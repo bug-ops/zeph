@@ -11,15 +11,15 @@ repository = "https://github.com/bug-ops/zeph"
 [workspace.dependencies]
 anyhow = "1.0"
 ollama-rs = "0.3"
-reqwest = { version = "0.13", features = ["json"] }
-serde = { version = "1.0", features = ["derive"] }
+reqwest = "0.13"
+serde = "1.0"
 serde_json = "1.0"
 serde_yml = "0.0"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-teloxide = { version = "0.17", features = ["macros"] }
+sqlx = "0.8"
+teloxide = "0.17"
 tempfile = "3"
 thiserror = "2.0"
-tokio = { version = "1", features = ["full"] }
+tokio = "1"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -38,7 +38,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeph-channels = { path = "crates/zeph-channels" }

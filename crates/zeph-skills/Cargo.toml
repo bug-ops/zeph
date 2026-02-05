@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_yml.workspace = true
 tracing.workspace = true
 

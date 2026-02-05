@@ -8,8 +8,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-serde.workspace = true
-tokio.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
 tracing.workspace = true
 zeph-llm = { path = "../zeph-llm" }

@@ -9,10 +9,10 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 ollama-rs.workspace = true
-reqwest.workspace = true
-serde.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
 tracing.workspace = true
 
 [lints]
