@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-fmt:
+    name: Lint (fmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          components: rustfmt
+          cache: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check formatting
+        run: cargo +nightly fmt --check
+
+  lint-clippy:
+    name: Lint (clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          components: clippy
+          cache-target: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: [lint-fmt, lint-clippy]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          bins: cargo-nextest
+          cache-target: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Run tests
+        run: cargo nextest run --workspace
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+
+  coverage:
+    name: Coverage
+    needs: [lint-fmt, lint-clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          bins: cargo-llvm-cov
+          cache-target: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: false

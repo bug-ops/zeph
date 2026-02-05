@@ -1,0 +1,48 @@
+name: Feature Request
+description: Suggest an idea for Zeph
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem?
+      placeholder: A clear description of what the problem is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions you've considered.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Core (Agent loop)
+        - LLM (Ollama/Claude)
+        - Skills
+        - Memory (SQLite)
+        - Channels (CLI/Telegram)
+        - Configuration
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context

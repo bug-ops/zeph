@@ -1,0 +1,165 @@
+name: Labeler
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  label-pr-paths:
+    name: Label PR (Paths)
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/labeler@v6
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+  label-pr-title-size:
+    name: Label PR (Title & Size)
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Label by title prefix
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = context.payload.pull_request.title.toLowerCase();
+            const labelsToAdd = [];
+
+            const prefixMap = {
+              'feat': 'enhancement',
+              'feature': 'enhancement',
+              'fix': 'bug',
+              'bugfix': 'bug',
+              'docs': 'documentation',
+              'doc': 'documentation',
+              'ci': 'ci',
+              'refactor': 'refactor',
+              'test': 'tests',
+              'perf': 'performance',
+              'chore': 'chore',
+              'build': 'build',
+              'style': 'style',
+              'revert': 'revert',
+              'breaking': 'breaking-change'
+            };
+
+            for (const [prefix, label] of Object.entries(prefixMap)) {
+              if (title.startsWith(`${prefix}:`) || title.startsWith(`${prefix}(`)) {
+                labelsToAdd.push(label);
+                break;
+              }
+            }
+
+            if (labelsToAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labelsToAdd
+              });
+            }
+
+      - name: Label by PR size
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const totalChanges = (pr.additions || 0) + (pr.deletions || 0);
+
+            let sizeLabel;
+            if (totalChanges <= 10) sizeLabel = 'size/XS';
+            else if (totalChanges <= 50) sizeLabel = 'size/S';
+            else if (totalChanges <= 200) sizeLabel = 'size/M';
+            else if (totalChanges <= 500) sizeLabel = 'size/L';
+            else sizeLabel = 'size/XL';
+
+            const existingLabels = pr.labels.map(l => l.name);
+            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+
+            for (const label of sizeLabels) {
+              if (existingLabels.includes(label) && label !== sizeLabel) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    name: label
+                  });
+                } catch (e) {}
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: [sizeLabel]
+            });
+
+  label-issue:
+    name: Label Issue
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Label by title prefix
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = context.payload.issue.title.toLowerCase();
+            const labelsToAdd = [];
+
+            const prefixMap = {
+              '[bug]': 'bug',
+              '[feature]': 'enhancement',
+              '[docs]': 'documentation',
+              '[question]': 'question',
+              '[help]': 'help wanted',
+              '[perf]': 'performance',
+              '[security]': 'security'
+            };
+
+            for (const [prefix, label] of Object.entries(prefixMap)) {
+              if (title.includes(prefix)) {
+                labelsToAdd.push(label);
+              }
+            }
+
+            const componentMap = {
+              'llm': 'llm',
+              'ollama': 'llm',
+              'claude': 'llm',
+              'telegram': 'channels',
+              'skill': 'skills',
+              'memory': 'memory',
+              'sqlite': 'memory'
+            };
+
+            for (const [keyword, label] of Object.entries(componentMap)) {
+              if (title.includes(keyword)) {
+                labelsToAdd.push(label);
+              }
+            }
+
+            if (labelsToAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: labelsToAdd
+              });
+            }

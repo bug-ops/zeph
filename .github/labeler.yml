@@ -1,0 +1,63 @@
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/**/*.rs"
+          - "Cargo.toml"
+          - "Cargo.lock"
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/zeph-core/**"
+
+llm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/zeph-llm/**"
+
+skills:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/zeph-skills/**"
+          - "skills/**"
+
+memory:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/zeph-memory/**"
+
+channels:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/zeph-channels/**"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "*.md"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Cargo.toml"
+          - "Cargo.lock"
+          - "**/Cargo.toml"
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".gitignore"
+          - "config/**"
+          - ".github/codecov.yml"
+          - ".github/dependabot.yml"

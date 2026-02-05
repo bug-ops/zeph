@@ -1,0 +1,45 @@
+coverage:
+  precision: 2
+  round: down
+  range: "60...100"
+
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 2%
+    patch:
+      default:
+        target: 60%
+
+flags:
+  zeph-core:
+    paths:
+      - crates/zeph-core/
+    carryforward: true
+  zeph-llm:
+    paths:
+      - crates/zeph-llm/
+    carryforward: true
+  zeph-skills:
+    paths:
+      - crates/zeph-skills/
+    carryforward: true
+  zeph-memory:
+    paths:
+      - crates/zeph-memory/
+    carryforward: true
+  zeph-channels:
+    paths:
+      - crates/zeph-channels/
+    carryforward: true
+
+ignore:
+  - "crates/*/tests/**"
+  - "tests/**"
+  - "target/**"
+
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: false
