@@ -1,0 +1,14 @@
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
