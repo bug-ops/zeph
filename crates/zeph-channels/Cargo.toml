@@ -1,0 +1,17 @@
+[package]
+name = "zeph-channels"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+teloxide.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+zeph-core = { path = "../zeph-core" }
+
+[lints]
+workspace = true

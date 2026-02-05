@@ -9,6 +9,7 @@ pub struct Config {
     pub llm: LlmConfig,
     pub skills: SkillsConfig,
     pub memory: MemoryConfig,
+    pub telegram: Option<TelegramConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +40,13 @@ pub struct SkillsConfig {
 pub struct MemoryConfig {
     pub sqlite_path: String,
     pub history_limit: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TelegramConfig {
+    pub token: Option<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
 }
 
 impl Config {
@@ -75,6 +83,13 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_SQLITE_PATH") {
             self.memory.sqlite_path = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
+            let tg = self.telegram.get_or_insert(TelegramConfig {
+                token: None,
+                allowed_users: Vec::new(),
+            });
+            tg.token = Some(v);
+        }
     }
 
     fn default() -> Self {
@@ -95,6 +110,7 @@ impl Config {
                 sqlite_path: "./data/zeph.db".into(),
                 history_limit: 50,
             },
+            telegram: None,
         }
     }
 }
@@ -105,6 +121,19 @@ mod tests {
 
     use super::*;
 
+    const LLM_ENV_KEYS: [&str; 4] = [
+        "ZEPH_LLM_PROVIDER",
+        "ZEPH_LLM_BASE_URL",
+        "ZEPH_LLM_MODEL",
+        "ZEPH_SQLITE_PATH",
+    ];
+
+    fn clear_llm_env() {
+        for key in LLM_ENV_KEYS {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
     #[test]
     fn defaults_when_file_missing() {
         let config = Config::default();
@@ -114,6 +143,7 @@ mod tests {
         assert_eq!(config.agent.name, "Zeph");
         assert_eq!(config.memory.history_limit, 50);
         assert!(config.llm.cloud.is_none());
+        assert!(config.telegram.is_none());
     }
 
     #[test]
@@ -142,10 +172,7 @@ history_limit = 10
         )
         .unwrap();
 
-        // Remove any ZEPH_ env vars that could interfere
-        for key in ["ZEPH_LLM_PROVIDER", "ZEPH_LLM_BASE_URL", "ZEPH_LLM_MODEL", "ZEPH_SQLITE_PATH"] {
-            unsafe { std::env::remove_var(key) };
-        }
+        clear_llm_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.agent.name, "TestBot");
@@ -184,9 +211,7 @@ history_limit = 50
         )
         .unwrap();
 
-        for key in ["ZEPH_LLM_PROVIDER", "ZEPH_LLM_BASE_URL", "ZEPH_LLM_MODEL", "ZEPH_SQLITE_PATH"] {
-            unsafe { std::env::remove_var(key) };
-        }
+        clear_llm_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.llm.provider, "claude");
@@ -205,5 +230,56 @@ history_limit = 50
         unsafe { std::env::remove_var("ZEPH_LLM_MODEL") };
 
         assert_eq!(config.llm.model, "phi3:mini");
+    }
+
+    #[test]
+    fn telegram_config_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tg.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[telegram]
+token = "123:ABC"
+allowed_users = ["alice", "bob"]
+"#
+        )
+        .unwrap();
+
+        clear_llm_env();
+
+        let config = Config::load(&path).unwrap();
+        let tg = config.telegram.unwrap();
+        assert_eq!(tg.token.as_deref(), Some("123:ABC"));
+        assert_eq!(tg.allowed_users, vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn telegram_env_override() {
+        let mut config = Config::default();
+        assert!(config.telegram.is_none());
+
+        unsafe { std::env::set_var("ZEPH_TELEGRAM_TOKEN", "env-token") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TELEGRAM_TOKEN") };
+
+        let tg = config.telegram.unwrap();
+        assert_eq!(tg.token.as_deref(), Some("env-token"));
     }
 }

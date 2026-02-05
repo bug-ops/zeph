@@ -1,29 +1,31 @@
-use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
 use tokio::process::Command;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::sqlite::{SqliteStore, role_str};
 
+use crate::channel::Channel;
 use crate::context::build_system_prompt;
 
 const MAX_SHELL_ITERATIONS: usize = 3;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub struct Agent<P: LlmProvider> {
+pub struct Agent<P: LlmProvider, C: Channel> {
     provider: P,
+    channel: C,
     messages: Vec<Message>,
     memory: Option<SqliteStore>,
     conversation_id: Option<i64>,
     history_limit: u32,
 }
 
-impl<P: LlmProvider> Agent<P> {
+impl<P: LlmProvider, C: Channel> Agent<P, C> {
     #[must_use]
-    pub fn new(provider: P, skills_prompt: &str) -> Self {
+    pub fn new(provider: P, channel: C, skills_prompt: &str) -> Self {
         let system_prompt = build_system_prompt(skills_prompt);
         Self {
             provider,
+            channel,
             messages: vec![Message {
                 role: Role::System,
                 content: system_prompt,
@@ -62,40 +64,28 @@ impl<P: LlmProvider> Agent<P> {
         Ok(())
     }
 
-    /// Run the interactive chat loop, reading from stdin until EOF or "exit"/"quit".
+    /// Run the chat loop, receiving messages via the channel until EOF or shutdown.
     ///
     /// # Errors
     ///
-    /// Returns an error if stdout flushing or stdin reading fails.
+    /// Returns an error if channel I/O or LLM communication fails.
     pub async fn run(&mut self) -> anyhow::Result<()> {
-        let stdin = io::stdin();
-        let mut reader = stdin.lock().lines();
-
         loop {
-            print!("You: ");
-            io::stdout().flush()?;
-
-            let Some(Ok(line)) = reader.next() else {
+            let Some(incoming) = self.channel.recv().await? else {
                 break;
             };
 
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if trimmed == "exit" || trimmed == "quit" {
-                break;
-            }
-
             self.messages.push(Message {
                 role: Role::User,
-                content: trimmed.to_string(),
+                content: incoming.text.clone(),
             });
-            self.persist_message(Role::User, trimmed).await;
+            self.persist_message(Role::User, &incoming.text).await;
 
             if let Err(e) = self.process_response().await {
                 tracing::error!("LLM error: {e:#}");
-                eprintln!("Error: {e:#}");
+                self.channel
+                    .send(&format!("Error: {e:#}"))
+                    .await?;
                 self.messages.pop();
             }
         }
@@ -105,8 +95,10 @@ impl<P: LlmProvider> Agent<P> {
 
     async fn process_response(&mut self) -> anyhow::Result<()> {
         for _ in 0..MAX_SHELL_ITERATIONS {
+            self.channel.send_typing().await?;
+
             let response = self.provider.chat(&self.messages).await?;
-            println!("Zeph: {response}");
+            self.channel.send(&response).await?;
 
             self.messages.push(Message {
                 role: Role::Assistant,
@@ -118,7 +110,7 @@ impl<P: LlmProvider> Agent<P> {
                 return Ok(());
             };
 
-            println!("[shell output]\n{output}");
+            self.channel.send(&format!("[shell output]\n{output}")).await?;
 
             let shell_msg = format!("[shell output]\n{output}");
             self.messages.push(Message {

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
+use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
 use zeph_core::config::Config;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
@@ -9,6 +11,36 @@ use zeph_llm::ollama::OllamaProvider;
 use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
+
+/// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
+#[derive(Debug)]
+enum AnyChannel {
+    Cli(CliChannel),
+    Telegram(TelegramChannel),
+}
+
+impl Channel for AnyChannel {
+    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+        match self {
+            Self::Cli(c) => c.recv().await,
+            Self::Telegram(c) => c.recv().await,
+        }
+    }
+
+    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Cli(c) => c.send(text).await,
+            Self::Telegram(c) => c.send(text).await,
+        }
+    }
+
+    async fn send_typing(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Cli(c) => c.send_typing().await,
+            Self::Telegram(c) => c.send_typing().await,
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,7 +56,11 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("loaded {} skill(s)", registry.all().len());
 
-    println!("zeph v{}", env!("CARGO_PKG_VERSION"));
+    let channel = create_channel(&config)?;
+
+    if matches!(channel, AnyChannel::Cli(_)) {
+        println!("zeph v{}", env!("CARGO_PKG_VERSION"));
+    }
 
     let store = SqliteStore::new(&config.memory.sqlite_path).await?;
     let conversation_id = match store.latest_conversation_id().await? {
@@ -34,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("conversation id: {conversation_id}");
 
-    let mut agent = Agent::new(provider, &skills_prompt)
+    let mut agent = Agent::new(provider, channel, &skills_prompt)
         .with_memory(store, conversation_id, config.memory.history_limit);
     agent.load_history().await?;
     agent.run().await
@@ -61,5 +97,25 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             Ok(AnyProvider::Claude(provider))
         }
         other => bail!("unknown LLM provider: {other}"),
+    }
+}
+
+fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
+    let token = config
+        .telegram
+        .as_ref()
+        .and_then(|t| t.token.clone());
+
+    if let Some(token) = token {
+        let allowed = config
+            .telegram
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.allowed_users.clone());
+
+        let tg = TelegramChannel::new(token, allowed).start()?;
+        tracing::info!("running in Telegram mode");
+        Ok(AnyChannel::Telegram(tg))
+    } else {
+        Ok(AnyChannel::Cli(CliChannel::new()))
     }
 }
