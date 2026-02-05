@@ -24,3 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-step execution loop with 3-iteration limit
 - 30-second timeout on shell commands
 - Context builder that combines base system prompt with skill instructions
+- SQLite conversation persistence with sqlx (zeph-memory)
+- Conversation history loading and message saving per session
+- Claude backend via Anthropic Messages API with 429 retry (zeph-llm)
+- AnyProvider enum dispatch for runtime provider selection
+- CloudLlmConfig for Claude-specific settings (model, max_tokens)
+- ZEPH_CLAUDE_API_KEY env var for API authentication
+- ZEPH_SQLITE_PATH env var override for database location
+- Provider factory in main.rs selecting Ollama or Claude from config
+- Memory integration into Agent with optional SqliteStore

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_memory::sqlite::{SqliteStore, role_str};
 
 use crate::context::build_system_prompt;
 
@@ -12,9 +13,13 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Agent<P: LlmProvider> {
     provider: P,
     messages: Vec<Message>,
+    memory: Option<SqliteStore>,
+    conversation_id: Option<i64>,
+    history_limit: u32,
 }
 
 impl<P: LlmProvider> Agent<P> {
+    #[must_use]
     pub fn new(provider: P, skills_prompt: &str) -> Self {
         let system_prompt = build_system_prompt(skills_prompt);
         Self {
@@ -23,7 +28,38 @@ impl<P: LlmProvider> Agent<P> {
                 role: Role::System,
                 content: system_prompt,
             }],
+            memory: None,
+            conversation_id: None,
+            history_limit: 50,
         }
+    }
+
+    #[must_use]
+    pub fn with_memory(mut self, store: SqliteStore, conversation_id: i64, limit: u32) -> Self {
+        self.memory = Some(store);
+        self.conversation_id = Some(conversation_id);
+        self.history_limit = limit;
+        self
+    }
+
+    /// Load conversation history from memory and inject into messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading history from `SQLite` fails.
+    pub async fn load_history(&mut self) -> anyhow::Result<()> {
+        let (Some(store), Some(cid)) = (&self.memory, self.conversation_id) else {
+            return Ok(());
+        };
+
+        let history = store.load_history(cid, self.history_limit).await?;
+        if !history.is_empty() {
+            tracing::info!("restored {} message(s) from conversation {cid}", history.len());
+            for msg in history {
+                self.messages.push(msg);
+            }
+        }
+        Ok(())
     }
 
     /// Run the interactive chat loop, reading from stdin until EOF or "exit"/"quit".
@@ -55,6 +91,7 @@ impl<P: LlmProvider> Agent<P> {
                 role: Role::User,
                 content: trimmed.to_string(),
             });
+            self.persist_message(Role::User, trimmed).await;
 
             if let Err(e) = self.process_response().await {
                 tracing::error!("LLM error: {e:#}");
@@ -75,6 +112,7 @@ impl<P: LlmProvider> Agent<P> {
                 role: Role::Assistant,
                 content: response.clone(),
             });
+            self.persist_message(Role::Assistant, &response).await;
 
             let Some(output) = extract_and_execute_bash(&response).await else {
                 return Ok(());
@@ -82,13 +120,24 @@ impl<P: LlmProvider> Agent<P> {
 
             println!("[shell output]\n{output}");
 
+            let shell_msg = format!("[shell output]\n{output}");
             self.messages.push(Message {
                 role: Role::User,
-                content: format!("[shell output]\n{output}"),
+                content: shell_msg.clone(),
             });
+            self.persist_message(Role::User, &shell_msg).await;
         }
 
         Ok(())
+    }
+
+    async fn persist_message(&self, role: Role, content: &str) {
+        let (Some(store), Some(cid)) = (&self.memory, self.conversation_id) else {
+            return;
+        };
+        if let Err(e) = store.save_message(cid, role_str(role), content).await {
+            tracing::error!("failed to persist message: {e:#}");
+        }
     }
 }
 

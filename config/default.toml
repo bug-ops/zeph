@@ -6,6 +6,10 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "mistral:7b"
 
+[llm.cloud]
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+
 [skills]
 paths = ["./skills"]
 

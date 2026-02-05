@@ -1,8 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, bail};
 use zeph_core::agent::Agent;
 use zeph_core::config::Config;
+use zeph_llm::any::AnyProvider;
+use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
+use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 
@@ -11,7 +15,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = Config::load(Path::new("config/default.toml"))?;
-    let provider = OllamaProvider::new(&config.llm.base_url, config.llm.model.clone());
+
+    let provider = create_provider(&config)?;
 
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
@@ -21,6 +26,40 @@ async fn main() -> anyhow::Result<()> {
 
     println!("zeph v{}", env!("CARGO_PKG_VERSION"));
 
-    let mut agent = Agent::new(provider, &skills_prompt);
+    let store = SqliteStore::new(&config.memory.sqlite_path).await?;
+    let conversation_id = match store.latest_conversation_id().await? {
+        Some(id) => id,
+        None => store.create_conversation().await?,
+    };
+
+    tracing::info!("conversation id: {conversation_id}");
+
+    let mut agent = Agent::new(provider, &skills_prompt)
+        .with_memory(store, conversation_id, config.memory.history_limit);
+    agent.load_history().await?;
     agent.run().await
+}
+
+fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
+    match config.llm.provider.as_str() {
+        "ollama" => {
+            let provider =
+                OllamaProvider::new(&config.llm.base_url, config.llm.model.clone());
+            Ok(AnyProvider::Ollama(provider))
+        }
+        "claude" => {
+            let cloud = config
+                .llm
+                .cloud
+                .as_ref()
+                .context("llm.cloud config section required for Claude provider")?;
+
+            let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
+                .context("ZEPH_CLAUDE_API_KEY env var required for Claude provider")?;
+
+            let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens);
+            Ok(AnyProvider::Claude(provider))
+        }
+        other => bail!("unknown LLM provider: {other}"),
+    }
 }

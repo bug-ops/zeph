@@ -21,6 +21,13 @@ pub struct LlmConfig {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    pub cloud: Option<CloudLlmConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloudLlmConfig {
+    pub model: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +38,7 @@ pub struct SkillsConfig {
 #[derive(Debug, Deserialize)]
 pub struct MemoryConfig {
     pub sqlite_path: String,
-    pub history_limit: usize,
+    pub history_limit: u32,
 }
 
 impl Config {
@@ -65,6 +72,9 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_LLM_MODEL") {
             self.llm.model = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_SQLITE_PATH") {
+            self.memory.sqlite_path = v;
+        }
     }
 
     fn default() -> Self {
@@ -76,6 +86,7 @@ impl Config {
                 provider: "ollama".into(),
                 base_url: "http://localhost:11434".into(),
                 model: "mistral:7b".into(),
+                cloud: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
@@ -102,6 +113,7 @@ mod tests {
         assert_eq!(config.llm.model, "mistral:7b");
         assert_eq!(config.agent.name, "Zeph");
         assert_eq!(config.memory.history_limit, 50);
+        assert!(config.llm.cloud.is_none());
     }
 
     #[test]
@@ -131,7 +143,7 @@ history_limit = 10
         .unwrap();
 
         // Remove any ZEPH_ env vars that could interfere
-        for key in ["ZEPH_LLM_PROVIDER", "ZEPH_LLM_BASE_URL", "ZEPH_LLM_MODEL"] {
+        for key in ["ZEPH_LLM_PROVIDER", "ZEPH_LLM_BASE_URL", "ZEPH_LLM_MODEL", "ZEPH_SQLITE_PATH"] {
             unsafe { std::env::remove_var(key) };
         }
 
@@ -140,6 +152,47 @@ history_limit = 10
         assert_eq!(config.llm.base_url, "http://custom:1234");
         assert_eq!(config.llm.model, "llama3:8b");
         assert_eq!(config.memory.history_limit, 10);
+    }
+
+    #[test]
+    fn parse_toml_with_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cloud.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "claude"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[llm.cloud]
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        for key in ["ZEPH_LLM_PROVIDER", "ZEPH_LLM_BASE_URL", "ZEPH_LLM_MODEL", "ZEPH_SQLITE_PATH"] {
+            unsafe { std::env::remove_var(key) };
+        }
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.llm.provider, "claude");
+        let cloud = config.llm.cloud.unwrap();
+        assert_eq!(cloud.model, "claude-sonnet-4-5-20250929");
+        assert_eq!(cloud.max_tokens, 4096);
     }
 
     #[test]
