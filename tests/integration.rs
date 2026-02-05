@@ -53,10 +53,7 @@ impl MockChannel {
 
 impl Channel for MockChannel {
     async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
-        Ok(self
-            .inputs
-            .pop_front()
-            .map(|text| ChannelMessage { text }))
+        Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
     }
 
     async fn send(&mut self, text: &str) -> anyhow::Result<()> {
@@ -157,10 +154,7 @@ async fn memory_save_load_roundtrip() {
     let cid = store.create_conversation().await.unwrap();
 
     store.save_message(cid, "user", "hello").await.unwrap();
-    store
-        .save_message(cid, "assistant", "world")
-        .await
-        .unwrap();
+    store.save_message(cid, "assistant", "world").await.unwrap();
 
     let history = store.load_history(cid, 50).await.unwrap();
     assert_eq!(history.len(), 2);
@@ -241,8 +235,7 @@ async fn agent_with_memory() {
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cid = store.create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider, channel, "")
-        .with_memory(store, cid, 50);
+    let mut agent = Agent::new(provider, channel, "").with_memory(store, cid, 50);
     agent.run().await.unwrap();
 }
 

@@ -59,8 +59,7 @@ impl Config {
     /// Returns an error if the file exists but cannot be read or parsed.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let mut config = if path.exists() {
-            let content =
-                std::fs::read_to_string(path).context("failed to read config file")?;
+            let content = std::fs::read_to_string(path).context("failed to read config file")?;
             toml::from_str::<Self>(&content).context("failed to parse config file")?
         } else {
             Self::default()

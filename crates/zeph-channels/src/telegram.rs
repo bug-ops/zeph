@@ -46,44 +46,39 @@ impl TelegramChannel {
         let allowed = self.allowed_users.clone();
 
         tokio::spawn(async move {
-            let handler = Update::filter_message().endpoint(
-                move |msg: Message, _bot: Bot| {
-                    let tx = tx.clone();
-                    let allowed = allowed.clone();
-                    async move {
-                        let username = msg
-                            .from
-                            .as_ref()
-                            .and_then(|u| u.username.clone());
+            let handler = Update::filter_message().endpoint(move |msg: Message, _bot: Bot| {
+                let tx = tx.clone();
+                let allowed = allowed.clone();
+                async move {
+                    let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
-                        if !allowed.is_empty() {
-                            let is_allowed = username
-                                .as_deref()
-                                .is_some_and(|u| allowed.iter().any(|a| a == u));
-                            if !is_allowed {
-                                tracing::warn!(
-                                    "rejected message from unauthorized user: {:?}",
-                                    username
-                                );
-                                return respond(());
-                            }
-                        }
-
-                        let Some(text) = msg.text() else {
+                    if !allowed.is_empty() {
+                        let is_allowed = username
+                            .as_deref()
+                            .is_some_and(|u| allowed.iter().any(|a| a == u));
+                        if !is_allowed {
+                            tracing::warn!(
+                                "rejected message from unauthorized user: {:?}",
+                                username
+                            );
                             return respond(());
-                        };
-
-                        let _ = tx
-                            .send(IncomingMessage {
-                                chat_id: msg.chat.id,
-                                text: text.to_string(),
-                            })
-                            .await;
-
-                        respond(())
+                        }
                     }
-                },
-            );
+
+                    let Some(text) = msg.text() else {
+                        return respond(());
+                    };
+
+                    let _ = tx
+                        .send(IncomingMessage {
+                            chat_id: msg.chat.id,
+                            text: text.to_string(),
+                        })
+                        .await;
+
+                    respond(())
+                }
+            });
 
             Dispatcher::builder(bot, handler)
                 .enable_ctrlc_handler()
@@ -98,7 +93,11 @@ impl TelegramChannel {
 
     fn is_command(text: &str) -> Option<&str> {
         let cmd = text.split_whitespace().next()?;
-        if cmd.starts_with('/') { Some(cmd) } else { None }
+        if cmd.starts_with('/') {
+            Some(cmd)
+        } else {
+            None
+        }
     }
 }
 
@@ -159,7 +158,9 @@ impl Channel for TelegramChannel {
         let Some(chat_id) = self.chat_id else {
             return Ok(());
         };
-        self.bot.send_chat_action(chat_id, ChatAction::Typing).await?;
+        self.bot
+            .send_chat_action(chat_id, ChatAction::Typing)
+            .await?;
         Ok(())
     }
 }

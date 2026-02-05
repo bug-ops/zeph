@@ -66,7 +66,10 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
 
         let history = store.load_history(cid, self.history_limit).await?;
         if !history.is_empty() {
-            tracing::info!("restored {} message(s) from conversation {cid}", history.len());
+            tracing::info!(
+                "restored {} message(s) from conversation {cid}",
+                history.len()
+            );
             for msg in history {
                 self.messages.push(msg);
             }
@@ -101,9 +104,7 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
 
             if let Err(e) = self.process_response().await {
                 tracing::error!("LLM error: {e:#}");
-                self.channel
-                    .send(&format!("Error: {e:#}"))
-                    .await?;
+                self.channel.send(&format!("Error: {e:#}")).await?;
                 self.messages.pop();
             }
         }
@@ -128,7 +129,9 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
                 return Ok(());
             };
 
-            self.channel.send(&format!("[shell output]\n{output}")).await?;
+            self.channel
+                .send(&format!("[shell output]\n{output}"))
+                .await?;
 
             let shell_msg = format!("[shell output]\n{output}");
             self.messages.push(Message {

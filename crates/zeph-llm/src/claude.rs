@@ -49,7 +49,10 @@ impl ClaudeProvider {
             .context("failed to send request to Claude API")?;
 
         let status = response.status();
-        let text = response.text().await.context("failed to read response body")?;
+        let text = response
+            .text()
+            .await
+            .context("failed to read response body")?;
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(anyhow::anyhow!("rate_limited"));
@@ -198,13 +201,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
     async fn integration_claude_chat() {
-        let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
-            .expect("ZEPH_CLAUDE_API_KEY must be set");
-        let provider = ClaudeProvider::new(
-            api_key,
-            "claude-sonnet-4-5-20250929".into(),
-            256,
-        );
+        let api_key =
+            std::env::var("ZEPH_CLAUDE_API_KEY").expect("ZEPH_CLAUDE_API_KEY must be set");
+        let provider = ClaudeProvider::new(api_key, "claude-sonnet-4-5-20250929".into(), 256);
 
         let messages = vec![Message {
             role: Role::User,

@@ -103,8 +103,7 @@ async fn health_check(provider: &AnyProvider) {
 fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
     match config.llm.provider.as_str() {
         "ollama" => {
-            let provider =
-                OllamaProvider::new(&config.llm.base_url, config.llm.model.clone());
+            let provider = OllamaProvider::new(&config.llm.base_url, config.llm.model.clone());
             Ok(AnyProvider::Ollama(provider))
         }
         "claude" => {
@@ -125,10 +124,7 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 }
 
 fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
-    let token = config
-        .telegram
-        .as_ref()
-        .and_then(|t| t.token.clone());
+    let token = config.telegram.as_ref().and_then(|t| t.token.clone());
 
     if let Some(token) = token {
         let allowed = config

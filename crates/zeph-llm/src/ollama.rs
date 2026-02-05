@@ -1,7 +1,7 @@
 use anyhow::Context;
 use ollama_rs::Ollama;
-use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::chat::ChatMessage;
+use ollama_rs::generation::chat::request::ChatMessageRequest;
 
 use crate::provider::{LlmProvider, Message, Role};
 

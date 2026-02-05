@@ -20,10 +20,7 @@ pub trait LlmProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the provider fails to communicate or the response is invalid.
-    fn chat(
-        &self,
-        messages: &[Message],
-    ) -> impl Future<Output = anyhow::Result<String>> + Send;
+    fn chat(&self, messages: &[Message]) -> impl Future<Output = anyhow::Result<String>> + Send;
 
     fn name(&self) -> &'static str;
 }

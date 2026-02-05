@@ -31,8 +31,7 @@ impl SqliteStore {
         if path != ":memory:"
             && let Some(parent) = std::path::Path::new(path).parent()
         {
-            std::fs::create_dir_all(parent)
-                .context("failed to create database directory")?;
+            std::fs::create_dir_all(parent).context("failed to create database directory")?;
         }
 
         let url = if path == ":memory:" {
@@ -61,11 +60,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert fails.
     pub async fn create_conversation(&self) -> anyhow::Result<i64> {
-        let row: (i64,) =
-            sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
-                .fetch_one(&self.pool)
-                .await
-                .context("failed to create conversation")?;
+        let row: (i64,) = sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to create conversation")?;
         Ok(row.0)
     }
 
