@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+ollama-rs.workspace = true
+serde.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
