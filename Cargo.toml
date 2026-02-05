@@ -13,6 +13,7 @@ anyhow = "1.0"
 ollama-rs = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yml = "0.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 toml = "0.9"
@@ -34,9 +35,11 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 tracing-subscriber.workspace = true
 zeph-core = { path = "crates/zeph-core" }
 zeph-llm = { path = "crates/zeph-llm" }
+zeph-skills = { path = "crates/zeph-skills" }
 
 [lints]
 workspace = true
