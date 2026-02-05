@@ -3738,6 +3738,7 @@ name = "zeph"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

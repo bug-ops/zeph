@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use tokio::sync::watch;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
@@ -50,6 +51,8 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = create_provider(&config)?;
 
+    health_check(&provider).await;
+
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
     let skills_prompt = format_skills_prompt(registry.all());
@@ -70,10 +73,31 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("conversation id: {conversation_id}");
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    tokio::spawn(async move {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to listen for ctrl-c: {e:#}");
+            return;
+        }
+        tracing::info!("received shutdown signal");
+        let _ = shutdown_tx.send(true);
+    });
+
     let mut agent = Agent::new(provider, channel, &skills_prompt)
-        .with_memory(store, conversation_id, config.memory.history_limit);
+        .with_memory(store, conversation_id, config.memory.history_limit)
+        .with_shutdown(shutdown_rx);
     agent.load_history().await?;
     agent.run().await
+}
+
+async fn health_check(provider: &AnyProvider) {
+    if let AnyProvider::Ollama(ollama) = provider {
+        match ollama.health_check().await {
+            Ok(()) => tracing::info!("ollama health check passed"),
+            Err(e) => tracing::warn!("ollama health check failed: {e:#}"),
+        }
+    }
 }
 
 fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {

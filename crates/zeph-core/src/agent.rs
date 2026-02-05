@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::sync::watch;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::sqlite::{SqliteStore, role_str};
 
@@ -17,12 +18,14 @@ pub struct Agent<P: LlmProvider, C: Channel> {
     memory: Option<SqliteStore>,
     conversation_id: Option<i64>,
     history_limit: u32,
+    shutdown: watch::Receiver<bool>,
 }
 
 impl<P: LlmProvider, C: Channel> Agent<P, C> {
     #[must_use]
     pub fn new(provider: P, channel: C, skills_prompt: &str) -> Self {
         let system_prompt = build_system_prompt(skills_prompt);
+        let (_tx, rx) = watch::channel(false);
         Self {
             provider,
             channel,
@@ -33,6 +36,7 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
             memory: None,
             conversation_id: None,
             history_limit: 50,
+            shutdown: rx,
         }
     }
 
@@ -41,6 +45,12 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
         self.memory = Some(store);
         self.conversation_id = Some(conversation_id);
         self.history_limit = limit;
+        self
+    }
+
+    #[must_use]
+    pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
+        self.shutdown = rx;
         self
     }
 
@@ -71,7 +81,15 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
     /// Returns an error if channel I/O or LLM communication fails.
     pub async fn run(&mut self) -> anyhow::Result<()> {
         loop {
-            let Some(incoming) = self.channel.recv().await? else {
+            let incoming = tokio::select! {
+                result = self.channel.recv() => result?,
+                () = shutdown_signal(&mut self.shutdown) => {
+                    tracing::info!("shutting down");
+                    break;
+                }
+            };
+
+            let Some(incoming) = incoming else {
                 break;
             };
 
@@ -129,6 +147,16 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
         };
         if let Err(e) = store.save_message(cid, role_str(role), content).await {
             tracing::error!("failed to persist message: {e:#}");
+        }
+    }
+}
+
+async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
+    // Wait until the value becomes true
+    while !*rx.borrow_and_update() {
+        if rx.changed().await.is_err() {
+            // Sender dropped without ever setting true — hang forever so select picks the other branch
+            std::future::pending::<()>().await;
         }
     }
 }

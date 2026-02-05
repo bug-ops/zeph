@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires ZEPH_CLAUDE_API_KEY env var
+    #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
     async fn integration_claude_chat() {
         let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
             .expect("ZEPH_CLAUDE_API_KEY must be set");
