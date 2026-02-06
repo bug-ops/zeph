@@ -24,6 +24,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Integration tests for streaming happy path and equivalence with non-streaming `chat()` (ignored by default)
 - ollama-rs `"stream"` feature enabled in workspace dependencies
 
+#### M6 Phase 3: Claude SSE streaming backend (Issue #37)
+- Native token-by-token streaming for `ClaudeProvider` using Anthropic Messages API with Server-Sent Events
+- `ClaudeProvider::chat_stream()` implementation via SSE event parsing
+- `ClaudeProvider::supports_streaming()` now returns `true`
+- SSE event parsing via `eventsource-stream` 0.2.3 library
+- Stream pipeline: `bytes_stream() -> eventsource() -> filter_map(parse_sse_event) -> Box::pin()`
+- Handles SSE events: `content_block_delta` (text extraction), `error` (mid-stream errors), metadata events (skipped)
+- Integration tests for streaming happy path and equivalence with non-streaming `chat()` (ignored by default)
+- eventsource-stream dependency added to workspace dependencies
+- reqwest `"stream"` feature enabled for `bytes_stream()` support
+
+### Fixed
+
+#### M6 Phase 3: Security improvements
+- Manual `Debug` implementation for `ClaudeProvider` to prevent API key leakage in debug output
+- Error message sanitization: full Claude API errors logged via `tracing::error!()`, generic messages returned to users
+
 ### Changed
 
 **BREAKING CHANGES** (pre-1.0.0):

@@ -11,6 +11,7 @@ repository = "https://github.com/bug-ops/zeph"
 
 [workspace.dependencies]
 anyhow = "1.0"
+eventsource-stream = "0.2"
 futures-core = "0.3"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 reqwest = { version = "0.13", default-features = false }

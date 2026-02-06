@@ -1,19 +1,32 @@
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
-use crate::provider::{LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, Role};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-#[derive(Debug)]
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
     max_tokens: u32,
+}
+
+impl fmt::Debug for ClaudeProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaudeProvider")
+            .field("client", &"<reqwest::Client>")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl ClaudeProvider {
@@ -35,6 +48,7 @@ impl ClaudeProvider {
             max_tokens: self.max_tokens,
             system: system.as_deref(),
             messages: &chat_messages,
+            stream: false,
         };
 
         let response = self
@@ -59,7 +73,8 @@ impl ClaudeProvider {
         }
 
         if !status.is_success() {
-            bail!("Claude API error {status}: {text}");
+            tracing::error!("Claude API error {status}: {text}");
+            bail!("Claude API request failed (status {status})");
         }
 
         let resp: ApiResponse =
@@ -69,6 +84,46 @@ impl ClaudeProvider {
             .first()
             .map(|c| c.text.clone())
             .context("empty response from Claude API")
+    }
+
+    async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
+        let (system, chat_messages) = split_messages(messages);
+
+        let body = RequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system.as_deref(),
+            messages: &chat_messages,
+            stream: true,
+        };
+
+        let response = self
+            .client
+            .post(API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("failed to send streaming request to Claude API")?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            bail!("rate_limited");
+        }
+
+        if !status.is_success() {
+            let text = response
+                .text()
+                .await
+                .context("failed to read error response body")?;
+            tracing::error!("Claude API streaming request error {status}: {text}");
+            bail!("Claude API streaming request failed (status {status})");
+        }
+
+        Ok(response)
     }
 }
 
@@ -85,20 +140,65 @@ impl LlmProvider for ClaudeProvider {
         }
     }
 
-    async fn chat_stream(
-        &self,
-        messages: &[Message],
-    ) -> anyhow::Result<crate::provider::ChatStream> {
-        let response = self.chat(messages).await?;
-        Ok(Box::pin(tokio_stream::once(Ok(response))))
+    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+        let response = match self.send_stream_request(messages).await {
+            Ok(resp) => resp,
+            Err(e) if e.to_string().contains("rate_limited") => {
+                tracing::warn!("Claude rate limited, retrying in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                self.send_stream_request(messages).await?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let event_stream = response.bytes_stream().eventsource();
+
+        let mapped = event_stream.filter_map(|event| match event {
+            Ok(event) => parse_sse_event(&event.data, &event.event),
+            Err(e) => Some(Err(anyhow::anyhow!("SSE parse error: {e}"))),
+        });
+
+        Ok(Box::pin(mapped))
     }
 
     fn supports_streaming(&self) -> bool {
-        false
+        true
     }
 
     fn name(&self) -> &'static str {
         "claude"
+    }
+}
+
+fn parse_sse_event(data: &str, event_type: &str) -> Option<anyhow::Result<String>> {
+    match event_type {
+        "content_block_delta" => match serde_json::from_str::<StreamEvent>(data) {
+            Ok(event) => {
+                if let Some(delta) = event.delta
+                    && delta.delta_type == "text_delta"
+                    && !delta.text.is_empty()
+                {
+                    return Some(Ok(delta.text));
+                }
+                None
+            }
+            Err(e) => Some(Err(anyhow::anyhow!("failed to parse SSE data: {e}"))),
+        },
+        "error" => match serde_json::from_str::<StreamEvent>(data) {
+            Ok(event) => {
+                if let Some(err) = event.error {
+                    Some(Err(anyhow::anyhow!(
+                        "Claude stream error ({}): {}",
+                        err.error_type,
+                        err.message
+                    )))
+                } else {
+                    Some(Err(anyhow::anyhow!("Claude stream error: {data}")))
+                }
+            }
+            Err(_) => Some(Err(anyhow::anyhow!("Claude stream error: {data}"))),
+        },
+        _ => None,
     }
 }
 
@@ -136,6 +236,8 @@ struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     messages: &'a [ApiMessage<'a>],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Serialize)]
@@ -152,6 +254,29 @@ struct ApiResponse {
 #[derive(Deserialize)]
 struct ContentBlock {
     text: String,
+}
+
+#[derive(Deserialize)]
+struct StreamEvent {
+    #[serde(default)]
+    delta: Option<Delta>,
+    #[serde(default)]
+    error: Option<StreamError>,
+}
+
+#[derive(Deserialize)]
+struct Delta {
+    #[serde(rename = "type")]
+    delta_type: String,
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct StreamError {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
 }
 
 #[cfg(test)]
@@ -210,6 +335,77 @@ mod tests {
         assert_eq!(system.unwrap(), "Part 1\n\nPart 2");
     }
 
+    #[test]
+    fn parse_sse_event_text_delta() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
+        let result = parse_sse_event(data, "content_block_delta");
+        assert_eq!(result.unwrap().unwrap(), "Hello");
+    }
+
+    #[test]
+    fn parse_sse_event_empty_text_delta() {
+        let data =
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}"#;
+        let result = parse_sse_event(data, "content_block_delta");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_event_error() {
+        let data = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        let result = parse_sse_event(data, "error");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("overloaded_error"));
+        assert!(err.to_string().contains("Overloaded"));
+    }
+
+    #[test]
+    fn parse_sse_event_message_start_skipped() {
+        let data = r#"{"type":"message_start","message":{}}"#;
+        let result = parse_sse_event(data, "message_start");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_event_message_stop_skipped() {
+        let data = r#"{"type":"message_stop"}"#;
+        let result = parse_sse_event(data, "message_stop");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_event_ping_skipped() {
+        let result = parse_sse_event("{}", "ping");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_event_invalid_json() {
+        let result = parse_sse_event("not json", "content_block_delta");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("failed to parse SSE data"));
+    }
+
+    #[test]
+    fn supports_streaming_returns_true() {
+        let provider =
+            ClaudeProvider::new("test-key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert!(provider.supports_streaming());
+    }
+
+    #[test]
+    fn debug_redacts_api_key() {
+        let provider = ClaudeProvider::new(
+            "sk-secret-key".into(),
+            "claude-sonnet-4-5-20250929".into(),
+            1024,
+        );
+        let debug_output = format!("{provider:?}");
+        assert!(!debug_output.contains("sk-secret-key"));
+        assert!(debug_output.contains("<redacted>"));
+        assert!(debug_output.contains("claude-sonnet-4-5-20250929"));
+    }
+
     #[tokio::test]
     #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
     async fn integration_claude_chat() {
@@ -224,5 +420,58 @@ mod tests {
 
         let response = provider.chat(&messages).await.unwrap();
         assert!(response.to_lowercase().contains("pong"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
+    async fn integration_claude_chat_stream() {
+        let api_key =
+            std::env::var("ZEPH_CLAUDE_API_KEY").expect("ZEPH_CLAUDE_API_KEY must be set");
+        let provider = ClaudeProvider::new(api_key, "claude-sonnet-4-5-20250929".into(), 256);
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "Reply with exactly: pong".into(),
+        }];
+
+        let mut stream = provider.chat_stream(&messages).await.unwrap();
+        let mut chunks = Vec::new();
+        let mut chunk_count = 0;
+
+        while let Some(result) = stream.next().await {
+            let chunk = result.unwrap();
+            chunks.push(chunk);
+            chunk_count += 1;
+        }
+
+        let full_response: String = chunks.concat();
+        assert!(!full_response.is_empty());
+        assert!(full_response.to_lowercase().contains("pong"));
+        assert!(chunk_count >= 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
+    async fn integration_claude_stream_matches_chat() {
+        let api_key =
+            std::env::var("ZEPH_CLAUDE_API_KEY").expect("ZEPH_CLAUDE_API_KEY must be set");
+        let provider = ClaudeProvider::new(api_key, "claude-sonnet-4-5-20250929".into(), 256);
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "What is 2+2? Reply with just the number.".into(),
+        }];
+
+        let chat_response = provider.chat(&messages).await.unwrap();
+
+        let mut stream = provider.chat_stream(&messages).await.unwrap();
+        let mut stream_chunks = Vec::new();
+        while let Some(result) = stream.next().await {
+            stream_chunks.push(result.unwrap());
+        }
+        let stream_response: String = stream_chunks.concat();
+
+        assert!(chat_response.contains('4'));
+        assert!(stream_response.contains('4'));
     }
 }

@@ -8,9 +8,10 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+eventsource-stream.workspace = true
 futures-core.workspace = true
 ollama-rs.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls"] }
+reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
