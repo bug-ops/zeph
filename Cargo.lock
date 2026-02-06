@@ -3598,6 +3598,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "toml",
  "tracing",
  "zeph-llm",

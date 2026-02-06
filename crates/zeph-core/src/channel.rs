@@ -47,13 +47,15 @@ pub trait Channel: Send {
 /// CLI channel that reads from stdin and writes to stdout.
 #[derive(Debug)]
 pub struct CliChannel {
-    _private: (),
+    accumulated: String,
 }
 
 impl CliChannel {
     #[must_use]
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            accumulated: String::new(),
+        }
     }
 }
 
@@ -92,6 +94,9 @@ impl Channel for CliChannel {
             return Ok(None);
         }
 
+        // Reset accumulated for new response
+        self.accumulated.clear();
+
         Ok(Some(ChannelMessage {
             text: trimmed.to_string(),
         }))
@@ -102,11 +107,16 @@ impl Channel for CliChannel {
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+        use std::io::{Write, stdout};
+        print!("{chunk}");
+        stdout().flush()?;
+        self.accumulated.push_str(chunk);
         Ok(())
     }
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        println!();
         Ok(())
     }
 }
@@ -159,5 +169,22 @@ mod tests {
     async fn flush_chunks_default_is_noop() {
         let mut ch = StubChannel;
         ch.flush_chunks().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cli_channel_send_chunk_accumulates() {
+        let mut ch = CliChannel::new();
+        ch.send_chunk("hello").await.unwrap();
+        ch.send_chunk(" ").await.unwrap();
+        ch.send_chunk("world").await.unwrap();
+        assert_eq!(ch.accumulated, "hello world");
+    }
+
+    #[tokio::test]
+    async fn cli_channel_flush_chunks_retains_buffer() {
+        let mut ch = CliChannel::new();
+        ch.send_chunk("test").await.unwrap();
+        ch.flush_chunks().await.unwrap();
+        assert_eq!(ch.accumulated, "test");
     }
 }

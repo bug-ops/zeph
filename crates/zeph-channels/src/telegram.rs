@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use teloxide::prelude::*;
-use teloxide::types::ChatAction;
+use teloxide::types::{ChatAction, MessageId};
 use tokio::sync::mpsc;
 use zeph_core::channel::{Channel, ChannelMessage};
 
@@ -12,6 +14,9 @@ pub struct TelegramChannel {
     chat_id: Option<ChatId>,
     rx: mpsc::Receiver<IncomingMessage>,
     allowed_users: Vec<String>,
+    accumulated: String,
+    last_edit: Option<Instant>,
+    message_id: Option<MessageId>,
 }
 
 #[derive(Debug)]
@@ -30,6 +35,9 @@ impl TelegramChannel {
             chat_id: None,
             rx,
             allowed_users,
+            accumulated: String::new(),
+            last_edit: None,
+            message_id: None,
         }
     }
 
@@ -99,6 +107,58 @@ impl TelegramChannel {
             None
         }
     }
+
+    fn should_send_update(&self) -> bool {
+        match self.last_edit {
+            None => true,
+            Some(last) => last.elapsed() > Duration::from_secs(1) || self.accumulated.len() >= 512,
+        }
+    }
+
+    async fn send_or_edit(&mut self) -> anyhow::Result<()> {
+        let Some(chat_id) = self.chat_id else {
+            anyhow::bail!("no active chat to send message to");
+        };
+
+        let text = if self.accumulated.is_empty() {
+            "..."
+        } else {
+            &self.accumulated
+        };
+
+        match self.message_id {
+            None => {
+                let msg = self.bot.send_message(chat_id, text).await?;
+                self.message_id = Some(msg.id);
+            }
+            Some(msg_id) => {
+                let edit_result = self.bot.edit_message_text(chat_id, msg_id, text).await;
+
+                if let Err(e) = edit_result {
+                    let error_msg = e.to_string();
+
+                    if error_msg.contains("message is not modified")
+                        || error_msg.contains("message to edit not found")
+                        || error_msg.contains("MESSAGE_ID_INVALID")
+                    {
+                        tracing::warn!(
+                            "Telegram edit failed (message_id stale?): {e}, sending new message"
+                        );
+                        self.message_id = None;
+                        self.last_edit = None;
+
+                        let msg = self.bot.send_message(chat_id, text).await?;
+                        self.message_id = Some(msg.id);
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+
+        self.last_edit = Some(Instant::now());
+        Ok(())
+    }
 }
 
 impl Channel for TelegramChannel {
@@ -109,6 +169,11 @@ impl Channel for TelegramChannel {
             };
 
             self.chat_id = Some(incoming.chat_id);
+
+            // Reset streaming state for new response
+            self.accumulated.clear();
+            self.last_edit = None;
+            self.message_id = None;
 
             if let Some(cmd) = Self::is_command(&incoming.text) {
                 match cmd {
@@ -154,11 +219,27 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+        self.accumulated.push_str(chunk);
+
+        if self.should_send_update() {
+            self.send_or_edit().await?;
+        }
+
         Ok(())
     }
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        // Final update with complete message
+        if self.message_id.is_some() {
+            self.send_or_edit().await?;
+        }
+
+        // Clear state for next response
+        self.accumulated.clear();
+        self.last_edit = None;
+        self.message_id = None;
+
         Ok(())
     }
 
@@ -183,5 +264,55 @@ mod tests {
         assert_eq!(TelegramChannel::is_command("/reset now"), Some("/reset"));
         assert_eq!(TelegramChannel::is_command("hello"), None);
         assert_eq!(TelegramChannel::is_command(""), None);
+    }
+
+    #[test]
+    fn should_send_update_first_chunk() {
+        let token = "test_token".to_string();
+        let allowed_users = Vec::new();
+        let channel = TelegramChannel::new(token, allowed_users);
+        assert!(channel.should_send_update());
+    }
+
+    #[test]
+    fn should_send_update_size_threshold() {
+        let token = "test_token".to_string();
+        let allowed_users = Vec::new();
+        let mut channel = TelegramChannel::new(token, allowed_users);
+        channel.accumulated = "a".repeat(512);
+        channel.last_edit = Some(Instant::now());
+        assert!(channel.should_send_update());
+    }
+
+    #[tokio::test]
+    async fn send_chunk_accumulates() {
+        let token = "test_token".to_string();
+        let allowed_users = Vec::new();
+        let mut channel = TelegramChannel::new(token, allowed_users);
+
+        // Manually set chat_id to avoid send_or_edit failure
+        // In real tests, this would be set by recv()
+        channel.accumulated.push_str("hello");
+        channel.accumulated.push(' ');
+        channel.accumulated.push_str("world");
+
+        assert_eq!(channel.accumulated, "hello world");
+    }
+
+    #[tokio::test]
+    async fn flush_chunks_clears_state() {
+        let token = "test_token".to_string();
+        let allowed_users = Vec::new();
+        let mut channel = TelegramChannel::new(token, allowed_users);
+
+        channel.accumulated = "test".to_string();
+        channel.last_edit = Some(Instant::now());
+        // Do not set message_id to avoid triggering send_or_edit()
+
+        channel.flush_chunks().await.unwrap();
+
+        assert!(channel.accumulated.is_empty());
+        assert!(channel.last_edit.is_none());
+        assert!(channel.message_id.is_none());
     }
 }

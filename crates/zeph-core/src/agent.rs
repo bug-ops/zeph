@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 use tokio::sync::watch;
+use tokio_stream::StreamExt;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::sqlite::{SqliteStore, role_str};
 
@@ -103,8 +104,10 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
             self.persist_message(Role::User, &incoming.text).await;
 
             if let Err(e) = self.process_response().await {
-                tracing::error!("LLM error: {e:#}");
-                self.channel.send(&format!("Error: {e:#}")).await?;
+                tracing::error!("Response processing failed: {e:#}");
+                self.channel
+                    .send("An error occurred while processing your request. Please try again.")
+                    .await?;
                 self.messages.pop();
             }
         }
@@ -116,8 +119,13 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
         for _ in 0..MAX_SHELL_ITERATIONS {
             self.channel.send_typing().await?;
 
-            let response = self.provider.chat(&self.messages).await?;
-            self.channel.send(&response).await?;
+            let response = if self.provider.supports_streaming() {
+                self.process_response_streaming().await?
+            } else {
+                let resp = self.provider.chat(&self.messages).await?;
+                self.channel.send(&resp).await?;
+                resp
+            };
 
             self.messages.push(Message {
                 role: Role::Assistant,
@@ -142,6 +150,20 @@ impl<P: LlmProvider, C: Channel> Agent<P, C> {
         }
 
         Ok(())
+    }
+
+    async fn process_response_streaming(&mut self) -> anyhow::Result<String> {
+        let mut stream = self.provider.chat_stream(&self.messages).await?;
+        let mut response = String::with_capacity(2048);
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk: String = chunk_result?;
+            response.push_str(&chunk);
+            self.channel.send_chunk(&chunk).await?;
+        }
+
+        self.channel.flush_chunks().await?;
+        Ok(response)
     }
 
     async fn persist_message(&self, role: Role, content: &str) {

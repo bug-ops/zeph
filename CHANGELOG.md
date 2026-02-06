@@ -35,6 +35,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - eventsource-stream dependency added to workspace dependencies
 - reqwest `"stream"` feature enabled for `bytes_stream()` support
 
+#### M6 Phase 4: Agent streaming integration (Issue #38)
+- Agent automatically uses streaming when `provider.supports_streaming()` returns true (ADR-014)
+- `Agent::process_response_streaming()` method for stream consumption and chunk accumulation
+- CliChannel immediate streaming: `send_chunk()` prints each chunk instantly via `print!()` + `flush()`
+- TelegramChannel batched streaming: debounce at 1 second OR 512 bytes, edit-in-place for progressive updates
+- Response buffer pre-allocation with `String::with_capacity(2048)` for performance
+- Error message sanitization: full errors logged via `tracing::error!()`, generic messages shown to users
+- Telegram edit retry logic: recovers from stale message_id (message deleted, permissions lost)
+- tokio-stream dependency added for `StreamExt` trait
+- 6 new unit tests for channel streaming behavior
+
 ### Fixed
 
 #### M6 Phase 3: Security improvements
