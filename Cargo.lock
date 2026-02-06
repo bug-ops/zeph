@@ -3537,6 +3537,7 @@ dependencies = [
  "anyhow",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "zeph-channels",
@@ -3576,11 +3577,13 @@ name = "zeph-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-core",
  "ollama-rs",
  "reqwest 0.13.1",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+#### M6 Phase 1: Streaming trait extension (Issue #35)
+- `LlmProvider::chat_stream()` method returning `Pin<Box<dyn Stream<Item = Result<String>> + Send>>`
+- `LlmProvider::supports_streaming()` capability query method
+- `Channel::send_chunk()` method for incremental response delivery
+- `Channel::flush_chunks()` method for buffered chunk flushing
+- `ChatStream` type alias for `Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>`
+- Streaming infrastructure in zeph-llm and zeph-core (dependencies: futures-core 0.3, tokio-stream 0.1)
+
+### Changed
+
+**BREAKING CHANGES** (pre-1.0.0):
+- `LlmProvider` trait now requires `chat_stream()` and `supports_streaming()` implementations (no default implementations per project policy)
+- `Channel` trait now requires `send_chunk()` and `flush_chunks()` implementations (no default implementations per project policy)
+- All existing providers (`OllamaProvider`, `ClaudeProvider`) updated with fallback implementations (Phase 1 non-streaming: calls `chat()` and wraps in single-item stream)
+- All existing channels (`CliChannel`, `TelegramChannel`) updated with no-op implementations (Phase 1: streaming not yet wired into agent loop)
+
 ## [0.1.0] - 2026-02-05
 
 ### Added

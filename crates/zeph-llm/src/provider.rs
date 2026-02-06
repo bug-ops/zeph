@@ -1,4 +1,10 @@
+use std::pin::Pin;
+
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
+
+/// Boxed stream of string chunks from an LLM provider.
+pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,5 +28,109 @@ pub trait LlmProvider: Send + Sync {
     /// Returns an error if the provider fails to communicate or the response is invalid.
     fn chat(&self, messages: &[Message]) -> impl Future<Output = anyhow::Result<String>> + Send;
 
+    /// Send messages and return a stream of response chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider fails to communicate or the response is invalid.
+    fn chat_stream(
+        &self,
+        messages: &[Message],
+    ) -> impl Future<Output = anyhow::Result<ChatStream>> + Send;
+
+    /// Whether this provider supports native streaming.
+    fn supports_streaming(&self) -> bool;
+
+    /// Provider name for logging and identification.
     fn name(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_stream::StreamExt;
+
+    use super::*;
+
+    struct StubProvider {
+        response: String,
+    }
+
+    impl LlmProvider for StubProvider {
+        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            Ok(self.response.clone())
+        }
+
+        async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+            let response = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(response))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    #[test]
+    fn supports_streaming_default_returns_false() {
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(!provider.supports_streaming());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_default_yields_single_chunk() {
+        let provider = StubProvider {
+            response: "hello world".into(),
+        };
+        let messages = vec![Message {
+            role: Role::User,
+            content: "test".into(),
+        }];
+
+        let mut stream = provider.chat_stream(&messages).await.unwrap();
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(chunk, "hello world");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_default_propagates_chat_error() {
+        struct FailProvider;
+
+        impl LlmProvider for FailProvider {
+            async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+                Err(anyhow::anyhow!("provider unavailable"))
+            }
+
+            async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+                let response = self.chat(messages).await?;
+                Ok(Box::pin(tokio_stream::once(Ok(response))))
+            }
+
+            fn supports_streaming(&self) -> bool {
+                false
+            }
+
+            fn name(&self) -> &'static str {
+                "fail"
+            }
+        }
+
+        let provider = FailProvider;
+        let messages = vec![Message {
+            role: Role::User,
+            content: "test".into(),
+        }];
+
+        let result = provider.chat_stream(&messages).await;
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("provider unavailable"));
+        }
+    }
 }

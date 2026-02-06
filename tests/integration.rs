@@ -29,6 +29,18 @@ impl LlmProvider for MockProvider {
         Ok(self.response.clone())
     }
 
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+        let response = self.chat(messages).await?;
+        Ok(Box::pin(tokio_stream::once(Ok(response))))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str {
         "mock"
     }
@@ -58,6 +70,14 @@ impl Channel for MockChannel {
 
     async fn send(&mut self, text: &str) -> anyhow::Result<()> {
         self.outputs.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+
+    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 }

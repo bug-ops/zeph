@@ -11,6 +11,7 @@ repository = "https://github.com/bug-ops/zeph"
 
 [workspace.dependencies]
 anyhow = "1.0"
+futures-core = "0.3"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls"] }
 reqwest = { version = "0.13", default-features = false }
 serde = "1.0"
@@ -20,6 +21,7 @@ teloxide = { version = "0.17", default-features = false, features = ["rustls", "
 tempfile = "3"
 thiserror = "2.0"
 tokio = "1"
+tokio-stream = "0.1"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -49,6 +51,7 @@ zeph-skills = { path = "crates/zeph-skills" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio-stream.workspace = true
 zeph-core = { path = "crates/zeph-core" }
 zeph-llm = { path = "crates/zeph-llm" }
 zeph-memory = { path = "crates/zeph-memory" }

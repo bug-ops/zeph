@@ -154,6 +154,14 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn send_typing(&mut self) -> anyhow::Result<()> {
         let Some(chat_id) = self.chat_id else {
             return Ok(());

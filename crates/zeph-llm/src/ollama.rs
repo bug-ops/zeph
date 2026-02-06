@@ -50,6 +50,18 @@ impl LlmProvider for OllamaProvider {
         Ok(response.message.content)
     }
 
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+    ) -> anyhow::Result<crate::provider::ChatStream> {
+        let response = self.chat(messages).await?;
+        Ok(Box::pin(tokio_stream::once(Ok(response))))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str {
         "ollama"
     }

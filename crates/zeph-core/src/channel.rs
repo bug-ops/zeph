@@ -20,6 +20,20 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn send(&mut self, text: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
 
+    /// Send a partial chunk of streaming response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_chunk(&mut self, chunk: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Flush any buffered chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn flush_chunks(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send;
+
     /// Send a typing indicator. No-op by default.
     ///
     /// # Errors
@@ -87,6 +101,14 @@ impl Channel for CliChannel {
         println!("Zeph: {text}");
         Ok(())
     }
+
+    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -105,5 +127,37 @@ mod tests {
     fn cli_channel_default() {
         let ch = CliChannel::default();
         let _ = format!("{ch:?}");
+    }
+
+    struct StubChannel;
+
+    impl Channel for StubChannel {
+        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+            Ok(None)
+        }
+
+        async fn send(&mut self, _text: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn send_chunk_default_is_noop() {
+        let mut ch = StubChannel;
+        ch.send_chunk("partial").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_chunks_default_is_noop() {
+        let mut ch = StubChannel;
+        ch.flush_chunks().await.unwrap();
     }
 }

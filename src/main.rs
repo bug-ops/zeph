@@ -35,6 +35,20 @@ impl Channel for AnyChannel {
         }
     }
 
+    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Cli(c) => c.send_chunk(chunk).await,
+            Self::Telegram(c) => c.send_chunk(chunk).await,
+        }
+    }
+
+    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Cli(c) => c.flush_chunks().await,
+            Self::Telegram(c) => c.flush_chunks().await,
+        }
+    }
+
     async fn send_typing(&mut self) -> anyhow::Result<()> {
         match self {
             Self::Cli(c) => c.send_typing().await,
