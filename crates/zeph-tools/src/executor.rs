@@ -1,0 +1,76 @@
+use std::fmt;
+
+/// Structured result from tool execution.
+#[derive(Debug, Clone)]
+pub struct ToolOutput {
+    pub summary: String,
+    pub blocks_executed: u32,
+}
+
+impl fmt::Display for ToolOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
+
+/// Errors that can occur during tool execution.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("command blocked by policy: {command}")]
+    Blocked { command: String },
+
+    /// Reserved for Phase 2/3: propagated from per-block timeout logic.
+    #[error("command timed out after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
+
+    /// Reserved for Phase 2/3: propagated from granular per-block error handling.
+    #[error("execution failed: {0}")]
+    Execution(#[from] std::io::Error),
+}
+
+/// Async trait for tool execution backends (shell, future MCP, A2A).
+///
+/// Accepts the full LLM response and returns an optional output.
+/// Returns `None` when no tool invocation is detected in the response.
+pub trait ToolExecutor: Send + Sync {
+    fn execute(
+        &self,
+        response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_output_display() {
+        let output = ToolOutput {
+            summary: "$ echo hello\nhello".to_owned(),
+            blocks_executed: 1,
+        };
+        assert_eq!(output.to_string(), "$ echo hello\nhello");
+    }
+
+    #[test]
+    fn tool_error_blocked_display() {
+        let err = ToolError::Blocked {
+            command: "rm -rf /".to_owned(),
+        };
+        assert_eq!(err.to_string(), "command blocked by policy: rm -rf /");
+    }
+
+    #[test]
+    fn tool_error_timeout_display() {
+        let err = ToolError::Timeout { timeout_secs: 30 };
+        assert_eq!(err.to_string(), "command timed out after 30s");
+    }
+
+    #[test]
+    fn tool_error_execution_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "bash not found");
+        let err = ToolError::Execution(io_err);
+        assert!(err.to_string().starts_with("execution failed:"));
+        assert!(err.to_string().contains("bash not found"));
+    }
+}

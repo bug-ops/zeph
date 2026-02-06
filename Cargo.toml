@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
+version = "0.2.0"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
@@ -26,6 +27,11 @@ tokio-stream = "0.1"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+zeph-channels = { path = "crates/zeph-channels", version = "0.2.0" }
+zeph-core = { path = "crates/zeph-core", version = "0.2.0" }
+zeph-llm = { path = "crates/zeph-llm", version = "0.2.0" }
+zeph-memory = { path = "crates/zeph-memory", version = "0.2.0" }
+zeph-skills = { path = "crates/zeph-skills", version = "0.2.0" }
 
 [workspace.lints.clippy]
 all = "warn"
@@ -33,7 +39,7 @@ pedantic = "warn"
 
 [package]
 name = "zeph"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -44,19 +50,19 @@ anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zeph-channels = { path = "crates/zeph-channels" }
-zeph-core = { path = "crates/zeph-core" }
-zeph-llm = { path = "crates/zeph-llm" }
-zeph-memory = { path = "crates/zeph-memory" }
-zeph-skills = { path = "crates/zeph-skills" }
+zeph-channels.workspace = true
+zeph-core.workspace = true
+zeph-llm.workspace = true
+zeph-memory.workspace = true
+zeph-skills.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio-stream.workspace = true
-zeph-core = { path = "crates/zeph-core" }
-zeph-llm = { path = "crates/zeph-llm" }
-zeph-memory = { path = "crates/zeph-memory" }
-zeph-skills = { path = "crates/zeph-skills" }
+zeph-core.workspace = true
+zeph-llm.workspace = true
+zeph-memory.workspace = true
+zeph-skills.workspace = true
 
 [lints]
 workspace = true

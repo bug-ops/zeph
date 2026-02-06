@@ -1,6 +1,6 @@
 [package]
 name = "zeph-channels"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ anyhow.workspace = true
 teloxide.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
-zeph-core = { path = "../zeph-core" }
+zeph-core.workspace = true
 
 [lints]
 workspace = true

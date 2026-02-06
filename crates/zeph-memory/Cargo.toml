@@ -1,6 +1,6 @@
 [package]
 name = "zeph-memory"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ anyhow.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
-zeph-llm = { path = "../zeph-llm" }
+zeph-llm.workspace = true
 
 [lints]
 workspace = true

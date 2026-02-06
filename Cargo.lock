@@ -3642,6 +3642,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-tools"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
