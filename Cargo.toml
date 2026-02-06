@@ -12,7 +12,7 @@ repository = "https://github.com/bug-ops/zeph"
 [workspace.dependencies]
 anyhow = "1.0"
 futures-core = "0.3"
-ollama-rs = { version = "0.3", default-features = false, features = ["rustls"] }
+ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 reqwest = { version = "0.13", default-features = false }
 serde = "1.0"
 serde_json = "1.0"

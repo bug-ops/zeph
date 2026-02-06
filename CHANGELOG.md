@@ -16,6 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ChatStream` type alias for `Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>`
 - Streaming infrastructure in zeph-llm and zeph-core (dependencies: futures-core 0.3, tokio-stream 0.1)
 
+#### M6 Phase 2: Ollama streaming backend (Issue #36)
+- Native token-by-token streaming for `OllamaProvider` using `ollama-rs` streaming API
+- `OllamaProvider::chat_stream()` implementation via `send_chat_messages_stream()`
+- `OllamaProvider::supports_streaming()` now returns `true`
+- Stream mapping from `Result<ChatMessageResponse, ()>` to `Result<String, anyhow::Error>`
+- Integration tests for streaming happy path and equivalence with non-streaming `chat()` (ignored by default)
+- ollama-rs `"stream"` feature enabled in workspace dependencies
+
 ### Changed
 
 **BREAKING CHANGES** (pre-1.0.0):

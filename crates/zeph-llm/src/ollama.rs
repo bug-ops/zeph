@@ -2,8 +2,9 @@ use anyhow::Context;
 use ollama_rs::Ollama;
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
+use tokio_stream::StreamExt;
 
-use crate::provider::{LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, Role};
 
 #[derive(Debug)]
 pub struct OllamaProvider {
@@ -50,16 +51,26 @@ impl LlmProvider for OllamaProvider {
         Ok(response.message.content)
     }
 
-    async fn chat_stream(
-        &self,
-        messages: &[Message],
-    ) -> anyhow::Result<crate::provider::ChatStream> {
-        let response = self.chat(messages).await?;
-        Ok(Box::pin(tokio_stream::once(Ok(response))))
+    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
+        let request = ChatMessageRequest::new(self.model.clone(), ollama_messages);
+
+        let stream = self
+            .client
+            .send_chat_messages_stream(request)
+            .await
+            .context("Ollama streaming request failed")?;
+
+        let mapped = stream.map(|item| match item {
+            Ok(response) => Ok(response.message.content),
+            Err(()) => Err(anyhow::anyhow!("Ollama stream chunk failed")),
+        });
+
+        Ok(Box::pin(mapped))
     }
 
     fn supports_streaming(&self) -> bool {
-        false
+        true
     }
 
     fn name(&self) -> &'static str {
@@ -113,5 +124,60 @@ mod tests {
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "hello");
+    }
+
+    #[test]
+    fn supports_streaming_returns_true() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into());
+        assert!(provider.supports_streaming());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Ollama instance"]
+    async fn integration_ollama_chat_stream() {
+        let provider = OllamaProvider::new("http://localhost:11434", "mistral:7b".into());
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "Reply with exactly: pong".into(),
+        }];
+
+        let mut stream = provider.chat_stream(&messages).await.unwrap();
+        let mut chunks = Vec::new();
+        let mut chunk_count = 0;
+
+        while let Some(result) = stream.next().await {
+            let chunk = result.unwrap();
+            chunks.push(chunk);
+            chunk_count += 1;
+        }
+
+        let full_response: String = chunks.concat();
+        assert!(!full_response.is_empty());
+        assert!(full_response.to_lowercase().contains("pong"));
+        assert!(chunk_count >= 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Ollama instance"]
+    async fn integration_ollama_stream_matches_chat() {
+        let provider = OllamaProvider::new("http://localhost:11434", "mistral:7b".into());
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "What is 2+2? Reply with just the number.".into(),
+        }];
+
+        let chat_response = provider.chat(&messages).await.unwrap();
+
+        let mut stream = provider.chat_stream(&messages).await.unwrap();
+        let mut stream_chunks = Vec::new();
+        while let Some(result) = stream.next().await {
+            stream_chunks.push(result.unwrap());
+        }
+        let stream_response: String = stream_chunks.concat();
+
+        assert!(chat_response.contains('4'));
+        assert!(stream_response.contains('4'));
     }
 }
