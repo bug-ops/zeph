@@ -138,10 +138,11 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 ```
 zeph (binary)
 ├── zeph-core       Agent loop, config, channel trait
-├── zeph-llm        LlmProvider trait, Ollama + Claude backends
+├── zeph-llm        LlmProvider trait, Ollama + Claude backends, token streaming
 ├── zeph-skills     SKILL.md parser, registry, prompt formatter
 ├── zeph-memory     SQLite conversation persistence
-└── zeph-channels   Telegram adapter (teloxide)
+├── zeph-channels   Telegram adapter (teloxide) with streaming
+└── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
 ```
 
 > [!IMPORTANT]

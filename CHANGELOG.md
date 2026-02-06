@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### M7 Phase 1: Tool Execution Framework - zeph-tools crate (Issue #39)
+- New `zeph-tools` leaf crate for tool execution abstraction following ADR-014
+- `ToolExecutor` trait with native async (Edition 2024 RPITIT): accepts full LLM response, returns `Option<ToolOutput>`
+- `ShellExecutor` implementation with bash block parser and execution (30s timeout via `tokio::time::timeout`)
+- `ToolOutput` struct with summary string and blocks_executed count
+- `ToolError` enum with Blocked/Timeout/Execution variants (thiserror)
+- `ToolsConfig` and `ShellConfig` configuration types with serde Deserialize and sensible defaults
+- Workspace version consolidation: `version.workspace = true` across all crates
+- Workspace inter-crate dependency references: `zeph-llm.workspace = true` pattern for all internal dependencies
+- 22 unit tests with 99.25% line coverage, zero clippy warnings
+- ADR-014: zeph-tools crate design rationale and architecture decisions
+
+### Changed
+
+**BREAKING CHANGES** (pre-1.0.0):
+- Workspace `Cargo.toml` now defines `version = "0.2.0"` in `[workspace.package]` section
+- All crate manifests use `version.workspace = true` instead of explicit versions
+- Inter-crate dependencies now reference workspace definitions (e.g., `zeph-llm.workspace = true`)
+
 ## [0.2.0] - 2026-02-06
 
 ### Added
