@@ -6,7 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-08
+
 ### Added
+
+#### M9 Phase 3: Conversation Summarization and Context Budget (Issue #62)
+- New `SemanticMemory::summarize()` method for LLM-based conversation compression
+- Automatic summarization triggered when message count exceeds threshold
+- SQLite migration `003_summaries.sql` creates dedicated summaries table with CASCADE constraints
+- `SqliteStore::save_summary()` stores summary with metadata (first/last message IDs, token estimate)
+- `SqliteStore::load_summaries()` retrieves all summaries for a conversation ordered by ID
+- `SqliteStore::load_messages_range()` fetches messages after specific ID with limit for batch processing
+- `SqliteStore::count_messages()` counts total messages in conversation
+- `SqliteStore::latest_summary_last_message_id()` gets last summarized message ID for resumption
+- `ContextBudget` struct for proportional token allocation (15% summaries, 25% semantic recall, 60% recent history)
+- `estimate_tokens()` helper using chars/4 heuristic (100x faster than tiktoken, ±25% accuracy)
+- `Agent::check_summarization()` lazy trigger after persist_message() when threshold exceeded
+- Batch size = threshold/2 to balance summary quality with LLM call frequency
+- Configuration: `memory.summarization_threshold` (default: 100), `memory.context_budget_tokens` (default: 0 = unlimited)
+- Environment overrides: `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD`, `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS`
+- Inline comments in `config/default.toml` documenting all configuration parameters
+- 26 new unit tests for summarization and context budget (196 total tests, 75.31% coverage)
+- Architecture Decision Records ADR-016 through ADR-019 for summarization design
+- Foreign key constraint added to `messages.conversation_id` with ON DELETE CASCADE
+
+#### M9 Phase 2: Semantic Memory Integration (Issue #61)
+- `SemanticMemory<P: LlmProvider>` orchestrator coordinating SQLite, Qdrant, and LlmProvider
+- `SemanticMemory::remember()` saves message to SQLite, generates embedding, stores in Qdrant
+- `SemanticMemory::recall()` performs semantic search with query embedding and fetches messages from SQLite
+- `SemanticMemory::has_embedding()` checks if message already embedded to prevent duplicates
+- `SemanticMemory::embed_missing()` background task to embed old messages (with LIMIT parameter)
+- `Agent<P, C, T>` now generic over LlmProvider to support SemanticMemory
+- `Agent::with_memory()` replaces SqliteStore with SemanticMemory
+- Graceful degradation: embedding failures logged but don't block message save
+- Qdrant connection failures silently downgrade to SQLite-only mode (no semantic recall)
+- Generic provider pattern: `SemanticMemory<P: LlmProvider>` instead of `Arc<dyn LlmProvider>` for Edition 2024 async trait compatibility
+- `AnyProvider`, `OllamaProvider`, `ClaudeProvider` now derive/implement `Clone` for semantic memory integration
+- Integration test updated for SemanticMemory API (with_memory now takes 5 parameters including recall_limit)
+- Semantic memory config: `memory.semantic.enabled`, `memory.semantic.recall_limit` (default: 5)
+- 18 new tests for semantic memory orchestration (recall, remember, embed_missing, graceful degradation)
 
 #### M9 Phase 1: Qdrant Integration (Issue #60)
 - New `QdrantStore` module in zeph-memory for vector storage and similarity search

@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, and multi-channel I/O.
+Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, semantic memory with Qdrant, and multi-channel I/O.
 
 ## Installation
 
@@ -80,6 +80,12 @@ paths = ["./skills"]
 [memory]
 sqlite_path = "./data/zeph.db"
 history_limit = 50
+summarization_threshold = 100  # Trigger summarization after N messages
+context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
+
+[memory.semantic]
+enabled = false               # Enable semantic search via Qdrant
+recall_limit = 5              # Number of semantically relevant messages to inject
 
 [tools]
 enabled = true
@@ -100,6 +106,9 @@ blocked_commands = []  # Additional patterns beyond defaults
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
 | `ZEPH_SQLITE_PATH` | SQLite database path |
+| `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
+| `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
+| `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
 
 > [!IMPORTANT]
@@ -129,6 +138,61 @@ Use curl to fetch search results...
 ```
 
 All loaded skills are injected into the system prompt.
+
+## Semantic Memory (Optional)
+
+> [!TIP]
+> Enable semantic search to retrieve contextually relevant messages from conversation history using vector similarity.
+
+Zeph supports optional integration with [Qdrant](https://qdrant.tech/) for semantic memory:
+
+1. **Start Qdrant:**
+
+   ```bash
+   docker compose up -d qdrant
+   ```
+
+2. **Enable semantic memory in config:**
+
+   ```toml
+   [memory.semantic]
+   enabled = true
+   recall_limit = 5
+   ```
+
+3. **Automatic embedding:** Messages are embedded asynchronously using the configured `embedding_model` and stored in Qdrant alongside SQLite.
+
+4. **Semantic recall:** Context builder injects semantically relevant messages from full history, not just recent messages.
+
+5. **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to SQLite-only mode (recency-based history).
+
+> [!NOTE]
+> Requires Ollama with an embedding model (e.g., `qwen3-embedding`). Claude API does not support embeddings natively.
+
+## Conversation Summarization (Optional)
+
+> [!TIP]
+> Automatically compress long conversation histories using LLM-based summarization to stay within context budget limits.
+
+Zeph supports automatic conversation summarization:
+
+- Triggered when message count exceeds `summarization_threshold` (default: 100)
+- Summaries stored in SQLite with token estimates
+- Context builder allocates proportional token budget:
+  - 15% for summaries
+  - 25% for semantic recall (if enabled)
+  - 60% for recent message history
+
+Enable via configuration:
+
+```toml
+[memory]
+summarization_threshold = 100
+context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
+```
+
+> [!IMPORTANT]
+> Summarization requires an LLM provider (Ollama or Claude). Set `context_budget_tokens = 0` to disable proportional allocation and use unlimited context.
 
 ## Docker
 
@@ -160,10 +224,10 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```
 zeph (binary)
-├── zeph-core       Agent loop, config, channel trait
-├── zeph-llm        LlmProvider trait, Ollama + Claude backends, token streaming
+├── zeph-core       Agent loop, config, channel trait, context builder
+├── zeph-llm        LlmProvider trait, Ollama + Claude backends, token streaming, embeddings
 ├── zeph-skills     SKILL.md parser, registry, prompt formatter
-├── zeph-memory     SQLite conversation persistence
+├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 └── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
 ```
