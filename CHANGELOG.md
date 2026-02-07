@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### M8: Embeddings support (Issue #54)
+- `LlmProvider` trait extended with `embed(&str) -> Result<Vec<f32>>` for generating text embeddings
+- `LlmProvider` trait extended with `supports_embeddings() -> bool` for capability detection
+- `OllamaProvider` implements embeddings via ollama-rs `generate_embeddings()` API
+- Default embedding model: `qwen3-embedding` (configurable via `llm.embedding_model`)
+- `ZEPH_LLM_EMBEDDING_MODEL` environment variable for runtime override
+- `ClaudeProvider::embed()` returns descriptive error (Claude API does not support embeddings)
+- `AnyProvider` delegates embedding methods to active provider
+- 10 new tests: unit tests for all providers, config tests for defaults/parsing/env override
+- Integration test for real Ollama embedding generation (ignored by default)
+
+### Changed
+- `OllamaProvider::new()` now accepts `embedding_model` parameter (breaking change, pre-v1.0)
+- Config schema: added `llm.embedding_model` field with serde default for backward compatibility
+
 ## [0.3.0] - 2026-02-07
 
 ### Added

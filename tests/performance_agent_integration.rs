@@ -36,6 +36,14 @@ impl LlmProvider for MockProvider {
         false
     }
 
+    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        Ok(vec![0.1, 0.2, 0.3])
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str {
         "mock"
     }
@@ -407,7 +415,7 @@ async fn tool_executor_pattern_matching_overhead() {
             assert_eq!(output.blocks_executed, 10);
             // 10 blocks should process quickly (bash subprocess is the bottleneck)
             println!(
-                "10-block execution time: {:.0}ms ({:.0}µs per block)",
+                "10-block execution time: {:.0}ms ({:.0}us per block)",
                 elapsed.as_millis(),
                 elapsed.as_micros() as f64 / 10.0
             );

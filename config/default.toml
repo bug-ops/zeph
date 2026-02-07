@@ -5,6 +5,7 @@ name = "Zeph"
 provider = "ollama"
 base_url = "http://localhost:11434"
 model = "mistral:7b"
+embedding_model = "qwen3-embedding"
 
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"

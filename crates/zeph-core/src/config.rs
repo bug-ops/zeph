@@ -25,7 +25,13 @@ pub struct LlmConfig {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
     pub cloud: Option<CloudLlmConfig>,
+}
+
+fn default_embedding_model() -> String {
+    "qwen3-embedding".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +88,9 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_LLM_MODEL") {
             self.llm.model = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_LLM_EMBEDDING_MODEL") {
+            self.llm.embedding_model = v;
+        }
         if let Ok(v) = std::env::var("ZEPH_SQLITE_PATH") {
             self.memory.sqlite_path = v;
         }
@@ -108,6 +117,7 @@ impl Config {
                 provider: "ollama".into(),
                 base_url: "http://localhost:11434".into(),
                 model: "mistral:7b".into(),
+                embedding_model: default_embedding_model(),
                 cloud: None,
             },
             skills: SkillsConfig {
@@ -129,10 +139,11 @@ mod tests {
 
     use super::*;
 
-    const LLM_ENV_KEYS: [&str; 4] = [
+    const LLM_ENV_KEYS: [&str; 5] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
+        "ZEPH_LLM_EMBEDDING_MODEL",
         "ZEPH_SQLITE_PATH",
     ];
 
@@ -148,6 +159,7 @@ mod tests {
         assert_eq!(config.llm.provider, "ollama");
         assert_eq!(config.llm.base_url, "http://localhost:11434");
         assert_eq!(config.llm.model, "mistral:7b");
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
         assert_eq!(config.agent.name, "Zeph");
         assert_eq!(config.memory.history_limit, 50);
         assert!(config.llm.cloud.is_none());
@@ -391,5 +403,88 @@ history_limit = 50
         unsafe { std::env::remove_var("ZEPH_TOOLS_TIMEOUT") };
 
         assert_eq!(config.tools.shell.timeout, 30);
+    }
+
+    #[test]
+    fn config_default_embedding_model() {
+        let config = Config::default();
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+    }
+
+    #[test]
+    fn config_parse_embedding_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("embed.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+embedding_model = "nomic-embed-text"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_llm_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.llm.embedding_model, "nomic-embed-text");
+    }
+
+    #[test]
+    fn config_env_override_embedding_model() {
+        let mut config = Config::default();
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+
+        unsafe { std::env::set_var("ZEPH_LLM_EMBEDDING_MODEL", "mxbai-embed-large") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_LLM_EMBEDDING_MODEL") };
+
+        assert_eq!(config.llm.embedding_model, "mxbai-embed-large");
+    }
+
+    #[test]
+    fn config_missing_embedding_model_uses_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_embed.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_llm_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
     }
 }

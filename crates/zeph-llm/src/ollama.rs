@@ -2,6 +2,7 @@ use anyhow::Context;
 use ollama_rs::Ollama;
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
+use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use tokio_stream::StreamExt;
 
 use crate::provider::{ChatStream, LlmProvider, Message, Role};
@@ -10,15 +11,17 @@ use crate::provider::{ChatStream, LlmProvider, Message, Role};
 pub struct OllamaProvider {
     client: Ollama,
     model: String,
+    embedding_model: String,
 }
 
 impl OllamaProvider {
     #[must_use]
-    pub fn new(base_url: &str, model: String) -> Self {
+    pub fn new(base_url: &str, model: String, embedding_model: String) -> Self {
         let (host, port) = parse_host_port(base_url);
         Self {
             client: Ollama::new(host, port),
             model,
+            embedding_model,
         }
     }
 
@@ -70,6 +73,29 @@ impl LlmProvider for OllamaProvider {
     }
 
     fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        let request = GenerateEmbeddingsRequest::new(
+            self.embedding_model.clone(),
+            EmbeddingsInput::from(text),
+        );
+
+        let response = self
+            .client
+            .generate_embeddings(request)
+            .await
+            .context("Ollama embedding request failed")?;
+
+        response
+            .embeddings
+            .into_iter()
+            .next()
+            .context("empty embeddings response from Ollama")
+    }
+
+    fn supports_embeddings(&self) -> bool {
         true
     }
 
@@ -128,14 +154,26 @@ mod tests {
 
     #[test]
     fn supports_streaming_returns_true() {
-        let provider = OllamaProvider::new("http://localhost:11434", "test".into());
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
         assert!(provider.supports_streaming());
+    }
+
+    #[test]
+    fn supports_embeddings_returns_true() {
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
+        assert!(provider.supports_embeddings());
     }
 
     #[tokio::test]
     #[ignore = "requires running Ollama instance"]
     async fn integration_ollama_chat_stream() {
-        let provider = OllamaProvider::new("http://localhost:11434", "mistral:7b".into());
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            "mistral:7b".into(),
+            "qwen3-embedding".into(),
+        );
 
         let messages = vec![Message {
             role: Role::User,
@@ -161,7 +199,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires running Ollama instance"]
     async fn integration_ollama_stream_matches_chat() {
-        let provider = OllamaProvider::new("http://localhost:11434", "mistral:7b".into());
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            "mistral:7b".into(),
+            "qwen3-embedding".into(),
+        );
 
         let messages = vec![Message {
             role: Role::User,
@@ -179,5 +221,20 @@ mod tests {
 
         assert!(chat_response.contains('4'));
         assert!(stream_response.contains('4'));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Ollama instance with qwen3-embedding model"]
+    async fn integration_ollama_embed() {
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            "mistral:7b".into(),
+            "qwen3-embedding".into(),
+        );
+
+        let embedding = provider.embed("hello world").await.unwrap();
+        assert!(!embedding.is_empty());
+        assert!(embedding.len() > 100);
+        assert!(embedding.iter().all(|v| v.is_finite()));
     }
 }

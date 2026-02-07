@@ -165,6 +165,16 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        Err(anyhow::anyhow!(
+            "Claude API does not support embeddings; use Ollama with an embedding model"
+        ))
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str {
         "claude"
     }
@@ -404,6 +414,30 @@ mod tests {
         assert!(!debug_output.contains("sk-secret-key"));
         assert!(debug_output.contains("<redacted>"));
         assert!(debug_output.contains("claude-sonnet-4-5-20250929"));
+    }
+
+    #[test]
+    fn claude_supports_embeddings_returns_false() {
+        let provider =
+            ClaudeProvider::new("test-key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert!(!provider.supports_embeddings());
+    }
+
+    #[tokio::test]
+    async fn claude_embed_returns_error() {
+        let provider =
+            ClaudeProvider::new("test-key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        let result = provider.embed("test").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Claude API does not support embeddings")
+        );
+        assert!(
+            err.to_string()
+                .contains("use Ollama with an embedding model")
+        );
     }
 
     #[tokio::test]

@@ -60,6 +60,7 @@ name = "Zeph"
 provider = "ollama"
 base_url = "http://localhost:11434"
 model = "mistral:7b"
+embedding_model = "qwen3-embedding"  # Model for text embeddings
 
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"
@@ -87,6 +88,7 @@ blocked_commands = []  # Additional patterns beyond defaults
 | `ZEPH_LLM_PROVIDER` | `ollama` or `claude` |
 | `ZEPH_LLM_BASE_URL` | Ollama API endpoint |
 | `ZEPH_LLM_MODEL` | Model name for Ollama |
+| `ZEPH_LLM_EMBEDDING_MODEL` | Embedding model for Ollama (default: `qwen3-embedding`) |
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
 | `ZEPH_SQLITE_PATH` | SQLite database path |

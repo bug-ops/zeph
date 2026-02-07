@@ -19,6 +19,7 @@ services:
       ZEPH_LLM_PROVIDER: ollama
       ZEPH_LLM_BASE_URL: ${ZEPH_LLM_BASE_URL:-http://ollama:11434}
       ZEPH_LLM_MODEL: ${ZEPH_LLM_MODEL:-mistral:7b}
+      ZEPH_LLM_EMBEDDING_MODEL: ${ZEPH_LLM_EMBEDDING_MODEL:-qwen3-embedding}
       ZEPH_SQLITE_PATH: /app/data/zeph.db
     volumes:
       - zeph_data:/app/data

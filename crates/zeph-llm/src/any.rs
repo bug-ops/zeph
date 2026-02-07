@@ -30,6 +30,20 @@ impl LlmProvider for AnyProvider {
         }
     }
 
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        match self {
+            Self::Ollama(p) => p.embed(text).await,
+            Self::Claude(p) => p.embed(text).await,
+        }
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_embeddings(),
+            Self::Claude(p) => p.supports_embeddings(),
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Self::Ollama(p) => p.name(),

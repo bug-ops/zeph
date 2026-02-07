@@ -42,6 +42,14 @@ impl LlmProvider for MockProvider {
         false
     }
 
+    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        Ok(vec![0.1, 0.2, 0.3])
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str {
         "mock"
     }
