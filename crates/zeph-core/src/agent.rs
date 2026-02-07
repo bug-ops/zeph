@@ -67,12 +67,25 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
 
         let history = store.load_history(cid, self.history_limit).await?;
         if !history.is_empty() {
-            tracing::info!(
-                "restored {} message(s) from conversation {cid}",
-                history.len()
-            );
+            let mut loaded = 0;
+            let mut skipped = 0;
+
             for msg in history {
+                if msg.content.trim().is_empty() {
+                    tracing::warn!(
+                        "skipping empty message from history (role: {:?})",
+                        msg.role
+                    );
+                    skipped += 1;
+                    continue;
+                }
                 self.messages.push(msg);
+                loaded += 1;
+            }
+
+            tracing::info!("restored {loaded} message(s) from conversation {cid}");
+            if skipped > 0 {
+                tracing::warn!("skipped {skipped} empty message(s) from history");
             }
         }
         Ok(())

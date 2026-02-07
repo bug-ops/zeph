@@ -111,7 +111,7 @@ impl TelegramChannel {
     fn should_send_update(&self) -> bool {
         match self.last_edit {
             None => true,
-            Some(last) => last.elapsed() > Duration::from_secs(1) || self.accumulated.len() >= 512,
+            Some(last) => last.elapsed() > Duration::from_secs(3),
         }
     }
 
@@ -128,17 +128,22 @@ impl TelegramChannel {
 
         match self.message_id {
             None => {
+                tracing::debug!("sending new message (length: {})", text.len());
                 let msg = self.bot.send_message(chat_id, text).await?;
                 self.message_id = Some(msg.id);
+                tracing::debug!("new message sent with id: {:?}", msg.id);
             }
             Some(msg_id) => {
+                tracing::debug!("editing message {:?} (length: {})", msg_id, text.len());
                 let edit_result = self.bot.edit_message_text(chat_id, msg_id, text).await;
 
                 if let Err(e) = edit_result {
                     let error_msg = e.to_string();
 
-                    if error_msg.contains("message is not modified")
-                        || error_msg.contains("message to edit not found")
+                    if error_msg.contains("message is not modified") {
+                        // Text hasn't changed, just skip this update
+                        tracing::debug!("message content unchanged, skipping edit");
+                    } else if error_msg.contains("message to edit not found")
                         || error_msg.contains("MESSAGE_ID_INVALID")
                     {
                         tracing::warn!(
@@ -152,6 +157,8 @@ impl TelegramChannel {
                     } else {
                         return Err(e.into());
                     }
+                } else {
+                    tracing::debug!("message edited successfully");
                 }
             }
         }
@@ -221,8 +228,14 @@ impl Channel for TelegramChannel {
 
     async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
         self.accumulated.push_str(chunk);
+        tracing::debug!(
+            "received chunk (size: {}, total: {})",
+            chunk.len(),
+            self.accumulated.len()
+        );
 
         if self.should_send_update() {
+            tracing::debug!("sending update (should_send_update returned true)");
             self.send_or_edit().await?;
         }
 
@@ -230,6 +243,12 @@ impl Channel for TelegramChannel {
     }
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        tracing::debug!(
+            "flushing chunks (message_id: {:?}, accumulated: {} bytes)",
+            self.message_id,
+            self.accumulated.len()
+        );
+
         // Final update with complete message
         if self.message_id.is_some() {
             self.send_or_edit().await?;
