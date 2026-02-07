@@ -278,7 +278,7 @@ async fn agent_with_memory() {
 
     let memory = SemanticMemory::new(
         ":memory:",
-        "http://invalid:6334",  // Will fail gracefully, qdrant=None
+        "http://invalid:6334", // Will fail gracefully, qdrant=None
         provider.clone(),
         "test-model",
     )
