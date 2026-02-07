@@ -3603,6 +3603,7 @@ dependencies = [
  "tracing",
  "zeph-llm",
  "zeph-memory",
+ "zeph-tools",
 ]
 
 [[package]]

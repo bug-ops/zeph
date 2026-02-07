@@ -32,6 +32,7 @@ zeph-core = { path = "crates/zeph-core", version = "0.2.0" }
 zeph-llm = { path = "crates/zeph-llm", version = "0.2.0" }
 zeph-memory = { path = "crates/zeph-memory", version = "0.2.0" }
 zeph-skills = { path = "crates/zeph-skills", version = "0.2.0" }
+zeph-tools = { path = "crates/zeph-tools", version = "0.2.0" }
 
 [workspace.lints.clippy]
 all = "warn"

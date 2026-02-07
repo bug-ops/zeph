@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use serde::Deserialize;
+use zeph_tools::ToolsConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -10,6 +11,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     pub memory: MemoryConfig,
     pub telegram: Option<TelegramConfig>,
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +92,11 @@ impl Config {
             });
             tg.token = Some(v);
         }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_TIMEOUT")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.tools.shell.timeout = secs;
+        }
     }
 
     fn default() -> Self {
@@ -110,6 +118,7 @@ impl Config {
                 history_limit: 50,
             },
             telegram: None,
+            tools: ToolsConfig::default(),
         }
     }
 }
@@ -143,6 +152,9 @@ mod tests {
         assert_eq!(config.memory.history_limit, 50);
         assert!(config.llm.cloud.is_none());
         assert!(config.telegram.is_none());
+        assert!(config.tools.enabled);
+        assert_eq!(config.tools.shell.timeout, 30);
+        assert!(config.tools.shell.blocked_commands.is_empty());
     }
 
     #[test]
@@ -280,5 +292,104 @@ allowed_users = ["alice", "bob"]
 
         let tg = config.telegram.unwrap();
         assert_eq!(tg.token.as_deref(), Some("env-token"));
+    }
+
+    #[test]
+    fn config_with_tools_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tools.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[tools]
+enabled = true
+
+[tools.shell]
+timeout = 60
+blocked_commands = ["custom-danger"]
+"#
+        )
+        .unwrap();
+
+        clear_llm_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.tools.enabled);
+        assert_eq!(config.tools.shell.timeout, 60);
+        assert_eq!(config.tools.shell.blocked_commands, vec!["custom-danger"]);
+    }
+
+    #[test]
+    fn config_without_tools_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_tools.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_llm_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.tools.enabled);
+        assert_eq!(config.tools.shell.timeout, 30);
+        assert!(config.tools.shell.blocked_commands.is_empty());
+    }
+
+    #[test]
+    fn env_override_tools_timeout() {
+        let mut config = Config::default();
+        assert_eq!(config.tools.shell.timeout, 30);
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_TIMEOUT", "120") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_TIMEOUT") };
+
+        assert_eq!(config.tools.shell.timeout, 120);
+    }
+
+    #[test]
+    fn env_override_tools_timeout_invalid_ignored() {
+        let mut config = Config::default();
+        assert_eq!(config.tools.shell.timeout, 30);
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_TIMEOUT", "not-a-number") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_TIMEOUT") };
+
+        assert_eq!(config.tools.shell.timeout, 30);
     }
 }
