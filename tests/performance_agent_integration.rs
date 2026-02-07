@@ -228,7 +228,7 @@ async fn agent_respects_configured_timeout() {
         timeout: 1,
         blocked_commands: vec![],
     };
-    let executor = ShellExecutor::new(&shell_config);
+    let _executor = ShellExecutor::new(&shell_config);
 
     // Verify timeout is set correctly
     let timeout_duration = Duration::from_secs(shell_config.timeout as u64);
