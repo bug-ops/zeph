@@ -127,6 +127,14 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
                 resp
             };
 
+            if response.trim().is_empty() {
+                tracing::warn!("received empty response from LLM, skipping");
+                self.channel
+                    .send("Received an empty response. Please try again.")
+                    .await?;
+                return Ok(());
+            }
+
             self.messages.push(Message {
                 role: Role::Assistant,
                 content: response.clone(),
@@ -135,6 +143,11 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
 
             match self.tool_executor.execute(&response).await {
                 Ok(Some(output)) => {
+                    if output.summary.trim().is_empty() {
+                        tracing::warn!("tool execution returned empty output");
+                        return Ok(());
+                    }
+
                     let formatted_output = format!("[shell output]\n{output}");
                     self.channel.send(&formatted_output).await?;
 
