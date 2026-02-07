@@ -1,31 +1,51 @@
 [agent]
+# Agent display name
 name = "Zeph"
 
 [llm]
+# LLM provider: "ollama" for local models or "claude" for Claude API
 provider = "ollama"
+# Base URL for Ollama server
 base_url = "http://localhost:11434"
+# Primary model for chat completions
 model = "mistral:7b"
+# Model for generating embeddings (semantic memory)
 embedding_model = "qwen3-embedding"
 
 [llm.cloud]
+# Claude API model (used when provider = "claude")
 model = "claude-sonnet-4-5-20250929"
+# Maximum tokens for Claude responses
 max_tokens = 4096
 
 [skills]
+# Directories to scan for SKILL.md files
 paths = ["./skills"]
 
 [memory]
+# SQLite database path for conversation history
 sqlite_path = "./data/zeph.db"
+# Maximum number of recent messages to load into context
 history_limit = 50
+# Qdrant vector database URL for semantic memory
 qdrant_url = "http://localhost:6334"
+# Number of messages before triggering summarization (0 = disabled)
+summarization_threshold = 100
+# Total token budget for context window (0 = unlimited)
+context_budget_tokens = 0
 
 [memory.semantic]
+# Enable semantic memory with vector search
 enabled = false
+# Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
 [tools]
+# Enable tool execution (bash commands)
 enabled = true
 
 [tools.shell]
+# Command timeout in seconds
 timeout = 30
+# Additional commands to block (case-insensitive, supports wildcards)
 blocked_commands = []

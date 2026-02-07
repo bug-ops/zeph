@@ -20,6 +20,7 @@ pub struct Agent<P: LlmProvider, C: Channel, T: ToolExecutor> {
     conversation_id: Option<i64>,
     history_limit: u32,
     recall_limit: usize,
+    summarization_threshold: usize,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -40,6 +41,7 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
             conversation_id: None,
             history_limit: 50,
             recall_limit: 5,
+            summarization_threshold: 100,
             shutdown: rx,
         }
     }
@@ -51,11 +53,13 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
         conversation_id: i64,
         history_limit: u32,
         recall_limit: usize,
+        summarization_threshold: usize,
     ) -> Self {
         self.memory = Some(memory);
         self.conversation_id = Some(conversation_id);
         self.history_limit = history_limit;
         self.recall_limit = recall_limit;
+        self.summarization_threshold = summarization_threshold;
         self
     }
 
@@ -220,6 +224,46 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
         };
         if let Err(e) = memory.remember(cid, role_str(role), content).await {
             tracing::error!("failed to persist message: {e:#}");
+            return;
+        }
+
+        self.check_summarization().await;
+    }
+
+    async fn check_summarization(&self) {
+        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
+            return;
+        };
+
+        let count = match memory.message_count(cid).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("failed to get message count: {e:#}");
+                return;
+            }
+        };
+
+        let count_usize = match usize::try_from(count) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("message count overflow: {e:#}");
+                return;
+            }
+        };
+
+        if count_usize > self.summarization_threshold {
+            let batch_size = self.summarization_threshold / 2;
+            match memory.summarize(cid, batch_size).await {
+                Ok(Some(summary_id)) => {
+                    tracing::info!("created summary {summary_id} for conversation {cid}");
+                }
+                Ok(None) => {
+                    tracing::debug!("no summarization needed");
+                }
+                Err(e) => {
+                    tracing::error!("summarization failed: {e:#}");
+                }
+            }
         }
     }
 }

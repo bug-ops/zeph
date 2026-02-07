@@ -53,10 +53,22 @@ pub struct MemoryConfig {
     pub qdrant_url: String,
     #[serde(default)]
     pub semantic: SemanticConfig,
+    #[serde(default = "default_summarization_threshold")]
+    pub summarization_threshold: usize,
+    #[serde(default = "default_context_budget_tokens")]
+    pub context_budget_tokens: usize,
 }
 
 fn default_qdrant_url() -> String {
     "http://localhost:6334".into()
+}
+
+fn default_summarization_threshold() -> usize {
+    100
+}
+
+fn default_context_budget_tokens() -> usize {
+    0
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +152,16 @@ impl Config {
         {
             self.memory.semantic.recall_limit = limit;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SUMMARIZATION_THRESHOLD")
+            && let Ok(threshold) = v.parse::<usize>()
+        {
+            self.memory.summarization_threshold = threshold;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS")
+            && let Ok(tokens) = v.parse::<usize>()
+        {
+            self.memory.context_budget_tokens = tokens;
+        }
         if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,
@@ -174,6 +196,8 @@ impl Config {
                 history_limit: 50,
                 qdrant_url: default_qdrant_url(),
                 semantic: SemanticConfig::default(),
+                summarization_threshold: default_summarization_threshold(),
+                context_budget_tokens: default_context_budget_tokens(),
             },
             telegram: None,
             tools: ToolsConfig::default(),
@@ -587,5 +611,107 @@ qdrant_url = "http://qdrant:6334"
         unsafe { std::env::remove_var("ZEPH_QDRANT_URL") };
 
         assert_eq!(config.memory.qdrant_url, "http://remote:6334");
+    }
+
+    #[test]
+    fn config_default_summarization_threshold() {
+        let config = Config::default();
+        assert_eq!(config.memory.summarization_threshold, 100);
+    }
+
+    #[test]
+    fn config_parse_summarization_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sum.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+summarization_threshold = 200
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.memory.summarization_threshold, 200);
+    }
+
+    #[test]
+    fn config_env_override_summarization_threshold() {
+        let mut config = Config::default();
+        assert_eq!(config.memory.summarization_threshold, 100);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_SUMMARIZATION_THRESHOLD", "150") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_SUMMARIZATION_THRESHOLD") };
+
+        assert_eq!(config.memory.summarization_threshold, 150);
+    }
+
+    #[test]
+    fn config_default_context_budget_tokens() {
+        let config = Config::default();
+        assert_eq!(config.memory.context_budget_tokens, 0);
+    }
+
+    #[test]
+    fn config_parse_context_budget_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+context_budget_tokens = 4096
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.memory.context_budget_tokens, 4096);
+    }
+
+    #[test]
+    fn config_env_override_context_budget_tokens() {
+        let mut config = Config::default();
+        assert_eq!(config.memory.context_budget_tokens, 0);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS", "8192") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS") };
+
+        assert_eq!(config.memory.context_budget_tokens, 8192);
     }
 }

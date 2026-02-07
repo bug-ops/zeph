@@ -118,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
             conversation_id,
             config.memory.history_limit,
             config.memory.semantic.recall_limit,
+            config.memory.summarization_threshold,
         )
         .with_shutdown(shutdown_rx);
     agent.load_history().await?;

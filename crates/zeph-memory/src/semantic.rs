@@ -1,4 +1,4 @@
-use zeph_llm::provider::{LlmProvider, Message};
+use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::qdrant::{QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
@@ -7,6 +7,40 @@ use crate::sqlite::SqliteStore;
 pub struct RecalledMessage {
     pub message: Message,
     pub score: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Summary {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub content: String,
+    pub first_message_id: i64,
+    pub last_message_id: i64,
+    pub token_estimate: i64,
+}
+
+/// Estimate token count using chars/4 heuristic.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count() / 4
+}
+
+fn build_summarization_prompt(messages: &[(i64, String, String)]) -> String {
+    let mut prompt = String::from(
+        "Summarize the following conversation concisely. Preserve key facts, decisions, \
+         and context that would be needed to continue the conversation. Be brief.\n\n\
+         Conversation:\n",
+    );
+
+    for (_, role, content) in messages {
+        prompt.push_str(role);
+        prompt.push_str(": ");
+        prompt.push_str(content);
+        prompt.push('\n');
+    }
+
+    prompt.push_str("\nSummary:");
+    prompt
 }
 
 pub struct SemanticMemory<P: LlmProvider> {
@@ -212,6 +246,132 @@ impl<P: LlmProvider> SemanticMemory<P> {
     pub fn has_qdrant(&self) -> bool {
         self.qdrant.is_some()
     }
+
+    /// Count messages in a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn message_count(&self, conversation_id: i64) -> anyhow::Result<i64> {
+        self.sqlite.count_messages(conversation_id).await
+    }
+
+    /// Load all summaries for a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn load_summaries(&self, conversation_id: i64) -> anyhow::Result<Vec<Summary>> {
+        let rows = self.sqlite.load_summaries(conversation_id).await?;
+        let summaries = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    conversation_id,
+                    content,
+                    first_message_id,
+                    last_message_id,
+                    token_estimate,
+                )| {
+                    Summary {
+                        id,
+                        conversation_id,
+                        content,
+                        first_message_id,
+                        last_message_id,
+                        token_estimate,
+                    }
+                },
+            )
+            .collect();
+        Ok(summaries)
+    }
+
+    /// Generate a summary of the oldest unsummarized messages.
+    ///
+    /// Returns `Ok(None)` if there are not enough messages to summarize.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if LLM call or database operation fails.
+    pub async fn summarize(
+        &self,
+        conversation_id: i64,
+        message_count: usize,
+    ) -> anyhow::Result<Option<i64>> {
+        let total = self.sqlite.count_messages(conversation_id).await?;
+
+        if total <= i64::try_from(message_count)? {
+            return Ok(None);
+        }
+
+        let after_id = self
+            .sqlite
+            .latest_summary_last_message_id(conversation_id)
+            .await?
+            .unwrap_or(0);
+
+        let messages = self
+            .sqlite
+            .load_messages_range(conversation_id, after_id, message_count)
+            .await?;
+
+        if messages.is_empty() {
+            return Ok(None);
+        }
+
+        let prompt = build_summarization_prompt(&messages);
+        let summary_text = self
+            .provider
+            .chat(&[Message {
+                role: Role::User,
+                content: prompt,
+            }])
+            .await?;
+
+        let token_estimate = i64::try_from(estimate_tokens(&summary_text))?;
+        let first_message_id = messages[0].0;
+        let last_message_id = messages[messages.len() - 1].0;
+
+        let summary_id = self
+            .sqlite
+            .save_summary(
+                conversation_id,
+                &summary_text,
+                first_message_id,
+                last_message_id,
+                token_estimate,
+            )
+            .await?;
+
+        if let Some(qdrant) = &self.qdrant
+            && self.provider.supports_embeddings()
+        {
+            match self.provider.embed(&summary_text).await {
+                Ok(vector) => {
+                    if let Err(e) = qdrant
+                        .store(
+                            summary_id,
+                            conversation_id,
+                            "system",
+                            vector,
+                            true,
+                            &self.embedding_model,
+                        )
+                        .await
+                    {
+                        tracing::warn!("Failed to embed summary: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate summary embedding: {e:#}");
+                }
+            }
+        }
+
+        Ok(Some(summary_id))
+    }
 }
 
 #[cfg(test)]
@@ -360,5 +520,135 @@ mod tests {
 
         let count = memory.embed_missing().await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn estimate_tokens_ascii() {
+        let text = "Hello, world!";
+        assert_eq!(estimate_tokens(text), 3);
+    }
+
+    #[test]
+    fn estimate_tokens_unicode() {
+        let text = "Привет мир";
+        assert_eq!(estimate_tokens(text), 2);
+    }
+
+    #[test]
+    fn estimate_tokens_empty() {
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[tokio::test]
+    async fn message_count_empty_conversation() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let count = memory.message_count(cid).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn message_count_after_saves() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        memory.remember(cid, "user", "msg1").await.unwrap();
+        memory.remember(cid, "assistant", "msg2").await.unwrap();
+
+        let count = memory.message_count(cid).await.unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn load_summaries_empty() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_summaries_ordered() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let msg_id1 = memory.remember(cid, "user", "m1").await.unwrap();
+        let msg_id2 = memory.remember(cid, "assistant", "m2").await.unwrap();
+        let msg_id3 = memory.remember(cid, "user", "m3").await.unwrap();
+
+        let s1 = memory
+            .sqlite()
+            .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+            .await
+            .unwrap();
+        let s2 = memory
+            .sqlite()
+            .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+            .await
+            .unwrap();
+
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].id, s1);
+        assert_eq!(summaries[0].content, "summary1");
+        assert_eq!(summaries[1].id, s2);
+        assert_eq!(summaries[1].content, "summary2");
+    }
+
+    #[tokio::test]
+    async fn summarize_below_threshold() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        memory.remember(cid, "user", "hello").await.unwrap();
+
+        let result = memory.summarize(cid, 10).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn summarize_stores_summary() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..5 {
+            memory
+                .remember(cid, "user", &format!("message {i}"))
+                .await
+                .unwrap();
+        }
+
+        let summary_id = memory.summarize(cid, 3).await.unwrap();
+        assert!(summary_id.is_some());
+
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, summary_id.unwrap());
+        assert!(!summaries[0].content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summarize_respects_previous_summaries() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..10 {
+            memory
+                .remember(cid, "user", &format!("message {i}"))
+                .await
+                .unwrap();
+        }
+
+        let s1 = memory.summarize(cid, 3).await.unwrap();
+        assert!(s1.is_some());
+
+        let s2 = memory.summarize(cid, 3).await.unwrap();
+        assert!(s2.is_some());
+
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries[0].last_message_id < summaries[1].first_message_id);
     }
 }

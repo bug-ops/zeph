@@ -177,6 +177,118 @@ impl SqliteStore {
 
         Ok(rows)
     }
+
+    /// Count the number of messages in a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn count_messages(&self, conversation_id: i64) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count messages")?;
+        Ok(row.0)
+    }
+
+    /// Load a range of messages after a given message ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn load_messages_range(
+        &self,
+        conversation_id: i64,
+        after_message_id: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, String, String)>> {
+        let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, role, content FROM messages \
+             WHERE conversation_id = ? AND id > ? \
+             ORDER BY id ASC LIMIT ?",
+        )
+        .bind(conversation_id)
+        .bind(after_message_id)
+        .bind(effective_limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load messages range")?;
+
+        Ok(rows)
+    }
+
+    /// Save a summary and return its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub async fn save_summary(
+        &self,
+        conversation_id: i64,
+        content: &str,
+        first_message_id: i64,
+        last_message_id: i64,
+        token_estimate: i64,
+    ) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
+             VALUES (?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(conversation_id)
+        .bind(content)
+        .bind(first_message_id)
+        .bind(last_message_id)
+        .bind(token_estimate)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to save summary")?;
+        Ok(row.0)
+    }
+
+    /// Load all summaries for a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn load_summaries(
+        &self,
+        conversation_id: i64,
+    ) -> anyhow::Result<Vec<(i64, i64, String, i64, i64, i64)>> {
+        let rows: Vec<(i64, i64, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, conversation_id, content, first_message_id, last_message_id, token_estimate \
+             FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
+        )
+        .bind(conversation_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load summaries")?;
+
+        Ok(rows)
+    }
+
+    /// Get the last message ID covered by the most recent summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn latest_summary_last_message_id(
+        &self,
+        conversation_id: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT last_message_id FROM summaries \
+             WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch latest summary")?;
+
+        Ok(row.map(|r| r.0))
+    }
 }
 
 fn parse_role(s: &str) -> Role {
@@ -420,5 +532,171 @@ mod tests {
 
         let unembedded = store.unembedded_message_ids(Some(3)).await.unwrap();
         assert_eq!(unembedded.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn count_messages_returns_correct_count() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        assert_eq!(store.count_messages(cid).await.unwrap(), 0);
+
+        store.save_message(cid, "user", "msg1").await.unwrap();
+        store.save_message(cid, "assistant", "msg2").await.unwrap();
+
+        assert_eq!(store.count_messages(cid).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn load_messages_range_basic() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
+        let msg_id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+
+        let msgs = store.load_messages_range(cid, msg_id1, 10).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].0, msg_id2);
+        assert_eq!(msgs[0].2, "msg2");
+        assert_eq!(msgs[1].0, msg_id3);
+        assert_eq!(msgs[1].2, "msg3");
+    }
+
+    #[tokio::test]
+    async fn load_messages_range_respects_limit() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store.save_message(cid, "user", "msg1").await.unwrap();
+        store.save_message(cid, "assistant", "msg2").await.unwrap();
+        store.save_message(cid, "user", "msg3").await.unwrap();
+
+        let msgs = store.load_messages_range(cid, 0, 2).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn save_and_load_summary() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "hello").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "hi").await.unwrap();
+
+        let summary_id = store
+            .save_summary(cid, "User greeted assistant", msg_id1, msg_id2, 5)
+            .await
+            .unwrap();
+
+        let summaries = store.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].0, summary_id);
+        assert_eq!(summaries[0].2, "User greeted assistant");
+        assert_eq!(summaries[0].3, msg_id1);
+        assert_eq!(summaries[0].4, msg_id2);
+        assert_eq!(summaries[0].5, 5);
+    }
+
+    #[tokio::test]
+    async fn load_summaries_empty() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let summaries = store.load_summaries(cid).await.unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_summaries_ordered() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "m1").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "m2").await.unwrap();
+        let msg_id3 = store.save_message(cid, "user", "m3").await.unwrap();
+
+        let s1 = store
+            .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+            .await
+            .unwrap();
+        let s2 = store
+            .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+            .await
+            .unwrap();
+
+        let summaries = store.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].0, s1);
+        assert_eq!(summaries[1].0, s2);
+    }
+
+    #[tokio::test]
+    async fn latest_summary_last_message_id_none() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let last = store.latest_summary_last_message_id(cid).await.unwrap();
+        assert!(last.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_summary_last_message_id_some() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "m1").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "m2").await.unwrap();
+        let msg_id3 = store.save_message(cid, "user", "m3").await.unwrap();
+
+        store
+            .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+            .await
+            .unwrap();
+        store
+            .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+            .await
+            .unwrap();
+
+        let last = store.latest_summary_last_message_id(cid).await.unwrap();
+        assert_eq!(last, Some(msg_id3));
+    }
+
+    #[tokio::test]
+    async fn cascade_delete_removes_summaries() {
+        let store = test_store().await;
+        let pool = store.pool();
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "m1").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "m2").await.unwrap();
+
+        store
+            .save_summary(cid, "summary", msg_id1, msg_id2, 3)
+            .await
+            .unwrap();
+
+        let before: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
+                .bind(cid)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(before.0, 1);
+
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(cid)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let after: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
+                .bind(cid)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(after.0, 0);
     }
 }

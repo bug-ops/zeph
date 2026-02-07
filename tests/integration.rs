@@ -287,7 +287,8 @@ async fn agent_with_memory() {
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider, channel, "", executor).with_memory(memory, cid, 50, 5);
+    let mut agent =
+        Agent::new(provider, channel, "", executor).with_memory(memory, cid, 50, 5, 100);
     agent.run().await.unwrap();
 }
 
