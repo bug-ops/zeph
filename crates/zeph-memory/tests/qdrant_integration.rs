@@ -1,7 +1,7 @@
 use testcontainers::ContainerAsync;
+use testcontainers::GenericImage;
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use zeph_memory::qdrant::QdrantStore;
 use zeph_memory::sqlite::SqliteStore;
 
@@ -74,10 +74,7 @@ async fn search_with_conversation_filter() {
     let cid2 = sqlite.create_conversation().await.unwrap();
 
     let msg1 = sqlite.save_message(cid1, "user", "first").await.unwrap();
-    let msg2 = sqlite
-        .save_message(cid2, "user", "second")
-        .await
-        .unwrap();
+    let msg2 = sqlite.save_message(cid2, "user", "second").await.unwrap();
 
     qdrant.ensure_collection(4).await.unwrap();
 
