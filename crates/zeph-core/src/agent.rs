@@ -72,10 +72,7 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
 
             for msg in history {
                 if msg.content.trim().is_empty() {
-                    tracing::warn!(
-                        "skipping empty message from history (role: {:?})",
-                        msg.role
-                    );
+                    tracing::warn!("skipping empty message from history (role: {:?})", msg.role);
                     skipped += 1;
                     continue;
                 }

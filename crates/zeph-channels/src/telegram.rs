@@ -112,13 +112,13 @@ impl TelegramChannel {
 
     fn has_unclosed_code_block(text: &str) -> bool {
         // Check code blocks (```)
-        if text.matches("```").count() % 2 != 0 {
+        if !text.matches("```").count().is_multiple_of(2) {
             return true;
         }
 
         // Check bold markers (*)
         // Count non-escaped * by looking at characters that come after \
-        let mut unescaped_asterisks = 0;
+        let mut unescaped_asterisks: usize = 0;
         let mut chars = text.chars().peekable();
 
         while let Some(c) = chars.next() {
@@ -131,7 +131,7 @@ impl TelegramChannel {
         }
 
         // Odd number of unescaped * means unclosed bold
-        unescaped_asterisks % 2 != 0
+        !unescaped_asterisks.is_multiple_of(2)
     }
 
     fn should_send_update(&self) -> bool {

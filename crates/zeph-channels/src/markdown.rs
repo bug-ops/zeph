@@ -1,11 +1,11 @@
-/// Converts standard Markdown to Telegram MarkdownV2 format.
+/// Converts standard Markdown to Telegram `MarkdownV2` format.
 ///
-/// Telegram MarkdownV2 has different syntax:
+/// Telegram `MarkdownV2` has different syntax:
 /// - `*bold*` instead of `**bold**`
 /// - Headers must be converted to bold text
 /// - Horizontal rules are removed
 /// - Special characters must be escaped
-/// - Code blocks (```) escape only ` and \
+/// - Code blocks escape only backtick and backslash
 pub fn markdown_to_telegram(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let lines = input.lines();
@@ -36,22 +36,27 @@ pub fn markdown_to_telegram(input: &str) -> String {
         }
 
         // Skip horizontal rules
-        if trimmed.starts_with("---") || trimmed.starts_with("***") || trimmed.starts_with("___")
-        {
+        if trimmed.starts_with("---") || trimmed.starts_with("***") || trimmed.starts_with("___") {
             continue;
         }
 
         // Convert headers to bold text
         if let Some(header) = trimmed.strip_prefix("# ") {
-            output.push_str(&format!("*{}*\n", escape_telegram(header)));
+            output.push('*');
+            output.push_str(&escape_telegram(header));
+            output.push_str("*\n");
             continue;
         }
         if let Some(header) = trimmed.strip_prefix("## ") {
-            output.push_str(&format!("*{}*\n", escape_telegram(header)));
+            output.push('*');
+            output.push_str(&escape_telegram(header));
+            output.push_str("*\n");
             continue;
         }
         if let Some(header) = trimmed.strip_prefix("### ") {
-            output.push_str(&format!("*{}*\n", escape_telegram(header)));
+            output.push('*');
+            output.push_str(&escape_telegram(header));
+            output.push_str("*\n");
             continue;
         }
 
@@ -67,7 +72,7 @@ pub fn markdown_to_telegram(input: &str) -> String {
 
 /// Escapes text inside code blocks.
 ///
-/// In Telegram MarkdownV2 code blocks, ` and \ must be escaped.
+/// In Telegram `MarkdownV2` code blocks, backtick and backslash must be escaped.
 fn escape_code_block(text: &str) -> String {
     let mut result = String::with_capacity(text.len() * 2);
     for c in text.chars() {
@@ -82,20 +87,20 @@ fn escape_code_block(text: &str) -> String {
     result
 }
 
-/// Converts **bold** to *bold* and escapes special characters for Telegram MarkdownV2.
+/// Converts **bold** to *bold* and escapes special characters for Telegram `MarkdownV2`.
 fn convert_bold_and_escape(text: &str) -> String {
     let mut result = String::with_capacity(text.len() * 2);
     let mut chars = text.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c == '*' {
-            if let Some(&next) = chars.peek() {
-                if next == '*' {
-                    // Found ** - convert to single * for Telegram bold (don't escape)
-                    chars.next(); // consume second *
-                    result.push('*');
-                    continue;
-                }
+            if let Some(&next) = chars.peek()
+                && next == '*'
+            {
+                // Found ** - convert to single * for Telegram bold (don't escape)
+                chars.next(); // consume second *
+                result.push('*');
+                continue;
             }
             // Single * should be escaped
             result.push('\\');
@@ -112,22 +117,34 @@ fn convert_bold_and_escape(text: &str) -> String {
     result
 }
 
-/// Checks if a character needs escaping in Telegram MarkdownV2.
+/// Checks if a character needs escaping in Telegram `MarkdownV2`.
 ///
-/// Special characters that need escaping:
-/// _ [ ] ( ) ~ ` > # + - = | { } . !
+/// Special characters that need escaping (per Telegram documentation).
 fn needs_escape(c: char) -> bool {
     matches!(
         c,
-        '_' | '[' | ']' | '(' | ')' | '~' | '`' | '>' | '#' | '+' | '-' | '=' | '|' | '{'
-            | '}' | '.' | '!'
+        '_' | '['
+            | ']'
+            | '('
+            | ')'
+            | '~'
+            | '`'
+            | '>'
+            | '#'
+            | '+'
+            | '-'
+            | '='
+            | '|'
+            | '{'
+            | '}'
+            | '.'
+            | '!'
     )
 }
 
-/// Escapes special characters for Telegram MarkdownV2.
+/// Escapes special characters for Telegram `MarkdownV2`.
 ///
-/// Special characters that need escaping in MarkdownV2:
-/// _ * [ ] ( ) ~ ` > # + - = | { } . !
+/// Escapes all reserved characters per Telegram documentation.
 fn escape_telegram(text: &str) -> String {
     let mut result = String::with_capacity(text.len() * 2);
 
