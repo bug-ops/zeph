@@ -20,8 +20,16 @@ cargo build
 ### Test
 
 ```bash
-cargo nextest run
+# Run unit tests only (exclude integration tests)
+cargo nextest run --workspace --lib --bins
+
+# Run all tests including integration tests (requires Docker)
+cargo nextest run --workspace --profile ci
 ```
+
+**Nextest profiles** (`.config/nextest.toml`):
+- `default`: Runs all tests (unit + integration)
+- `ci`: CI environment, runs all tests with JUnit XML output for reporting
 
 ### Integration Tests
 
@@ -33,7 +41,10 @@ Integration tests use [testcontainers-rs](https://github.com/testcontainers/test
 # Run only integration tests
 cargo nextest run --workspace --test '*integration*'
 
-# Run all tests including integration
+# Run unit tests only (skip integration tests)
+cargo nextest run --workspace --lib --bins
+
+# Run all tests
 cargo nextest run --workspace
 ```
 
@@ -67,7 +78,7 @@ cargo llvm-cov --all-features --workspace
 1. Create a feature branch: `feat/<scope>/<description>` or `fix/<scope>/<description>`
 2. Keep changes focused -- one logical change per PR
 3. Add tests for new functionality
-4. Ensure all checks pass: `cargo +nightly fmt`, `cargo clippy`, `cargo nextest run`
+4. Ensure all checks pass: `cargo +nightly fmt`, `cargo clippy`, `cargo nextest run --lib --bins`
 5. Write a clear PR description following the template
 
 ## Commit Messages

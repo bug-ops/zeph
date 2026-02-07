@@ -1,0 +1,17 @@
+# Nextest configuration for zeph project
+# https://nexte.st/book/configuration.html
+
+[profile.default]
+# Default profile for local development
+# No default filter - run all unit tests
+# Integration tests are in separate test binaries (tests/*_integration.rs)
+# and can be run explicitly with --test flag or using the ci profile
+
+[profile.ci]
+# CI profile that runs ALL tests including integration tests
+# Override with: cargo nextest run --profile ci
+default-filter = "all()"
+
+[profile.ci.junit]
+# Store JUnit XML report for CI
+path = "target/nextest/ci/junit.xml"
