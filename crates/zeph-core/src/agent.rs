@@ -161,7 +161,7 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
                         return Ok(());
                     }
 
-                    let formatted_output = format!("[shell output]\n{output}");
+                    let formatted_output = format!("[shell output]\n```\n{output}\n```");
                     self.channel.send(&formatted_output).await?;
 
                     self.messages.push(Message {
