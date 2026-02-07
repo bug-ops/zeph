@@ -51,10 +51,37 @@ pub struct MemoryConfig {
     pub history_limit: u32,
     #[serde(default = "default_qdrant_url")]
     pub qdrant_url: String,
+    #[serde(default)]
+    pub semantic: SemanticConfig,
 }
 
 fn default_qdrant_url() -> String {
     "http://localhost:6334".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SemanticConfig {
+    #[serde(default = "default_semantic_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_recall_limit")]
+    pub recall_limit: usize,
+}
+
+impl Default for SemanticConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_semantic_enabled(),
+            recall_limit: default_recall_limit(),
+        }
+    }
+}
+
+fn default_semantic_enabled() -> bool {
+    false
+}
+
+fn default_recall_limit() -> usize {
+    5
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +130,16 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_QDRANT_URL") {
             self.memory.qdrant_url = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SEMANTIC_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.semantic.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_RECALL_LIMIT")
+            && let Ok(limit) = v.parse::<usize>()
+        {
+            self.memory.semantic.recall_limit = limit;
+        }
         if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,
@@ -136,6 +173,7 @@ impl Config {
                 sqlite_path: "./data/zeph.db".into(),
                 history_limit: 50,
                 qdrant_url: default_qdrant_url(),
+                semantic: SemanticConfig::default(),
             },
             telegram: None,
             tools: ToolsConfig::default(),

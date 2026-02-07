@@ -19,6 +19,7 @@ zeph-llm.workspace = true
 [dev-dependencies]
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-stream.workspace = true
 
 [lints]
 workspace = true

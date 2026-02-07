@@ -9,7 +9,7 @@ use zeph_core::config::Config;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::ShellExecutor;
@@ -80,10 +80,21 @@ async fn main() -> anyhow::Result<()> {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
     }
 
-    let store = SqliteStore::new(&config.memory.sqlite_path).await?;
-    let conversation_id = match store.latest_conversation_id().await? {
+    let memory = SemanticMemory::new(
+        &config.memory.sqlite_path,
+        &config.memory.qdrant_url,
+        provider.clone(),
+        &config.llm.embedding_model,
+    )
+    .await?;
+
+    if config.memory.semantic.enabled && memory.has_qdrant() {
+        tracing::info!("Semantic memory enabled, Qdrant connected");
+    }
+
+    let conversation_id = match memory.sqlite().latest_conversation_id().await? {
         Some(id) => id,
-        None => store.create_conversation().await?,
+        None => memory.sqlite().create_conversation().await?,
     };
 
     tracing::info!("conversation id: {conversation_id}");
@@ -102,7 +113,12 @@ async fn main() -> anyhow::Result<()> {
     let shell_executor = ShellExecutor::new(&config.tools.shell);
 
     let mut agent = Agent::new(provider, channel, &skills_prompt, shell_executor)
-        .with_memory(store, conversation_id, config.memory.history_limit)
+        .with_memory(
+            memory,
+            conversation_id,
+            config.memory.history_limit,
+            config.memory.semantic.recall_limit,
+        )
         .with_shutdown(shutdown_rx);
     agent.load_history().await?;
     agent.run().await

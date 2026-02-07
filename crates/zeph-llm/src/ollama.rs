@@ -7,7 +7,7 @@ use tokio_stream::StreamExt;
 
 use crate::provider::{ChatStream, LlmProvider, Message, Role};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Ollama,
     model: String,

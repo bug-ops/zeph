@@ -4535,6 +4535,7 @@ dependencies = [
  "sqlx",
  "testcontainers",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
  "zeph-llm",

@@ -131,6 +131,52 @@ impl SqliteStore {
                 .context("failed to fetch latest conversation")?;
         Ok(row.map(|r| r.0))
     }
+
+    /// Fetch a single message by its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn message_by_id(&self, message_id: i64) -> anyhow::Result<Option<Message>> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT role, content FROM messages WHERE id = ?")
+                .bind(message_id)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to fetch message by id")?;
+
+        Ok(row.map(|(role_str, content)| Message {
+            role: parse_role(&role_str),
+            content,
+        }))
+    }
+
+    /// Return message IDs and content for messages without embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn unembedded_message_ids(
+        &self,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<(i64, i64, String, String)>> {
+        let effective_limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
+
+        let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(
+            "SELECT m.id, m.conversation_id, m.role, m.content \
+             FROM messages m \
+             LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
+             WHERE em.id IS NULL \
+             ORDER BY m.id ASC \
+             LIMIT ?",
+        )
+        .bind(effective_limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch unembedded message ids")?;
+
+        Ok(rows)
+    }
 }
 
 fn parse_role(s: &str) -> Role {
@@ -297,5 +343,82 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(after.0, 0);
+    }
+
+    #[tokio::test]
+    async fn message_by_id_fetches_existing() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store.save_message(cid, "user", "hello").await.unwrap();
+
+        let msg = store.message_by_id(msg_id).await.unwrap();
+        assert!(msg.is_some());
+        let msg = msg.unwrap();
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn message_by_id_returns_none_for_nonexistent() {
+        let store = test_store().await;
+        let msg = store.message_by_id(999).await.unwrap();
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn unembedded_message_ids_returns_all_when_none_embedded() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store.save_message(cid, "user", "msg1").await.unwrap();
+        store.save_message(cid, "assistant", "msg2").await.unwrap();
+
+        let unembedded = store.unembedded_message_ids(None).await.unwrap();
+        assert_eq!(unembedded.len(), 2);
+        assert_eq!(unembedded[0].3, "msg1");
+        assert_eq!(unembedded[1].3, "msg2");
+    }
+
+    #[tokio::test]
+    async fn unembedded_message_ids_excludes_embedded() {
+        let store = test_store().await;
+        let pool = store.pool();
+        let cid = store.create_conversation().await.unwrap();
+
+        let msg_id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+        let msg_id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
+
+        let point_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(msg_id1)
+        .bind(&point_id)
+        .bind(768_i64)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let unembedded = store.unembedded_message_ids(None).await.unwrap();
+        assert_eq!(unembedded.len(), 1);
+        assert_eq!(unembedded[0].0, msg_id2);
+        assert_eq!(unembedded[0].3, "msg2");
+    }
+
+    #[tokio::test]
+    async fn unembedded_message_ids_respects_limit() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        for i in 0..10 {
+            store
+                .save_message(cid, "user", &format!("msg{i}"))
+                .await
+                .unwrap();
+        }
+
+        let unembedded = store.unembedded_message_ids(Some(3)).await.unwrap();
+        assert_eq!(unembedded.len(), 3);
     }
 }

@@ -2,7 +2,7 @@ use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
 use crate::provider::{ChatStream, LlmProvider, Message};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),

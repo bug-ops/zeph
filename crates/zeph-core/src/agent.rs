@@ -1,7 +1,8 @@
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{LlmProvider, Message, Role};
-use zeph_memory::sqlite::{SqliteStore, role_str};
+use zeph_memory::semantic::SemanticMemory;
+use zeph_memory::sqlite::role_str;
 use zeph_tools::executor::{ToolError, ToolExecutor};
 
 use crate::channel::Channel;
@@ -15,9 +16,10 @@ pub struct Agent<P: LlmProvider, C: Channel, T: ToolExecutor> {
     channel: C,
     tool_executor: T,
     messages: Vec<Message>,
-    memory: Option<SqliteStore>,
+    memory: Option<SemanticMemory<P>>,
     conversation_id: Option<i64>,
     history_limit: u32,
+    recall_limit: usize,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -37,15 +39,23 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
             memory: None,
             conversation_id: None,
             history_limit: 50,
+            recall_limit: 5,
             shutdown: rx,
         }
     }
 
     #[must_use]
-    pub fn with_memory(mut self, store: SqliteStore, conversation_id: i64, limit: u32) -> Self {
-        self.memory = Some(store);
+    pub fn with_memory(
+        mut self,
+        memory: SemanticMemory<P>,
+        conversation_id: i64,
+        history_limit: u32,
+        recall_limit: usize,
+    ) -> Self {
+        self.memory = Some(memory);
         self.conversation_id = Some(conversation_id);
-        self.history_limit = limit;
+        self.history_limit = history_limit;
+        self.recall_limit = recall_limit;
         self
     }
 
@@ -61,11 +71,14 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     ///
     /// Returns an error if loading history from `SQLite` fails.
     pub async fn load_history(&mut self) -> anyhow::Result<()> {
-        let (Some(store), Some(cid)) = (&self.memory, self.conversation_id) else {
+        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
             return Ok(());
         };
 
-        let history = store.load_history(cid, self.history_limit).await?;
+        let history = memory
+            .sqlite()
+            .load_history(cid, self.history_limit)
+            .await?;
         if !history.is_empty() {
             let mut loaded = 0;
             let mut skipped = 0;
@@ -202,10 +215,10 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     }
 
     async fn persist_message(&self, role: Role, content: &str) {
-        let (Some(store), Some(cid)) = (&self.memory, self.conversation_id) else {
+        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
             return;
         };
-        if let Err(e) = store.save_message(cid, role_str(role), content).await {
+        if let Err(e) = memory.remember(cid, role_str(role), content).await {
             tracing::error!("failed to persist message: {e:#}");
         }
     }

@@ -19,6 +19,10 @@ sqlite_path = "./data/zeph.db"
 history_limit = 50
 qdrant_url = "http://localhost:6334"
 
+[memory.semantic]
+enabled = false
+recall_limit = 5
+
 [tools]
 enabled = true
 

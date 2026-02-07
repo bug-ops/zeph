@@ -29,6 +29,17 @@ impl fmt::Debug for ClaudeProvider {
     }
 }
 
+impl Clone for ClaudeProvider {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            api_key: self.api_key.clone(),
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+        }
+    }
+}
+
 impl ClaudeProvider {
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
