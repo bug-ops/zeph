@@ -20,12 +20,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - 22 unit tests with 99.25% line coverage, zero clippy warnings
 - ADR-014: zeph-tools crate design rationale and architecture decisions
 
+#### M7 Phase 3 (Issue #41): Agent integration with ToolExecutor trait
+- Agent now uses `ShellExecutor` for all bash command execution with safety checks
+- Four integration tests for blocked command behavior and error handling
+- Security improvements: blocked commands no longer leak pattern details to users
+
+### Security
+
+- **CRITICAL fix for SEC-001**: Shell commands now filtered through ShellExecutor with DEFAULT_BLOCKED patterns (rm -rf /, sudo, mkfs, dd if=, curl, wget, nc, shutdown, reboot, halt, poweroff, init 0). Resolves command injection vulnerability.
+
+### Fixed
+
+- Shell command timeout now respects `config.tools.shell.timeout` (was hardcoded 30s)
+- Removed duplicate bash parsing logic from agent.rs (now centralized in zeph-tools)
+- Error message pattern leakage: blocked commands now show generic security policy message instead of leaking exact blocked pattern
+
 ### Changed
 
 **BREAKING CHANGES** (pre-1.0.0):
+- `Agent::new()` signature changed: now requires `tool_executor: T` as 4th parameter where `T: ToolExecutor`
+- `Agent` struct now generic over three types: `Agent<P, C, T>` (provider, channel, tool_executor)
 - Workspace `Cargo.toml` now defines `version = "0.2.0"` in `[workspace.package]` section
 - All crate manifests use `version.workspace = true` instead of explicit versions
 - Inter-crate dependencies now reference workspace definitions (e.g., `zeph-llm.workspace = true`)
+
+**Migration:**
+```rust
+// Before:
+let agent = Agent::new(provider, channel, &skills_prompt);
+
+// After:
+use zeph_tools::shell::ShellExecutor;
+let executor = ShellExecutor::new(&config.tools.shell);
+let agent = Agent::new(provider, channel, &skills_prompt, executor);
+```
 
 ## [0.2.0] - 2026-02-06
 

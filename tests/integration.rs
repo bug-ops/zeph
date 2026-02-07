@@ -9,6 +9,7 @@ use zeph_llm::provider::{LlmProvider, Message};
 use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
+use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 // -- Mock LLM Provider --
 
@@ -79,6 +80,16 @@ impl Channel for MockChannel {
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+// -- Mock Tool Executor --
+
+struct MockToolExecutor;
+
+impl ToolExecutor for MockToolExecutor {
+    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(None)
     }
 }
 
@@ -223,8 +234,9 @@ async fn agent_roundtrip_mock() {
     let provider = MockProvider::new("mock response");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["hello"], outputs.clone());
+    let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, "");
+    let mut agent = Agent::new(provider, channel, "", executor);
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -237,8 +249,9 @@ async fn agent_multiple_messages() {
     let provider = MockProvider::new("reply");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["first", "second", "third"], outputs.clone());
+    let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, "");
+    let mut agent = Agent::new(provider, channel, "", executor);
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -251,11 +264,12 @@ async fn agent_with_memory() {
     let provider = MockProvider::new("remembered");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["save this"], outputs.clone());
+    let executor = MockToolExecutor;
 
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cid = store.create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider, channel, "").with_memory(store, cid, 50);
+    let mut agent = Agent::new(provider, channel, "", executor).with_memory(store, cid, 50);
     agent.run().await.unwrap();
 }
 
@@ -264,10 +278,11 @@ async fn agent_shutdown_via_watch() {
     let provider = MockProvider::new("should not appear");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec![], outputs.clone());
+    let executor = MockToolExecutor;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
 
-    let mut agent = Agent::new(provider, channel, "").with_shutdown(rx);
+    let mut agent = Agent::new(provider, channel, "", executor).with_shutdown(rx);
 
     let _ = tx.send(true);
 

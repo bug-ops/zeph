@@ -12,6 +12,7 @@ use zeph_llm::ollama::OllamaProvider;
 use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
+use zeph_tools::ShellExecutor;
 
 /// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
 #[derive(Debug)]
@@ -98,7 +99,9 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    let mut agent = Agent::new(provider, channel, &skills_prompt)
+    let shell_executor = ShellExecutor::new(&config.tools.shell);
+
+    let mut agent = Agent::new(provider, channel, &skills_prompt, shell_executor)
         .with_memory(store, conversation_id, config.memory.history_limit)
         .with_shutdown(shutdown_rx);
     agent.load_history().await?;

@@ -3577,6 +3577,7 @@ dependencies = [
  "zeph-llm",
  "zeph-memory",
  "zeph-skills",
+ "zeph-tools",
 ]
 
 [[package]]
