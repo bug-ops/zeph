@@ -49,6 +49,12 @@ pub struct SkillsConfig {
 pub struct MemoryConfig {
     pub sqlite_path: String,
     pub history_limit: u32,
+    #[serde(default = "default_qdrant_url")]
+    pub qdrant_url: String,
+}
+
+fn default_qdrant_url() -> String {
+    "http://localhost:6334".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -94,6 +100,9 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_SQLITE_PATH") {
             self.memory.sqlite_path = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_QDRANT_URL") {
+            self.memory.qdrant_url = v;
+        }
         if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,
@@ -126,6 +135,7 @@ impl Config {
             memory: MemoryConfig {
                 sqlite_path: "./data/zeph.db".into(),
                 history_limit: 50,
+                qdrant_url: default_qdrant_url(),
             },
             telegram: None,
             tools: ToolsConfig::default(),
@@ -139,16 +149,17 @@ mod tests {
 
     use super::*;
 
-    const LLM_ENV_KEYS: [&str; 5] = [
+    const ENV_KEYS: [&str; 6] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
         "ZEPH_LLM_EMBEDDING_MODEL",
         "ZEPH_SQLITE_PATH",
+        "ZEPH_QDRANT_URL",
     ];
 
-    fn clear_llm_env() {
-        for key in LLM_ENV_KEYS {
+    fn clear_env() {
+        for key in ENV_KEYS {
             unsafe { std::env::remove_var(key) };
         }
     }
@@ -162,6 +173,7 @@ mod tests {
         assert_eq!(config.llm.embedding_model, "qwen3-embedding");
         assert_eq!(config.agent.name, "Zeph");
         assert_eq!(config.memory.history_limit, 50);
+        assert_eq!(config.memory.qdrant_url, "http://localhost:6334");
         assert!(config.llm.cloud.is_none());
         assert!(config.telegram.is_none());
         assert!(config.tools.enabled);
@@ -195,7 +207,7 @@ history_limit = 10
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.agent.name, "TestBot");
@@ -234,7 +246,7 @@ history_limit = 50
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.llm.provider, "claude");
@@ -285,7 +297,7 @@ allowed_users = ["alice", "bob"]
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         let tg = config.telegram.unwrap();
@@ -339,7 +351,7 @@ blocked_commands = ["custom-danger"]
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert!(config.tools.enabled);
@@ -373,7 +385,7 @@ history_limit = 50
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert!(config.tools.enabled);
@@ -438,7 +450,7 @@ history_limit = 50
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.llm.embedding_model, "nomic-embed-text");
@@ -482,9 +494,60 @@ history_limit = 50
         )
         .unwrap();
 
-        clear_llm_env();
+        clear_env();
 
         let config = Config::load(&path).unwrap();
         assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+    }
+
+    #[test]
+    fn config_default_qdrant_url() {
+        let config = Config::default();
+        assert_eq!(config.memory.qdrant_url, "http://localhost:6334");
+    }
+
+    #[test]
+    fn config_parse_qdrant_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("qdrant.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+qdrant_url = "http://qdrant:6334"
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.memory.qdrant_url, "http://qdrant:6334");
+    }
+
+    #[test]
+    fn config_env_override_qdrant_url() {
+        let mut config = Config::default();
+        assert_eq!(config.memory.qdrant_url, "http://localhost:6334");
+
+        unsafe { std::env::set_var("ZEPH_QDRANT_URL", "http://remote:6334") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_QDRANT_URL") };
+
+        assert_eq!(config.memory.qdrant_url, "http://remote:6334");
     }
 }

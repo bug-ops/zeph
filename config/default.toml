@@ -17,6 +17,7 @@ paths = ["./skills"]
 [memory]
 sqlite_path = "./data/zeph.db"
 history_limit = 50
+qdrant_url = "http://localhost:6334"
 
 [tools]
 enabled = true

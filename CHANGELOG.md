@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+#### M9 Phase 1: Qdrant Integration (Issue #60)
+- New `QdrantStore` module in zeph-memory for vector storage and similarity search
+- `QdrantStore::store()` persists embeddings to Qdrant and tracks metadata in SQLite
+- `QdrantStore::search()` performs cosine similarity search with filtering by conversation_id and role
+- `QdrantStore::has_embedding()` checks if message has associated embedding
+- `QdrantStore::ensure_collection()` idempotently creates Qdrant collection with 768-dimensional vectors
+- SQLite migration `002_embeddings_metadata.sql` for embedding metadata tracking
+- `embeddings_metadata` table with foreign key constraint to messages (ON DELETE CASCADE)
+- PRAGMA foreign_keys enabled in SqliteStore via SqliteConnectOptions
+- `SearchFilter` and `SearchResult` types for flexible query construction
+- `MemoryConfig.qdrant_url` field with `ZEPH_QDRANT_URL` environment variable override (default: http://localhost:6334)
+- Docker Compose Qdrant service (qdrant/qdrant:v1.13.6) on ports 6333/6334 with persistent storage
+- Integration tests for Qdrant operations (ignored by default, require running Qdrant instance)
+- Unit tests for SQLite metadata operations with 98% coverage
+- 12 new tests total (3 unit + 2 integration for QdrantStore, 1 CASCADE DELETE test for SqliteStore, 3 config tests)
+
 #### M8: Embeddings support (Issue #54)
 - `LlmProvider` trait extended with `embed(&str) -> Result<Vec<f32>>` for generating text embeddings
 - `LlmProvider` trait extended with `supports_embeddings() -> bool` for capability detection
@@ -22,6 +38,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Docker Compose configuration: added `ZEPH_LLM_EMBEDDING_MODEL` environment variable
 
 ### Changed
+
+**BREAKING CHANGES** (pre-1.0.0):
+- `SqliteStore::save_message()` now returns `Result<i64>` instead of `Result<()>` to enable embedding workflow
+- `SqliteStore::new()` uses `sqlx::migrate!()` macro instead of INIT_SQL constant for proper migration management
+- `QdrantStore::store()` requires `model: &str` parameter for multi-model support
+- Config constant `LLM_ENV_KEYS` renamed to `ENV_KEYS` to reflect inclusion of non-LLM variables
+
+**Migration:**
+```rust
+// Before:
+let _ = store.save_message(conv_id, "user", "hello").await?;
+
+// After:
+let message_id = store.save_message(conv_id, "user", "hello").await?;
+```
+
 - `OllamaProvider::new()` now accepts `embedding_model` parameter (breaking change, pre-v1.0)
 - Config schema: added `llm.embedding_model` field with serde default for backward compatibility
 

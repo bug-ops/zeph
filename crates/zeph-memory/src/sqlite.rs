@@ -1,20 +1,9 @@
+use std::str::FromStr;
+
 use anyhow::Context;
 use sqlx::SqlitePool;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use zeph_llm::provider::{Message, Role};
-
-const INIT_SQL: &str = "\
-CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER NOT NULL REFERENCES conversations(id),
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);";
 
 #[derive(Debug)]
 pub struct SqliteStore {
@@ -24,34 +13,41 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Open (or create) the `SQLite` database and run migrations.
     ///
+    /// Enables foreign key constraints at connection level so that
+    /// `ON DELETE CASCADE` and other FK rules are enforced.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database cannot be opened or migrations fail.
     pub async fn new(path: &str) -> anyhow::Result<Self> {
-        if path != ":memory:"
-            && let Some(parent) = std::path::Path::new(path).parent()
-        {
-            std::fs::create_dir_all(parent).context("failed to create database directory")?;
-        }
-
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
             format!("sqlite:{path}?mode=rwc")
         };
 
+        let opts = SqliteConnectOptions::from_str(&url)?
+            .create_if_missing(true)
+            .foreign_keys(true);
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&url)
+            .connect_with(opts)
             .await
             .context("failed to open SQLite database")?;
 
-        sqlx::query(INIT_SQL)
-            .execute(&pool)
+        sqlx::migrate!("./migrations")
+            .run(&pool)
             .await
             .context("failed to run migrations")?;
 
         Ok(Self { pool })
+    }
+
+    /// Expose the underlying pool for shared access by other stores.
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// Create a new conversation and return its ID.
@@ -67,7 +63,7 @@ impl SqliteStore {
         Ok(row.0)
     }
 
-    /// Save a message to the given conversation.
+    /// Save a message to the given conversation and return the message ID.
     ///
     /// # Errors
     ///
@@ -77,15 +73,17 @@ impl SqliteStore {
         conversation_id: i64,
         role: &str,
         content: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)")
-            .bind(conversation_id)
-            .bind(role)
-            .bind(content)
-            .execute(&self.pool)
-            .await
-            .context("failed to save message")?;
-        Ok(())
+    ) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(conversation_id)
+        .bind(role)
+        .bind(content)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to save message")?;
+        Ok(row.0)
     }
 
     /// Load the most recent messages for a conversation, up to `limit`.
@@ -174,11 +172,14 @@ mod tests {
         let store = test_store().await;
         let cid = store.create_conversation().await.unwrap();
 
-        store.save_message(cid, "user", "hello").await.unwrap();
-        store
+        let msg_id1 = store.save_message(cid, "user", "hello").await.unwrap();
+        let msg_id2 = store
             .save_message(cid, "assistant", "hi there")
             .await
             .unwrap();
+
+        assert_eq!(msg_id1, 1);
+        assert_eq!(msg_id2, 2);
 
         let history = store.load_history(cid, 50).await.unwrap();
         assert_eq!(history.len(), 2);
@@ -233,5 +234,68 @@ mod tests {
         assert_eq!(h1[0].content, "conv1");
         assert_eq!(h2.len(), 1);
         assert_eq!(h2[0].content, "conv2");
+    }
+
+    #[tokio::test]
+    async fn pool_accessor_returns_valid_pool() {
+        let store = test_store().await;
+        let pool = store.pool();
+        let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(pool).await.unwrap();
+        assert_eq!(row.0, 1);
+    }
+
+    #[tokio::test]
+    async fn embeddings_metadata_table_exists() {
+        let store = test_store().await;
+        let result: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings_metadata'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(result.0, 1);
+    }
+
+    #[tokio::test]
+    async fn cascade_delete_removes_embeddings_metadata() {
+        let store = test_store().await;
+        let pool = store.pool();
+
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store.save_message(cid, "user", "test").await.unwrap();
+
+        let point_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(msg_id)
+        .bind(&point_id)
+        .bind(768_i64)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let before: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
+                .bind(msg_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(before.0, 1);
+
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(msg_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let after: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
+                .bind(msg_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(after.0, 0);
     }
 }

@@ -8,9 +8,12 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+qdrant-client = { workspace = true, features = ["serde"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 
 [lints]

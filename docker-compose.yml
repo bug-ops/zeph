@@ -9,10 +9,26 @@ services:
       - gpu
       - cpu
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+    profiles:
+      - gpu
+      - cpu
+
   zeph:
     build: .
     depends_on:
       ollama:
+        condition: service_started
+        required: false
+      qdrant:
         condition: service_started
         required: false
     environment:
@@ -21,6 +37,7 @@ services:
       ZEPH_LLM_MODEL: ${ZEPH_LLM_MODEL:-mistral:7b}
       ZEPH_LLM_EMBEDDING_MODEL: ${ZEPH_LLM_EMBEDDING_MODEL:-qwen3-embedding}
       ZEPH_SQLITE_PATH: /app/data/zeph.db
+      ZEPH_QDRANT_URL: http://qdrant:6334
     volumes:
       - zeph_data:/app/data
     stdin_open: true
@@ -28,4 +45,5 @@ services:
 
 volumes:
   ollama_models:
+  qdrant_data:
   zeph_data:
