@@ -9,6 +9,9 @@ all-features = true
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
+# rustls-pemfile unmaintained (via qdrant-client -> tonic)
+# Cannot fix directly, monitoring upstream
+ignore = ["RUSTSEC-2025-0134"]
 
 [licenses]
 confidence-threshold = 0.93
@@ -38,6 +41,12 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
+
+# Allow thiserror 1.x/2.x duplicate until qdrant-client updates to 2.x
+skip = [
+    { name = "thiserror", version = "=1.0.69" },
+    { name = "thiserror-impl", version = "=1.0.69" },
+]
 
 [sources]
 unknown-registry = "warn"
