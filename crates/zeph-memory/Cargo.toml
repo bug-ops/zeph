@@ -16,5 +16,9 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 
+[dev-dependencies]
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

@@ -290,46 +290,4 @@ mod tests {
 
         assert!(result.is_err());
     }
-
-    #[tokio::test]
-    #[ignore = "requires running Qdrant instance"]
-    async fn integration_qdrant_ensure_collection() {
-        let (_sqlite, pool) = setup().await;
-        let qdrant = QdrantStore::new("http://localhost:6334", pool).unwrap();
-        qdrant.ensure_collection(768).await.unwrap();
-        qdrant.ensure_collection(768).await.unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "requires running Qdrant instance"]
-    async fn integration_qdrant_store_and_search() {
-        let (sqlite, pool) = setup().await;
-        let cid = sqlite.create_conversation().await.unwrap();
-        let msg_id = sqlite
-            .save_message(cid, "user", "hello world")
-            .await
-            .unwrap();
-
-        let qdrant = QdrantStore::new("http://localhost:6334", pool).unwrap();
-        qdrant.ensure_collection(4).await.unwrap();
-
-        let vector = vec![0.1, 0.2, 0.3, 0.4];
-        let point_id = qdrant
-            .store(
-                msg_id,
-                cid,
-                "user",
-                vector.clone(),
-                false,
-                "qwen3-embedding",
-            )
-            .await
-            .unwrap();
-        assert!(!point_id.is_empty());
-        assert!(qdrant.has_embedding(msg_id).await.unwrap());
-
-        let results = qdrant.search(&vector, 10, None).await.unwrap();
-        assert!(!results.is_empty());
-        assert_eq!(results[0].message_id, msg_id);
-    }
 }
