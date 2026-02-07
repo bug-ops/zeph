@@ -3564,7 +3564,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -3582,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "teloxide",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "eventsource-stream",
@@ -3625,7 +3625,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "sqlx",
@@ -3636,7 +3636,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -3645,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",

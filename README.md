@@ -71,6 +71,13 @@ paths = ["./skills"]
 [memory]
 sqlite_path = "./data/zeph.db"
 history_limit = 50
+
+[tools]
+enabled = true
+
+[tools.shell]
+timeout = 30
+blocked_commands = []  # Additional patterns beyond defaults
 ```
 
 ### Environment variables
@@ -83,6 +90,10 @@ history_limit = 50
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
 | `ZEPH_SQLITE_PATH` | SQLite database path |
+| `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
+
+> [!IMPORTANT]
+> Shell commands are filtered for safety. Dangerous commands (`rm -rf /`, `sudo`, `mkfs`, `dd`, `curl`, `wget`, `nc`, `shutdown`) are blocked by default. Add custom patterns via `tools.shell.blocked_commands` in config.
 
 ## Skills
 

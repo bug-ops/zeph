@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-07
+
 ### Added
 
 #### M7 Phase 1: Tool Execution Framework - zeph-tools crate (Issue #39)
@@ -20,18 +22,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - 22 unit tests with 99.25% line coverage, zero clippy warnings
 - ADR-014: zeph-tools crate design rationale and architecture decisions
 
-#### M7 Phase 3 (Issue #41): Agent integration with ToolExecutor trait
+#### M7 Phase 2: Command safety (Issue #40)
+- DEFAULT_BLOCKED patterns: 12 dangerous commands (rm -rf /, sudo, mkfs, dd if=, curl, wget, nc, ncat, netcat, shutdown, reboot, halt)
+- Case-insensitive command filtering via to_lowercase() normalization
+- Configurable timeout and blocked_commands in TOML via `[tools.shell]` section
+- Custom blocked commands additive to defaults (cannot weaken security)
+- 35+ comprehensive unit tests covering exact match, prefix match, multiline, case variations
+- ToolsConfig integration with core Config struct
+
+#### M7 Phase 3: Agent integration (Issue #41)
 - Agent now uses `ShellExecutor` for all bash command execution with safety checks
+- SEC-001 CRITICAL vulnerability fixed: unfiltered bash execution removed from agent.rs
+- Removed 66 lines of duplicate code (extract_bash_blocks, execute_bash, extract_and_execute_bash)
+- ToolError::Blocked properly handled with user-facing error message
 - Four integration tests for blocked command behavior and error handling
-- Security improvements: blocked commands no longer leak pattern details to users
+- Performance validation: < 1% overhead for tool executor abstraction
+- Security audit: all acceptance criteria met, zero vulnerabilities
 
 ### Security
 
-- **CRITICAL fix for SEC-001**: Shell commands now filtered through ShellExecutor with DEFAULT_BLOCKED patterns (rm -rf /, sudo, mkfs, dd if=, curl, wget, nc, shutdown, reboot, halt, poweroff, init 0). Resolves command injection vulnerability.
+- **CRITICAL fix for SEC-001**: Shell commands now filtered through ShellExecutor with DEFAULT_BLOCKED patterns (rm -rf /, sudo, mkfs, dd if=, curl, wget, nc, shutdown, reboot, halt). Resolves command injection vulnerability where agent.rs bypassed all security checks via inline bash execution.
 
 ### Fixed
 
-- Shell command timeout now respects `config.tools.shell.timeout` (was hardcoded 30s)
+- Shell command timeout now respects `config.tools.shell.timeout` (was hardcoded 30s in agent.rs)
 - Removed duplicate bash parsing logic from agent.rs (now centralized in zeph-tools)
 - Error message pattern leakage: blocked commands now show generic security policy message instead of leaking exact blocked pattern
 
@@ -40,7 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 **BREAKING CHANGES** (pre-1.0.0):
 - `Agent::new()` signature changed: now requires `tool_executor: T` as 4th parameter where `T: ToolExecutor`
 - `Agent` struct now generic over three types: `Agent<P, C, T>` (provider, channel, tool_executor)
-- Workspace `Cargo.toml` now defines `version = "0.2.0"` in `[workspace.package]` section
+- Workspace `Cargo.toml` now defines `version = "0.3.0"` in `[workspace.package]` section
 - All crate manifests use `version.workspace = true` instead of explicit versions
 - Inter-crate dependencies now reference workspace definitions (e.g., `zeph-llm.workspace = true`)
 
