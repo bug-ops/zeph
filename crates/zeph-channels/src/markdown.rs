@@ -208,10 +208,11 @@ mod tests {
     fn test_code_block_escaping() {
         let input = "```bash\nfind ~/Documents -type f \\( -iname \"*.jpg\" \\)\n```";
         let output = markdown_to_telegram(input);
-        // Inside code blocks, only ` and \ are escaped
-        assert!(output.contains("```bash"));
+        // Inside code blocks, only backtick and backslash are escaped
+        // Language specifier is removed for Telegram compatibility
+        assert!(output.starts_with("```\n"));
         assert!(output.contains("find ~/Documents -type f \\\\( -iname"));
-        assert!(output.contains("```"));
+        assert!(output.ends_with("\n```"));
     }
 
     #[test]

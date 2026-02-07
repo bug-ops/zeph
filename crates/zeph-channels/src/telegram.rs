@@ -356,12 +356,13 @@ mod tests {
     }
 
     #[test]
-    fn should_send_update_size_threshold() {
+    fn should_send_update_time_threshold() {
         let token = "test_token".to_string();
         let allowed_users = Vec::new();
         let mut channel = TelegramChannel::new(token, allowed_users);
-        channel.accumulated = "a".repeat(512);
-        channel.last_edit = Some(Instant::now());
+        channel.accumulated = "test".to_string();
+        // Set last_edit to 11 seconds ago (threshold is 10 seconds)
+        channel.last_edit = Some(Instant::now() - Duration::from_secs(11));
         assert!(channel.should_send_update());
     }
 
