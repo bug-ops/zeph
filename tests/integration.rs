@@ -6,6 +6,7 @@ use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage};
 use zeph_core::config::Config;
 use zeph_llm::provider::{LlmProvider, Message};
+use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
@@ -13,6 +14,7 @@ use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 // -- Mock LLM Provider --
 
+#[derive(Clone)]
 struct MockProvider {
     response: String,
 }
@@ -274,10 +276,18 @@ async fn agent_with_memory() {
     let channel = MockChannel::new(vec!["save this"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let store = SqliteStore::new(":memory:").await.unwrap();
-    let cid = store.create_conversation().await.unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",  // Will fail gracefully, qdrant=None
+        provider.clone(),
+        "test-model",
+    )
+    .await
+    .unwrap();
 
-    let mut agent = Agent::new(provider, channel, "", executor).with_memory(store, cid, 50);
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let mut agent = Agent::new(provider, channel, "", executor).with_memory(memory, cid, 50, 5);
     agent.run().await.unwrap();
 }
 
