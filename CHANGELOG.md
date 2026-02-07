@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AnyProvider` delegates embedding methods to active provider
 - 10 new tests: unit tests for all providers, config tests for defaults/parsing/env override
 - Integration test for real Ollama embedding generation (ignored by default)
+- README documentation: model compatibility notes and `ollama pull` instructions for both LLM and embedding models
+- Docker Compose configuration: added `ZEPH_LLM_EMBEDDING_MODEL` environment variable
 
 ### Changed
 - `OllamaProvider::new()` now accepts `embedding_model` parameter (breaking change, pre-v1.0)

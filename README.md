@@ -52,6 +52,14 @@ ZEPH_TELEGRAM_TOKEN="123:ABC" ./target/release/zeph
 
 Zeph loads `config/default.toml` at startup and applies environment variable overrides.
 
+> [!NOTE]
+> When using Ollama, ensure both the LLM model and embedding model are pulled:
+> ```bash
+> ollama pull mistral:7b
+> ollama pull qwen3-embedding
+> ```
+> The default configuration uses `mistral:7b` for text generation and `qwen3-embedding` for vector embeddings. These models are independent and work together seamlessly.
+
 ```toml
 [agent]
 name = "Zeph"
@@ -127,6 +135,8 @@ All loaded skills are injected into the system prompt.
 ### Apple Silicon (Ollama on host with Metal GPU)
 
 ```bash
+ollama pull mistral:7b
+ollama pull qwen3-embedding
 ollama serve &
 ZEPH_LLM_BASE_URL=http://host.docker.internal:11434 docker compose up
 ```
