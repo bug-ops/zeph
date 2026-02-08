@@ -3,7 +3,9 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main)](https://github.com/bug-ops/zeph/actions)
 [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
 [![Security](https://img.shields.io/badge/security-hardened-brightgreen)](SECURITY.md)
+[![Trivy Scan](https://img.shields.io/badge/Trivy-0%20CVEs-success)](https://github.com/bug-ops/zeph/security)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, semantic memory with Qdrant, and multi-channel I/O. **Cross-platform**: Linux, macOS, Windows (x86_64 + ARM64).
@@ -44,10 +46,10 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.4.1
+docker pull ghcr.io/bug-ops/zeph:v0.4.2
 ```
 
-**Security:** Images are scanned with [Trivy](https://trivy.dev/) and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
+**Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
 
 ## Usage
 
@@ -291,7 +293,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.1 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.2 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -308,46 +310,80 @@ ZEPH_IMAGE=zeph:local docker compose up --build
 
 ## Security
 
-Zeph implements multiple security layers to ensure safe operation in production environments.
+Zeph implements defense-in-depth security for safe AI agent operations in production environments.
 
 ### Shell Command Filtering
 
 > [!WARNING]
-> Shell commands from LLM responses are filtered through a security layer before execution.
+> All shell commands from LLM responses pass through a security filter before execution. Commands matching blocked patterns are rejected with detailed error messages.
 
 **12 blocked patterns by default:**
-- `rm -rf /` — filesystem destruction
-- `sudo` — privilege escalation
-- `mkfs` — filesystem formatting
-- `dd if=` — low-level disk operations
-- `curl`, `wget` — arbitrary code download
-- `nc`, `ncat`, `netcat` — reverse shells
-- `shutdown`, `reboot`, `halt` — system control
 
-**Custom patterns:** Add project-specific blocked commands via `tools.shell.blocked_commands` in config. Custom patterns are additive to defaults (cannot weaken security).
+| Pattern | Risk Category | Examples |
+|---------|---------------|----------|
+| `rm -rf /`, `rm -rf /*` | Filesystem destruction | Prevents accidental system wipe |
+| `sudo`, `su` | Privilege escalation | Blocks unauthorized root access |
+| `mkfs`, `fdisk` | Filesystem operations | Prevents disk formatting |
+| `dd if=`, `dd of=` | Low-level disk I/O | Blocks dangerous write operations |
+| `curl \| bash`, `wget \| sh` | Arbitrary code execution | Prevents remote code injection |
+| `nc`, `ncat`, `netcat` | Network backdoors | Blocks reverse shell attempts |
+| `shutdown`, `reboot`, `halt` | System control | Prevents service disruption |
 
-**Case-insensitive matching:** `SUDO`, `Sudo`, `sudo` all blocked.
+**Configuration:**
+```toml
+[tools.shell]
+timeout = 30  # Command execution timeout
+blocked_commands = ["custom_pattern"]  # Additional patterns (additive to defaults)
+```
+
+> [!IMPORTANT]
+> Custom patterns are **additive** — you cannot weaken default security. Matching is case-insensitive (`SUDO`, `Sudo`, `sudo` all blocked).
+
+**Safe execution model:**
+- Commands parsed for blocked patterns before execution
+- Timeout enforcement (default: 30s, configurable)
+- Sandboxed execution with restricted environment
+- Full errors logged to system, sanitized messages shown to users
 
 ### Container Security
 
-Docker images are hardened for production use:
+Docker images follow security best practices:
 
-- **Base image:** Oracle Linux 9 Slim (security-first distribution)
-- **Vulnerability scanning:** Every release scanned with [Trivy](https://trivy.dev/)
-- **Zero vulnerabilities:** **0 HIGH/CRITICAL CVEs** in latest release
-- **Non-root user:** Runs as dedicated `zeph` user (UID 1000)
-- **Minimal attack surface:** Only required packages installed
+| Security Layer | Implementation | Status |
+|----------------|----------------|--------|
+| **Base image** | Oracle Linux 9 Slim | Production-hardened |
+| **Vulnerability scanning** | Trivy in CI/CD | **0 HIGH/CRITICAL CVEs** |
+| **User privileges** | Non-root `zeph` user (UID 1000) | ✅ Enforced |
+| **Attack surface** | Minimal package installation | Distroless-style |
+| **Image signing** | Coming soon (issue #TBD) | 🚧 Planned |
 
-### Secure by Default
+**Continuous security:**
+- Every release scanned with [Trivy](https://trivy.dev/) before publishing
+- Automated Dependabot PRs for dependency updates
+- `cargo-deny` checks in CI for license/vulnerability compliance
 
-- **Timeout protection:** Shell commands limited to 30s (configurable)
-- **Error sanitization:** Full errors logged, generic messages shown to users
-- **No `unsafe` code:** Project policy denies unsafe Rust blocks
-- **Secrets management:** API keys via environment variables (vault integration planned, see [#70](https://github.com/bug-ops/zeph/issues/70))
+### Code Security
+
+Rust-native memory safety guarantees:
+
+- **Zero `unsafe` blocks:** Project policy enforces `#![forbid(unsafe_code)]`
+- **No panic in production:** `unwrap()` and `expect()` linted via clippy
+- **Secure dependencies:** All crates audited with `cargo-deny`
+- **MSRV policy:** Rust 1.88+ (Edition 2024) for latest security patches
+
+### Secrets Management
+
+> [!CAUTION]
+> API keys and tokens must be passed via environment variables. Never commit secrets to version control.
+
+**Current:** Environment variables (`ZEPH_CLAUDE_API_KEY`, `ZEPH_TELEGRAM_TOKEN`)
+**Planned:** Vault integration for centralized secret rotation (see [#70](https://github.com/bug-ops/zeph/issues/70))
 
 ### Reporting Security Issues
 
-See [SECURITY.md](SECURITY.md) for vulnerability disclosure process.
+Found a vulnerability? See [SECURITY.md](SECURITY.md) for responsible disclosure process.
+
+**Security contact:** Submit via GitHub Security Advisories (confidential)
 
 ## Architecture
 
