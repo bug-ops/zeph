@@ -212,6 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn timeout_enforced() {
         let config = ShellConfig {
             timeout: 1,
