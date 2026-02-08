@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
@@ -35,13 +35,13 @@ toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = "1.20"
-zeph-a2a = { path = "crates/zeph-a2a", version = "0.5.0" }
-zeph-channels = { path = "crates/zeph-channels", version = "0.5.0" }
-zeph-core = { path = "crates/zeph-core", version = "0.5.0" }
-zeph-llm = { path = "crates/zeph-llm", version = "0.5.0" }
-zeph-memory = { path = "crates/zeph-memory", version = "0.5.0" }
-zeph-skills = { path = "crates/zeph-skills", version = "0.5.0" }
-zeph-tools = { path = "crates/zeph-tools", version = "0.5.0" }
+zeph-a2a = { path = "crates/zeph-a2a", version = "0.6.0" }
+zeph-channels = { path = "crates/zeph-channels", version = "0.6.0" }
+zeph-core = { path = "crates/zeph-core", version = "0.6.0" }
+zeph-llm = { path = "crates/zeph-llm", version = "0.6.0" }
+zeph-memory = { path = "crates/zeph-memory", version = "0.6.0" }
+zeph-skills = { path = "crates/zeph-skills", version = "0.6.0" }
+zeph-tools = { path = "crates/zeph-tools", version = "0.6.0" }
 
 [workspace.lints.clippy]
 all = "warn"

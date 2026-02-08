@@ -8,7 +8,7 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, semantic memory with Qdrant, and multi-channel I/O. **Cross-platform**: Linux, macOS, Windows (x86_64 + ARM64).
+Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, semantic memory with Qdrant, A2A protocol support, and multi-channel I/O. **Cross-platform**: Linux, macOS, Windows (x86_64 + ARM64).
 
 ## Installation
 
@@ -45,7 +45,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.5.0
+docker pull ghcr.io/bug-ops/zeph:v0.6.0
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -261,7 +261,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.5.0`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.6.0`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -304,7 +304,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.5.0 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.6.0 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -408,6 +408,18 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for responsible disclosure
 
 **Security contact:** Submit via GitHub Security Advisories (confidential)
 
+## Feature Flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `a2a` | Enabled | [A2A protocol](https://github.com/a2aproject/A2A) client for agent-to-agent communication |
+
+Disable optional features for a smaller binary:
+
+```bash
+cargo build --release --no-default-features
+```
+
 ## Architecture
 
 <details>
@@ -420,7 +432,8 @@ zeph (binary)
 ├── zeph-skills     SKILL.md parser, registry, embedding matcher, hot-reload watcher
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
-└── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
+├── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
+└── zeph-a2a        A2A protocol client, agent discovery, JSON-RPC 2.0 (optional)
 ```
 
 </details>

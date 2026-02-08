@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-08
+
 ### Added
 - New `zeph-a2a` crate: A2A protocol implementation for agent-to-agent communication (Issue #78)
 - A2A protocol types: `Task`, `TaskState`, `TaskStatus`, `Message`, `Part`, `Artifact`, `AgentCard`, `AgentSkill`, `AgentCapabilities` with full serde camelCase serialization (Issue #79)
@@ -16,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bearer token authentication support for all A2A client operations (Issue #81)
 - SSE streaming via `eventsource-stream` with `TaskEvent` enum (`StatusUpdate`, `ArtifactUpdate`) (Issue #81)
 - `A2aError` enum with variants for HTTP, JSON, JSON-RPC, discovery, and stream errors (Issue #79)
+- Optional `a2a` feature flag (enabled by default) to gate A2A functionality
 - 42 new unit tests for protocol types, JSON-RPC envelopes, agent card builder, discovery registry, and client operations
 
 ## [0.5.0] - 2026-02-08
