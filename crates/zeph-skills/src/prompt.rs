@@ -1,9 +1,10 @@
+use std::borrow::Borrow;
 use std::fmt::Write;
 
 use crate::loader::Skill;
 
 #[must_use]
-pub fn format_skills_prompt(skills: &[Skill]) -> String {
+pub fn format_skills_prompt<S: Borrow<Skill>>(skills: &[S]) -> String {
     if skills.is_empty() {
         return String::new();
     }
@@ -11,6 +12,7 @@ pub fn format_skills_prompt(skills: &[Skill]) -> String {
     let mut out = String::from("<available_skills>\n");
 
     for skill in skills {
+        let skill = skill.borrow();
         let _ = write!(
             out,
             "  <skill name=\"{}\">\n    <description>{}</description>\n    <instructions>\n{}\n    </instructions>\n  </skill>\n",
@@ -28,7 +30,8 @@ mod tests {
 
     #[test]
     fn empty_skills_returns_empty_string() {
-        assert_eq!(format_skills_prompt(&[]), "");
+        let empty: &[Skill] = &[];
+        assert_eq!(format_skills_prompt(empty), "");
     }
 
     #[test]

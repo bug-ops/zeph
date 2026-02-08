@@ -21,6 +21,8 @@ max_tokens = 4096
 [skills]
 # Directories to scan for SKILL.md files
 paths = ["./skills"]
+# Maximum number of skills to inject into context per query (embedding-based selection)
+max_active_skills = 5
 
 [memory]
 # SQLite database path for conversation history

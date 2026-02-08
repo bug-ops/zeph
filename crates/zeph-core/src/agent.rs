@@ -1,8 +1,15 @@
-use tokio::sync::watch;
+use std::path::PathBuf;
+
+use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::role_str;
+use zeph_skills::loader::Skill;
+use zeph_skills::matcher::SkillMatcher;
+use zeph_skills::prompt::format_skills_prompt;
+use zeph_skills::registry::SkillRegistry;
+use zeph_skills::watcher::SkillEvent;
 use zeph_tools::executor::{ToolError, ToolExecutor};
 
 use crate::channel::Channel;
@@ -11,11 +18,16 @@ use crate::context::build_system_prompt;
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
 
-pub struct Agent<P: LlmProvider, C: Channel, T: ToolExecutor> {
+pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
     provider: P,
     channel: C,
     tool_executor: T,
     messages: Vec<Message>,
+    skills: Vec<Skill>,
+    skill_paths: Vec<PathBuf>,
+    matcher: Option<SkillMatcher>,
+    max_active_skills: usize,
+    skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     memory: Option<SemanticMemory<P>>,
     conversation_id: Option<i64>,
     history_limit: u32,
@@ -24,10 +36,18 @@ pub struct Agent<P: LlmProvider, C: Channel, T: ToolExecutor> {
     shutdown: watch::Receiver<bool>,
 }
 
-impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     #[must_use]
-    pub fn new(provider: P, channel: C, skills_prompt: &str, tool_executor: T) -> Self {
-        let system_prompt = build_system_prompt(skills_prompt);
+    pub fn new(
+        provider: P,
+        channel: C,
+        skills: Vec<Skill>,
+        matcher: Option<SkillMatcher>,
+        max_active_skills: usize,
+        tool_executor: T,
+    ) -> Self {
+        let skills_prompt = format_skills_prompt(&skills);
+        let system_prompt = build_system_prompt(&skills_prompt);
         let (_tx, rx) = watch::channel(false);
         Self {
             provider,
@@ -37,6 +57,11 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
                 role: Role::System,
                 content: system_prompt,
             }],
+            skills,
+            skill_paths: Vec::new(),
+            matcher,
+            max_active_skills,
+            skill_reload_rx: None,
             memory: None,
             conversation_id: None,
             history_limit: 50,
@@ -66,6 +91,17 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
         self.shutdown = rx;
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_reload(
+        mut self,
+        paths: Vec<PathBuf>,
+        rx: mpsc::Receiver<SkillEvent>,
+    ) -> Self {
+        self.skill_paths = paths;
+        self.skill_reload_rx = Some(rx);
         self
     }
 
@@ -118,11 +154,22 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
                     tracing::info!("shutting down");
                     break;
                 }
+                Some(_) = recv_skill_event(&mut self.skill_reload_rx) => {
+                    self.reload_skills().await;
+                    continue;
+                }
             };
 
             let Some(incoming) = incoming else {
                 break;
             };
+
+            if incoming.text.trim() == "/skills" {
+                self.handle_skills_command().await?;
+                continue;
+            }
+
+            self.rebuild_system_prompt(&incoming.text).await;
 
             self.messages.push(Message {
                 role: Role::User,
@@ -140,6 +187,87 @@ impl<P: LlmProvider, C: Channel, T: ToolExecutor> Agent<P, C, T> {
         }
 
         Ok(())
+    }
+
+    async fn handle_skills_command(&mut self) -> anyhow::Result<()> {
+        use std::fmt::Write;
+
+        let mut output = String::from("Available skills:\n\n");
+
+        for skill in &self.skills {
+            let _ = writeln!(output, "- {} — {}", skill.name, skill.description);
+        }
+
+        if let Some(memory) = &self.memory {
+            match memory.sqlite().load_skill_usage().await {
+                Ok(usage) if !usage.is_empty() => {
+                    output.push_str("\nUsage statistics:\n\n");
+                    for row in &usage {
+                        let _ = writeln!(
+                            output,
+                            "- {}: {} invocations (last: {})",
+                            row.skill_name, row.invocation_count, row.last_used_at,
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("failed to load skill usage: {e:#}"),
+            }
+        }
+
+        self.channel.send(&output).await
+    }
+
+    async fn reload_skills(&mut self) {
+        let registry = SkillRegistry::load(&self.skill_paths);
+        self.skills = registry.into_skills();
+
+        let provider = self.provider.clone();
+        self.matcher = SkillMatcher::new(&self.skills, |text| {
+            let owned = text.to_owned();
+            let p = provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        })
+        .await;
+
+        let skills_prompt = format_skills_prompt(&self.skills);
+        let system_prompt = build_system_prompt(&skills_prompt);
+        if let Some(msg) = self.messages.first_mut() {
+            msg.content = system_prompt;
+        }
+
+        tracing::info!("reloaded {} skill(s)", self.skills.len());
+    }
+
+    async fn rebuild_system_prompt(&mut self, query: &str) {
+        let active_skills: Vec<&Skill> = if let Some(matcher) = &self.matcher {
+            let provider = self.provider.clone();
+            matcher
+                .match_skills(&self.skills, query, self.max_active_skills, |text| {
+                    let owned = text.to_owned();
+                    let p = provider.clone();
+                    Box::pin(async move { p.embed(&owned).await })
+                })
+                .await
+        } else {
+            self.skills.iter().collect()
+        };
+
+        if !active_skills.is_empty()
+            && let Some(memory) = &self.memory
+        {
+            let names: Vec<&str> = active_skills.iter().map(|s| s.name.as_str()).collect();
+            if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
+                tracing::warn!("failed to record skill usage: {e:#}");
+            }
+        }
+
+        let skills_prompt = format_skills_prompt(&active_skills);
+        let system_prompt = build_system_prompt(&skills_prompt);
+
+        if let Some(msg) = self.messages.first_mut() {
+            msg.content = system_prompt;
+        }
     }
 
     async fn process_response(&mut self) -> anyhow::Result<()> {
@@ -273,5 +401,12 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
         if rx.changed().await.is_err() {
             std::future::pending::<()>().await;
         }
+    }
+}
+
+async fn recv_skill_event(rx: &mut Option<mpsc::Receiver<SkillEvent>>) -> Option<SkillEvent> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }

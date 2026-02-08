@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Embedding-based skill matcher: `SkillMatcher` with cosine similarity selects top-K relevant skills per query instead of injecting all skills into the system prompt (Issue #75)
+- `max_active_skills` config field (default: 5) with `ZEPH_SKILLS_MAX_ACTIVE` env var override
+- Skill hot-reload: filesystem watcher via `notify-debouncer-mini` detects SKILL.md changes and re-embeds without restart (Issue #76)
+- Skill priority: earlier paths in `skills.paths` take precedence when skills share the same name (Issue #76)
+- `SkillRegistry::reload()` and `SkillRegistry::into_skills()` methods
+- SQLite `skill_usage` table tracking per-skill invocation counts and last-used timestamps (Issue #77)
+- `/skills` command displaying available skills with usage statistics
+- Three new bundled skills: `git`, `docker`, `api-request` (Issue #77)
+- 17 new unit tests for matcher, registry priority, reload, and usage tracking
+
+### Changed
+- `Agent::new()` signature: accepts `Vec<Skill>`, `Option<SkillMatcher>`, `max_active_skills` instead of pre-formatted skills prompt string
+- `format_skills_prompt` now generic over `Borrow<Skill>` to accept both `&[Skill]` and `&[&Skill]`
+- `Skill` struct derives `Clone`
+- `Agent` generic constraint: `P: LlmProvider + Clone + 'static` (required for embed_fn closures)
+- System prompt rebuilt dynamically per user query with only matched skills
+
+### Dependencies
+- Added `notify` 8.0, `notify-debouncer-mini` 0.6
+- `zeph-core` now depends on `zeph-skills`
+- `zeph-skills` now depends on `tokio` (sync, rt) and `notify`
+
 ## [0.4.3] - 2026-02-08
 
 ### Fixed

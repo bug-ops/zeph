@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Skill {
     pub name: String,
     pub description: String,

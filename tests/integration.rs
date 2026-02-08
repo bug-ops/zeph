@@ -246,7 +246,7 @@ async fn agent_roundtrip_mock() {
     let channel = MockChannel::new(vec!["hello"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, "", executor);
+    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -261,7 +261,7 @@ async fn agent_multiple_messages() {
     let channel = MockChannel::new(vec!["first", "second", "third"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, "", executor);
+    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -287,8 +287,8 @@ async fn agent_with_memory() {
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let mut agent =
-        Agent::new(provider, channel, "", executor).with_memory(memory, cid, 50, 5, 100);
+    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor)
+        .with_memory(memory, cid, 50, 5, 100);
     agent.run().await.unwrap();
 }
 
@@ -301,7 +301,7 @@ async fn agent_shutdown_via_watch() {
 
     let (tx, rx) = tokio::sync::watch::channel(false);
 
-    let mut agent = Agent::new(provider, channel, "", executor).with_shutdown(rx);
+    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor).with_shutdown(rx);
 
     let _ = tx.send(true);
 

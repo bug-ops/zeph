@@ -9,9 +9,11 @@ use zeph_core::config::Config;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
+use zeph_llm::provider::LlmProvider;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_skills::prompt::format_skills_prompt;
+use zeph_skills::matcher::SkillMatcher;
 use zeph_skills::registry::SkillRegistry;
+use zeph_skills::watcher::SkillWatcher;
 use zeph_tools::ShellExecutor;
 
 /// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
@@ -70,9 +72,20 @@ async fn main() -> anyhow::Result<()> {
 
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
-    let skills_prompt = format_skills_prompt(registry.all());
+    let skill_count = registry.all().len();
+    let skills = registry.into_skills();
 
-    tracing::info!("loaded {} skill(s)", registry.all().len());
+    let matcher = SkillMatcher::new(&skills, |text| {
+        let owned = text.to_owned();
+        let p = provider.clone();
+        Box::pin(async move { p.embed(&owned).await })
+    })
+    .await;
+    if matcher.is_some() {
+        tracing::info!("skill matcher initialized with embeddings for {skill_count} skill(s)");
+    } else {
+        tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
+    }
 
     let channel = create_channel(&config)?;
 
@@ -112,15 +125,35 @@ async fn main() -> anyhow::Result<()> {
 
     let shell_executor = ShellExecutor::new(&config.tools.shell);
 
-    let mut agent = Agent::new(provider, channel, &skills_prompt, shell_executor)
-        .with_memory(
-            memory,
-            conversation_id,
-            config.memory.history_limit,
-            config.memory.semantic.recall_limit,
-            config.memory.summarization_threshold,
-        )
-        .with_shutdown(shutdown_rx);
+    let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(4);
+    let _watcher = match SkillWatcher::start(&skill_paths, reload_tx) {
+        Ok(w) => {
+            tracing::info!("skill watcher started");
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!("skill watcher unavailable: {e:#}");
+            None
+        }
+    };
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        skills,
+        matcher,
+        config.skills.max_active_skills,
+        shell_executor,
+    )
+    .with_skill_reload(skill_paths, reload_rx)
+    .with_memory(
+        memory,
+        conversation_id,
+        config.memory.history_limit,
+        config.memory.semantic.recall_limit,
+        config.memory.summarization_threshold,
+    )
+    .with_shutdown(shutdown_rx);
     agent.load_history().await?;
     agent.run().await
 }

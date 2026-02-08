@@ -8,10 +8,14 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+notify.workspace = true
+notify-debouncer-mini.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

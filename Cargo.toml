@@ -15,6 +15,8 @@ anyhow = "1.0"
 criterion = "0.8"
 eventsource-stream = "0.2"
 futures-core = "0.3"
+notify = "8"
+notify-debouncer-mini = "0.7"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 pulldown-cmark = "0.13"
 qdrant-client = { version = "1.16", default-features = false }

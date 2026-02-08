@@ -43,6 +43,12 @@ pub struct CloudLlmConfig {
 #[derive(Debug, Deserialize)]
 pub struct SkillsConfig {
     pub paths: Vec<String>,
+    #[serde(default = "default_max_active_skills")]
+    pub max_active_skills: usize,
+}
+
+fn default_max_active_skills() -> usize {
+    5
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +168,11 @@ impl Config {
         {
             self.memory.context_budget_tokens = tokens;
         }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.skills.max_active_skills = n;
+        }
         if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,
@@ -190,6 +201,7 @@ impl Config {
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
+                max_active_skills: default_max_active_skills(),
             },
             memory: MemoryConfig {
                 sqlite_path: "./data/zeph.db".into(),
@@ -213,7 +225,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 11] = [
+    const ENV_KEYS: [&str; 12] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -223,6 +235,7 @@ mod tests {
         "ZEPH_QDRANT_URL",
         "ZEPH_MEMORY_SUMMARIZATION_THRESHOLD",
         "ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS",
+        "ZEPH_SKILLS_MAX_ACTIVE",
         "ZEPH_TELEGRAM_TOKEN",
         "ZEPH_TOOLS_TIMEOUT",
     ];

@@ -289,6 +289,61 @@ impl SqliteStore {
 
         Ok(row.map(|r| r.0))
     }
+
+    /// Record usage of skills (UPSERT: increment count and update timestamp).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn record_skill_usage(&self, skill_names: &[&str]) -> anyhow::Result<()> {
+        for name in skill_names {
+            sqlx::query(
+                "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
+                 VALUES (?, 1, datetime('now')) \
+                 ON CONFLICT(skill_name) DO UPDATE SET \
+                 invocation_count = invocation_count + 1, \
+                 last_used_at = datetime('now')",
+            )
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .context("failed to record skill usage")?;
+        }
+        Ok(())
+    }
+
+    /// Load all skill usage statistics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn load_skill_usage(&self) -> anyhow::Result<Vec<SkillUsageRow>> {
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT skill_name, invocation_count, last_used_at \
+             FROM skill_usage ORDER BY invocation_count DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load skill usage")?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(skill_name, invocation_count, last_used_at)| SkillUsageRow {
+                    skill_name,
+                    invocation_count,
+                    last_used_at,
+                },
+            )
+            .collect())
+    }
+}
+
+#[derive(Debug)]
+pub struct SkillUsageRow {
+    pub skill_name: String,
+    pub invocation_count: i64,
+    pub last_used_at: String,
 }
 
 fn parse_role(s: &str) -> Role {
@@ -698,5 +753,33 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(after.0, 0);
+    }
+
+    #[tokio::test]
+    async fn record_skill_usage_increments() {
+        let store = test_store().await;
+
+        store.record_skill_usage(&["git"]).await.unwrap();
+        store.record_skill_usage(&["git"]).await.unwrap();
+
+        let usage = store.load_skill_usage().await.unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].skill_name, "git");
+        assert_eq!(usage[0].invocation_count, 2);
+    }
+
+    #[tokio::test]
+    async fn load_skill_usage_returns_all() {
+        let store = test_store().await;
+
+        store.record_skill_usage(&["git", "docker"]).await.unwrap();
+        store.record_skill_usage(&["git"]).await.unwrap();
+
+        let usage = store.load_skill_usage().await.unwrap();
+        assert_eq!(usage.len(), 2);
+        assert_eq!(usage[0].skill_name, "git");
+        assert_eq!(usage[0].invocation_count, 2);
+        assert_eq!(usage[1].skill_name, "docker");
+        assert_eq!(usage[1].invocation_count, 1);
     }
 }

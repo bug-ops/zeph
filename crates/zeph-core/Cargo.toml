@@ -15,6 +15,7 @@ toml.workspace = true
 tracing.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
+zeph-skills.workspace = true
 zeph-tools.workspace = true
 
 [dev-dependencies]
