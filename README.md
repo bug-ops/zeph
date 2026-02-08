@@ -45,7 +45,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.6.0
+docker pull ghcr.io/bug-ops/zeph:v0.7.0
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -128,6 +128,14 @@ enabled = true
 [tools.shell]
 timeout = 30
 blocked_commands = []  # Additional patterns beyond defaults
+
+[a2a]
+enabled = false
+host = "0.0.0.0"
+port = 8080
+# public_url = "https://agent.example.com"
+# auth_token = "secret"
+rate_limit = 60
 ```
 
 </details>
@@ -152,6 +160,12 @@ blocked_commands = []  # Additional patterns beyond defaults
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
+| `ZEPH_A2A_ENABLED` | Enable A2A server (default: false) |
+| `ZEPH_A2A_HOST` | A2A server bind address (default: `0.0.0.0`) |
+| `ZEPH_A2A_PORT` | A2A server port (default: `8080`) |
+| `ZEPH_A2A_PUBLIC_URL` | Public URL for agent card discovery |
+| `ZEPH_A2A_AUTH_TOKEN` | Bearer token for A2A server authentication |
+| `ZEPH_A2A_RATE_LIMIT` | Max requests per IP per minute (default: 60) |
 
 </details>
 
@@ -261,7 +275,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.6.0`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.0`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -304,7 +318,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.6.0 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.0 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -408,11 +422,27 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for responsible disclosure
 
 **Security contact:** Submit via GitHub Security Advisories (confidential)
 
+## A2A Server (Optional)
+
+Zeph includes an embedded [A2A protocol](https://github.com/a2aproject/A2A) server for agent-to-agent communication. When enabled, other agents can discover and interact with Zeph via the standard A2A JSON-RPC 2.0 API.
+
+```bash
+ZEPH_A2A_ENABLED=true ZEPH_A2A_AUTH_TOKEN=secret ./target/release/zeph
+```
+
+The server exposes:
+- `/.well-known/agent-card.json` — agent discovery (public, no auth)
+- `/a2a` — JSON-RPC endpoint (`message/send`, `tasks/get`, `tasks/cancel`)
+- `/a2a/stream` — SSE streaming endpoint
+
+> [!TIP]
+> Set `ZEPH_A2A_AUTH_TOKEN` to secure the server with bearer token authentication. The agent card endpoint remains public per A2A spec.
+
 ## Feature Flags
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `a2a` | Enabled | [A2A protocol](https://github.com/a2aproject/A2A) client for agent-to-agent communication |
+| `a2a` | Enabled | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 
 Disable optional features for a smaller binary:
 
@@ -433,7 +463,7 @@ zeph (binary)
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 ├── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
-└── zeph-a2a        A2A protocol client, agent discovery, JSON-RPC 2.0 (optional)
+└── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
 ```
 
 </details>

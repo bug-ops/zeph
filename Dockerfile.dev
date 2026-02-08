@@ -14,6 +14,7 @@ COPY crates/zeph-skills/Cargo.toml crates/zeph-skills/Cargo.toml
 COPY crates/zeph-memory/Cargo.toml crates/zeph-memory/Cargo.toml
 COPY crates/zeph-channels/Cargo.toml crates/zeph-channels/Cargo.toml
 COPY crates/zeph-tools/Cargo.toml crates/zeph-tools/Cargo.toml
+COPY crates/zeph-a2a/Cargo.toml crates/zeph-a2a/Cargo.toml
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
     for d in crates/*/; do mkdir -p "$d/src" && echo '' > "$d/src/lib.rs"; done && \
     cargo build --release 2>/dev/null || true
