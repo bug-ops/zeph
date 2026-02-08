@@ -110,30 +110,6 @@ impl TelegramChannel {
         }
     }
 
-    fn has_unclosed_code_block(text: &str) -> bool {
-        // Check code blocks (```)
-        if !text.matches("```").count().is_multiple_of(2) {
-            return true;
-        }
-
-        // Check bold markers (*)
-        // Count non-escaped * by looking at characters that come after \
-        let mut unescaped_asterisks: usize = 0;
-        let mut chars = text.chars().peekable();
-
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                // Skip next character (it's escaped)
-                chars.next();
-            } else if c == '*' {
-                unescaped_asterisks += 1;
-            }
-        }
-
-        // Odd number of unescaped * means unclosed bold
-        !unescaped_asterisks.is_multiple_of(2)
-    }
-
     fn should_send_update(&self) -> bool {
         match self.last_edit {
             None => true,
@@ -152,13 +128,6 @@ impl TelegramChannel {
             &self.accumulated
         };
 
-        // Don't send if there's an unclosed code block
-        if Self::has_unclosed_code_block(text) {
-            tracing::debug!("skipping update: unclosed code block detected");
-            return Ok(());
-        }
-
-        // Convert markdown to Telegram format
         let formatted_text = markdown_to_telegram(text);
 
         tracing::debug!("formatted_text (full): {}", formatted_text);
@@ -267,7 +236,6 @@ impl Channel for TelegramChannel {
             anyhow::bail!("no active chat to send message to");
         };
 
-        // Convert markdown to Telegram format
         let formatted_text = markdown_to_telegram(text);
 
         if formatted_text.len() <= MAX_MESSAGE_LEN {
@@ -276,10 +244,10 @@ impl Channel for TelegramChannel {
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         } else {
-            for chunk in formatted_text.as_bytes().chunks(MAX_MESSAGE_LEN) {
-                let chunk_str = String::from_utf8_lossy(chunk);
+            let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
+            for chunk in chunks {
                 self.bot
-                    .send_message(chat_id, chunk_str.as_ref())
+                    .send_message(chat_id, chunk)
                     .parse_mode(ParseMode::MarkdownV2)
                     .await?;
             }

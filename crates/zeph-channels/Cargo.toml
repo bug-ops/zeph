@@ -8,10 +8,18 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+pulldown-cmark.workspace = true
 teloxide.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
 zeph-core.workspace = true
+
+[[bench]]
+name = "markdown_performance"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
 
 [lints]
 workspace = true
