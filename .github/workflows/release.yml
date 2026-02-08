@@ -37,6 +37,14 @@ jobs:
             target: aarch64-apple-darwin
             archive: tar.gz
             use_cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            use_cross: true
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -59,20 +67,41 @@ jobs:
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
-      - name: Strip binary
-        if: "!matrix.use_cross"
+      - name: Strip binary (Unix)
+        if: "!matrix.use_cross && runner.os != 'Windows'"
         run: strip target/${{ matrix.target }}/release/zeph
-      - name: Create archive
+      - name: Create archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../zeph-${{ matrix.target }}.tar.gz zeph
           cd ../../..
           shasum -a 256 zeph-${{ matrix.target }}.tar.gz > zeph-${{ matrix.target }}.tar.gz.sha256
+      - name: Create archive (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ -f zeph.exe ]; then
+            7z a ../../../zeph-${{ matrix.target }}.zip zeph.exe
+          else
+            7z a ../../../zeph-${{ matrix.target }}.zip zeph
+          fi
+          cd ../../..
+          if command -v shasum &> /dev/null; then
+            shasum -a 256 zeph-${{ matrix.target }}.zip > zeph-${{ matrix.target }}.zip.sha256
+          else
+            sha256sum zeph-${{ matrix.target }}.zip > zeph-${{ matrix.target }}.zip.sha256
+          fi
       - name: Upload archive
         uses: actions/upload-artifact@v6
         with:
           name: binary-${{ matrix.target }}
-          path: zeph-${{ matrix.target }}.*
+          path: |
+            zeph-${{ matrix.target }}.tar.gz
+            zeph-${{ matrix.target }}.tar.gz.sha256
+            zeph-${{ matrix.target }}.zip
+            zeph-${{ matrix.target }}.zip.sha256
           retention-days: 3
 
   create-release:
@@ -99,6 +128,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
+            artifacts/**/*.zip
             artifacts/**/*.sha256
 
   docker-publish:
