@@ -4235,6 +4235,7 @@ checksum = "ee48d38b119b0cd71fe4141b30f5ba9c7c5d9f4e7a3a8b4a674e4b6ef789976f"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
@@ -4883,6 +4884,22 @@ dependencies = [
  "zeph-memory",
  "zeph-skills",
  "zeph-tools",
+]
+
+[[package]]
+name = "zeph-a2a"
+version = "0.5.0"
+dependencies = [
+ "eventsource-stream",
+ "futures-core",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
