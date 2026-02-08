@@ -55,11 +55,16 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["a2a"]
+a2a = ["dep:zeph-a2a"]
+
 [dependencies]
 anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeph-a2a = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true

@@ -4878,6 +4878,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "zeph-a2a",
  "zeph-channels",
  "zeph-core",
  "zeph-llm",
