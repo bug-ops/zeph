@@ -1,0 +1,38 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=DEBUG
+
+  zeph:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    depends_on:
+      - qdrant
+    environment:
+      RUST_LOG: "zeph=debug,zeph_core=debug,zeph_llm=debug,zeph_channels=trace,zeph_memory=debug,zeph_tools=debug"
+      RUST_BACKTRACE: "1"
+      ZEPH_LLM_PROVIDER: ${ZEPH_LLM_PROVIDER:-ollama}
+      ZEPH_LLM_BASE_URL: ${ZEPH_LLM_BASE_URL:-http://host.docker.internal:11434}
+      ZEPH_LLM_MODEL: ${ZEPH_LLM_MODEL:-mistral:7b}
+      ZEPH_LLM_EMBEDDING_MODEL: ${ZEPH_LLM_EMBEDDING_MODEL:-qwen3-embedding}
+      ZEPH_CLAUDE_API_KEY: ${ZEPH_CLAUDE_API_KEY:-}
+      ZEPH_TELEGRAM_TOKEN: ${ZEPH_TELEGRAM_TOKEN:-}
+      ZEPH_SQLITE_PATH: /app/data/zeph.db
+      ZEPH_QDRANT_URL: http://qdrant:6334
+      ZEPH_MEMORY_SEMANTIC_ENABLED: ${ZEPH_MEMORY_SEMANTIC_ENABLED:-true}
+      ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT: ${ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT:-5}
+    volumes:
+      - zeph_data:/app/data
+    stdin_open: true
+    tty: true
+
+volumes:
+  qdrant_data:
+  zeph_data:

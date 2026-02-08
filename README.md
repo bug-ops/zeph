@@ -298,11 +298,23 @@ ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.2 docker compose up
 docker compose pull && docker compose up
 ```
 
-### Local Development (build from source)
+### Local Development
+
+Full stack with debug tracing (builds from source via `Dockerfile.dev`, uses host Ollama via `host.docker.internal`):
 
 ```bash
-# Build and run local changes
-ZEPH_IMAGE=zeph:local docker compose up --build
+# Build and start Qdrant + Zeph with debug logging
+docker compose -f docker-compose.dev.yml up --build
+```
+
+Dependencies only (run zeph natively on host):
+
+```bash
+# Start Qdrant
+docker compose -f docker-compose.deps.yml up
+
+# Run zeph natively with debug tracing
+RUST_LOG=zeph=debug,zeph_channels=trace cargo run
 ```
 
 </details>

@@ -1,0 +1,44 @@
+FROM rust:1.88-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Cache dependencies in a separate layer
+COPY Cargo.toml Cargo.lock ./
+COPY crates/zeph-core/Cargo.toml crates/zeph-core/Cargo.toml
+COPY crates/zeph-llm/Cargo.toml crates/zeph-llm/Cargo.toml
+COPY crates/zeph-skills/Cargo.toml crates/zeph-skills/Cargo.toml
+COPY crates/zeph-memory/Cargo.toml crates/zeph-memory/Cargo.toml
+COPY crates/zeph-channels/Cargo.toml crates/zeph-channels/Cargo.toml
+COPY crates/zeph-tools/Cargo.toml crates/zeph-tools/Cargo.toml
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
+    for d in crates/*/; do mkdir -p "$d/src" && echo '' > "$d/src/lib.rs"; done && \
+    cargo build --release 2>/dev/null || true
+
+COPY . .
+RUN touch src/main.rs && \
+    for d in crates/*/src/lib.rs; do touch "$d"; done && \
+    cargo build --release
+
+FROM container-registry.oracle.com/os/oraclelinux:9-slim
+
+RUN microdnf install -y shadow-utils ca-certificates && \
+    microdnf clean all && \
+    useradd --system --no-create-home --shell /sbin/nologin zeph
+
+WORKDIR /app
+
+COPY --from=builder /build/target/release/zeph /app/zeph
+COPY config/ /app/config/
+COPY skills/ /app/skills/
+
+RUN mkdir -p /app/data && \
+    chown -R zeph:zeph /app && \
+    chmod +x /app/zeph
+
+USER zeph
+
+ENTRYPOINT ["/app/zeph"]

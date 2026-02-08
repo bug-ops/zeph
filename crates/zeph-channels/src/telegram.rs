@@ -130,6 +130,11 @@ impl TelegramChannel {
 
         let formatted_text = markdown_to_telegram(text);
 
+        if formatted_text.is_empty() {
+            tracing::debug!("skipping send: formatted text is empty");
+            return Ok(());
+        }
+
         tracing::debug!("formatted_text (full): {}", formatted_text);
 
         match self.message_id {
@@ -237,6 +242,11 @@ impl Channel for TelegramChannel {
         };
 
         let formatted_text = markdown_to_telegram(text);
+
+        if formatted_text.is_empty() {
+            tracing::debug!("skipping send: formatted text is empty");
+            return Ok(());
+        }
 
         if formatted_text.len() <= MAX_MESSAGE_LEN {
             self.bot
