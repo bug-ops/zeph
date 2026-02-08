@@ -40,7 +40,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.4.0
+docker pull ghcr.io/bug-ops/zeph:v0.4.1
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -191,11 +191,13 @@ Zeph supports optional integration with [Qdrant](https://qdrant.tech/) for seman
    recall_limit = 5
    ```
 
-3. **Automatic embedding:** Messages are embedded asynchronously using the configured `embedding_model` and stored in Qdrant alongside SQLite.
+3. **Automatic setup:** Qdrant collection (`zeph_conversations`) is created automatically on first use with correct vector dimensions (896 for `qwen3-embedding`) and Cosine distance metric. No manual initialization required.
 
-4. **Semantic recall:** Context builder injects semantically relevant messages from full history, not just recent messages.
+4. **Automatic embedding:** Messages are embedded asynchronously using the configured `embedding_model` and stored in Qdrant alongside SQLite.
 
-5. **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to SQLite-only mode (recency-based history).
+5. **Semantic recall:** Context builder injects semantically relevant messages from full history, not just recent messages.
+
+6. **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to SQLite-only mode (recency-based history).
 
 </details>
 
@@ -230,7 +232,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.0`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.1`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -273,7 +275,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.0 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.1 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
