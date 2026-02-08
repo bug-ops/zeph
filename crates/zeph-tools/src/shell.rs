@@ -168,12 +168,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn execute_simple_command() {
         let result = execute_bash("echo hello", Duration::from_secs(30)).await;
         assert!(result.contains("hello"));
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn execute_stderr_output() {
         let result = execute_bash("echo err >&2", Duration::from_secs(30)).await;
         assert!(result.contains("[stderr]"));
@@ -181,6 +183,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn execute_stdout_and_stderr_combined() {
         let result = execute_bash("echo out && echo err >&2", Duration::from_secs(30)).await;
         assert!(result.contains("out"));
@@ -190,6 +193,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn execute_empty_output() {
         let result = execute_bash("true", Duration::from_secs(30)).await;
         assert_eq!(result, "(no output)");
