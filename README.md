@@ -2,6 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main)](https://github.com/bug-ops/zeph/actions)
 [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
+[![Security](https://img.shields.io/badge/security-hardened-brightgreen)](SECURITY.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Lightweight AI agent with hybrid inference (Ollama / Claude), skills-first architecture, semantic memory with Qdrant, and multi-channel I/O.
@@ -115,7 +116,7 @@ blocked_commands = []  # Additional patterns beyond defaults
 </details>
 
 > [!IMPORTANT]
-> Shell commands are filtered for safety. Dangerous commands (`rm -rf /`, `sudo`, `mkfs`, `dd`, `curl`, `wget`, `nc`, `shutdown`) are blocked by default. Add custom patterns via `tools.shell.blocked_commands` in config.
+> Shell commands are filtered for safety. See [Security](#security) section for complete list of 12 blocked patterns and customization options.
 
 <details>
 <summary><b>🔧 Environment Variables</b> (click to expand)</summary>
@@ -289,6 +290,49 @@ ZEPH_IMAGE=zeph:local docker compose up --build
 ```
 
 </details>
+
+## Security
+
+Zeph implements multiple security layers to ensure safe operation in production environments.
+
+### Shell Command Filtering
+
+> [!WARNING]
+> Shell commands from LLM responses are filtered through a security layer before execution.
+
+**12 blocked patterns by default:**
+- `rm -rf /` — filesystem destruction
+- `sudo` — privilege escalation
+- `mkfs` — filesystem formatting
+- `dd if=` — low-level disk operations
+- `curl`, `wget` — arbitrary code download
+- `nc`, `ncat`, `netcat` — reverse shells
+- `shutdown`, `reboot`, `halt` — system control
+
+**Custom patterns:** Add project-specific blocked commands via `tools.shell.blocked_commands` in config. Custom patterns are additive to defaults (cannot weaken security).
+
+**Case-insensitive matching:** `SUDO`, `Sudo`, `sudo` all blocked.
+
+### Container Security
+
+Docker images are hardened for production use:
+
+- **Base image:** Oracle Linux 9 Slim (security-first distribution)
+- **Vulnerability scanning:** Every release scanned with [Trivy](https://trivy.dev/)
+- **Zero vulnerabilities:** **0 HIGH/CRITICAL CVEs** in latest release
+- **Non-root user:** Runs as dedicated `zeph` user (UID 1000)
+- **Minimal attack surface:** Only required packages installed
+
+### Secure by Default
+
+- **Timeout protection:** Shell commands limited to 30s (configurable)
+- **Error sanitization:** Full errors logged, generic messages shown to users
+- **No `unsafe` code:** Project policy denies unsafe Rust blocks
+- **Secrets management:** API keys via environment variables (vault integration planned, see [#70](https://github.com/bug-ops/zeph/issues/70))
+
+### Reporting Security Issues
+
+See [SECURITY.md](SECURITY.md) for vulnerability disclosure process.
 
 ## Architecture
 
