@@ -45,7 +45,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.4.3
+docker pull ghcr.io/bug-ops/zeph:v0.5.0
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -110,6 +110,7 @@ max_tokens = 4096
 
 [skills]
 paths = ["./skills"]
+max_active_skills = 5  # Top-K skills per query via embedding similarity
 
 [memory]
 sqlite_path = "./data/zeph.db"
@@ -149,11 +150,16 @@ blocked_commands = []  # Additional patterns beyond defaults
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
 | `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
+| `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
 
 </details>
 
 ## Skills
+
+Zeph uses an embedding-based skill system: only the most relevant skills are injected into the LLM context per query using cosine similarity matching.
+
+Six bundled skills: `web-search`, `file-ops`, `system-info`, `git`, `docker`, `api-request`. Use `/skills` in chat to list available skills with usage statistics.
 
 <details>
 <summary><b>🛠️ Skills System</b> (click to expand)</summary>
@@ -164,7 +170,7 @@ Drop `SKILL.md` files into subdirectories under `skills/` to extend agent capabi
 skills/
   web-search/
     SKILL.md
-  file-ops/
+  git/
     SKILL.md
 ```
 
@@ -179,7 +185,13 @@ description: Search the web for information.
 Use curl to fetch search results...
 ```
 
-All loaded skills are injected into the system prompt.
+**Embedding-based matching:** Per query, only the top-K most relevant skills (default: 5) are selected via cosine similarity of embeddings and injected into the system prompt. Configure with `skills.max_active_skills` or `ZEPH_SKILLS_MAX_ACTIVE`.
+
+**Hot-reload:** SKILL.md file changes are detected via filesystem watcher (500ms debounce) and re-embedded without restart.
+
+**Priority:** When multiple `skills.paths` contain a skill with the same name, the first path takes precedence.
+
+**Usage tracking:** Per-skill invocation counts and timestamps are stored in SQLite. View with the `/skills` chat command.
 
 </details>
 
@@ -249,7 +261,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.3`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.5.0`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -292,7 +304,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.4.3 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.5.0 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -405,7 +417,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for responsible disclosure
 zeph (binary)
 ├── zeph-core       Agent loop, config, channel trait, context builder
 ├── zeph-llm        LlmProvider trait, Ollama + Claude backends, token streaming, embeddings
-├── zeph-skills     SKILL.md parser, registry, prompt formatter
+├── zeph-skills     SKILL.md parser, registry, embedding matcher, hot-reload watcher
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 └── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser

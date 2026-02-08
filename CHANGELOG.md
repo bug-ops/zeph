@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-08
+
 ### Added
 - Embedding-based skill matcher: `SkillMatcher` with cosine similarity selects top-K relevant skills per query instead of injecting all skills into the system prompt (Issue #75)
 - `max_active_skills` config field (default: 5) with `ZEPH_SKILLS_MAX_ACTIVE` env var override

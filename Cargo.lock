@@ -4869,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -4900,7 +4900,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -4918,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "eventsource-stream",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "qdrant-client",
@@ -4950,7 +4950,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "notify",
@@ -4962,7 +4962,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
