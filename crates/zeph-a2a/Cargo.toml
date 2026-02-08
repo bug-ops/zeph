@@ -6,20 +6,31 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+server = ["dep:axum", "dep:subtle", "dep:tower", "dep:tower-http"]
+
 [dependencies]
+axum = { workspace = true, optional = true }
 eventsource-stream.workspace = true
+futures.workspace = true
 futures-core.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 serde = { workspace = true, features = ["derive"] }
+subtle = { workspace = true, optional = true }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tokio-stream.workspace = true
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true, features = ["limit", "trace"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
+axum = { workspace = true, features = ["macros"] }
+http-body-util.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower.workspace = true
 
 [lints]
 workspace = true

@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- A2A Server: axum-based HTTP server with JSON-RPC 2.0 routing for `message/send`, `tasks/get`, `tasks/cancel` (Issue #83)
+- In-memory `TaskManager` with full task lifecycle: create, get, update status, add artifacts, append history, cancel (Issue #83)
+- SSE streaming endpoint (`/a2a/stream`) with JSON-RPC response envelope wrapping per A2A spec (Issue #84)
+- Bearer token authentication middleware with constant-time comparison via `subtle::ConstantTimeEq` (Issue #85)
+- Per-IP rate limiting middleware with configurable 60-second sliding window (Issue #85)
+- Request body size limit (1 MiB) via `tower-http::limit::RequestBodyLimitLayer` (Issue #85)
+- `A2aServerConfig` with env var overrides: `ZEPH_A2A_ENABLED`, `ZEPH_A2A_HOST`, `ZEPH_A2A_PORT`, `ZEPH_A2A_PUBLIC_URL`, `ZEPH_A2A_AUTH_TOKEN`, `ZEPH_A2A_RATE_LIMIT`
+- Agent card served at `/.well-known/agent-card.json` (public, no auth required)
+- Graceful shutdown integration via tokio watch channel
+- Server module gated behind `server` feature flag on `zeph-a2a` crate
+
+### Changed
+- `Part` type refactored from flat struct to tagged enum with `kind` discriminator (`text`, `file`, `data`) per A2A spec
+- `TaskState::Pending` renamed to `TaskState::Submitted` with explicit per-variant `#[serde(rename)]` for kebab-case wire format
+- Added `AuthRequired` and `Unknown` variants to `TaskState`
+- `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` gained `kind` field (`status-update`, `artifact-update`)
+
 ## [0.6.0] - 2026-02-08
 
 ### Added

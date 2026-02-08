@@ -137,6 +137,11 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    #[cfg(feature = "a2a")]
+    if config.a2a.enabled {
+        spawn_a2a_server(&config, shutdown_rx.clone());
+    }
+
     let mut agent = Agent::new(
         provider,
         channel,
@@ -191,6 +196,77 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             Ok(AnyProvider::Claude(provider))
         }
         other => bail!("unknown LLM provider: {other}"),
+    }
+}
+
+#[cfg(feature = "a2a")]
+fn spawn_a2a_server(config: &Config, shutdown_rx: watch::Receiver<bool>) {
+    let public_url = if config.a2a.public_url.is_empty() {
+        format!("http://{}:{}", config.a2a.host, config.a2a.port)
+    } else {
+        config.a2a.public_url.clone()
+    };
+
+    let card =
+        zeph_a2a::AgentCardBuilder::new(&config.agent.name, &public_url, env!("CARGO_PKG_VERSION"))
+            .description("Zeph AI agent")
+            .streaming(true)
+            .build();
+
+    let processor: std::sync::Arc<dyn zeph_a2a::TaskProcessor> =
+        std::sync::Arc::new(EchoTaskProcessor);
+    let a2a_server = zeph_a2a::A2aServer::new(
+        card,
+        processor,
+        &config.a2a.host,
+        config.a2a.port,
+        shutdown_rx,
+    )
+    .with_auth(config.a2a.auth_token.clone())
+    .with_rate_limit(config.a2a.rate_limit);
+
+    tracing::info!(
+        "A2A server spawned on {}:{}",
+        config.a2a.host,
+        config.a2a.port
+    );
+
+    tokio::spawn(async move {
+        if let Err(e) = a2a_server.serve().await {
+            tracing::error!("A2A server error: {e:#}");
+        }
+    });
+}
+
+#[cfg(feature = "a2a")]
+struct EchoTaskProcessor;
+
+#[cfg(feature = "a2a")]
+impl zeph_a2a::TaskProcessor for EchoTaskProcessor {
+    fn process(
+        &self,
+        _task_id: String,
+        message: zeph_a2a::Message,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<zeph_a2a::ProcessResult, zeph_a2a::A2aError>>
+                + Send,
+        >,
+    > {
+        Box::pin(async move {
+            let text = message.text_content().unwrap_or("").to_owned();
+            Ok(zeph_a2a::ProcessResult {
+                response: zeph_a2a::Message {
+                    role: zeph_a2a::Role::Agent,
+                    parts: vec![zeph_a2a::Part::text(format!("echo: {text}"))],
+                    message_id: None,
+                    task_id: None,
+                    context_id: None,
+                    metadata: None,
+                },
+                artifacts: vec![],
+            })
+        })
     }
 }
 

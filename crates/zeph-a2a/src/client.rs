@@ -140,6 +140,7 @@ mod tests {
     #[test]
     fn task_event_deserialize_status_update() {
         let event = TaskStatusUpdateEvent {
+            kind: "status-update".into(),
             task_id: "t-1".into(),
             context_id: None,
             status: TaskStatus {
@@ -157,6 +158,7 @@ mod tests {
     #[test]
     fn task_event_deserialize_artifact_update() {
         let event = TaskArtifactUpdateEvent {
+            kind: "artifact-update".into(),
             task_id: "t-1".into(),
             context_id: None,
             artifact: Artifact {

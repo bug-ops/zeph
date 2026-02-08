@@ -13,6 +13,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub a2a: A2aServerConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +111,47 @@ pub struct TelegramConfig {
     pub allowed_users: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct A2aServerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_a2a_host")]
+    pub host: String,
+    #[serde(default = "default_a2a_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub public_url: String,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    #[serde(default = "default_a2a_rate_limit")]
+    pub rate_limit: u32,
+}
+
+fn default_a2a_host() -> String {
+    "0.0.0.0".into()
+}
+
+fn default_a2a_port() -> u16 {
+    8080
+}
+
+fn default_a2a_rate_limit() -> u32 {
+    60
+}
+
+impl Default for A2aServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_a2a_host(),
+            port: default_a2a_port(),
+            public_url: String::new(),
+            auth_token: None,
+            rate_limit: default_a2a_rate_limit(),
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from a TOML file with env var overrides.
     ///
@@ -185,6 +228,30 @@ impl Config {
         {
             self.tools.shell.timeout = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.a2a.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_HOST") {
+            self.a2a.host = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_PORT")
+            && let Ok(port) = v.parse::<u16>()
+        {
+            self.a2a.port = port;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_PUBLIC_URL") {
+            self.a2a.public_url = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_AUTH_TOKEN") {
+            self.a2a.auth_token = Some(v);
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_RATE_LIMIT")
+            && let Ok(rate) = v.parse::<u32>()
+        {
+            self.a2a.rate_limit = rate;
+        }
     }
 
     fn default() -> Self {
@@ -213,6 +280,7 @@ impl Config {
             },
             telegram: None,
             tools: ToolsConfig::default(),
+            a2a: A2aServerConfig::default(),
         }
     }
 }

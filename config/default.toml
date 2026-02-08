@@ -42,6 +42,18 @@ enabled = false
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
+[a2a]
+# Enable A2A server for agent-to-agent communication
+enabled = false
+# Bind address
+host = "0.0.0.0"
+# HTTP port
+port = 8080
+# Public URL advertised in AgentCard (auto-generated if empty)
+public_url = ""
+# Rate limit: max requests per minute per IP (0 = unlimited)
+rate_limit = 60
+
 [tools]
 # Enable tool execution (bash commands)
 enabled = true

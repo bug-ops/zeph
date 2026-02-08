@@ -16,6 +16,9 @@ pub enum A2aError {
 
     #[error("SSE stream error: {0}")]
     Stream(String),
+
+    #[error("server error: {0}")]
+    Server(String),
 }
 
 impl From<JsonRpcError> for A2aError {

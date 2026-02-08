@@ -1,15 +1,25 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum TaskState {
-    Pending,
+    #[serde(rename = "submitted")]
+    Submitted,
+    #[serde(rename = "working")]
     Working,
+    #[serde(rename = "input-required")]
     InputRequired,
+    #[serde(rename = "completed")]
     Completed,
+    #[serde(rename = "failed")]
     Failed,
+    #[serde(rename = "canceled")]
     Canceled,
+    #[serde(rename = "rejected")]
     Rejected,
+    #[serde(rename = "auth-required")]
+    AuthRequired,
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,18 +68,27 @@ pub struct Message {
     pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Part {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file: Option<FileContent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Part {
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
+    },
+    File {
+        file: FileContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
+    },
+    Data {
+        data: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +168,8 @@ pub struct AgentSkill {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStatusUpdateEvent {
+    #[serde(default = "kind_status_update")]
+    pub kind: String,
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
@@ -157,9 +178,15 @@ pub struct TaskStatusUpdateEvent {
     pub is_final: bool,
 }
 
+fn kind_status_update() -> String {
+    "status-update".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
+    #[serde(default = "kind_artifact_update")]
+    pub kind: String,
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
@@ -168,12 +195,15 @@ pub struct TaskArtifactUpdateEvent {
     pub is_final: bool,
 }
 
+fn kind_artifact_update() -> String {
+    "artifact-update".into()
+}
+
 impl Part {
     #[must_use]
     pub fn text(s: impl Into<String>) -> Self {
-        Self {
-            text: Some(s.into()),
-            file: None,
+        Self::Text {
+            text: s.into(),
             metadata: None,
         }
     }
@@ -194,7 +224,10 @@ impl Message {
 
     #[must_use]
     pub fn text_content(&self) -> Option<&str> {
-        self.parts.iter().find_map(|p| p.text.as_deref())
+        self.parts.iter().find_map(|p| match p {
+            Part::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
     }
 }
 
@@ -203,15 +236,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn task_state_serde_camel_case() {
+    fn task_state_serde() {
         let states = [
-            (TaskState::Pending, "\"pending\""),
+            (TaskState::Submitted, "\"submitted\""),
             (TaskState::Working, "\"working\""),
-            (TaskState::InputRequired, "\"inputRequired\""),
+            (TaskState::InputRequired, "\"input-required\""),
             (TaskState::Completed, "\"completed\""),
             (TaskState::Failed, "\"failed\""),
             (TaskState::Canceled, "\"canceled\""),
             (TaskState::Rejected, "\"rejected\""),
+            (TaskState::AuthRequired, "\"auth-required\""),
+            (TaskState::Unknown, "\"unknown\""),
         ];
         for (state, expected) in states {
             let json = serde_json::to_string(&state).unwrap();
@@ -230,8 +265,46 @@ mod tests {
     #[test]
     fn part_text_constructor() {
         let part = Part::text("hello");
-        assert_eq!(part.text.as_deref(), Some("hello"));
-        assert!(part.file.is_none());
+        assert_eq!(
+            part,
+            Part::Text {
+                text: "hello".into(),
+                metadata: None
+            }
+        );
+    }
+
+    #[test]
+    fn part_kind_serde() {
+        let text_part = Part::text("hello");
+        let json = serde_json::to_string(&text_part).unwrap();
+        assert!(json.contains("\"kind\":\"text\""));
+        assert!(json.contains("\"text\":\"hello\""));
+        let back: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, text_part);
+
+        let file_part = Part::File {
+            file: FileContent {
+                name: Some("doc.pdf".into()),
+                media_type: None,
+                file_with_bytes: None,
+                file_with_uri: Some("https://example.com/doc.pdf".into()),
+            },
+            metadata: None,
+        };
+        let json = serde_json::to_string(&file_part).unwrap();
+        assert!(json.contains("\"kind\":\"file\""));
+        let back: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, file_part);
+
+        let data_part = Part::Data {
+            data: serde_json::json!({"key": "value"}),
+            metadata: None,
+        };
+        let json = serde_json::to_string(&data_part).unwrap();
+        assert!(json.contains("\"kind\":\"data\""));
+        let back: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, data_part);
     }
 
     #[test]
@@ -278,7 +351,7 @@ mod tests {
             id: "t".into(),
             context_id: None,
             status: TaskStatus {
-                state: TaskState::Pending,
+                state: TaskState::Submitted,
                 timestamp: "ts".into(),
                 message: None,
             },
@@ -343,8 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn task_status_update_event_final_rename() {
+    fn task_status_update_event_serde() {
         let event = TaskStatusUpdateEvent {
+            kind: "status-update".into(),
             task_id: "t-1".into(),
             context_id: None,
             status: TaskStatus {
@@ -357,13 +431,16 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"final\":true"));
         assert!(!json.contains("isFinal"));
+        assert!(json.contains("\"kind\":\"status-update\""));
         let back: TaskStatusUpdateEvent = serde_json::from_str(&json).unwrap();
         assert!(back.is_final);
+        assert_eq!(back.kind, "status-update");
     }
 
     #[test]
-    fn task_artifact_update_event_final_rename() {
+    fn task_artifact_update_event_serde() {
         let event = TaskArtifactUpdateEvent {
+            kind: "artifact-update".into(),
             task_id: "t-1".into(),
             context_id: None,
             artifact: Artifact {
@@ -376,8 +453,10 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"final\":false"));
+        assert!(json.contains("\"kind\":\"artifact-update\""));
         let back: TaskArtifactUpdateEvent = serde_json::from_str(&json).unwrap();
         assert!(!back.is_final);
+        assert_eq!(back.kind, "artifact-update");
     }
 
     #[test]
