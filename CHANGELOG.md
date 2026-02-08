@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-02-08
+
+### Fixed
+- Telegram "Bad Request: text must be non-empty" error when LLM returns whitespace-only content. Added `is_empty()` guard after `markdown_to_telegram` conversion in both `send()` and `send_or_edit()` (Issue #73)
+
+### Added
+- `Dockerfile.dev`: multi-stage build from source with cargo registry/build cache layers for fast rebuilds
+- `docker-compose.dev.yml`: full dev stack (Qdrant + Zeph) with debug tracing (`RUST_LOG`, `RUST_BACKTRACE=1`), uses host Ollama via `host.docker.internal`
+- `docker-compose.deps.yml`: Qdrant-only compose for native zeph execution on macOS
+
 ## [0.4.2] - 2026-02-08
 
 ### Fixed
