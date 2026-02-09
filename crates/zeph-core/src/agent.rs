@@ -303,7 +303,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         return Ok(());
                     }
 
-                    let formatted_output = format!("[shell output]\n```\n{output}\n```");
+                    let formatted_output = format!("[tool output]\n```\n{output}\n```");
                     self.channel.send(&formatted_output).await?;
 
                     self.messages.push(Message {

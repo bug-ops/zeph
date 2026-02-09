@@ -14,7 +14,7 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::matcher::SkillMatcher;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillWatcher;
-use zeph_tools::ShellExecutor;
+use zeph_tools::{CompositeExecutor, ShellExecutor, WebScrapeExecutor};
 
 /// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
 #[derive(Debug)]
@@ -124,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let shell_executor = ShellExecutor::new(&config.tools.shell);
+    let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
+    let tool_executor = CompositeExecutor::new(shell_executor, scrape_executor);
 
     let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(4);
     let _watcher = match SkillWatcher::start(&skill_paths, reload_tx) {
@@ -148,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
         skills,
         matcher,
         config.skills.max_active_skills,
-        shell_executor,
+        tool_executor,
     )
     .with_skill_reload(skill_paths, reload_rx)
     .with_memory(

@@ -228,6 +228,16 @@ impl Config {
         {
             self.tools.shell.timeout = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SCRAPE_TIMEOUT")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.tools.scrape.timeout = secs;
+        }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SCRAPE_MAX_BODY")
+            && let Ok(bytes) = v.parse::<usize>()
+        {
+            self.tools.scrape.max_body_bytes = bytes;
+        }
         if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {

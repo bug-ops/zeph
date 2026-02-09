@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `WebScrapeExecutor`: safe HTML scraping via scrape-core with CSS selectors, SSRF protection, and HTTPS-only enforcement (Issue #57)
+- `CompositeExecutor<A, B>`: generic executor chaining with first-match-wins dispatch
+- Bundled `web-scrape` skill with CSS selector examples for structured data extraction
+- `extract_fenced_blocks()` shared utility for fenced code block parsing (DRY refactor)
+- `[tools.scrape]` config section with timeout and max body size settings
+
+### Changed
+- Agent tool output label from `[shell output]` to `[tool output]`
+- `ShellExecutor` block extraction now uses shared `extract_fenced_blocks()`
+
 ## [0.7.0] - 2026-02-08
 
 ### Added

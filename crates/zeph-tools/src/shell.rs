@@ -74,21 +74,7 @@ impl ShellExecutor {
 }
 
 fn extract_bash_blocks(text: &str) -> Vec<&str> {
-    let mut blocks = Vec::new();
-    let mut rest = text;
-
-    while let Some(start) = rest.find("```bash") {
-        let code_start = start + 7;
-        let after = &rest[code_start..];
-        if let Some(end) = after.find("```") {
-            blocks.push(after[..end].trim());
-            rest = &after[end + 3..];
-        } else {
-            break;
-        }
-    }
-
-    blocks
+    crate::executor::extract_fenced_blocks(text, "bash")
 }
 
 async fn execute_bash(code: &str, timeout: Duration) -> String {

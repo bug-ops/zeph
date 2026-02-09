@@ -1,0 +1,103 @@
+use crate::executor::{ToolError, ToolExecutor, ToolOutput};
+
+/// Chains two `ToolExecutor` implementations with first-match-wins dispatch.
+///
+/// Tries `first`, falls through to `second` if it returns `Ok(None)`.
+/// Errors from `first` propagate immediately without trying `second`.
+#[derive(Debug)]
+pub struct CompositeExecutor<A: ToolExecutor, B: ToolExecutor> {
+    first: A,
+    second: B,
+}
+
+impl<A: ToolExecutor, B: ToolExecutor> CompositeExecutor<A, B> {
+    #[must_use]
+    pub fn new(first: A, second: B) -> Self {
+        Self { first, second }
+    }
+}
+
+impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> {
+    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        if let Some(output) = self.first.execute(response).await? {
+            return Ok(Some(output));
+        }
+        self.second.execute(response).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MatchingExecutor;
+    impl ToolExecutor for MatchingExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                summary: "matched".to_owned(),
+                blocks_executed: 1,
+            }))
+        }
+    }
+
+    struct NoMatchExecutor;
+    impl ToolExecutor for NoMatchExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+    }
+
+    struct ErrorExecutor;
+    impl ToolExecutor for ErrorExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Err(ToolError::Blocked {
+                command: "test".to_owned(),
+            })
+        }
+    }
+
+    struct SecondExecutor;
+    impl ToolExecutor for SecondExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                summary: "second".to_owned(),
+                blocks_executed: 1,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn first_matches_returns_first() {
+        let composite = CompositeExecutor::new(MatchingExecutor, SecondExecutor);
+        let result = composite.execute("anything").await.unwrap();
+        assert_eq!(result.unwrap().summary, "matched");
+    }
+
+    #[tokio::test]
+    async fn first_none_falls_through_to_second() {
+        let composite = CompositeExecutor::new(NoMatchExecutor, SecondExecutor);
+        let result = composite.execute("anything").await.unwrap();
+        assert_eq!(result.unwrap().summary, "second");
+    }
+
+    #[tokio::test]
+    async fn both_none_returns_none() {
+        let composite = CompositeExecutor::new(NoMatchExecutor, NoMatchExecutor);
+        let result = composite.execute("anything").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn first_error_propagates_without_trying_second() {
+        let composite = CompositeExecutor::new(ErrorExecutor, SecondExecutor);
+        let result = composite.execute("anything").await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn second_error_propagates_when_first_none() {
+        let composite = CompositeExecutor::new(NoMatchExecutor, ErrorExecutor);
+        let result = composite.execute("anything").await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+}

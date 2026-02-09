@@ -39,6 +39,29 @@ pub trait ToolExecutor: Send + Sync {
     ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send;
 }
 
+/// Extract fenced code blocks with the given language marker from text.
+///
+/// Searches for `` ```{lang} `` … `` ``` `` pairs, returning trimmed content.
+#[must_use]
+pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
+    let marker = format!("```{lang}");
+    let marker_len = marker.len();
+    let mut blocks = Vec::new();
+    let mut rest = text;
+
+    while let Some(start) = rest.find(&marker) {
+        let after = &rest[start + marker_len..];
+        if let Some(end) = after.find("```") {
+            blocks.push(after[..end].trim());
+            rest = &after[end + 3..];
+        } else {
+            break;
+        }
+    }
+
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

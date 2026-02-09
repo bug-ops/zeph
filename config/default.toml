@@ -63,3 +63,9 @@ enabled = true
 timeout = 30
 # Additional commands to block (case-insensitive, supports wildcards)
 blocked_commands = []
+
+[tools.scrape]
+# HTTP request timeout in seconds
+timeout = 15
+# Maximum response body size in bytes (1MB)
+max_body_bytes = 1048576
