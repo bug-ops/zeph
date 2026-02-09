@@ -48,7 +48,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.7.0
+docker pull ghcr.io/bug-ops/zeph:v0.7.1
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -132,6 +132,10 @@ enabled = true
 timeout = 30
 blocked_commands = []  # Additional patterns beyond defaults
 
+[tools.scrape]
+timeout = 15
+max_body_bytes = 1048576  # 1MB
+
 [a2a]
 enabled = false
 host = "0.0.0.0"
@@ -163,6 +167,8 @@ rate_limit = 60
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
+| `ZEPH_TOOLS_SCRAPE_TIMEOUT` | Web scrape request timeout in seconds (default: 15) |
+| `ZEPH_TOOLS_SCRAPE_MAX_BODY` | Max response body size in bytes (default: 1048576) |
 | `ZEPH_A2A_ENABLED` | Enable A2A server (default: false) |
 | `ZEPH_A2A_HOST` | A2A server bind address (default: `0.0.0.0`) |
 | `ZEPH_A2A_PORT` | A2A server port (default: `8080`) |
@@ -176,7 +182,7 @@ rate_limit = 60
 
 Zeph uses an embedding-based skill system: only the most relevant skills are injected into the LLM context per query using cosine similarity matching.
 
-Six bundled skills: `web-search`, `file-ops`, `system-info`, `git`, `docker`, `api-request`. Use `/skills` in chat to list available skills with usage statistics.
+Seven bundled skills: `web-search`, `web-scrape`, `file-ops`, `system-info`, `git`, `docker`, `api-request`. Use `/skills` in chat to list available skills with usage statistics.
 
 <details>
 <summary><b>🛠️ Skills System</b> (click to expand)</summary>
@@ -278,7 +284,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.0`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.1`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -321,7 +327,7 @@ docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.0 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.1 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -465,7 +471,7 @@ zeph (binary)
 ├── zeph-skills     SKILL.md parser, registry, embedding matcher, hot-reload watcher
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
-├── zeph-tools      ToolExecutor trait, ShellExecutor with bash parser
+├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
 └── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
 ```
 
