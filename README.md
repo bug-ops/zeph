@@ -182,7 +182,7 @@ rate_limit = 60
 
 Zeph uses an embedding-based skill system: only the most relevant skills are injected into the LLM context per query using cosine similarity matching.
 
-Seven bundled skills: `web-search`, `web-scrape`, `file-ops`, `system-info`, `git`, `docker`, `api-request`. Use `/skills` in chat to list available skills with usage statistics.
+Eight bundled skills: `web-search`, `web-scrape`, `file-ops`, `system-info`, `git`, `docker`, `api-request`, `setup-guide`. Use `/skills` in chat to list available skills with usage statistics.
 
 <details>
 <summary><b>🛠️ Skills System</b> (click to expand)</summary>

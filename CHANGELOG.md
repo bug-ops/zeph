@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Bundled `setup-guide` skill with configuration reference for all env vars, TOML keys, and operating modes
+
 ## [0.7.1] - 2026-02-09
 
 ### Added
