@@ -6,6 +6,7 @@ use crate::loader::Skill;
 /// Type alias for boxed embed futures to work around async closure lifetime issues.
 pub type EmbedFuture = Pin<Box<dyn Future<Output = anyhow::Result<Vec<f32>>> + Send>>;
 
+#[derive(Debug)]
 pub struct SkillMatcher {
     embeddings: Vec<(usize, Vec<f32>)>,
 }
@@ -69,6 +70,68 @@ impl SkillMatcher {
             .into_iter()
             .filter_map(|(idx, _)| skills.get(idx))
             .collect()
+    }
+}
+
+#[derive(Debug)]
+pub enum SkillMatcherBackend {
+    InMemory(SkillMatcher),
+    #[cfg(feature = "qdrant")]
+    Qdrant(crate::qdrant_matcher::QdrantSkillMatcher),
+}
+
+impl SkillMatcherBackend {
+    #[must_use]
+    pub fn is_qdrant(&self) -> bool {
+        match self {
+            Self::InMemory(_) => false,
+            #[cfg(feature = "qdrant")]
+            Self::Qdrant(_) => true,
+        }
+    }
+
+    pub async fn match_skills<'a, F>(
+        &self,
+        skills: &'a [Skill],
+        query: &str,
+        limit: usize,
+        embed_fn: F,
+    ) -> Vec<&'a Skill>
+    where
+        F: Fn(&str) -> EmbedFuture,
+    {
+        match self {
+            Self::InMemory(m) => m.match_skills(skills, query, limit, embed_fn).await,
+            #[cfg(feature = "qdrant")]
+            Self::Qdrant(m) => m.match_skills(skills, query, limit, embed_fn).await,
+        }
+    }
+
+    /// Sync skill embeddings. Only performs work for the Qdrant variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Qdrant sync fails.
+    pub async fn sync<F>(
+        &mut self,
+        skills: &[Skill],
+        embedding_model: &str,
+        embed_fn: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(&str) -> EmbedFuture,
+    {
+        match self {
+            Self::InMemory(_) => {
+                let _ = (skills, embedding_model, &embed_fn);
+                Ok(())
+            }
+            #[cfg(feature = "qdrant")]
+            Self::Qdrant(m) => {
+                m.sync(skills, embedding_model, embed_fn).await?;
+                Ok(())
+            }
+        }
     }
 }
 

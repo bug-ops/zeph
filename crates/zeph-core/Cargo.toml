@@ -15,7 +15,7 @@ toml.workspace = true
 tracing.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
-zeph-skills.workspace = true
+zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
 
 [dev-dependencies]

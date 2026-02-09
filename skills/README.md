@@ -5,12 +5,22 @@ Skills are contextual instructions that Zeph loads automatically based on what y
 ## How It Works
 
 1. **You send a message** — for example, "check disk usage on this server"
-2. **Zeph matches your query** against all available skill descriptions using embedding similarity (cosine distance)
-3. **Top matching skills are selected** — by default, the 5 most relevant ones
+2. **Zeph embeds your query** using the configured embedding model
+3. **Top matching skills are selected** — by default, the 5 most relevant ones ranked by vector similarity
 4. **Selected skills are injected** into the system prompt, giving Zeph specific instructions and examples for the task
 5. **Zeph responds** using the knowledge from matched skills
 
 This happens automatically on every message. You don't need to activate skills manually.
+
+### Matching Backends
+
+Zeph supports two skill matching backends:
+
+- **In-memory** (default) — embeddings are computed on startup and matched via cosine similarity. No external dependencies required.
+- **Qdrant** — when semantic memory is enabled and Qdrant is reachable, skill embeddings are persisted in a `zeph_skills` collection. On startup, only changed skills are re-embedded using BLAKE3 content hash comparison. Qdrant's HNSW index handles the vector search. If Qdrant becomes unavailable, Zeph falls back to in-memory matching automatically.
+
+> [!TIP]
+> The Qdrant backend significantly reduces startup time when you have many skills, since unchanged skills skip the embedding step entirely.
 
 > [!TIP]
 > Use `/skills` in chat to see all available skills and their usage statistics.
@@ -125,3 +135,5 @@ If the embedding model is unavailable, Zeph falls back to using all skills for e
 ## Hot Reload
 
 Zeph watches skill directories for changes. When you edit, add, or remove a `SKILL.md` file, skills are automatically reloaded without restarting the agent. Changes take effect on the next message.
+
+With the Qdrant backend, hot-reload triggers a delta sync — only modified skills are re-embedded and updated in the collection. Orphan points (removed skills) are cleaned up automatically.

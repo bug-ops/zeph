@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Bundled `setup-guide` skill with configuration reference for all env vars, TOML keys, and operating modes
 - `allowed_commands` shell config to override default blocklist entries via `ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS`
+- `QdrantSkillMatcher`: persistent skill embeddings in Qdrant with BLAKE3 content-hash delta sync (Issue #104)
+- `SkillMatcherBackend` enum dispatching between `InMemory` and `Qdrant` skill matching (Issue #105)
+- `qdrant` feature flag on `zeph-skills` crate gating all Qdrant dependencies
+- Graceful fallback to in-memory matcher when Qdrant is unavailable
+
+### Changed
+- `Agent` field `matcher` type changed from `Option<SkillMatcher>` to `Option<SkillMatcherBackend>`
+- Skill matcher creation extracted to `create_skill_matcher()` in `main.rs`
+
+### Dependencies
+- Added `blake3` 1.8 to workspace
 
 ## [0.7.1] - 2026-02-09
 

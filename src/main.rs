@@ -11,7 +11,8 @@ use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_skills::matcher::SkillMatcher;
+use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillWatcher;
 use zeph_tools::{CompositeExecutor, ShellExecutor, WebScrapeExecutor};
@@ -72,26 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
-    let skill_count = registry.all().len();
     let skills = registry.into_skills();
-
-    let matcher = SkillMatcher::new(&skills, |text| {
-        let owned = text.to_owned();
-        let p = provider.clone();
-        Box::pin(async move { p.embed(&owned).await })
-    })
-    .await;
-    if matcher.is_some() {
-        tracing::info!("skill matcher initialized with embeddings for {skill_count} skill(s)");
-    } else {
-        tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
-    }
-
-    let channel = create_channel(&config)?;
-
-    if matches!(channel, AnyChannel::Cli(_)) {
-        println!("zeph v{}", env!("CARGO_PKG_VERSION"));
-    }
 
     let memory = SemanticMemory::new(
         &config.memory.sqlite_path,
@@ -102,7 +84,21 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     if config.memory.semantic.enabled && memory.has_qdrant() {
-        tracing::info!("Semantic memory enabled, Qdrant connected");
+        tracing::info!("semantic memory enabled, Qdrant connected");
+    }
+
+    let matcher = create_skill_matcher(&config, &provider, &skills, &memory).await;
+    let skill_count = skills.len();
+    if matcher.is_some() {
+        tracing::info!("skill matcher initialized for {skill_count} skill(s)");
+    } else {
+        tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
+    }
+
+    let channel = create_channel(&config)?;
+
+    if matches!(channel, AnyChannel::Cli(_)) {
+        println!("zeph v{}", env!("CARGO_PKG_VERSION"));
     }
 
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
@@ -152,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         config.skills.max_active_skills,
         tool_executor,
     )
+    .with_embedding_model(config.llm.embedding_model.clone())
     .with_skill_reload(skill_paths, reload_rx)
     .with_memory(
         memory,
@@ -172,6 +169,41 @@ async fn health_check(provider: &AnyProvider) {
             Err(e) => tracing::warn!("ollama health check failed: {e:#}"),
         }
     }
+}
+
+async fn create_skill_matcher(
+    config: &Config,
+    provider: &AnyProvider,
+    skills: &[zeph_skills::loader::Skill],
+    memory: &SemanticMemory<AnyProvider>,
+) -> Option<SkillMatcherBackend> {
+    let p = provider.clone();
+    let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
+        let owned = text.to_owned();
+        let p = p.clone();
+        Box::pin(async move { p.embed(&owned).await })
+    };
+
+    if config.memory.semantic.enabled && memory.has_qdrant() {
+        match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
+            Ok(mut qm) => match qm
+                .sync(skills, &config.llm.embedding_model, &embed_fn)
+                .await
+            {
+                Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),
+                Err(e) => {
+                    tracing::warn!("Qdrant skill sync failed, falling back to in-memory: {e:#}");
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Qdrant client creation failed, falling back to in-memory: {e:#}");
+            }
+        }
+    }
+
+    SkillMatcher::new(skills, &embed_fn)
+        .await
+        .map(SkillMatcherBackend::InMemory)
 }
 
 fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {

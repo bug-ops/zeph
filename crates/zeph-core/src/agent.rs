@@ -6,7 +6,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::role_str;
 use zeph_skills::loader::Skill;
-use zeph_skills::matcher::SkillMatcher;
+use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
@@ -25,8 +25,9 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     messages: Vec<Message>,
     skills: Vec<Skill>,
     skill_paths: Vec<PathBuf>,
-    matcher: Option<SkillMatcher>,
+    matcher: Option<SkillMatcherBackend>,
     max_active_skills: usize,
+    embedding_model: String,
     skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     memory: Option<SemanticMemory<P>>,
     conversation_id: Option<i64>,
@@ -42,7 +43,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         provider: P,
         channel: C,
         skills: Vec<Skill>,
-        matcher: Option<SkillMatcher>,
+        matcher: Option<SkillMatcherBackend>,
         max_active_skills: usize,
         tool_executor: T,
     ) -> Self {
@@ -61,6 +62,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             skill_paths: Vec::new(),
             matcher,
             max_active_skills,
+            embedding_model: String::new(),
             skill_reload_rx: None,
             memory: None,
             conversation_id: None,
@@ -85,6 +87,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.history_limit = history_limit;
         self.recall_limit = recall_limit;
         self.summarization_threshold = summarization_threshold;
+        self
+    }
+
+    #[must_use]
+    pub fn with_embedding_model(mut self, model: String) -> Self {
+        self.embedding_model = model;
         self
     }
 
@@ -223,12 +231,28 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.skills = registry.into_skills();
 
         let provider = self.provider.clone();
-        self.matcher = SkillMatcher::new(&self.skills, |text| {
+        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
             Box::pin(async move { p.embed(&owned).await })
-        })
-        .await;
+        };
+
+        let needs_inmemory_rebuild = !self
+            .matcher
+            .as_ref()
+            .is_some_and(SkillMatcherBackend::is_qdrant);
+
+        if needs_inmemory_rebuild {
+            self.matcher = SkillMatcher::new(&self.skills, embed_fn)
+                .await
+                .map(SkillMatcherBackend::InMemory);
+        } else if let Some(ref mut backend) = self.matcher
+            && let Err(e) = backend
+                .sync(&self.skills, &self.embedding_model, embed_fn)
+                .await
+        {
+            tracing::warn!("failed to sync skill embeddings: {e:#}");
+        }
 
         let skills_prompt = format_skills_prompt(&self.skills);
         let system_prompt = build_system_prompt(&skills_prompt);

@@ -6,12 +6,20 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+qdrant = ["dep:blake3", "dep:qdrant-client", "dep:serde_json", "dep:uuid"]
+
 [dependencies]
 anyhow.workspace = true
+blake3 = { workspace = true, optional = true }
 notify.workspace = true
 notify-debouncer-mini.workspace = true
+qdrant-client = { workspace = true, optional = true, features = ["serde"] }
+serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
+uuid = { workspace = true, optional = true, features = ["v5"] }
 
 [dev-dependencies]
 tempfile.workspace = true

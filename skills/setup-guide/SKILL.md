@@ -56,6 +56,8 @@ Start Qdrant:
 docker compose up -d qdrant
 ```
 
+When semantic memory is enabled and Qdrant is reachable, skill embeddings are persisted in a `zeph_skills` collection. On startup, only changed skills are re-embedded (BLAKE3 content hash comparison). The Qdrant HNSW index is used for skill matching instead of in-memory cosine similarity. If Qdrant is unavailable, the agent falls back to in-memory matching.
+
 ## Summarization
 
 ```bash
