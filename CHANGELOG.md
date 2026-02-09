@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Bundled `setup-guide` skill with configuration reference for all env vars, TOML keys, and operating modes
+- `allowed_commands` shell config to override default blocklist entries via `ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS`
 
 ## [0.7.1] - 2026-02-09
 

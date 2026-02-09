@@ -94,8 +94,10 @@ Config: `tools.enabled` (default: true) — master toggle for all tool execution
 Shell:
 ```bash
 export ZEPH_TOOLS_TIMEOUT=30
+export ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS=curl,wget
 ```
 Config: `tools.shell.blocked_commands` — additional command patterns to block.
+Config: `tools.shell.allowed_commands` — commands to remove from the default blocklist.
 
 Scrape:
 ```bash

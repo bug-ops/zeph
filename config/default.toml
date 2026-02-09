@@ -63,6 +63,8 @@ enabled = true
 timeout = 30
 # Additional commands to block (case-insensitive, supports wildcards)
 blocked_commands = []
+# Commands to remove from the default blocklist (e.g., ["curl", "wget"])
+allowed_commands = []
 
 [tools.scrape]
 # HTTP request timeout in seconds

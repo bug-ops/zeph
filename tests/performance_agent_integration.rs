@@ -236,6 +236,7 @@ async fn agent_respects_configured_timeout() {
     let shell_config = ShellConfig {
         timeout: 1,
         blocked_commands: vec![],
+        allowed_commands: vec![],
     };
     let _executor = ShellExecutor::new(&shell_config);
 
@@ -256,6 +257,7 @@ async fn shell_executor_default_blocked_patterns() {
     let shell_config = ShellConfig {
         timeout: 30,
         blocked_commands: vec![],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -290,6 +292,7 @@ async fn shell_executor_allows_safe_commands() {
     let shell_config = ShellConfig {
         timeout: 5,
         blocked_commands: vec![],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -313,6 +316,7 @@ async fn shell_executor_case_insensitive_blocking() {
     let shell_config = ShellConfig {
         timeout: 30,
         blocked_commands: vec![],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -340,6 +344,7 @@ async fn integration_agent_tool_executor_types() {
     let shell_config = ShellConfig {
         timeout: 30,
         blocked_commands: vec![],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -398,6 +403,7 @@ async fn tool_executor_pattern_matching_overhead() {
             "custom2".to_string(),
             "custom3".to_string(),
         ],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -434,6 +440,7 @@ async fn agent_no_regression_in_error_handling() {
     let shell_config = ShellConfig {
         timeout: 30,
         blocked_commands: vec!["dangerous".to_string()],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -487,6 +494,7 @@ async fn agent_tool_executor_error_recovery() {
     let shell_config = ShellConfig {
         timeout: 30,
         blocked_commands: vec!["forbidden".to_string()],
+        allowed_commands: vec![],
     };
     let executor = ShellExecutor::new(&shell_config);
 

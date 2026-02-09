@@ -20,7 +20,17 @@ pub struct ShellExecutor {
 impl ShellExecutor {
     #[must_use]
     pub fn new(config: &ShellConfig) -> Self {
-        let mut blocked: Vec<String> = DEFAULT_BLOCKED.iter().map(|s| (*s).to_owned()).collect();
+        let allowed: Vec<String> = config
+            .allowed_commands
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+
+        let mut blocked: Vec<String> = DEFAULT_BLOCKED
+            .iter()
+            .filter(|s| !allowed.contains(&s.to_lowercase()))
+            .map(|s| (*s).to_owned())
+            .collect();
         blocked.extend(config.blocked_commands.iter().map(|s| s.to_lowercase()));
         blocked.sort();
         blocked.dedup();
@@ -115,6 +125,7 @@ mod tests {
         ShellConfig {
             timeout: 30,
             blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
         }
     }
 
@@ -190,6 +201,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: vec!["rm -rf /".to_owned()],
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let response = "Run:\n```bash\nrm -rf /\n```";
@@ -203,6 +215,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 1,
             blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let response = "Run:\n```bash\nsleep 60\n```";
@@ -217,6 +230,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let result = executor.execute("plain text, no blocks").await;
@@ -229,6 +243,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let response = "```bash\necho one\n```\n```bash\necho two\n```";
@@ -263,6 +278,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: vec!["custom-danger".to_owned()],
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         assert!(executor.find_blocked_command("sudo rm").is_some());
@@ -358,6 +374,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: vec!["sudo".to_owned(), "sudo".to_owned()],
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let count = executor
@@ -430,6 +447,7 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: vec!["Sudo".to_owned(), "sudo".to_owned(), "SUDO".to_owned()],
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         let count = executor
@@ -445,9 +463,95 @@ mod tests {
         let config = ShellConfig {
             timeout: 30,
             blocked_commands: vec!["MyCustom".to_owned()],
+            allowed_commands: Vec::new(),
         };
         let executor = ShellExecutor::new(&config);
         assert!(executor.blocked_commands.iter().any(|c| c == "mycustom"));
         assert!(!executor.blocked_commands.iter().any(|c| c == "MyCustom"));
+    }
+
+    // --- allowed_commands tests ---
+
+    #[test]
+    fn allowed_commands_removes_from_default() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: Vec::new(),
+            allowed_commands: vec!["curl".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_none()
+        );
+        assert!(executor.find_blocked_command("sudo rm").is_some());
+    }
+
+    #[test]
+    fn allowed_commands_case_insensitive() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: Vec::new(),
+            allowed_commands: vec!["CURL".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn allowed_does_not_override_explicit_block() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: vec!["curl".to_owned()],
+            allowed_commands: vec!["curl".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn allowed_unknown_command_ignored() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: Vec::new(),
+            allowed_commands: vec!["nonexistent-cmd".to_owned()],
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.find_blocked_command("sudo rm").is_some());
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn empty_allowed_commands_changes_nothing() {
+        let config = ShellConfig {
+            timeout: 30,
+            blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("sudo rm").is_some());
+        assert!(
+            executor
+                .find_blocked_command("wget http://evil.com")
+                .is_some()
+        );
     }
 }

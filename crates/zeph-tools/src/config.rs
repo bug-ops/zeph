@@ -19,13 +19,15 @@ pub struct ToolsConfig {
     pub scrape: ScrapeConfig,
 }
 
-/// Shell-specific configuration: timeout and command blocklist.
+/// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
 #[derive(Debug, Deserialize)]
 pub struct ShellConfig {
     #[serde(default = "default_timeout")]
     pub timeout: u64,
     #[serde(default)]
     pub blocked_commands: Vec<String>,
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
 }
 
 impl Default for ToolsConfig {
@@ -43,6 +45,7 @@ impl Default for ShellConfig {
         Self {
             timeout: default_timeout(),
             blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
         }
     }
 }
@@ -159,5 +162,23 @@ mod tests {
         let config = ToolsConfig::default();
         assert_eq!(config.scrape.timeout, 15);
         assert_eq!(config.scrape.max_body_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn deserialize_allowed_commands() {
+        let toml_str = r#"
+            [shell]
+            timeout = 30
+            allowed_commands = ["curl", "wget"]
+        "#;
+
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.shell.allowed_commands, vec!["curl", "wget"]);
+    }
+
+    #[test]
+    fn default_allowed_commands_empty() {
+        let config = ShellConfig::default();
+        assert!(config.allowed_commands.is_empty());
     }
 }

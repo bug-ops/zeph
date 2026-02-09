@@ -223,6 +223,13 @@ impl Config {
             });
             tg.token = Some(v);
         }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS") {
+            self.tools.shell.allowed_commands = v
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_TIMEOUT")
             && let Ok(secs) = v.parse::<u64>()
         {
@@ -303,7 +310,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 12] = [
+    const ENV_KEYS: [&str; 13] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -316,6 +323,7 @@ mod tests {
         "ZEPH_SKILLS_MAX_ACTIVE",
         "ZEPH_TELEGRAM_TOKEN",
         "ZEPH_TOOLS_TIMEOUT",
+        "ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS",
     ];
 
     fn clear_env() {
@@ -583,6 +591,20 @@ history_limit = 50
         unsafe { std::env::remove_var("ZEPH_TOOLS_TIMEOUT") };
 
         assert_eq!(config.tools.shell.timeout, 30);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_allowed_commands() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.tools.shell.allowed_commands.is_empty());
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS", "curl, wget , ") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS") };
+
+        assert_eq!(config.tools.shell.allowed_commands, vec!["curl", "wget"]);
     }
 
     #[test]
