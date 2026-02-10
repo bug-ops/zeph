@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-02-10
+
 ### Added
 - Shell sandbox: configurable `allowed_paths` directory allowlist and `allow_network` toggle blocking curl/wget/nc in `ShellExecutor` (Issue #91)
 - Sandbox validation before every shell command execution with path canonicalization
