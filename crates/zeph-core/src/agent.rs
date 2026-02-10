@@ -35,6 +35,10 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     recall_limit: usize,
     summarization_threshold: usize,
     shutdown: watch::Receiver<bool>,
+    #[cfg(feature = "mcp")]
+    mcp_tools: Vec<zeph_mcp::McpTool>,
+    #[cfg(feature = "mcp")]
+    mcp_registry: Option<zeph_mcp::McpToolRegistry>,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -70,6 +74,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             recall_limit: 5,
             summarization_threshold: 100,
             shutdown: rx,
+            #[cfg(feature = "mcp")]
+            mcp_tools: Vec::new(),
+            #[cfg(feature = "mcp")]
+            mcp_registry: None,
         }
     }
 
@@ -110,6 +118,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> Self {
         self.skill_paths = paths;
         self.skill_reload_rx = Some(rx);
+        self
+    }
+
+    #[cfg(feature = "mcp")]
+    #[must_use]
+    pub fn with_mcp(
+        mut self,
+        tools: Vec<zeph_mcp::McpTool>,
+        registry: Option<zeph_mcp::McpToolRegistry>,
+    ) -> Self {
+        self.mcp_tools = tools;
+        self.mcp_registry = registry;
         self
     }
 
@@ -287,11 +307,45 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         let skills_prompt = format_skills_prompt(&active_skills);
-        let system_prompt = build_system_prompt(&skills_prompt);
+        #[allow(unused_mut)]
+        let mut system_prompt = build_system_prompt(&skills_prompt);
+
+        #[cfg(feature = "mcp")]
+        {
+            let matched_tools = self.match_mcp_tools(query).await;
+            if !matched_tools.is_empty() {
+                let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
+                tracing::debug!(
+                    skills = ?active_skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                    mcp_tools = ?tool_names,
+                    "matched items"
+                );
+                let tools_prompt = zeph_mcp::format_mcp_tools_prompt(&matched_tools);
+                if !tools_prompt.is_empty() {
+                    system_prompt.push_str("\n\n");
+                    system_prompt.push_str(&tools_prompt);
+                }
+            }
+        }
 
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn match_mcp_tools(&self, query: &str) -> Vec<zeph_mcp::McpTool> {
+        let Some(ref registry) = self.mcp_registry else {
+            return self.mcp_tools.clone();
+        };
+        let provider = self.provider.clone();
+        registry
+            .search(query, self.max_active_skills, |text| {
+                let owned = text.to_owned();
+                let p = provider.clone();
+                Box::pin(async move { p.embed(&owned).await })
+            })
+            .await
     }
 
     async fn process_response(&mut self) -> anyhow::Result<()> {

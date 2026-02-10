@@ -121,6 +121,21 @@ async fn main() -> anyhow::Result<()> {
 
     let shell_executor = ShellExecutor::new(&config.tools.shell);
     let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
+
+    #[cfg(feature = "mcp")]
+    let (tool_executor, mcp_tools) = {
+        let mcp_manager = std::sync::Arc::new(create_mcp_manager(&config));
+        let mcp_tools = mcp_manager.connect_all().await;
+        tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
+
+        let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+        let base_executor = CompositeExecutor::new(shell_executor, scrape_executor);
+        let executor = CompositeExecutor::new(base_executor, mcp_executor);
+
+        (executor, mcp_tools)
+    };
+
+    #[cfg(not(feature = "mcp"))]
     let tool_executor = CompositeExecutor::new(shell_executor, scrape_executor);
 
     let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(4);
@@ -140,7 +155,10 @@ async fn main() -> anyhow::Result<()> {
         spawn_a2a_server(&config, shutdown_rx.clone());
     }
 
-    let mut agent = Agent::new(
+    #[cfg(feature = "mcp")]
+    let mcp_registry = create_mcp_registry(&config, &provider, &mcp_tools).await;
+
+    let agent = Agent::new(
         provider,
         channel,
         skills,
@@ -158,6 +176,12 @@ async fn main() -> anyhow::Result<()> {
         config.memory.summarization_threshold,
     )
     .with_shutdown(shutdown_rx);
+
+    #[cfg(feature = "mcp")]
+    let agent = agent.with_mcp(mcp_tools, mcp_registry);
+
+    let mut agent = agent;
+
     agent.load_history().await?;
     agent.run().await
 }
@@ -301,6 +325,55 @@ impl zeph_a2a::TaskProcessor for EchoTaskProcessor {
                 artifacts: vec![],
             })
         })
+    }
+}
+
+#[cfg(feature = "mcp")]
+fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
+    let entries: Vec<zeph_mcp::ServerEntry> = config
+        .mcp
+        .servers
+        .iter()
+        .map(|s| zeph_mcp::ServerEntry {
+            id: s.id.clone(),
+            command: s.command.clone(),
+            args: s.args.clone(),
+            env: s.env.clone(),
+            timeout: std::time::Duration::from_secs(s.timeout),
+        })
+        .collect();
+    zeph_mcp::McpManager::new(entries)
+}
+
+#[cfg(feature = "mcp")]
+async fn create_mcp_registry(
+    config: &Config,
+    provider: &AnyProvider,
+    mcp_tools: &[zeph_mcp::McpTool],
+) -> Option<zeph_mcp::McpToolRegistry> {
+    if !config.memory.semantic.enabled {
+        return None;
+    }
+    match zeph_mcp::McpToolRegistry::new(&config.memory.qdrant_url) {
+        Ok(mut reg) => {
+            let p = provider.clone();
+            let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
+                let owned = text.to_owned();
+                let p = p.clone();
+                Box::pin(async move { p.embed(&owned).await })
+            };
+            if let Err(e) = reg
+                .sync(mcp_tools, &config.llm.embedding_model, &embed_fn)
+                .await
+            {
+                tracing::warn!("MCP tool embedding sync failed: {e:#}");
+            }
+            Some(reg)
+        }
+        Err(e) => {
+            tracing::warn!("MCP tool registry unavailable: {e:#}");
+            None
+        }
     }
 }
 

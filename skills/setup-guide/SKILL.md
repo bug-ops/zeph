@@ -107,6 +107,24 @@ export ZEPH_TOOLS_SCRAPE_TIMEOUT=15
 export ZEPH_TOOLS_SCRAPE_MAX_BODY=1048576
 ```
 
+## MCP (Model Context Protocol)
+
+Build with `--features mcp` to enable MCP tool integration.
+
+Config in `config/default.toml`:
+```toml
+[[mcp.servers]]
+id = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+timeout = 30
+
+[mcp.servers.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+```
+
+MCP tools are discovered at startup, embedded into Qdrant (`zeph_mcp_tools` collection), and matched per query alongside skills. Tool invocations use ` ```mcp ` fenced blocks with JSON payloads.
+
 ## Skills
 
 ```bash

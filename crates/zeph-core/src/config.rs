@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
@@ -15,6 +16,8 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub a2a: A2aServerConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +153,45 @@ impl Default for A2aServerConfig {
             rate_limit: default_a2a_rate_limit(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub id: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout: u64,
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted: HashMap<&str, &str> = self
+            .env
+            .keys()
+            .map(|k| (k.as_str(), "[REDACTED]"))
+            .collect();
+        f.debug_struct("McpServerConfig")
+            .field("id", &self.id)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &redacted)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
 }
 
 impl Config {
@@ -298,6 +340,7 @@ impl Config {
             telegram: None,
             tools: ToolsConfig::default(),
             a2a: A2aServerConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

@@ -15,6 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `qdrant` feature flag on `zeph-skills` crate gating all Qdrant dependencies
 - Graceful fallback to in-memory matcher when Qdrant is unavailable
 - Skill matching tracing via `tracing::debug!` for diagnostics
+- New `zeph-mcp` crate: MCP client via rmcp 0.14 with stdio transport (Issue #117)
+- `McpClient` and `McpManager` for multi-server lifecycle management with concurrent connections
+- `McpToolExecutor` implementing `ToolExecutor` for `` ```mcp `` block execution (Issue #120)
+- `McpToolRegistry`: MCP tool embeddings in Qdrant `zeph_mcp_tools` collection with BLAKE3 delta sync (Issue #118)
+- Unified matching: skills + MCP tools injected into system prompt by relevance (Issue #119)
+- `mcp` feature flag on root binary and zeph-core gating all MCP functionality
+- Bundled `mcp-generate` skill with instructions for MCP-to-skill generation via mcp-execution (Issue #121)
+- `[[mcp.servers]]` TOML config section for MCP server connections
 
 ### Changed
 - `Agent` field `matcher` type changed from `Option<SkillMatcher>` to `Option<SkillMatcherBackend>`
@@ -22,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Dependencies
 - Added `blake3` 1.8 to workspace
+- Added `rmcp` 0.14 to workspace (MCP protocol SDK)
 
 ## [0.7.1] - 2026-02-09
 
