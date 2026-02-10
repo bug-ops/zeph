@@ -22,6 +22,10 @@ pub struct Config {
     pub mcp: McpConfig,
     #[serde(default)]
     pub vault: VaultConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+    #[serde(default)]
+    pub timeouts: TimeoutConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -314,6 +318,20 @@ pub struct A2aServerConfig {
     pub auth_token: Option<String>,
     #[serde(default = "default_a2a_rate_limit")]
     pub rate_limit: u32,
+    #[serde(default = "default_true")]
+    pub require_tls: bool,
+    #[serde(default = "default_true")]
+    pub ssrf_protection: bool,
+    #[serde(default = "default_a2a_max_body")]
+    pub max_body_size: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_a2a_max_body() -> usize {
+    1_048_576
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -328,6 +346,9 @@ impl std::fmt::Debug for A2aServerConfig {
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("rate_limit", &self.rate_limit)
+            .field("require_tls", &self.require_tls)
+            .field("ssrf_protection", &self.ssrf_protection)
+            .field("max_body_size", &self.max_body_size)
             .finish()
     }
 }
@@ -353,6 +374,55 @@ impl Default for A2aServerConfig {
             public_url: String::new(),
             auth_token: None,
             rate_limit: default_a2a_rate_limit(),
+            require_tls: true,
+            ssrf_protection: true,
+            max_body_size: default_a2a_max_body(),
+        }
+    }
+}
+
+fn default_llm_timeout() -> u64 {
+    120
+}
+
+fn default_embedding_timeout() -> u64 {
+    30
+}
+
+fn default_a2a_timeout() -> u64 {
+    30
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecurityConfig {
+    #[serde(default = "default_true")]
+    pub redact_secrets: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            redact_secrets: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TimeoutConfig {
+    #[serde(default = "default_llm_timeout")]
+    pub llm_seconds: u64,
+    #[serde(default = "default_embedding_timeout")]
+    pub embedding_seconds: u64,
+    #[serde(default = "default_a2a_timeout")]
+    pub a2a_seconds: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            llm_seconds: default_llm_timeout(),
+            embedding_seconds: default_embedding_timeout(),
+            a2a_seconds: default_a2a_timeout(),
         }
     }
 }
@@ -440,6 +510,11 @@ impl Config {
     }
 
     fn apply_env_overrides(&mut self) {
+        self.apply_env_overrides_core();
+        self.apply_env_overrides_security();
+    }
+
+    fn apply_env_overrides_core(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             self.llm.provider = v;
         }
@@ -482,6 +557,16 @@ impl Config {
             && let Ok(n) = v.parse::<usize>()
         {
             self.skills.max_active_skills = n;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.skills.learning.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE")
+            && let Ok(auto_activate) = v.parse::<bool>()
+        {
+            self.skills.learning.auto_activate = auto_activate;
         }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS") {
             self.tools.shell.allowed_commands = v
@@ -526,15 +611,63 @@ impl Config {
         {
             self.a2a.rate_limit = rate;
         }
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
+    }
+
+    fn apply_env_overrides_security(&mut self) {
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOWED_PATHS") {
+            self.tools.shell.allowed_paths = v
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOW_NETWORK")
+            && let Ok(allow) = v.parse::<bool>()
+        {
+            self.tools.shell.allow_network = allow;
+        }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_AUDIT_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {
-            self.skills.learning.enabled = enabled;
+            self.tools.audit.enabled = enabled;
         }
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE")
-            && let Ok(auto_activate) = v.parse::<bool>()
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_AUDIT_DESTINATION") {
+            self.tools.audit.destination = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SECURITY_REDACT_SECRETS")
+            && let Ok(redact) = v.parse::<bool>()
         {
-            self.skills.learning.auto_activate = auto_activate;
+            self.security.redact_secrets = redact;
+        }
+        if let Ok(v) = std::env::var("ZEPH_TIMEOUT_LLM")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.timeouts.llm_seconds = secs;
+        }
+        if let Ok(v) = std::env::var("ZEPH_TIMEOUT_EMBEDDING")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.timeouts.embedding_seconds = secs;
+        }
+        if let Ok(v) = std::env::var("ZEPH_TIMEOUT_A2A")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.timeouts.a2a_seconds = secs;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_REQUIRE_TLS")
+            && let Ok(require) = v.parse::<bool>()
+        {
+            self.a2a.require_tls = require;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_SSRF_PROTECTION")
+            && let Ok(ssrf) = v.parse::<bool>()
+        {
+            self.a2a.ssrf_protection = ssrf;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_MAX_BODY_SIZE")
+            && let Ok(size) = v.parse::<usize>()
+        {
+            self.a2a.max_body_size = size;
         }
     }
 
@@ -592,6 +725,8 @@ impl Config {
             a2a: A2aServerConfig::default(),
             mcp: McpConfig::default(),
             vault: VaultConfig::default(),
+            security: SecurityConfig::default(),
+            timeouts: TimeoutConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

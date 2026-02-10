@@ -311,6 +311,15 @@ impl Channel for TelegramChannel {
             .await?;
         Ok(())
     }
+
+    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+        self.send(&format!("{prompt}\nReply 'yes' to confirm."))
+            .await?;
+        let Some(incoming) = self.rx.recv().await else {
+            return Ok(false);
+        };
+        Ok(incoming.text.trim().eq_ignore_ascii_case("yes"))
+    }
 }
 
 #[cfg(test)]

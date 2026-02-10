@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::pin::Pin;
 
 use eventsource_stream::Eventsource;
@@ -23,12 +24,25 @@ pub enum TaskEvent {
 
 pub struct A2aClient {
     client: reqwest::Client,
+    require_tls: bool,
+    ssrf_protection: bool,
 }
 
 impl A2aClient {
     #[must_use]
     pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            require_tls: false,
+            ssrf_protection: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_security(mut self, require_tls: bool, ssrf_protection: bool) -> Self {
+        self.require_tls = require_tls;
+        self.ssrf_protection = ssrf_protection;
+        self
     }
 
     /// # Errors
@@ -51,6 +65,7 @@ impl A2aClient {
         params: SendMessageParams,
         token: Option<&str>,
     ) -> Result<TaskEventStream, A2aError> {
+        self.validate_endpoint(endpoint).await?;
         let request = JsonRpcRequest::new(METHOD_SEND_STREAMING_MESSAGE, params);
         let mut req = self.client.post(endpoint).json(&request);
         if let Some(t) = token {
@@ -110,6 +125,41 @@ impl A2aClient {
             .await
     }
 
+    async fn validate_endpoint(&self, endpoint: &str) -> Result<(), A2aError> {
+        if self.require_tls && !endpoint.starts_with("https://") {
+            return Err(A2aError::Security(format!(
+                "TLS required but endpoint uses HTTP: {endpoint}"
+            )));
+        }
+
+        if self.ssrf_protection {
+            let url: url::Url = endpoint
+                .parse()
+                .map_err(|e| A2aError::Security(format!("invalid URL: {e}")))?;
+
+            if let Some(host) = url.host_str() {
+                let addrs = tokio::net::lookup_host(format!(
+                    "{}:{}",
+                    host,
+                    url.port_or_known_default().unwrap_or(443)
+                ))
+                .await
+                .map_err(|e| A2aError::Security(format!("DNS resolution failed: {e}")))?;
+
+                for addr in addrs {
+                    if is_private_ip(addr.ip()) {
+                        return Err(A2aError::Security(format!(
+                            "SSRF protection: private IP {} for host {host}",
+                            addr.ip()
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn rpc_call<P: Serialize, R: DeserializeOwned>(
         &self,
         endpoint: &str,
@@ -117,6 +167,7 @@ impl A2aClient {
         params: P,
         token: Option<&str>,
     ) -> Result<R, A2aError> {
+        self.validate_endpoint(endpoint).await?;
         let request = JsonRpcRequest::new(method, params);
         let mut req = self.client.post(endpoint).json(&request);
         if let Some(t) = token {
@@ -125,6 +176,15 @@ impl A2aClient {
         let resp = req.send().await?;
         let rpc_response: JsonRpcResponse<R> = resp.json().await?;
         rpc_response.into_result().map_err(A2aError::from)
+    }
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
 
@@ -223,6 +283,68 @@ mod tests {
     fn a2a_client_construction() {
         let client = A2aClient::new(reqwest::Client::new());
         drop(client);
+    }
+
+    #[test]
+    fn is_private_ip_loopback() {
+        assert!(is_private_ip(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
+        assert!(is_private_ip(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn is_private_ip_private_ranges() {
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
+        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_link_local() {
+        assert!(is_private_ip("169.254.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_unspecified() {
+        assert!(is_private_ip("0.0.0.0".parse().unwrap()));
+        assert!(is_private_ip("::".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_public() {
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn tls_enforcement_rejects_http() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let result = client.validate_endpoint("http://example.com/rpc").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, A2aError::Security(_)));
+        assert!(err.to_string().contains("TLS required"));
+    }
+
+    #[tokio::test]
+    async fn tls_enforcement_allows_https() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let result = client.validate_endpoint("https://example.com/rpc").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ssrf_protection_rejects_localhost() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(false, true);
+        let result = client.validate_endpoint("http://127.0.0.1:8080/rpc").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("SSRF"));
+    }
+
+    #[tokio::test]
+    async fn no_security_allows_http_localhost() {
+        let client = A2aClient::new(reqwest::Client::new());
+        let result = client.validate_endpoint("http://127.0.0.1:8080/rpc").await;
+        assert!(result.is_ok());
     }
 
     #[test]

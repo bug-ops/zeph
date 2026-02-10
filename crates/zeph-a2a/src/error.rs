@@ -19,6 +19,9 @@ pub enum A2aError {
 
     #[error("server error: {0}")]
     Server(String),
+
+    #[error("security policy violation: {0}")]
+    Security(String),
 }
 
 impl From<JsonRpcError> for A2aError {
@@ -64,6 +67,15 @@ mod tests {
 
         let err = A2aError::Stream("unexpected EOF".into());
         assert_eq!(err.to_string(), "SSE stream error: unexpected EOF");
+    }
+
+    #[test]
+    fn security_error_display() {
+        let err = A2aError::Security("TLS required but endpoint uses HTTP".into());
+        assert_eq!(
+            err.to_string(),
+            "security policy violation: TLS required but endpoint uses HTTP"
+        );
     }
 
     #[test]

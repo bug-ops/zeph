@@ -63,6 +63,13 @@ impl Channel for AnyChannel {
             Self::Telegram(c) => c.send_typing().await,
         }
     }
+
+    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+        match self {
+            Self::Cli(c) => c.confirm(prompt).await,
+            Self::Telegram(c) => c.confirm(prompt).await,
+        }
+    }
 }
 
 #[tokio::main]
@@ -141,7 +148,12 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    let shell_executor = ShellExecutor::new(&config.tools.shell);
+    let mut shell_executor = ShellExecutor::new(&config.tools.shell);
+    if config.tools.audit.enabled
+        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+    {
+        shell_executor = shell_executor.with_audit(logger);
+    }
     let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
 
     #[cfg(feature = "mcp")]
@@ -197,7 +209,8 @@ async fn main() -> anyhow::Result<()> {
         config.memory.semantic.recall_limit,
         config.memory.summarization_threshold,
     )
-    .with_shutdown(shutdown_rx);
+    .with_shutdown(shutdown_rx)
+    .with_security(config.security, config.timeouts);
 
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry);
@@ -369,7 +382,8 @@ fn spawn_a2a_server(config: &Config, shutdown_rx: watch::Receiver<bool>) {
         shutdown_rx,
     )
     .with_auth(config.a2a.auth_token.clone())
-    .with_rate_limit(config.a2a.rate_limit);
+    .with_rate_limit(config.a2a.rate_limit)
+    .with_max_body_size(config.a2a.max_body_size);
 
     tracing::info!(
         "A2A server spawned on {}:{}",

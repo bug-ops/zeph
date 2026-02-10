@@ -10,12 +10,14 @@ use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
-use zeph_tools::executor::{ToolError, ToolExecutor};
+use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::channel::Channel;
 #[cfg(feature = "self-learning")]
 use crate::config::LearningConfig;
+use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::context::build_system_prompt;
+use crate::redact::redact_secrets;
 
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
@@ -38,6 +40,8 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     summarization_threshold: usize,
     shutdown: watch::Receiver<bool>,
     active_skill_names: Vec<String>,
+    security: SecurityConfig,
+    timeouts: TimeoutConfig,
     #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
     #[cfg(feature = "self-learning")]
@@ -88,6 +92,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             summarization_threshold: 100,
             shutdown: rx,
             active_skill_names: Vec::new(),
+            security: SecurityConfig::default(),
+            timeouts: TimeoutConfig::default(),
             #[cfg(feature = "self-learning")]
             learning_config: None,
             #[cfg(feature = "self-learning")]
@@ -155,6 +161,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> Self {
         self.mcp_tools = tools;
         self.mcp_registry = registry;
+        self
+    }
+
+    #[must_use]
+    pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
+        self.security = security;
+        self.timeouts = timeouts;
         self
     }
 
@@ -659,12 +672,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         for _ in 0..MAX_SHELL_ITERATIONS {
             self.channel.send_typing().await?;
 
-            let response = if self.provider.supports_streaming() {
-                self.process_response_streaming().await?
-            } else {
-                let resp = self.provider.chat(&self.messages).await?;
-                self.channel.send(&resp).await?;
-                resp
+            let Some(response) = self.call_llm_with_timeout().await? else {
+                return Ok(());
             };
 
             if response.trim().is_empty() {
@@ -692,69 +701,141 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             });
             self.persist_message(Role::Assistant, &response).await;
 
-            match self.tool_executor.execute(&response).await {
-                Ok(Some(output)) => {
-                    if output.summary.trim().is_empty() {
-                        tracing::warn!("tool execution returned empty output");
-                        self.record_skill_outcomes("success", None).await;
-                        return Ok(());
-                    }
-
-                    if output.summary.contains("[error]") || output.summary.contains("[exit code") {
-                        self.record_skill_outcomes("tool_failure", Some(&output.summary))
-                            .await;
-
-                        #[cfg(feature = "self-learning")]
-                        if !self.reflection_used
-                            && self
-                                .attempt_self_reflection(&output.summary, &output.summary)
-                                .await?
-                        {
-                            return Ok(());
-                        }
-                    } else {
-                        self.record_skill_outcomes("success", None).await;
-                    }
-
-                    let formatted_output = format!("[tool output]\n```\n{output}\n```");
-                    self.channel.send(&formatted_output).await?;
-
-                    self.messages.push(Message {
-                        role: Role::User,
-                        content: formatted_output.clone(),
-                    });
-                    self.persist_message(Role::User, &formatted_output).await;
-                }
-                Ok(None) => {
-                    self.record_skill_outcomes("success", None).await;
-                    return Ok(());
-                }
-                Err(ToolError::Blocked { command }) => {
-                    tracing::warn!("blocked command: {command}");
-                    let error_msg = "This command is blocked by security policy.".to_string();
-                    self.channel.send(&error_msg).await?;
-                    return Ok(());
-                }
-                Err(e) => {
-                    let err_str = format!("{e:#}");
-                    tracing::error!("tool execution error: {err_str}");
-                    self.record_skill_outcomes("tool_failure", Some(&err_str))
-                        .await;
-
-                    #[cfg(feature = "self-learning")]
-                    if !self.reflection_used && self.attempt_self_reflection(&err_str, "").await? {
-                        return Ok(());
-                    }
-
-                    self.channel
-                        .send("Tool execution failed. Please try a different approach.")
-                        .await?;
-                    return Ok(());
-                }
+            let result = self.tool_executor.execute(&response).await;
+            if !self.handle_tool_result(&response, result).await? {
+                return Ok(());
             }
         }
 
         Ok(())
+    }
+
+    async fn call_llm_with_timeout(&mut self) -> anyhow::Result<Option<String>> {
+        let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
+
+        if self.provider.supports_streaming() {
+            if let Ok(r) =
+                tokio::time::timeout(llm_timeout, self.process_response_streaming()).await
+            {
+                Ok(Some(r?))
+            } else {
+                self.channel
+                    .send("LLM request timed out. Please try again.")
+                    .await?;
+                Ok(None)
+            }
+        } else {
+            match tokio::time::timeout(llm_timeout, self.provider.chat(&self.messages)).await {
+                Ok(Ok(resp)) => {
+                    let display = self.maybe_redact(&resp);
+                    self.channel.send(&display).await?;
+                    Ok(Some(resp))
+                }
+                Ok(Err(e)) => Err(e),
+                Err(_) => {
+                    self.channel
+                        .send("LLM request timed out. Please try again.")
+                        .await?;
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// Returns `true` if the tool loop should continue.
+    async fn handle_tool_result(
+        &mut self,
+        response: &str,
+        result: Result<Option<ToolOutput>, ToolError>,
+    ) -> anyhow::Result<bool> {
+        match result {
+            Ok(Some(output)) => {
+                if output.summary.trim().is_empty() {
+                    tracing::warn!("tool execution returned empty output");
+                    self.record_skill_outcomes("success", None).await;
+                    return Ok(false);
+                }
+
+                if output.summary.contains("[error]") || output.summary.contains("[exit code") {
+                    self.record_skill_outcomes("tool_failure", Some(&output.summary))
+                        .await;
+
+                    #[cfg(feature = "self-learning")]
+                    if !self.reflection_used
+                        && self
+                            .attempt_self_reflection(&output.summary, &output.summary)
+                            .await?
+                    {
+                        return Ok(false);
+                    }
+                } else {
+                    self.record_skill_outcomes("success", None).await;
+                }
+
+                let formatted_output = format!("[tool output]\n```\n{output}\n```");
+                let display = self.maybe_redact(&formatted_output);
+                self.channel.send(&display).await?;
+
+                self.messages.push(Message {
+                    role: Role::User,
+                    content: formatted_output.clone(),
+                });
+                self.persist_message(Role::User, &formatted_output).await;
+                Ok(true)
+            }
+            Ok(None) => {
+                self.record_skill_outcomes("success", None).await;
+                Ok(false)
+            }
+            Err(ToolError::Blocked { command }) => {
+                tracing::warn!("blocked command: {command}");
+                self.channel
+                    .send("This command is blocked by security policy.")
+                    .await?;
+                Ok(false)
+            }
+            Err(ToolError::ConfirmationRequired { command }) => {
+                let prompt = format!("Allow command: {command}?");
+                if self.channel.confirm(&prompt).await? {
+                    if let Ok(Some(out)) = self.tool_executor.execute_confirmed(response).await {
+                        let formatted = format!("[tool output]\n```\n{out}\n```");
+                        let display = self.maybe_redact(&formatted);
+                        self.channel.send(&display).await?;
+                        self.messages.push(Message {
+                            role: Role::User,
+                            content: formatted.clone(),
+                        });
+                        self.persist_message(Role::User, &formatted).await;
+                    }
+                } else {
+                    self.channel.send("Command cancelled.").await?;
+                }
+                Ok(false)
+            }
+            Err(ToolError::SandboxViolation { path }) => {
+                tracing::warn!("sandbox violation: {path}");
+                self.channel
+                    .send("Command targets a path outside the sandbox.")
+                    .await?;
+                Ok(false)
+            }
+            Err(e) => {
+                let err_str = format!("{e:#}");
+                tracing::error!("tool execution error: {err_str}");
+                self.record_skill_outcomes("tool_failure", Some(&err_str))
+                    .await;
+
+                #[cfg(feature = "self-learning")]
+                if !self.reflection_used && self.attempt_self_reflection(&err_str, "").await? {
+                    return Ok(false);
+                }
+
+                self.channel
+                    .send("Tool execution failed. Please try a different approach.")
+                    .await?;
+                Ok(false)
+            }
+        }
     }
 
     async fn process_response_streaming(&mut self) -> anyhow::Result<String> {
@@ -764,11 +845,20 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         while let Some(chunk_result) = stream.next().await {
             let chunk: String = chunk_result?;
             response.push_str(&chunk);
-            self.channel.send_chunk(&chunk).await?;
+            let display = self.maybe_redact(&chunk);
+            self.channel.send_chunk(&display).await?;
         }
 
         self.channel.flush_chunks().await?;
         Ok(response)
+    }
+
+    fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.security.redact_secrets {
+            redact_secrets(text)
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
     }
 
     async fn persist_message(&self, role: Role, content: &str) {

@@ -257,6 +257,7 @@ async fn agent_respects_configured_timeout() {
         timeout: 1,
         blocked_commands: vec![],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let _executor = ShellExecutor::new(&shell_config);
 
@@ -278,6 +279,7 @@ async fn shell_executor_default_blocked_patterns() {
         timeout: 30,
         blocked_commands: vec![],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -311,6 +313,7 @@ async fn shell_executor_allows_safe_commands() {
         timeout: 5,
         blocked_commands: vec![],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -335,6 +338,7 @@ async fn shell_executor_case_insensitive_blocking() {
         timeout: 30,
         blocked_commands: vec![],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -362,6 +366,7 @@ async fn integration_agent_tool_executor_types() {
         timeout: 30,
         blocked_commands: vec![],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -431,6 +436,7 @@ async fn tool_executor_pattern_matching_overhead() {
             "custom3".to_string(),
         ],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -467,6 +473,7 @@ async fn agent_no_regression_in_error_handling() {
         timeout: 30,
         blocked_commands: vec!["dangerous".to_string()],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 
@@ -535,6 +542,7 @@ async fn agent_tool_executor_error_recovery() {
         timeout: 30,
         blocked_commands: vec!["forbidden".to_string()],
         allowed_commands: vec![],
+        ..ShellConfig::default()
     };
     let executor = ShellExecutor::new(&shell_config);
 

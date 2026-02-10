@@ -106,6 +106,12 @@ port = 8080
 public_url = ""
 # Rate limit: max requests per minute per IP (0 = unlimited)
 rate_limit = 60
+# Require TLS for outbound A2A connections
+require_tls = true
+# Block requests to private/loopback IPs
+ssrf_protection = true
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
 
 [tools]
 # Enable tool execution (bash commands)
@@ -118,9 +124,33 @@ timeout = 30
 blocked_commands = []
 # Commands to remove from the default blocklist (e.g., ["curl", "wget"])
 allowed_commands = []
+# Restrict file access to these paths (empty = current directory only)
+allowed_paths = []
+# Allow network commands (curl, wget, nc)
+allow_network = true
+# Commands that require user confirmation before execution
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
 
 [tools.scrape]
 # HTTP request timeout in seconds
 timeout = 15
 # Maximum response body size in bytes (1MB)
 max_body_bytes = 1048576
+
+[tools.audit]
+# Enable audit logging for tool executions
+enabled = false
+# Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
+destination = "stdout"
+
+[security]
+# Redact secrets (API keys, tokens) from LLM responses before display
+redact_secrets = true
+
+[timeouts]
+# LLM chat completion timeout in seconds
+llm_seconds = 120
+# Embedding generation timeout in seconds
+embedding_seconds = 30
+# A2A remote call timeout in seconds
+a2a_seconds = 30

@@ -8,6 +8,21 @@ fn default_timeout() -> u64 {
     30
 }
 
+fn default_confirm_patterns() -> Vec<String> {
+    vec![
+        "rm ".into(),
+        "git push -f".into(),
+        "git push --force".into(),
+        "drop table".into(),
+        "drop database".into(),
+        "truncate ".into(),
+    ]
+}
+
+fn default_audit_destination() -> String {
+    "stdout".into()
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize)]
 pub struct ToolsConfig {
@@ -17,6 +32,8 @@ pub struct ToolsConfig {
     pub shell: ShellConfig,
     #[serde(default)]
     pub scrape: ScrapeConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
@@ -28,6 +45,21 @@ pub struct ShellConfig {
     pub blocked_commands: Vec<String>,
     #[serde(default)]
     pub allowed_commands: Vec<String>,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    #[serde(default = "default_true")]
+    pub allow_network: bool,
+    #[serde(default = "default_confirm_patterns")]
+    pub confirm_patterns: Vec<String>,
+}
+
+/// Configuration for audit logging of tool executions.
+#[derive(Debug, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_audit_destination")]
+    pub destination: String,
 }
 
 impl Default for ToolsConfig {
@@ -36,6 +68,7 @@ impl Default for ToolsConfig {
             enabled: true,
             shell: ShellConfig::default(),
             scrape: ScrapeConfig::default(),
+            audit: AuditConfig::default(),
         }
     }
 }
@@ -46,6 +79,18 @@ impl Default for ShellConfig {
             timeout: default_timeout(),
             blocked_commands: Vec::new(),
             allowed_commands: Vec::new(),
+            allowed_paths: Vec::new(),
+            allow_network: true,
+            confirm_patterns: default_confirm_patterns(),
+        }
+    }
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            destination: default_audit_destination(),
         }
     }
 }
@@ -117,6 +162,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
+        assert!(!config.audit.enabled);
     }
 
     #[test]
@@ -124,6 +170,9 @@ mod tests {
         let config = ShellConfig::default();
         assert_eq!(config.timeout, 30);
         assert!(config.blocked_commands.is_empty());
+        assert!(config.allowed_paths.is_empty());
+        assert!(config.allow_network);
+        assert!(!config.confirm_patterns.is_empty());
     }
 
     #[test]
@@ -133,8 +182,12 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
+        assert!(config.shell.allow_network);
+        assert!(!config.shell.confirm_patterns.is_empty());
         assert_eq!(config.scrape.timeout, 15);
         assert_eq!(config.scrape.max_body_bytes, 1_048_576);
+        assert!(!config.audit.enabled);
+        assert_eq!(config.audit.destination, "stdout");
     }
 
     #[test]
@@ -180,5 +233,40 @@ mod tests {
     fn default_allowed_commands_empty() {
         let config = ShellConfig::default();
         assert!(config.allowed_commands.is_empty());
+    }
+
+    #[test]
+    fn deserialize_shell_security_fields() {
+        let toml_str = r#"
+            [shell]
+            allowed_paths = ["/tmp", "/home/user"]
+            allow_network = false
+            confirm_patterns = ["rm ", "drop table"]
+        "#;
+
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.shell.allowed_paths, vec!["/tmp", "/home/user"]);
+        assert!(!config.shell.allow_network);
+        assert_eq!(config.shell.confirm_patterns, vec!["rm ", "drop table"]);
+    }
+
+    #[test]
+    fn deserialize_audit_config() {
+        let toml_str = r#"
+            [audit]
+            enabled = true
+            destination = "/var/log/zeph-audit.log"
+        "#;
+
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.audit.enabled);
+        assert_eq!(config.audit.destination, "/var/log/zeph-audit.log");
+    }
+
+    #[test]
+    fn default_audit_config() {
+        let config = AuditConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.destination, "stdout");
     }
 }

@@ -9,7 +9,7 @@ use tokio::sync::watch;
 
 use crate::error::A2aError;
 use crate::types::AgentCard;
-use router::build_router_with_config;
+use router::build_router_with_full_config;
 pub use state::{AppState, ProcessResult, TaskManager, TaskProcessor};
 
 pub struct A2aServer {
@@ -18,6 +18,7 @@ pub struct A2aServer {
     shutdown_rx: watch::Receiver<bool>,
     auth_token: Option<String>,
     rate_limit: u32,
+    max_body_size: usize,
 }
 
 impl A2aServer {
@@ -46,6 +47,7 @@ impl A2aServer {
             shutdown_rx,
             auth_token: None,
             rate_limit: 0,
+            max_body_size: 1_048_576,
         }
     }
 
@@ -61,13 +63,24 @@ impl A2aServer {
         self
     }
 
+    #[must_use]
+    pub fn with_max_body_size(mut self, size: usize) -> Self {
+        self.max_body_size = size;
+        self
+    }
+
     /// Start the HTTP server. Returns when the shutdown signal is received.
     ///
     /// # Errors
     ///
     /// Returns an error if the server fails to bind or encounters a fatal I/O error.
     pub async fn serve(self) -> Result<(), A2aError> {
-        let router = build_router_with_config(self.state, self.auth_token, self.rate_limit);
+        let router = build_router_with_full_config(
+            self.state,
+            self.auth_token,
+            self.rate_limit,
+            self.max_body_size,
+        );
 
         let listener = tokio::net::TcpListener::bind(self.addr)
             .await

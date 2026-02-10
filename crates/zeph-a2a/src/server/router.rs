@@ -17,7 +17,8 @@ use tower_http::limit::RequestBodyLimitLayer;
 use super::handlers::{agent_card_handler, jsonrpc_handler, stream_handler};
 use super::state::AppState;
 
-const MAX_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
+#[cfg(test)]
+const DEFAULT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
 #[derive(Clone)]
 struct AuthConfig {
@@ -30,10 +31,20 @@ struct RateLimitState {
     counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
 }
 
+#[cfg(test)]
 pub fn build_router_with_config(
     state: AppState,
     auth_token: Option<String>,
     rate_limit: u32,
+) -> Router {
+    build_router_with_full_config(state, auth_token, rate_limit, DEFAULT_MAX_BODY_SIZE)
+}
+
+pub fn build_router_with_full_config(
+    state: AppState,
+    auth_token: Option<String>,
+    rate_limit: u32,
+    max_body_size: usize,
 ) -> Router {
     let auth_cfg = AuthConfig { token: auth_token };
     let rate_state = RateLimitState {
@@ -49,7 +60,7 @@ pub fn build_router_with_config(
             rate_limit_middleware,
         ))
         .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware))
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE));
+        .layer(RequestBodyLimitLayer::new(max_body_size));
 
     Router::new()
         .route("/.well-known/agent-card.json", get(agent_card_handler))
@@ -230,7 +241,7 @@ mod tests {
     async fn body_size_limit() {
         let app = build_router_with_config(test_state(), None, 0);
 
-        let oversized = vec![b'a'; MAX_BODY_SIZE + 1];
+        let oversized = vec![b'a'; DEFAULT_MAX_BODY_SIZE + 1];
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/a2a")

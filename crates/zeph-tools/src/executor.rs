@@ -19,11 +19,15 @@ pub enum ToolError {
     #[error("command blocked by policy: {command}")]
     Blocked { command: String },
 
-    /// Reserved for Phase 2/3: propagated from per-block timeout logic.
+    #[error("path not allowed by sandbox: {path}")]
+    SandboxViolation { path: String },
+
+    #[error("command requires confirmation: {command}")]
+    ConfirmationRequired { command: String },
+
     #[error("command timed out after {timeout_secs}s")]
     Timeout { timeout_secs: u64 },
 
-    /// Reserved for Phase 2/3: propagated from granular per-block error handling.
     #[error("execution failed: {0}")]
     Execution(#[from] std::io::Error),
 }
@@ -37,6 +41,15 @@ pub trait ToolExecutor: Send + Sync {
         &self,
         response: &str,
     ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send;
+
+    /// Execute bypassing confirmation checks (called after user approves).
+    /// Default: delegates to `execute`.
+    fn execute_confirmed(
+        &self,
+        response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        self.execute(response)
+    }
 }
 
 /// Extract fenced code blocks with the given language marker from text.
@@ -81,6 +94,25 @@ mod tests {
             command: "rm -rf /".to_owned(),
         };
         assert_eq!(err.to_string(), "command blocked by policy: rm -rf /");
+    }
+
+    #[test]
+    fn tool_error_sandbox_violation_display() {
+        let err = ToolError::SandboxViolation {
+            path: "/etc/shadow".to_owned(),
+        };
+        assert_eq!(err.to_string(), "path not allowed by sandbox: /etc/shadow");
+    }
+
+    #[test]
+    fn tool_error_confirmation_required_display() {
+        let err = ToolError::ConfirmationRequired {
+            command: "rm -rf /tmp".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "command requires confirmation: rm -rf /tmp"
+        );
     }
 
     #[test]

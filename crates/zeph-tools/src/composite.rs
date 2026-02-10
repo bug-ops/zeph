@@ -24,6 +24,13 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
         }
         self.second.execute(response).await
     }
+
+    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        if let Some(output) = self.first.execute_confirmed(response).await? {
+            return Ok(Some(output));
+        }
+        self.second.execute_confirmed(response).await
+    }
 }
 
 #[cfg(test)]

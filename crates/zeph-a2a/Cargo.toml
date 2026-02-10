@@ -19,7 +19,8 @@ serde = { workspace = true, features = ["derive"] }
 subtle = { workspace = true, optional = true }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["net", "sync"] }
+url.workspace = true
 tokio-stream.workspace = true
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = ["limit", "trace"] }

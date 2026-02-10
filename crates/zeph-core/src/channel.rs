@@ -42,6 +42,16 @@ pub trait Channel: Send {
     fn send_typing(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
+
+    /// Request user confirmation for a destructive action. Returns `true` if confirmed.
+    /// Default: auto-confirm (for headless/test scenarios).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn confirm(&mut self, _prompt: &str) -> impl Future<Output = anyhow::Result<bool>> + Send {
+        async { Ok(true) }
+    }
 }
 
 /// CLI channel that reads from stdin and writes to stdout.
@@ -119,6 +129,19 @@ impl Channel for CliChannel {
         println!();
         Ok(())
     }
+
+    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+        let prompt = prompt.to_owned();
+        tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, Write};
+            print!("{prompt} [y/N]: ");
+            std::io::stdout().flush()?;
+            let mut buf = String::new();
+            std::io::stdin().lock().read_line(&mut buf)?;
+            Ok(buf.trim().eq_ignore_ascii_case("y"))
+        })
+        .await?
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +209,12 @@ mod tests {
         ch.send_chunk("test").await.unwrap();
         ch.flush_chunks().await.unwrap();
         assert_eq!(ch.accumulated, "test");
+    }
+
+    #[tokio::test]
+    async fn stub_channel_confirm_auto_approves() {
+        let mut ch = StubChannel;
+        let result = ch.confirm("Delete everything?").await.unwrap();
+        assert!(result);
     }
 }

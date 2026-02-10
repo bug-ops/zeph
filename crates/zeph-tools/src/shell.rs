@@ -1,7 +1,9 @@
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
+use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
 use crate::executor::{ToolError, ToolExecutor, ToolOutput};
 
@@ -10,11 +12,16 @@ const DEFAULT_BLOCKED: &[&str] = &[
     "reboot", "halt",
 ];
 
+const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
+
 /// Bash block extraction and execution via `tokio::process::Command`.
 #[derive(Debug)]
 pub struct ShellExecutor {
     timeout: Duration,
     blocked_commands: Vec<String>,
+    allowed_paths: Vec<PathBuf>,
+    confirm_patterns: Vec<String>,
+    audit_logger: Option<AuditLogger>,
 }
 
 impl ShellExecutor {
@@ -32,18 +39,54 @@ impl ShellExecutor {
             .map(|s| (*s).to_owned())
             .collect();
         blocked.extend(config.blocked_commands.iter().map(|s| s.to_lowercase()));
+
+        if !config.allow_network {
+            for cmd in NETWORK_COMMANDS {
+                let lower = cmd.to_lowercase();
+                if !blocked.contains(&lower) {
+                    blocked.push(lower);
+                }
+            }
+        }
+
         blocked.sort();
         blocked.dedup();
+
+        let allowed_paths = if config.allowed_paths.is_empty() {
+            vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
+        } else {
+            config.allowed_paths.iter().map(PathBuf::from).collect()
+        };
 
         Self {
             timeout: Duration::from_secs(config.timeout),
             blocked_commands: blocked,
+            allowed_paths,
+            confirm_patterns: config.confirm_patterns.clone(),
+            audit_logger: None,
         }
     }
-}
 
-impl ToolExecutor for ShellExecutor {
-    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+    #[must_use]
+    pub fn with_audit(mut self, logger: AuditLogger) -> Self {
+        self.audit_logger = Some(logger);
+        self
+    }
+
+    /// Execute a bash block bypassing the confirmation check (called after user confirms).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError` on blocked commands, sandbox violations, or execution failures.
+    pub async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_inner(response, true).await
+    }
+
+    async fn execute_inner(
+        &self,
+        response: &str,
+        skip_confirm: bool,
+    ) -> Result<Option<ToolOutput>, ToolError> {
         let blocks = extract_bash_blocks(response);
         if blocks.is_empty() {
             return Ok(None);
@@ -55,12 +98,43 @@ impl ToolExecutor for ShellExecutor {
 
         for block in &blocks {
             if let Some(blocked) = self.find_blocked_command(block) {
+                self.log_audit(
+                    block,
+                    AuditResult::Blocked {
+                        reason: format!("blocked command: {blocked}"),
+                    },
+                    0,
+                )
+                .await;
                 return Err(ToolError::Blocked {
                     command: blocked.to_owned(),
                 });
             }
 
+            self.validate_sandbox(block)?;
+
+            if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
+                return Err(ToolError::ConfirmationRequired {
+                    command: pattern.to_owned(),
+                });
+            }
+
+            let start = Instant::now();
             let out = execute_bash(block, self.timeout).await;
+            #[allow(clippy::cast_possible_truncation)]
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            let result = if out.contains("[error]") {
+                AuditResult::Error {
+                    message: out.clone(),
+                }
+            } else if out.contains("timed out") {
+                AuditResult::Timeout
+            } else {
+                AuditResult::Success
+            };
+            self.log_audit(block, result, duration_ms).await;
+
             outputs.push(format!("$ {block}\n{out}"));
         }
 
@@ -69,9 +143,24 @@ impl ToolExecutor for ShellExecutor {
             blocks_executed,
         }))
     }
-}
 
-impl ShellExecutor {
+    fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
+        for token in extract_absolute_paths(code) {
+            let path = PathBuf::from(token);
+            let canonical = path.canonicalize().unwrap_or(path);
+            if !self
+                .allowed_paths
+                .iter()
+                .any(|allowed| canonical.starts_with(allowed))
+            {
+                return Err(ToolError::SandboxViolation {
+                    path: canonical.display().to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn find_blocked_command(&self, code: &str) -> Option<&str> {
         let normalized = code.to_lowercase();
         for blocked in &self.blocked_commands {
@@ -81,10 +170,56 @@ impl ShellExecutor {
         }
         None
     }
+
+    fn find_confirm_command(&self, code: &str) -> Option<&str> {
+        let normalized = code.to_lowercase();
+        for pattern in &self.confirm_patterns {
+            if normalized.contains(pattern.as_str()) {
+                return Some(pattern.as_str());
+            }
+        }
+        None
+    }
+
+    async fn log_audit(&self, command: &str, result: AuditResult, duration_ms: u64) {
+        if let Some(ref logger) = self.audit_logger {
+            let entry = AuditEntry {
+                timestamp: chrono_now(),
+                tool: "shell".into(),
+                command: command.into(),
+                result,
+                duration_ms,
+            };
+            logger.log(&entry).await;
+        }
+    }
+}
+
+impl ToolExecutor for ShellExecutor {
+    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_inner(response, false).await
+    }
+}
+
+fn extract_absolute_paths(code: &str) -> Vec<&str> {
+    code.split_whitespace()
+        .filter(|token| token.starts_with('/'))
+        .map(|token| token.trim_end_matches([';', '&', '|']))
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 fn extract_bash_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "bash")
+}
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{secs}")
 }
 
 async fn execute_bash(code: &str, timeout: Duration) -> String {
@@ -126,6 +261,16 @@ mod tests {
             timeout: 30,
             blocked_commands: Vec::new(),
             allowed_commands: Vec::new(),
+            allowed_paths: Vec::new(),
+            allow_network: true,
+            confirm_patterns: Vec::new(),
+        }
+    }
+
+    fn sandbox_config(allowed_paths: Vec<String>) -> ShellConfig {
+        ShellConfig {
+            allowed_paths,
+            ..default_config()
         }
     }
 
@@ -199,9 +344,8 @@ mod tests {
     #[tokio::test]
     async fn blocked_command_rejected() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["rm -rf /".to_owned()],
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         let response = "Run:\n```bash\nrm -rf /\n```";
@@ -214,8 +358,7 @@ mod tests {
     async fn timeout_enforced() {
         let config = ShellConfig {
             timeout: 1,
-            blocked_commands: Vec::new(),
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         let response = "Run:\n```bash\nsleep 60\n```";
@@ -227,12 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_no_blocks_returns_none() {
-        let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
-            allowed_commands: Vec::new(),
-        };
-        let executor = ShellExecutor::new(&config);
+        let executor = ShellExecutor::new(&default_config());
         let result = executor.execute("plain text, no blocks").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -240,12 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_multiple_blocks_counted() {
-        let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
-            allowed_commands: Vec::new(),
-        };
-        let executor = ShellExecutor::new(&config);
+        let executor = ShellExecutor::new(&default_config());
         let response = "```bash\necho one\n```\n```bash\necho two\n```";
         let result = executor.execute(response).await;
         let output = result.unwrap().unwrap();
@@ -254,7 +387,7 @@ mod tests {
         assert!(output.summary.contains("two"));
     }
 
-    // --- Phase 2: command filtering tests ---
+    // --- command filtering tests ---
 
     #[test]
     fn default_blocked_always_active() {
@@ -276,9 +409,8 @@ mod tests {
     #[test]
     fn user_blocked_additive() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["custom-danger".to_owned()],
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(executor.find_blocked_command("sudo rm").is_some());
@@ -372,9 +504,8 @@ mod tests {
     #[test]
     fn duplicate_patterns_deduped() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["sudo".to_owned(), "sudo".to_owned()],
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         let count = executor
@@ -401,7 +532,7 @@ mod tests {
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
-    // --- Review fixes: network exfiltration patterns ---
+    // --- network exfiltration patterns ---
 
     #[test]
     fn network_exfiltration_blocked() {
@@ -436,18 +567,16 @@ mod tests {
     #[test]
     fn nc_trailing_space_avoids_ncp() {
         let executor = ShellExecutor::new(&default_config());
-        // "nc " with trailing space should not match "ncp" (no trailing space)
         assert!(executor.find_blocked_command("ncp file.txt").is_none());
     }
 
-    // --- Review fixes: user pattern normalization ---
+    // --- user pattern normalization ---
 
     #[test]
     fn mixed_case_user_patterns_deduped() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["Sudo".to_owned(), "sudo".to_owned(), "SUDO".to_owned()],
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         let count = executor
@@ -461,9 +590,8 @@ mod tests {
     #[test]
     fn user_pattern_stored_lowercase() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["MyCustom".to_owned()],
-            allowed_commands: Vec::new(),
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(executor.blocked_commands.iter().any(|c| c == "mycustom"));
@@ -475,9 +603,8 @@ mod tests {
     #[test]
     fn allowed_commands_removes_from_default() {
         let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
             allowed_commands: vec!["curl".to_owned()],
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(
@@ -491,9 +618,8 @@ mod tests {
     #[test]
     fn allowed_commands_case_insensitive() {
         let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
             allowed_commands: vec!["CURL".to_owned()],
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(
@@ -506,9 +632,9 @@ mod tests {
     #[test]
     fn allowed_does_not_override_explicit_block() {
         let config = ShellConfig {
-            timeout: 30,
             blocked_commands: vec!["curl".to_owned()],
             allowed_commands: vec!["curl".to_owned()],
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(
@@ -521,9 +647,8 @@ mod tests {
     #[test]
     fn allowed_unknown_command_ignored() {
         let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
             allowed_commands: vec!["nonexistent-cmd".to_owned()],
+            ..default_config()
         };
         let executor = ShellExecutor::new(&config);
         assert!(executor.find_blocked_command("sudo rm").is_some());
@@ -536,12 +661,7 @@ mod tests {
 
     #[test]
     fn empty_allowed_commands_changes_nothing() {
-        let config = ShellConfig {
-            timeout: 30,
-            blocked_commands: Vec::new(),
-            allowed_commands: Vec::new(),
-        };
-        let executor = ShellExecutor::new(&config);
+        let executor = ShellExecutor::new(&default_config());
         assert!(
             executor
                 .find_blocked_command("curl https://example.com")
@@ -553,5 +673,164 @@ mod tests {
                 .find_blocked_command("wget http://evil.com")
                 .is_some()
         );
+    }
+
+    // --- Phase 1: sandbox tests ---
+
+    #[test]
+    fn extract_absolute_paths_from_code() {
+        let paths = extract_absolute_paths("cat /etc/passwd && ls /var/log");
+        assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
+    }
+
+    #[test]
+    fn extract_absolute_paths_handles_trailing_chars() {
+        let paths = extract_absolute_paths("cat /etc/passwd; echo /var/log|");
+        assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
+    }
+
+    #[test]
+    fn extract_absolute_paths_ignores_relative() {
+        let paths = extract_absolute_paths("cat ./file.txt ../other");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn sandbox_allows_cwd_by_default() {
+        let executor = ShellExecutor::new(&default_config());
+        let cwd = std::env::current_dir().unwrap();
+        let cwd_path = cwd.display().to_string();
+        let code = format!("cat {cwd_path}/file.txt");
+        assert!(executor.validate_sandbox(&code).is_ok());
+    }
+
+    #[test]
+    fn sandbox_rejects_path_outside_allowed() {
+        let config = sandbox_config(vec!["/tmp/test-sandbox".into()]);
+        let executor = ShellExecutor::new(&config);
+        let result = executor.validate_sandbox("cat /etc/passwd");
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn sandbox_no_absolute_paths_passes() {
+        let config = sandbox_config(vec!["/tmp".into()]);
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.validate_sandbox("echo hello").is_ok());
+    }
+
+    // --- Phase 1: allow_network tests ---
+
+    #[test]
+    fn allow_network_false_blocks_network_commands() {
+        let config = ShellConfig {
+            allow_network: false,
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_some()
+        );
+        assert!(
+            executor
+                .find_blocked_command("wget http://example.com")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("nc 10.0.0.1 4444").is_some());
+    }
+
+    #[test]
+    fn allow_network_true_keeps_default_behavior() {
+        let config = ShellConfig {
+            allow_network: true,
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        // Network commands are still blocked by DEFAULT_BLOCKED
+        assert!(
+            executor
+                .find_blocked_command("curl https://example.com")
+                .is_some()
+        );
+    }
+
+    // --- Phase 2a: confirmation tests ---
+
+    #[test]
+    fn find_confirm_command_matches_pattern() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["rm ".into(), "git push -f".into()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        assert_eq!(
+            executor.find_confirm_command("rm /tmp/file.txt"),
+            Some("rm ")
+        );
+        assert_eq!(
+            executor.find_confirm_command("git push -f origin main"),
+            Some("git push -f")
+        );
+    }
+
+    #[test]
+    fn find_confirm_command_case_insensitive() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["drop table".into()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.find_confirm_command("DROP TABLE users").is_some());
+    }
+
+    #[test]
+    fn find_confirm_command_no_match() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["rm ".into()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        assert!(executor.find_confirm_command("echo hello").is_none());
+    }
+
+    #[tokio::test]
+    async fn confirmation_required_returned() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["rm ".into()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        let response = "```bash\nrm file.txt\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_confirmed_skips_confirmation() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["echo".into()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        let response = "```bash\necho confirmed\n```";
+        let result = executor.execute_confirmed(response).await;
+        assert!(result.is_ok());
+        let output = result.unwrap().unwrap();
+        assert!(output.summary.contains("confirmed"));
+    }
+
+    // --- default confirm patterns test ---
+
+    #[test]
+    fn default_confirm_patterns_loaded() {
+        let config = ShellConfig::default();
+        assert!(!config.confirm_patterns.is_empty());
+        assert!(config.confirm_patterns.contains(&"rm ".to_owned()));
+        assert!(config.confirm_patterns.contains(&"git push -f".to_owned()));
     }
 }
