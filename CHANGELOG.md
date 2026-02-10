@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Config examples for candle and orchestrator in `config/default.toml`
 - Setup guide sections for candle local inference and model orchestrator
 - 15 new unit tests for orchestrator, chat templates, generation config, and loader
+- Progressive skill loading: lazy body loading via `OnceLock`, on-demand resource resolution for `scripts/`, `references/`, `assets/` directories, extended frontmatter (`compatibility`, `license`, `metadata`, `allowed-tools`), skill name validation per agentskills.io spec (Issue #115)
+- `SkillMeta`/`Skill` composition pattern: metadata loaded at startup, body deferred until skill activation
+- `SkillRegistry` replaces `Vec<Skill>` in Agent — lazy body access via `get_skill()`/`get_body()`
+- `resource.rs` module: `discover_resources()` + `load_resource()` with path traversal protection via canonicalization
 - Self-learning skill evolution system: automatic skill improvement through failure detection, self-reflection retry, and LLM-generated version updates (Issue #107)
 - `SkillOutcome` enum and `SkillMetrics` for skill execution outcome tracking (Issue #108)
 - Agent self-reflection retry on tool failure with 1-retry-per-message budget (Issue #109)
@@ -45,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[[mcp.servers]]` TOML config section for MCP server connections
 
 ### Changed
+- `Skill` struct refactored: split into `SkillMeta` (lightweight metadata) + `Skill` (meta + body), composition pattern
+- `SkillRegistry` now uses `OnceLock<String>` for lazy body caching instead of eager loading
+- Matcher APIs accept `&[&SkillMeta]` instead of `&[Skill]` — embeddings use description only
+- `Agent` stores `SkillRegistry` directly instead of `Vec<Skill>`
 - `Agent` field `matcher` type changed from `Option<SkillMatcher>` to `Option<SkillMatcherBackend>`
 - Skill matcher creation extracted to `create_skill_matcher()` in `main.rs`
 

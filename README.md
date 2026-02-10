@@ -180,7 +180,7 @@ rate_limit = 60
 
 ## Skills
 
-Zeph uses an embedding-based skill system: only the most relevant skills are injected into the LLM context per query using cosine similarity matching.
+Zeph uses an embedding-based skill system with progressive loading: only metadata is loaded at startup, skill bodies are deferred until activation, and resource files are resolved on demand.
 
 Eleven bundled skills: `web-search`, `web-scrape`, `file-ops`, `system-info`, `git`, `docker`, `api-request`, `setup-guide`, `skill-audit`, `skill-creator`, `mcp-generate`. Use `/skills` in chat to list available skills with usage statistics.
 
@@ -193,24 +193,36 @@ Drop `SKILL.md` files into subdirectories under `skills/` to extend agent capabi
 skills/
   web-search/
     SKILL.md
+    scripts/       # optional: executable scripts
+    references/    # optional: reference documents
+    assets/        # optional: static assets
   git/
     SKILL.md
 ```
 
-`SKILL.md` format:
+`SKILL.md` format (per [agentskills.io](https://agentskills.io) spec):
 
 ```markdown
 ---
 name: web-search
 description: Search the web for information.
+compatibility: requires curl
+license: MIT
+allowed-tools: shell, web-scrape
 ---
 # Instructions
 Use curl to fetch search results...
 ```
 
+Extended frontmatter fields: `compatibility`, `license`, `metadata` (arbitrary key-value pairs), `allowed-tools`. Unknown keys are preserved in metadata for forward compatibility.
+
+**Name validation:** Skill names must be 1-64 characters, lowercase letters/numbers/hyphens only, no leading/trailing/consecutive hyphens, and must match the directory name.
+
+**Progressive loading:** Only metadata (~100 tokens per skill) is loaded at startup for embedding and matching. Full body (<5000 tokens) is loaded lazily on first activation and cached via `OnceLock`. Resource files in `scripts/`, `references/`, `assets/` are loaded on demand with path traversal protection.
+
 **Embedding-based matching:** Per query, only the top-K most relevant skills (default: 5) are selected via cosine similarity of embeddings and injected into the system prompt. Configure with `skills.max_active_skills` or `ZEPH_SKILLS_MAX_ACTIVE`.
 
-**Hot-reload:** SKILL.md file changes are detected via filesystem watcher (500ms debounce) and re-embedded without restart.
+**Hot-reload:** SKILL.md file changes are detected via filesystem watcher (500ms debounce) and re-embedded without restart. Cached bodies are invalidated on reload.
 
 **Priority:** When multiple `skills.paths` contain a skill with the same name, the first path takes precedence.
 
@@ -612,7 +624,7 @@ cargo build --release --no-default-features               # minimal binary
 zeph (binary)
 ├── zeph-core       Agent loop, config, channel trait, context builder
 ├── zeph-llm        LlmProvider trait, Ollama + Claude + Candle backends, orchestrator, embeddings
-├── zeph-skills     SKILL.md parser, registry, embedding matcher, hot-reload watcher
+├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 ├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
