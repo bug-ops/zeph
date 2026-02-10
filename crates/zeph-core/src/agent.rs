@@ -880,9 +880,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(false);
         };
 
-        let skill = match self.registry.get_skill(&name) {
-            Ok(s) => s,
-            Err(_) => return Ok(false),
+        let Ok(skill) = self.registry.get_skill(&name) else {
+            return Ok(false);
         };
 
         let prompt = zeph_skills::evolution::build_reflection_prompt(

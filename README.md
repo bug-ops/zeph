@@ -48,7 +48,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.7.1
+docker pull ghcr.io/bug-ops/zeph:v0.8.0
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -299,7 +299,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.1`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.0`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -359,7 +359,7 @@ ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.7.1 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.0 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up

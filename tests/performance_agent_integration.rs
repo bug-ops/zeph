@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -127,8 +129,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
         *self.execution_time.lock().unwrap() = Some(elapsed);
         *self.call_count.lock().unwrap() += 1;
         self.execution_log.lock().unwrap().push(format!(
-            "execute() called, has_blocks={}, elapsed={:?}",
-            has_blocks, elapsed
+            "execute() called, has_blocks={has_blocks}, elapsed={elapsed:?}",
         ));
 
         if has_blocks {
@@ -169,8 +170,7 @@ async fn agent_integration_no_bash_blocks() {
     // Should be very fast for non-bash response
     assert!(
         elapsed.as_millis() < 500,
-        "Agent run should be fast for non-bash response: {:?}",
-        elapsed
+        "Agent run should be fast for non-bash response: {elapsed:?}",
     );
 
     // Tool executor should be called exactly once (for the single response)
@@ -208,8 +208,7 @@ async fn agent_integration_with_safe_bash_blocks() {
     // Should complete reasonably (bash subprocess is the bottleneck, not tool executor)
     assert!(
         elapsed.as_millis() < 1000,
-        "Agent run should complete: {:?}",
-        elapsed
+        "Agent run should complete: {elapsed:?}",
     );
 
     // With bash blocks in response, execute is called at least once
@@ -239,8 +238,7 @@ async fn tool_executor_overhead_is_minimal() {
         // Mock executor should take < 100us
         assert!(
             time.as_micros() < 100,
-            "Tool executor mock call overhead should be minimal: {:?}",
-            time
+            "Tool executor mock call overhead should be minimal: {time:?}",
         );
     }
 }
@@ -263,7 +261,7 @@ async fn agent_respects_configured_timeout() {
     let _executor = ShellExecutor::new(&shell_config);
 
     // Verify timeout is set correctly
-    let timeout_duration = Duration::from_secs(shell_config.timeout as u64);
+    let timeout_duration = Duration::from_secs(shell_config.timeout);
     assert_eq!(timeout_duration, Duration::from_secs(1));
 }
 
@@ -299,9 +297,7 @@ async fn shell_executor_default_blocked_patterns() {
         let result = executor.execute(cmd).await;
         assert!(
             matches!(result, Err(ToolError::Blocked { .. })),
-            "Command with pattern '{}' should be blocked. Result: {:?}",
-            pattern,
-            result
+            "Command with pattern '{pattern}' should be blocked. Result: {result:?}",
         );
     }
 }
@@ -346,11 +342,10 @@ async fn shell_executor_case_insensitive_blocking() {
     let variations = vec!["SUDO", "Sudo", "SuDo", "sudo", "SUDO rm -rf /"];
 
     for cmd in variations {
-        let result = executor.execute(&format!("```bash\n{}\n```", cmd)).await;
+        let result = executor.execute(&format!("```bash\n{cmd}\n```")).await;
         assert!(
             matches!(result, Err(ToolError::Blocked { .. })),
-            "Should block case-insensitive: {}",
-            cmd
+            "Should block case-insensitive: {cmd}",
         );
     }
 }
@@ -415,15 +410,12 @@ async fn agent_throughput_multiple_responses() {
     // Sanity check: should complete in reasonable time
     assert!(
         elapsed.as_secs() < 10,
-        "5 responses should complete: {:?}",
-        elapsed
+        "5 responses should complete: {elapsed:?}",
     );
 
-    println!(
-        "5-message throughput: {:.0}ms total ({:.0}ms per message)",
-        elapsed.as_millis(),
-        elapsed.as_millis() as f64 / 5.0
-    );
+    let total_ms = elapsed.as_millis() as u64;
+    let per_msg = total_ms as f64 / 5.0;
+    println!("5-message throughput: {total_ms}ms total ({per_msg:.0}ms per message)");
 }
 
 #[tokio::test]
@@ -445,7 +437,8 @@ async fn tool_executor_pattern_matching_overhead() {
     // Build a response with many bash blocks to test pattern matching overhead
     let mut large_response = String::new();
     for i in 0..10 {
-        large_response.push_str(&format!("Block {}:\n```bash\necho test{}\n```\n", i, i));
+        use std::fmt::Write;
+        write!(large_response, "Block {i}:\n```bash\necho test{i}\n```\n").unwrap();
     }
 
     let start = Instant::now();
@@ -456,11 +449,9 @@ async fn tool_executor_pattern_matching_overhead() {
         Ok(Some(output)) => {
             assert_eq!(output.blocks_executed, 10);
             // 10 blocks should process quickly (bash subprocess is the bottleneck)
-            println!(
-                "10-block execution time: {:.0}ms ({:.0}us per block)",
-                elapsed.as_millis(),
-                elapsed.as_micros() as f64 / 10.0
-            );
+            let total_ms = elapsed.as_millis() as u64;
+            let per_block = elapsed.as_micros() as u64 as f64 / 10.0;
+            println!("10-block execution time: {total_ms}ms ({per_block:.0}us per block)");
         }
         _ => panic!("Should execute successfully"),
     }
