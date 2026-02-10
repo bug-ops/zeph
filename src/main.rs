@@ -11,6 +11,7 @@ use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::semantic::SemanticMemory;
+use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 use zeph_skills::registry::SkillRegistry;
@@ -73,7 +74,6 @@ async fn main() -> anyhow::Result<()> {
 
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
-    let skills = registry.into_skills();
 
     let memory = SemanticMemory::new(
         &config.memory.sqlite_path,
@@ -87,8 +87,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("semantic memory enabled, Qdrant connected");
     }
 
-    let matcher = create_skill_matcher(&config, &provider, &skills, &memory).await;
-    let skill_count = skills.len();
+    let all_meta = registry.all_meta();
+    let matcher = create_skill_matcher(&config, &provider, &all_meta, &memory).await;
+    let skill_count = all_meta.len();
     if matcher.is_some() {
         tracing::info!("skill matcher initialized for {skill_count} skill(s)");
     } else {
@@ -161,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
     let agent = Agent::new(
         provider,
         channel,
-        skills,
+        registry,
         matcher,
         config.skills.max_active_skills,
         tool_executor,
@@ -215,7 +216,7 @@ async fn health_check(provider: &AnyProvider) {
 async fn create_skill_matcher(
     config: &Config,
     provider: &AnyProvider,
-    skills: &[zeph_skills::loader::Skill],
+    meta: &[&SkillMeta],
     memory: &SemanticMemory<AnyProvider>,
 ) -> Option<SkillMatcherBackend> {
     let p = provider.clone();
@@ -227,10 +228,7 @@ async fn create_skill_matcher(
 
     if config.memory.semantic.enabled && memory.has_qdrant() {
         match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
-            Ok(mut qm) => match qm
-                .sync(skills, &config.llm.embedding_model, &embed_fn)
-                .await
-            {
+            Ok(mut qm) => match qm.sync(meta, &config.llm.embedding_model, &embed_fn).await {
                 Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),
                 Err(e) => {
                     tracing::warn!("Qdrant skill sync failed, falling back to in-memory: {e:#}");
@@ -242,7 +240,7 @@ async fn create_skill_matcher(
         }
     }
 
-    SkillMatcher::new(skills, &embed_fn)
+    SkillMatcher::new(meta, &embed_fn)
         .await
         .map(SkillMatcherBackend::InMemory)
 }

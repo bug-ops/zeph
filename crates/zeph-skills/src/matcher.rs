@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::loader::Skill;
+use crate::loader::SkillMeta;
 
 /// Type alias for boxed embed futures to work around async closure lifetime issues.
 pub type EmbedFuture = Pin<Box<dyn Future<Output = anyhow::Result<Vec<f32>>> + Send>>;
@@ -15,7 +15,7 @@ impl SkillMatcher {
     /// Create a matcher by pre-computing embeddings for all skill descriptions.
     ///
     /// Returns `None` if all embeddings fail (caller should fall back to all skills).
-    pub async fn new<F>(skills: &[Skill], embed_fn: F) -> Option<Self>
+    pub async fn new<F>(skills: &[&SkillMeta], embed_fn: F) -> Option<Self>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -35,20 +35,21 @@ impl SkillMatcher {
         Some(Self { embeddings })
     }
 
-    /// Match a user query against stored skill embeddings, returning the top-K skills
+    /// Match a user query against stored skill embeddings, returning the top-K indices
     /// ranked by cosine similarity.
     ///
     /// Returns an empty vec if the query embedding fails.
-    pub async fn match_skills<'a, F>(
+    pub async fn match_skills<F>(
         &self,
-        skills: &'a [Skill],
+        count: usize,
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<&'a Skill>
+    ) -> Vec<usize>
     where
         F: Fn(&str) -> EmbedFuture,
     {
+        let _ = count; // total skill count, unused for in-memory matcher
         let query_vec = match embed_fn(query).await {
             Ok(v) => v,
             Err(e) => {
@@ -66,10 +67,7 @@ impl SkillMatcher {
         scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
 
-        scored
-            .into_iter()
-            .filter_map(|(idx, _)| skills.get(idx))
-            .collect()
+        scored.into_iter().map(|(idx, _)| idx).collect()
     }
 }
 
@@ -90,20 +88,20 @@ impl SkillMatcherBackend {
         }
     }
 
-    pub async fn match_skills<'a, F>(
+    pub async fn match_skills<F>(
         &self,
-        skills: &'a [Skill],
+        meta: &[&SkillMeta],
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<&'a Skill>
+    ) -> Vec<usize>
     where
         F: Fn(&str) -> EmbedFuture,
     {
         match self {
-            Self::InMemory(m) => m.match_skills(skills, query, limit, embed_fn).await,
+            Self::InMemory(m) => m.match_skills(meta.len(), query, limit, embed_fn).await,
             #[cfg(feature = "qdrant")]
-            Self::Qdrant(m) => m.match_skills(skills, query, limit, embed_fn).await,
+            Self::Qdrant(m) => m.match_skills(meta, query, limit, embed_fn).await,
         }
     }
 
@@ -114,7 +112,7 @@ impl SkillMatcherBackend {
     /// Returns an error if the Qdrant sync fails.
     pub async fn sync<F>(
         &mut self,
-        skills: &[Skill],
+        meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
     ) -> anyhow::Result<()>
@@ -123,12 +121,12 @@ impl SkillMatcherBackend {
     {
         match self {
             Self::InMemory(_) => {
-                let _ = (skills, embedding_model, &embed_fn);
+                let _ = (meta, embedding_model, &embed_fn);
                 Ok(())
             }
             #[cfg(feature = "qdrant")]
             Self::Qdrant(m) => {
-                m.sync(skills, embedding_model, embed_fn).await?;
+                m.sync(meta, embedding_model, embed_fn).await?;
                 Ok(())
             }
         }
@@ -161,6 +159,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_cosine_similarity_identical() {
@@ -185,11 +184,15 @@ mod tests {
         assert!((sim - (-1.0)).abs() < 1e-6);
     }
 
-    fn make_skill(name: &str, description: &str) -> Skill {
-        Skill {
+    fn make_meta(name: &str, description: &str) -> SkillMeta {
+        SkillMeta {
             name: name.into(),
             description: description.into(),
-            body: String::new(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            skill_dir: PathBuf::new(),
         }
     }
 
@@ -216,55 +219,59 @@ mod tests {
 
     #[tokio::test]
     async fn test_match_skills_returns_top_k() {
-        let skills = vec![
-            make_skill("a", "alpha"),
-            make_skill("b", "beta"),
-            make_skill("c", "gamma"),
+        let metas = vec![
+            make_meta("a", "alpha"),
+            make_meta("b", "beta"),
+            make_meta("c", "gamma"),
         ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&skills, embed_fn_mapping).await.unwrap();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         let matched = matcher
-            .match_skills(&skills, "query", 2, embed_fn_mapping)
+            .match_skills(refs.len(), "query", 2, embed_fn_mapping)
             .await;
 
         assert_eq!(matched.len(), 2);
-        assert_eq!(matched[0].name, "a");
-        assert_eq!(matched[1].name, "b");
+        assert_eq!(matched[0], 0); // "a" / "alpha"
+        assert_eq!(matched[1], 1); // "b" / "beta"
     }
 
     #[tokio::test]
     async fn test_match_skills_empty_skills() {
-        let skills: Vec<Skill> = Vec::new();
-        let matcher = SkillMatcher::new(&skills, embed_fn_constant).await;
+        let refs: Vec<&SkillMeta> = Vec::new();
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await;
         assert!(matcher.is_none());
     }
 
     #[tokio::test]
     async fn test_match_skills_single_skill() {
-        let skills = vec![make_skill("only", "the only skill")];
+        let metas = vec![make_meta("only", "the only skill")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&skills, embed_fn_constant).await.unwrap();
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let matched = matcher
-            .match_skills(&skills, "query", 5, embed_fn_constant)
+            .match_skills(refs.len(), "query", 5, embed_fn_constant)
             .await;
 
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].name, "only");
+        assert_eq!(matched[0], 0);
     }
 
     #[tokio::test]
     async fn test_matcher_new_returns_none_on_failure() {
-        let skills = vec![make_skill("fail", "will fail")];
-        let matcher = SkillMatcher::new(&skills, embed_fn_fail).await;
+        let metas = vec![make_meta("fail", "will fail")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_fail).await;
         assert!(matcher.is_none());
     }
 
     #[tokio::test]
     async fn test_matcher_skips_failed_embeddings() {
-        let skills = vec![
-            make_skill("good", "good skill"),
-            make_skill("bad", "bad skill"),
+        let metas = vec![
+            make_meta("good", "good skill"),
+            make_meta("bad", "bad skill"),
         ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let embed_fn = |text: &str| -> EmbedFuture {
             if text == "bad skill" {
@@ -274,7 +281,7 @@ mod tests {
             }
         };
 
-        let matcher = SkillMatcher::new(&skills, embed_fn).await.unwrap();
+        let matcher = SkillMatcher::new(&refs, embed_fn).await.unwrap();
         assert_eq!(matcher.embeddings.len(), 1);
         assert_eq!(matcher.embeddings[0].0, 0);
     }

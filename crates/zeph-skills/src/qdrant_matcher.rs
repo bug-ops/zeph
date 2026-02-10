@@ -8,7 +8,7 @@ use qdrant_client::qdrant::{
     value::Kind,
 };
 
-use crate::loader::Skill;
+use crate::loader::SkillMeta;
 use crate::matcher::EmbedFuture;
 
 const COLLECTION_NAME: &str = "zeph_skills";
@@ -42,11 +42,10 @@ impl std::fmt::Debug for QdrantSkillMatcher {
     }
 }
 
-fn content_hash(skill: &Skill) -> String {
+fn content_hash(meta: &SkillMeta) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(skill.name.as_bytes());
-    hasher.update(skill.description.as_bytes());
-    hasher.update(skill.body.as_bytes());
+    hasher.update(meta.name.as_bytes());
+    hasher.update(meta.description.as_bytes());
     hasher.finalize().to_hex().to_string()
 }
 
@@ -77,7 +76,7 @@ impl QdrantSkillMatcher {
     /// Returns an error if Qdrant communication fails.
     pub async fn sync<F>(
         &mut self,
-        skills: &[Skill],
+        meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
     ) -> anyhow::Result<SyncStats>
@@ -88,16 +87,13 @@ impl QdrantSkillMatcher {
 
         self.ensure_collection(&embed_fn).await?;
 
-        // Scroll all existing points (payload only, no vectors)
         let existing = self.scroll_all().await?;
 
-        // Build current skill set: name -> (hash, skill_ref)
-        let mut current: HashMap<String, (String, &Skill)> = HashMap::with_capacity(skills.len());
-        for skill in skills {
-            current.insert(skill.name.clone(), (content_hash(skill), skill));
+        let mut current: HashMap<String, (String, &SkillMeta)> = HashMap::with_capacity(meta.len());
+        for m in meta {
+            current.insert(m.name.clone(), (content_hash(m), *m));
         }
 
-        // Detect model change by checking first existing point's embedding_model
         let model_changed = existing.values().any(|stored| {
             stored
                 .get("embedding_model")
@@ -109,9 +105,8 @@ impl QdrantSkillMatcher {
             self.recreate_collection(&embed_fn).await?;
         }
 
-        // Collect changed skills into a batch
         let mut points_to_upsert = Vec::new();
-        for (name, (hash, skill)) in &current {
+        for (name, (hash, m)) in &current {
             let needs_update = if let Some(stored) = existing.get(name) {
                 model_changed || stored.get("content_hash").is_some_and(|h| h != hash)
             } else {
@@ -124,7 +119,7 @@ impl QdrantSkillMatcher {
                 continue;
             }
 
-            let vector = match embed_fn(&skill.description).await {
+            let vector = match embed_fn(&m.description).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!("failed to embed skill '{name}': {e:#}");
@@ -135,7 +130,7 @@ impl QdrantSkillMatcher {
             let point_id = skill_point_id(name);
             let payload: serde_json::Value = serde_json::json!({
                 "skill_name": name,
-                "description": skill.description,
+                "description": m.description,
                 "content_hash": hash,
                 "embedding_model": embedding_model,
             });
@@ -159,7 +154,6 @@ impl QdrantSkillMatcher {
                 .context("failed to upsert skill points")?;
         }
 
-        // Remove orphan points (skills no longer in registry)
         let orphan_ids: Vec<String> = existing
             .keys()
             .filter(|name| !current.contains_key(*name))
@@ -193,13 +187,14 @@ impl QdrantSkillMatcher {
     }
 
     /// Search for relevant skills using Qdrant native vector search.
-    pub async fn match_skills<'a, F>(
+    /// Returns indices into the provided meta slice.
+    pub async fn match_skills<F>(
         &self,
-        skills: &'a [Skill],
+        meta: &[&SkillMeta],
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<&'a Skill>
+    ) -> Vec<usize>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -238,7 +233,7 @@ impl QdrantSkillMatcher {
                     Some(Kind::StringValue(s)) => s.as_str(),
                     _ => return None,
                 };
-                skills.iter().find(|s| s.name == name_str)
+                meta.iter().position(|m| m.name == name_str)
             })
             .collect()
     }
@@ -268,7 +263,6 @@ impl QdrantSkillMatcher {
             return Ok(());
         }
 
-        // Probe vector dimensions by embedding a short test string
         let probe = embed_fn("dimension probe")
             .await
             .context("failed to probe embedding dimensions")?;
@@ -291,7 +285,6 @@ impl QdrantSkillMatcher {
         Ok(())
     }
 
-    /// Scroll all points from the collection, returning `skill_name` -> payload fields.
     async fn scroll_all(&self) -> anyhow::Result<HashMap<String, HashMap<String, String>>> {
         let mut result = HashMap::new();
         let mut offset: Option<qdrant_client::qdrant::PointId> = None;
@@ -342,28 +335,33 @@ impl QdrantSkillMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    fn make_skill(name: &str, description: &str, body: &str) -> Skill {
-        Skill {
+    fn make_meta(name: &str, description: &str) -> SkillMeta {
+        SkillMeta {
             name: name.into(),
             description: description.into(),
-            body: body.into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            skill_dir: PathBuf::new(),
         }
     }
 
     #[test]
     fn test_content_hash_deterministic() {
-        let skill = make_skill("test", "A test skill", "body content");
-        let h1 = content_hash(&skill);
-        let h2 = content_hash(&skill);
+        let meta = make_meta("test", "A test skill");
+        let h1 = content_hash(&meta);
+        let h2 = content_hash(&meta);
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_content_hash_changes_on_modification() {
-        let s1 = make_skill("test", "A test skill", "body v1");
-        let s2 = make_skill("test", "A test skill", "body v2");
-        assert_ne!(content_hash(&s1), content_hash(&s2));
+        let m1 = make_meta("test", "A test skill v1");
+        let m2 = make_meta("test", "A test skill v2");
+        assert_ne!(content_hash(&m1), content_hash(&m2));
     }
 
     #[test]

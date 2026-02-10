@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage};
 use zeph_llm::provider::{LlmProvider, Message};
+use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 // Mock Provider for performance testing
@@ -152,7 +153,14 @@ async fn agent_integration_no_bash_blocks() {
     let channel = MockChannel::new(vec!["hello"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor.clone());
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor.clone(),
+    );
 
     let start = Instant::now();
     let _ = agent.run().await;
@@ -184,7 +192,14 @@ async fn agent_integration_with_safe_bash_blocks() {
     let channel = MockChannel::new(vec!["run echo"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor.clone());
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor.clone(),
+    );
 
     let start = Instant::now();
     let _ = agent.run().await;
@@ -208,7 +223,14 @@ async fn tool_executor_overhead_is_minimal() {
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor.clone());
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor.clone(),
+    );
 
     let _ = agent.run().await;
 
@@ -349,8 +371,14 @@ async fn integration_agent_tool_executor_types() {
     let executor = ShellExecutor::new(&shell_config);
 
     // Should compile and construct successfully
-    let _agent: Agent<MockProvider, MockChannel, ShellExecutor> =
-        Agent::new(provider, channel, vec![], None, 5, executor);
+    let _agent: Agent<MockProvider, MockChannel, ShellExecutor> = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
 }
 
 // ==========================
@@ -368,7 +396,14 @@ async fn agent_throughput_multiple_responses() {
     );
     let executor = InstrumentedMockExecutor::new();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor.clone());
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor.clone(),
+    );
 
     let start = Instant::now();
     let _ = agent.run().await;
@@ -448,7 +483,14 @@ async fn agent_no_regression_in_error_handling() {
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
 
     // Should run without panic
     let _ = agent.run().await;
@@ -477,7 +519,14 @@ async fn agent_no_memory_leaks_in_loop() {
     );
     let executor = InstrumentedMockExecutor::new();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor.clone());
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor.clone(),
+    );
 
     // This should run without panics or excessive allocations
     let _ = agent.run().await;
@@ -502,7 +551,14 @@ async fn agent_tool_executor_error_recovery() {
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["user input"], output_sent.clone());
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
 
     // Should handle the error gracefully
     let result = agent.run().await;

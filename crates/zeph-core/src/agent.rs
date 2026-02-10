@@ -25,7 +25,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     channel: C,
     tool_executor: T,
     messages: Vec<Message>,
-    skills: Vec<Skill>,
+    registry: SkillRegistry,
     skill_paths: Vec<PathBuf>,
     matcher: Option<SkillMatcherBackend>,
     max_active_skills: usize,
@@ -53,13 +53,19 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     pub fn new(
         provider: P,
         channel: C,
-        skills: Vec<Skill>,
+        registry: SkillRegistry,
         matcher: Option<SkillMatcherBackend>,
         max_active_skills: usize,
         tool_executor: T,
     ) -> Self {
-        let skills_prompt = format_skills_prompt(&skills);
+        let all_skills: Vec<Skill> = registry
+            .all_meta()
+            .iter()
+            .filter_map(|m| registry.get_skill(&m.name).ok())
+            .collect();
+        let skills_prompt = format_skills_prompt(&all_skills);
         let system_prompt = build_system_prompt(&skills_prompt);
+
         let (_tx, rx) = watch::channel(false);
         Self {
             provider,
@@ -69,7 +75,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 role: Role::System,
                 content: system_prompt,
             }],
-            skills,
+            registry,
             skill_paths: Vec::new(),
             matcher,
             max_active_skills,
@@ -258,8 +264,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         let mut output = String::from("Available skills:\n\n");
 
-        for skill in &self.skills {
-            let _ = writeln!(output, "- {} — {}", skill.name, skill.description);
+        for meta in self.registry.all_meta() {
+            let _ = writeln!(output, "- {} — {}", meta.name, meta.description);
         }
 
         if let Some(memory) = &self.memory {
@@ -530,9 +536,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn reload_skills(&mut self) {
-        let registry = SkillRegistry::load(&self.skill_paths);
-        self.skills = registry.into_skills();
+        self.registry = SkillRegistry::load(&self.skill_paths);
 
+        let all_meta = self.registry.all_meta();
         let provider = self.provider.clone();
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
@@ -546,50 +552,66 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .is_some_and(SkillMatcherBackend::is_qdrant);
 
         if needs_inmemory_rebuild {
-            self.matcher = SkillMatcher::new(&self.skills, embed_fn)
+            self.matcher = SkillMatcher::new(&all_meta, embed_fn)
                 .await
                 .map(SkillMatcherBackend::InMemory);
         } else if let Some(ref mut backend) = self.matcher
             && let Err(e) = backend
-                .sync(&self.skills, &self.embedding_model, embed_fn)
+                .sync(&all_meta, &self.embedding_model, embed_fn)
                 .await
         {
             tracing::warn!("failed to sync skill embeddings: {e:#}");
         }
 
-        let skills_prompt = format_skills_prompt(&self.skills);
+        let all_skills: Vec<Skill> = self
+            .registry
+            .all_meta()
+            .iter()
+            .filter_map(|m| self.registry.get_skill(&m.name).ok())
+            .collect();
+        let skills_prompt = format_skills_prompt(&all_skills);
         let system_prompt = build_system_prompt(&skills_prompt);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
 
-        tracing::info!("reloaded {} skill(s)", self.skills.len());
+        tracing::info!("reloaded {} skill(s)", self.registry.all_meta().len());
     }
 
     async fn rebuild_system_prompt(&mut self, query: &str) {
-        let active_skills: Vec<&Skill> = if let Some(matcher) = &self.matcher {
+        let all_meta = self.registry.all_meta();
+        let matched_indices: Vec<usize> = if let Some(matcher) = &self.matcher {
             let provider = self.provider.clone();
             matcher
-                .match_skills(&self.skills, query, self.max_active_skills, |text| {
+                .match_skills(&all_meta, query, self.max_active_skills, |text| {
                     let owned = text.to_owned();
                     let p = provider.clone();
                     Box::pin(async move { p.embed(&owned).await })
                 })
                 .await
         } else {
-            self.skills.iter().collect()
+            (0..all_meta.len()).collect()
         };
 
-        self.active_skill_names = active_skills.iter().map(|s| s.name.clone()).collect();
+        self.active_skill_names = matched_indices
+            .iter()
+            .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
+            .collect();
 
-        if !active_skills.is_empty()
+        if !self.active_skill_names.is_empty()
             && let Some(memory) = &self.memory
         {
-            let names: Vec<&str> = active_skills.iter().map(|s| s.name.as_str()).collect();
+            let names: Vec<&str> = self.active_skill_names.iter().map(String::as_str).collect();
             if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
                 tracing::warn!("failed to record skill usage: {e:#}");
             }
         }
+
+        let active_skills: Vec<Skill> = self
+            .active_skill_names
+            .iter()
+            .filter_map(|name| self.registry.get_skill(name).ok())
+            .collect();
 
         let skills_prompt = format_skills_prompt(&active_skills);
         #[allow(unused_mut)]
@@ -601,7 +623,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if !matched_tools.is_empty() {
                 let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
                 tracing::debug!(
-                    skills = ?active_skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                    skills = ?self.active_skill_names,
                     mcp_tools = ?tool_names,
                     "matched items"
                 );
@@ -852,18 +874,19 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         self.reflection_used = true;
 
-        let skill = self
-            .active_skill_names
-            .first()
-            .and_then(|name| self.skills.iter().find(|s| s.name == *name))
-            .cloned();
+        let skill_name = self.active_skill_names.first().cloned();
 
-        let Some(skill) = skill else {
+        let Some(name) = skill_name else {
             return Ok(false);
         };
 
+        let skill = match self.registry.get_skill(&name) {
+            Ok(s) => s,
+            Err(_) => return Ok(false),
+        };
+
         let prompt = zeph_skills::evolution::build_reflection_prompt(
-            &skill.name,
+            skill.name(),
             &skill.body,
             error_context,
             tool_output,
@@ -875,7 +898,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         });
 
         let messages_before = self.messages.len();
-        // Box::pin to break async recursion cycle (process_response → attempt_self_reflection → process_response)
+        // Box::pin to break async recursion cycle (process_response -> attempt_self_reflection -> process_response)
         Box::pin(self.process_response()).await?;
         let retry_succeeded = self.messages.len() > messages_before;
 
@@ -888,7 +911,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
 
-            self.generate_improved_skill(&skill.name, error_context, &successful_response, None)
+            self.generate_improved_skill(&name, error_context, &successful_response, None)
                 .await
                 .ok();
         }
@@ -916,15 +939,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         };
 
-        let skill = self
-            .skills
-            .iter()
-            .find(|s| s.name == skill_name)
-            .ok_or_else(|| anyhow::anyhow!("skill not found: {skill_name}"))?;
+        let skill = self.registry.get_skill(skill_name)?;
 
         memory
             .sqlite()
-            .ensure_skill_version_exists(skill_name, &skill.body, &skill.description)
+            .ensure_skill_version_exists(skill_name, &skill.body, skill.description())
             .await?;
 
         if !self
@@ -957,7 +976,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             config,
             skill_name,
             generated_body,
-            &skill.description,
+            skill.description(),
             error_context,
         )
         .await

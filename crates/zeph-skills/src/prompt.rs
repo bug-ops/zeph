@@ -1,10 +1,9 @@
-use std::borrow::Borrow;
 use std::fmt::Write;
 
 use crate::loader::Skill;
 
 #[must_use]
-pub fn format_skills_prompt<S: Borrow<Skill>>(skills: &[S]) -> String {
+pub fn format_skills_prompt(skills: &[Skill]) -> String {
     if skills.is_empty() {
         return String::new();
     }
@@ -12,11 +11,12 @@ pub fn format_skills_prompt<S: Borrow<Skill>>(skills: &[S]) -> String {
     let mut out = String::from("<available_skills>\n");
 
     for skill in skills {
-        let skill = skill.borrow();
         let _ = write!(
             out,
             "  <skill name=\"{}\">\n    <description>{}</description>\n    <instructions>\n{}\n    </instructions>\n  </skill>\n",
-            skill.name, skill.description, skill.body,
+            skill.name(),
+            skill.description(),
+            skill.body,
         );
     }
 
@@ -27,6 +27,24 @@ pub fn format_skills_prompt<S: Borrow<Skill>>(skills: &[S]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use crate::loader::SkillMeta;
+
+    fn make_skill(name: &str, description: &str, body: &str) -> Skill {
+        Skill {
+            meta: SkillMeta {
+                name: name.into(),
+                description: description.into(),
+                compatibility: None,
+                license: None,
+                metadata: Vec::new(),
+                allowed_tools: Vec::new(),
+                skill_dir: PathBuf::new(),
+            },
+            body: body.into(),
+        }
+    }
 
     #[test]
     fn empty_skills_returns_empty_string() {
@@ -36,11 +54,7 @@ mod tests {
 
     #[test]
     fn single_skill_format() {
-        let skills = vec![Skill {
-            name: "test".into(),
-            description: "A test.".into(),
-            body: "# Hello\nworld".into(),
-        }];
+        let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
         let output = format_skills_prompt(&skills);
         assert!(output.starts_with("<available_skills>"));
@@ -53,16 +67,8 @@ mod tests {
     #[test]
     fn multiple_skills() {
         let skills = vec![
-            Skill {
-                name: "a".into(),
-                description: "desc a".into(),
-                body: "body a".into(),
-            },
-            Skill {
-                name: "b".into(),
-                description: "desc b".into(),
-                body: "body b".into(),
-            },
+            make_skill("a", "desc a", "body a"),
+            make_skill("b", "desc b", "body b"),
         ];
 
         let output = format_skills_prompt(&skills);

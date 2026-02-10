@@ -142,7 +142,9 @@ fn config_defaults_and_env_overrides() {
 #[test]
 fn skill_parse_valid() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("SKILL.md");
+    let skill_dir = dir.path().join("test-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    let path = skill_dir.join("SKILL.md");
     std::fs::write(
         &path,
         "---\nname: test-skill\ndescription: A test.\n---\n# Instructions\nDo stuff.",
@@ -150,8 +152,8 @@ fn skill_parse_valid() {
     .unwrap();
 
     let skill = load_skill(&path).unwrap();
-    assert_eq!(skill.name, "test-skill");
-    assert_eq!(skill.description, "A test.");
+    assert_eq!(skill.name(), "test-skill");
+    assert_eq!(skill.description(), "A test.");
     assert!(skill.body.contains("Do stuff."));
 }
 
@@ -184,7 +186,7 @@ fn skill_registry_scans_temp_dir() {
     .unwrap();
 
     let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
-    assert_eq!(registry.all().len(), 2);
+    assert_eq!(registry.all_meta().len(), 2);
 }
 
 // -- Memory tests --
@@ -246,7 +248,14 @@ async fn agent_roundtrip_mock() {
     let channel = MockChannel::new(vec!["hello"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -261,7 +270,14 @@ async fn agent_multiple_messages() {
     let channel = MockChannel::new(vec!["first", "second", "third"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -287,8 +303,15 @@ async fn agent_with_memory() {
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor)
-        .with_memory(memory, cid, 50, 5, 100);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    )
+    .with_memory(memory, cid, 50, 5, 100);
     agent.run().await.unwrap();
 }
 
@@ -301,7 +324,15 @@ async fn agent_shutdown_via_watch() {
 
     let (tx, rx) = tokio::sync::watch::channel(false);
 
-    let mut agent = Agent::new(provider, channel, vec![], None, 5, executor).with_shutdown(rx);
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    )
+    .with_shutdown(rx);
 
     let _ = tx.send(true);
 
