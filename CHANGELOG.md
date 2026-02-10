@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Shell sandbox: configurable `allowed_paths` directory allowlist and `allow_network` toggle blocking curl/wget/nc in `ShellExecutor` (Issue #91)
+- Sandbox validation before every shell command execution with path canonicalization
+- `tools.shell.allowed_paths` config (empty = working directory only) with `ZEPH_TOOLS_SHELL_ALLOWED_PATHS` env override
+- `tools.shell.allow_network` config (default: true) with `ZEPH_TOOLS_SHELL_ALLOW_NETWORK` env override
+- Interactive confirmation for destructive commands (`rm`, `git push -f`, `DROP TABLE`, etc.) with CLI y/N prompt and Telegram inline keyboard (Issue #92)
+- `tools.shell.confirm_patterns` config with default destructive command patterns
+- `Channel::confirm()` trait method with default auto-confirm for headless/test scenarios
+- `ToolError::ConfirmationRequired` and `ToolError::SandboxViolation` variants
+- `execute_confirmed()` method on `ToolExecutor` for confirmation bypass after user approval
+- A2A TLS enforcement: reject HTTP endpoints when `a2a.require_tls = true` (Issue #92)
+- A2A SSRF protection: block private IP ranges (RFC 1918, loopback, link-local) with DNS resolution (Issue #92)
+- Configurable A2A server payload size limit via `a2a.max_body_size` (default: 1 MiB)
+- Structured JSON audit logging for all tool executions with stdout or file destination (Issue #93)
+- `AuditLogger` with `AuditEntry` (timestamp, tool, command, result, duration) and `AuditResult` enum
+- `[tools.audit]` config section with `ZEPH_TOOLS_AUDIT_ENABLED` and `ZEPH_TOOLS_AUDIT_DESTINATION` env overrides
+- Secret redaction in LLM responses: detect API keys, tokens, passwords, private keys and replace with `[REDACTED]` (Issue #93)
+- Whitespace-preserving `redact_secrets()` scanner with zero-allocation fast path via `Cow<str>`
+- `[security]` config section with `redact_secrets` toggle (default: true)
+- Configurable timeout policies for LLM, embedding, and A2A operations (Issue #93)
+- `[timeouts]` config section with `llm_seconds`, `embedding_seconds`, `a2a_seconds`
+- LLM calls wrapped with `tokio::time::timeout` in agent loop
+
 ## [0.8.0] - 2026-02-10
 
 ### Added

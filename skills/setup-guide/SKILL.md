@@ -85,9 +85,15 @@ export ZEPH_A2A_PORT=8080
 export ZEPH_A2A_PUBLIC_URL=https://my-agent.example.com
 export ZEPH_A2A_AUTH_TOKEN=secret-token
 export ZEPH_A2A_RATE_LIMIT=60
+export ZEPH_A2A_REQUIRE_TLS=true
+export ZEPH_A2A_SSRF_PROTECTION=true
+export ZEPH_A2A_MAX_BODY_SIZE=1048576
 ```
 
 Rate limit: requests per minute per IP (0 = unlimited).
+TLS enforcement: reject HTTP endpoints when `require_tls = true`.
+SSRF protection: block private IPs (10.x, 172.16.x, 192.168.x, 127.x) in outbound A2A calls.
+Max body size: request payload limit in bytes (default 1 MiB).
 
 ## Tools
 
@@ -97,9 +103,20 @@ Shell:
 ```bash
 export ZEPH_TOOLS_TIMEOUT=30
 export ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS=curl,wget
+export ZEPH_TOOLS_SHELL_ALLOWED_PATHS=/home/user/workspace,/tmp
+export ZEPH_TOOLS_SHELL_ALLOW_NETWORK=true
 ```
 Config: `tools.shell.blocked_commands` — additional command patterns to block.
 Config: `tools.shell.allowed_commands` — commands to remove from the default blocklist.
+Config: `tools.shell.allowed_paths` — restrict filesystem access (empty = cwd only).
+Config: `tools.shell.allow_network` — `false` blocks curl/wget/nc.
+Config: `tools.shell.confirm_patterns` — destructive commands requiring user confirmation.
+
+Audit logging:
+```bash
+export ZEPH_TOOLS_AUDIT_ENABLED=true
+export ZEPH_TOOLS_AUDIT_DESTINATION=./data/audit.jsonl
+```
 
 Scrape:
 ```bash
@@ -187,3 +204,21 @@ export ZEPH_SKILLS_MAX_ACTIVE=5
 ```
 
 Config: `skills.paths` (default: `["./skills"]`). Top-K skills selected per query via embedding similarity. File changes detected automatically (hot-reload).
+
+## Security
+
+Secret redaction:
+```bash
+export ZEPH_SECURITY_REDACT_SECRETS=true
+```
+
+Scans LLM responses for API keys, tokens, passwords, and private keys. Replaces detected secrets with `[REDACTED]`.
+
+Timeouts:
+```bash
+export ZEPH_TIMEOUT_LLM=120
+export ZEPH_TIMEOUT_EMBEDDING=30
+export ZEPH_TIMEOUT_A2A=30
+```
+
+Config: `timeouts.llm_seconds`, `timeouts.embedding_seconds`, `timeouts.a2a_seconds`.

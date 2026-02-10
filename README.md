@@ -130,11 +130,27 @@ enabled = true
 
 [tools.shell]
 timeout = 30
-blocked_commands = []  # Additional patterns beyond defaults
+blocked_commands = []
+allowed_commands = []
+allowed_paths = []          # Directories shell can access (empty = cwd only)
+allow_network = true        # false blocks curl/wget/nc
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
 
 [tools.scrape]
 timeout = 15
 max_body_bytes = 1048576  # 1MB
+
+[tools.audit]
+enabled = false             # Structured JSON audit log for tool executions
+destination = "stdout"      # "stdout" or file path
+
+[security]
+redact_secrets = true       # Redact API keys/tokens in LLM responses
+
+[timeouts]
+llm_seconds = 120           # LLM chat completion timeout
+embedding_seconds = 30      # Embedding generation timeout
+a2a_seconds = 30            # A2A remote call timeout
 
 [vault]
 backend = "env"  # "env" (default) or "age"
@@ -151,7 +167,7 @@ rate_limit = 60
 </details>
 
 > [!IMPORTANT]
-> Shell commands are filtered for safety. See [Security](#security) section for complete list of 12 blocked patterns and customization options.
+> Shell commands are sandboxed with path restrictions, network control, and destructive command confirmation. See [Security](#security) for details.
 
 <details>
 <summary><b>🔧 Environment Variables</b> (click to expand)</summary>
@@ -178,6 +194,17 @@ rate_limit = 60
 | `ZEPH_A2A_PUBLIC_URL` | Public URL for agent card discovery |
 | `ZEPH_A2A_AUTH_TOKEN` | Bearer token for A2A server authentication |
 | `ZEPH_A2A_RATE_LIMIT` | Max requests per IP per minute (default: 60) |
+| `ZEPH_A2A_REQUIRE_TLS` | Require HTTPS for outbound A2A connections (default: true) |
+| `ZEPH_A2A_SSRF_PROTECTION` | Block private/loopback IPs in A2A client (default: true) |
+| `ZEPH_A2A_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
+| `ZEPH_TOOLS_SHELL_ALLOWED_PATHS` | Comma-separated directories shell can access (empty = cwd) |
+| `ZEPH_TOOLS_SHELL_ALLOW_NETWORK` | Allow network commands from shell (default: true) |
+| `ZEPH_TOOLS_AUDIT_ENABLED` | Enable audit logging for tool executions (default: false) |
+| `ZEPH_TOOLS_AUDIT_DESTINATION` | Audit log destination: `stdout` or file path |
+| `ZEPH_SECURITY_REDACT_SECRETS` | Redact secrets in LLM responses (default: true) |
+| `ZEPH_TIMEOUT_LLM` | LLM call timeout in seconds (default: 120) |
+| `ZEPH_TIMEOUT_EMBEDDING` | Embedding generation timeout in seconds (default: 30) |
+| `ZEPH_TIMEOUT_A2A` | A2A remote call timeout in seconds (default: 30) |
 
 </details>
 
@@ -417,18 +444,75 @@ Zeph implements defense-in-depth security for safe AI agent operations in produc
 **Configuration:**
 ```toml
 [tools.shell]
-timeout = 30  # Command execution timeout
+timeout = 30
 blocked_commands = ["custom_pattern"]  # Additional patterns (additive to defaults)
+allowed_paths = ["/home/user/workspace"]  # Restrict filesystem access
+allow_network = true  # false blocks curl/wget/nc
+confirm_patterns = ["rm ", "git push -f"]  # Destructive command patterns
 ```
 
 > [!IMPORTANT]
-> Custom patterns are **additive** — you cannot weaken default security. Matching is case-insensitive (`SUDO`, `Sudo`, `sudo` all blocked).
+> Custom blocked patterns are **additive** — you cannot weaken default security. Matching is case-insensitive.
+
+### Shell Sandbox
+
+Commands are validated against a configurable filesystem allowlist before execution:
+
+- `allowed_paths = []` (default) restricts access to the working directory only
+- Paths are canonicalized to prevent traversal attacks (`../../etc/passwd`)
+- `allow_network = false` blocks network tools (`curl`, `wget`, `nc`, `ncat`, `netcat`)
+
+### Destructive Command Confirmation
+
+Commands matching `confirm_patterns` trigger an interactive confirmation before execution:
+
+- **CLI:** `y/N` prompt on stdin
+- **Telegram:** inline keyboard with Confirm/Cancel buttons
+- Default patterns: `rm`, `git push -f`, `git push --force`, `drop table`, `drop database`, `truncate`
+- Configurable via `tools.shell.confirm_patterns` in TOML
+
+### Audit Logging
+
+Structured JSON audit log for all tool executions:
+
+```toml
+[tools.audit]
+enabled = true
+destination = "./data/audit.jsonl"  # or "stdout"
+```
+
+Each entry includes timestamp, tool name, command, result (success/blocked/error/timeout), and duration in milliseconds.
+
+### Secret Redaction
+
+LLM responses are scanned for common secret patterns before display:
+
+- Detected patterns: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`
+- Secrets replaced with `[REDACTED]` preserving original whitespace formatting
+- Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
+
+### Timeout Policies
+
+Configurable per-operation timeouts prevent hung connections:
+
+```toml
+[timeouts]
+llm_seconds = 120       # LLM chat completion
+embedding_seconds = 30  # Embedding generation
+a2a_seconds = 30        # A2A remote calls
+```
+
+### A2A Network Security
+
+- **TLS enforcement:** `a2a.require_tls = true` rejects HTTP endpoints (HTTPS only)
+- **SSRF protection:** `a2a.ssrf_protection = true` blocks private IP ranges (RFC 1918, loopback, link-local) via DNS resolution
+- **Payload limits:** `a2a.max_body_size` caps request body (default: 1 MiB)
 
 **Safe execution model:**
-- Commands parsed for blocked patterns before execution
+- Commands parsed for blocked patterns, then sandbox-validated, then confirmation-checked
 - Timeout enforcement (default: 30s, configurable)
-- Sandboxed execution with restricted environment
 - Full errors logged to system, sanitized messages shown to users
+- Audit trail for all tool executions (when enabled)
 
 ### Container Security
 
