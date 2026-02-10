@@ -549,7 +549,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn reload_skills(&mut self) {
-        self.registry = SkillRegistry::load(&self.skill_paths);
+        let new_registry = SkillRegistry::load(&self.skill_paths);
+        if new_registry.fingerprint() == self.registry.fingerprint() {
+            return;
+        }
+        self.registry = new_registry;
 
         let all_meta = self.registry.all_meta();
         let provider = self.provider.clone();

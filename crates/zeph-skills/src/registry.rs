@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -12,12 +13,14 @@ struct SkillEntry {
 #[derive(Default)]
 pub struct SkillRegistry {
     entries: Vec<SkillEntry>,
+    fingerprint: u64,
 }
 
 impl std::fmt::Debug for SkillRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SkillRegistry")
             .field("count", &self.entries.len())
+            .field("fingerprint", &self.fingerprint)
             .finish()
     }
 }
@@ -61,12 +64,39 @@ impl SkillRegistry {
             }
         }
 
-        Self { entries }
+        let fingerprint = Self::compute_fingerprint(&entries);
+        Self {
+            entries,
+            fingerprint,
+        }
     }
 
     /// Reload skills from the given paths, replacing the current set.
     pub fn reload(&mut self, paths: &[impl AsRef<Path>]) {
         *self = Self::load(paths);
+    }
+
+    /// Content fingerprint based on file metadata (name + mtime + size).
+    /// Returns 0 for empty registries.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        self.fingerprint
+    }
+
+    fn compute_fingerprint(entries: &[SkillEntry]) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        entries.len().hash(&mut hasher);
+        for entry in entries {
+            entry.meta.name.hash(&mut hasher);
+            let skill_path = entry.meta.skill_dir.join("SKILL.md");
+            if let Ok(meta) = std::fs::metadata(&skill_path) {
+                meta.len().hash(&mut hasher);
+                if let Ok(mtime) = meta.modified() {
+                    mtime.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
     }
 
     #[must_use]
