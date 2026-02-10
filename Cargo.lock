@@ -7282,7 +7282,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -7302,7 +7302,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "axum 0.8.8",
  "eventsource-stream",
@@ -7325,7 +7325,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "criterion",
@@ -7338,7 +7338,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "age",
  "anyhow",
@@ -7360,7 +7360,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -7381,7 +7381,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -7398,7 +7398,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "qdrant-client",
@@ -7414,7 +7414,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -7430,7 +7430,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "reqwest 0.13.2",
  "scrape-core",

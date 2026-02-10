@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-02-10
+
+### Changed
+- Enable all non-platform features by default: `orchestrator`, `self-learning`, `mcp`, `vault-age`, `candle`
+- Features `metal` and `cuda` remain opt-in (platform-specific GPU accelerators)
+- CI clippy uses default features instead of explicit feature list
+- Docker images now include skill runtime dependencies: `curl`, `wget`, `git`, `jq`, `file`, `findutils`, `procps-ng`
+
 ## [0.8.1] - 2026-02-10
 
 ### Added

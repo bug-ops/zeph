@@ -18,7 +18,7 @@ model = "claude-sonnet-4-5-20250929"
 # Maximum tokens for Claude responses
 max_tokens = 4096
 
-# Candle local inference (requires --features candle)
+# Candle local inference (enabled by default, disable with --no-default-features)
 # [llm.candle]
 # source = "huggingface"  # "local" or "huggingface"
 # repo_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
@@ -35,7 +35,7 @@ max_tokens = 4096
 # seed = 42
 # repeat_penalty = 1.1
 
-# Model orchestrator (requires --features orchestrator)
+# Model orchestrator (enabled by default)
 # Routes tasks to different providers with fallback chains
 # [llm.orchestrator]
 # default = "ollama"
@@ -56,7 +56,7 @@ paths = ["./skills"]
 max_active_skills = 5
 
 [skills.learning]
-# Enable self-learning skill improvement (requires self-learning feature)
+# Enable self-learning skill improvement (feature enabled by default, runtime toggle)
 enabled = false
 # Automatically activate improved versions (false = require manual approval)
 auto_activate = false

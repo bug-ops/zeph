@@ -2,7 +2,9 @@ FROM container-registry.oracle.com/os/oraclelinux:9-slim
 
 ARG TARGETARCH
 
-RUN microdnf install -y shadow-utils ca-certificates && \
+RUN microdnf install -y \
+    shadow-utils ca-certificates \
+    curl wget git jq file findutils procps-ng && \
     microdnf clean all && \
     useradd --system --no-create-home --shell /sbin/nologin zeph
 
