@@ -79,6 +79,7 @@ candle = ["zeph-llm/candle"]
 metal = ["zeph-llm/metal"]
 cuda = ["zeph-llm/cuda"]
 orchestrator = ["zeph-llm/orchestrator"]
+self-learning = ["zeph-core/self-learning"]
 
 [dependencies]
 anyhow.workspace = true

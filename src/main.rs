@@ -180,6 +180,9 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry);
 
+    #[cfg(feature = "self-learning")]
+    let agent = agent.with_learning(config.skills.learning);
+
     let mut agent = agent;
 
     agent.load_history().await?;

@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 qdrant = ["dep:blake3", "dep:qdrant-client", "dep:serde_json", "dep:uuid"]
+self-learning = []
 
 [dependencies]
 anyhow.workspace = true

@@ -1,5 +1,7 @@
 //! SKILL.md loader, skill registry, and prompt formatter.
 
+#[cfg(feature = "self-learning")]
+pub mod evolution;
 pub mod loader;
 pub mod matcher;
 pub mod prompt;

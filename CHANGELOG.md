@@ -17,6 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Config examples for candle and orchestrator in `config/default.toml`
 - Setup guide sections for candle local inference and model orchestrator
 - 15 new unit tests for orchestrator, chat templates, generation config, and loader
+- Self-learning skill evolution system: automatic skill improvement through failure detection, self-reflection retry, and LLM-generated version updates (Issue #107)
+- `SkillOutcome` enum and `SkillMetrics` for skill execution outcome tracking (Issue #108)
+- Agent self-reflection retry on tool failure with 1-retry-per-message budget (Issue #109)
+- Skill version generation and storage in SQLite with auto-activate and manual approval modes (Issue #110)
+- Automatic rollback when skill version success rate drops below threshold (Issue #111)
+- `/skill stats`, `/skill versions`, `/skill activate`, `/skill approve`, `/skill reset` commands for version management (Issue #111)
+- `/feedback` command for explicit user feedback on skill quality (Issue #112)
+- `LearningConfig` with TOML config section `[skills.learning]` and env var overrides
+- `self-learning` feature flag on `zeph-skills`, `zeph-core`, and root binary
+- SQLite migration 005: `skill_versions` and `skill_outcomes` tables
 - Bundled `setup-guide` skill with configuration reference for all env vars, TOML keys, and operating modes
 - Bundled `skill-audit` skill for spec compliance and security review of installed skills
 - `allowed_commands` shell config to override default blocklist entries via `ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS`

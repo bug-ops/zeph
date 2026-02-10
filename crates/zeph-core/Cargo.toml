@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 mcp = ["dep:zeph-mcp"]
+self-learning = ["zeph-skills/self-learning"]
 
 [dependencies]
 anyhow.workspace = true

@@ -55,6 +55,24 @@ paths = ["./skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
 
+[skills.learning]
+# Enable self-learning skill improvement (requires self-learning feature)
+enabled = false
+# Automatically activate improved versions (false = require manual approval)
+auto_activate = false
+# Minimum failures before generating improvement
+min_failures = 3
+# Success rate threshold below which improvement is triggered (0.0-1.0)
+improve_threshold = 0.7
+# Success rate below which automatic rollback occurs (0.0-1.0)
+rollback_threshold = 0.5
+# Minimum evaluations before rollback decision
+min_evaluations = 5
+# Maximum auto-generated versions per skill
+max_versions = 10
+# Cooldown between improvements for same skill (minutes)
+cooldown_minutes = 60
+
 [memory]
 # SQLite database path for conversation history
 sqlite_path = "./data/zeph.db"

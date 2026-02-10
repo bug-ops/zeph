@@ -165,10 +165,66 @@ pub struct SkillsConfig {
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
     pub max_active_skills: usize,
+    #[serde(default)]
+    pub learning: LearningConfig,
 }
 
 fn default_max_active_skills() -> usize {
     5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LearningConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_activate: bool,
+    #[serde(default = "default_min_failures")]
+    pub min_failures: u32,
+    #[serde(default = "default_improve_threshold")]
+    pub improve_threshold: f64,
+    #[serde(default = "default_rollback_threshold")]
+    pub rollback_threshold: f64,
+    #[serde(default = "default_min_evaluations")]
+    pub min_evaluations: u32,
+    #[serde(default = "default_max_versions")]
+    pub max_versions: u32,
+    #[serde(default = "default_cooldown_minutes")]
+    pub cooldown_minutes: u64,
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_activate: false,
+            min_failures: default_min_failures(),
+            improve_threshold: default_improve_threshold(),
+            rollback_threshold: default_rollback_threshold(),
+            min_evaluations: default_min_evaluations(),
+            max_versions: default_max_versions(),
+            cooldown_minutes: default_cooldown_minutes(),
+        }
+    }
+}
+
+fn default_min_failures() -> u32 {
+    3
+}
+fn default_improve_threshold() -> f64 {
+    0.7
+}
+fn default_rollback_threshold() -> f64 {
+    0.5
+}
+fn default_min_evaluations() -> u32 {
+    5
+}
+fn default_max_versions() -> u32 {
+    10
+}
+fn default_cooldown_minutes() -> u64 {
+    60
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +385,7 @@ impl Config {
         Ok(config)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             self.llm.provider = v;
@@ -426,6 +483,16 @@ impl Config {
         {
             self.a2a.rate_limit = rate;
         }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.skills.learning.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE")
+            && let Ok(auto_activate) = v.parse::<bool>()
+        {
+            self.skills.learning.auto_activate = auto_activate;
+        }
     }
 
     fn default() -> Self {
@@ -445,6 +512,7 @@ impl Config {
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
+                learning: LearningConfig::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: "./data/zeph.db".into(),
@@ -470,7 +538,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 13] = [
+    const ENV_KEYS: [&str; 15] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -484,6 +552,8 @@ mod tests {
         "ZEPH_TELEGRAM_TOKEN",
         "ZEPH_TOOLS_TIMEOUT",
         "ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS",
+        "ZEPH_SKILLS_LEARNING_ENABLED",
+        "ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE",
     ];
 
     fn clear_env() {
@@ -1005,5 +1075,144 @@ context_budget_tokens = 4096
         unsafe { std::env::remove_var("ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS") };
 
         assert_eq!(config.memory.context_budget_tokens, 8192);
+    }
+
+    #[test]
+    fn learning_config_defaults() {
+        let config = Config::default();
+        let lc = &config.skills.learning;
+        assert!(!lc.enabled);
+        assert!(!lc.auto_activate);
+        assert_eq!(lc.min_failures, 3);
+        assert!((lc.improve_threshold - 0.7).abs() < f64::EPSILON);
+        assert!((lc.rollback_threshold - 0.5).abs() < f64::EPSILON);
+        assert_eq!(lc.min_evaluations, 5);
+        assert_eq!(lc.max_versions, 10);
+        assert_eq!(lc.cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn parse_toml_with_learning_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("learn.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[skills.learning]
+enabled = true
+auto_activate = true
+min_failures = 5
+improve_threshold = 0.6
+rollback_threshold = 0.4
+min_evaluations = 10
+max_versions = 20
+cooldown_minutes = 120
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        let lc = &config.skills.learning;
+        assert!(lc.enabled);
+        assert!(lc.auto_activate);
+        assert_eq!(lc.min_failures, 5);
+        assert!((lc.improve_threshold - 0.6).abs() < f64::EPSILON);
+        assert!((lc.rollback_threshold - 0.4).abs() < f64::EPSILON);
+        assert_eq!(lc.min_evaluations, 10);
+        assert_eq!(lc.max_versions, 20);
+        assert_eq!(lc.cooldown_minutes, 120);
+    }
+
+    #[test]
+    fn parse_toml_without_learning_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_learn.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(!config.skills.learning.enabled);
+        assert_eq!(config.skills.learning.min_failures, 3);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_learning_enabled() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.skills.learning.enabled);
+
+        unsafe { std::env::set_var("ZEPH_SKILLS_LEARNING_ENABLED", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_SKILLS_LEARNING_ENABLED") };
+
+        assert!(config.skills.learning.enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_learning_auto_activate() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.skills.learning.auto_activate);
+
+        unsafe { std::env::set_var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE") };
+
+        assert!(config.skills.learning.auto_activate);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_learning_invalid_ignored() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.skills.learning.enabled);
+
+        unsafe { std::env::set_var("ZEPH_SKILLS_LEARNING_ENABLED", "not-a-bool") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_SKILLS_LEARNING_ENABLED") };
+
+        assert!(!config.skills.learning.enabled);
     }
 }
