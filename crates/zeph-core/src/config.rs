@@ -33,6 +33,8 @@ pub struct LlmConfig {
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
     pub cloud: Option<CloudLlmConfig>,
+    pub candle: Option<CandleConfig>,
+    pub orchestrator: Option<OrchestratorConfig>,
 }
 
 fn default_embedding_model() -> String {
@@ -43,6 +45,119 @@ fn default_embedding_model() -> String {
 pub struct CloudLlmConfig {
     pub model: String,
     pub max_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CandleConfig {
+    #[serde(default = "default_candle_source")]
+    pub source: String,
+    #[serde(default)]
+    pub local_path: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default = "default_chat_template")]
+    pub chat_template: String,
+    #[serde(default = "default_candle_device")]
+    pub device: String,
+    #[serde(default)]
+    pub embedding_repo: Option<String>,
+    #[serde(default)]
+    pub generation: GenerationParams,
+}
+
+fn default_candle_source() -> String {
+    "huggingface".into()
+}
+
+fn default_chat_template() -> String {
+    "chatml".into()
+}
+
+fn default_candle_device() -> String {
+    "cpu".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenerationParams {
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    #[serde(default = "default_repeat_penalty")]
+    pub repeat_penalty: f32,
+    #[serde(default = "default_repeat_last_n")]
+    pub repeat_last_n: usize,
+}
+
+const MAX_TOKENS_CAP: usize = 32768;
+
+impl GenerationParams {
+    #[must_use]
+    pub fn capped_max_tokens(&self) -> usize {
+        self.max_tokens.min(MAX_TOKENS_CAP)
+    }
+}
+
+impl Default for GenerationParams {
+    fn default() -> Self {
+        Self {
+            temperature: default_temperature(),
+            top_p: None,
+            top_k: None,
+            max_tokens: default_max_tokens(),
+            seed: default_seed(),
+            repeat_penalty: default_repeat_penalty(),
+            repeat_last_n: default_repeat_last_n(),
+        }
+    }
+}
+
+fn default_temperature() -> f64 {
+    0.7
+}
+
+fn default_max_tokens() -> usize {
+    2048
+}
+
+fn default_seed() -> u64 {
+    42
+}
+
+fn default_repeat_penalty() -> f32 {
+    1.1
+}
+
+fn default_repeat_last_n() -> usize {
+    64
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrchestratorConfig {
+    pub default: String,
+    pub embed: String,
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, OrchestratorProviderConfig>,
+    #[serde(default)]
+    pub routes: std::collections::HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrchestratorProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -324,6 +439,8 @@ impl Config {
                 model: "mistral:7b".into(),
                 embedding_model: default_embedding_model(),
                 cloud: None,
+                candle: None,
+                orchestrator: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

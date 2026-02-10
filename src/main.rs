@@ -187,11 +187,25 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn health_check(provider: &AnyProvider) {
-    if let AnyProvider::Ollama(ollama) = provider {
-        match ollama.health_check().await {
+    match provider {
+        AnyProvider::Ollama(ollama) => match ollama.health_check().await {
             Ok(()) => tracing::info!("ollama health check passed"),
             Err(e) => tracing::warn!("ollama health check failed: {e:#}"),
+        },
+        #[cfg(feature = "candle")]
+        AnyProvider::Candle(candle) => {
+            tracing::info!("candle provider loaded, device: {}", candle.device_name());
         }
+        #[cfg(feature = "orchestrator")]
+        AnyProvider::Orchestrator(orch) => {
+            for (name, p) in orch.providers() {
+                tracing::info!(
+                    "orchestrator sub-provider '{name}': {}",
+                    zeph_llm::provider::LlmProvider::name(p)
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -252,6 +266,53 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 
             let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens);
             Ok(AnyProvider::Claude(provider))
+        }
+        #[cfg(feature = "candle")]
+        "candle" => {
+            let candle_cfg = config
+                .llm
+                .candle
+                .as_ref()
+                .context("llm.candle config section required for candle provider")?;
+
+            let source = match candle_cfg.source.as_str() {
+                "local" => zeph_llm::candle_provider::loader::ModelSource::Local {
+                    path: std::path::PathBuf::from(&candle_cfg.local_path),
+                },
+                _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
+                    repo_id: config.llm.model.clone(),
+                    filename: candle_cfg.filename.clone(),
+                },
+            };
+
+            let template = zeph_llm::candle_provider::template::ChatTemplate::parse_str(
+                &candle_cfg.chat_template,
+            );
+            let gen_config = zeph_llm::candle_provider::generate::GenerationConfig {
+                temperature: candle_cfg.generation.temperature,
+                top_p: candle_cfg.generation.top_p,
+                top_k: candle_cfg.generation.top_k,
+                max_tokens: candle_cfg.generation.capped_max_tokens(),
+                seed: candle_cfg.generation.seed,
+                repeat_penalty: candle_cfg.generation.repeat_penalty,
+                repeat_last_n: candle_cfg.generation.repeat_last_n,
+            };
+
+            let device = select_device(&candle_cfg.device)?;
+
+            let provider = zeph_llm::candle_provider::CandleProvider::new(
+                &source,
+                template,
+                gen_config,
+                candle_cfg.embedding_repo.as_deref(),
+                device,
+            )?;
+            Ok(AnyProvider::Candle(provider))
+        }
+        #[cfg(feature = "orchestrator")]
+        "orchestrator" => {
+            let orch = build_orchestrator(config)?;
+            Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
         other => bail!("unknown LLM provider: {other}"),
     }
@@ -375,6 +436,136 @@ async fn create_mcp_registry(
             None
         }
     }
+}
+
+#[cfg(feature = "candle")]
+fn select_device(preference: &str) -> anyhow::Result<zeph_llm::candle_provider::Device> {
+    match preference {
+        "metal" => {
+            #[cfg(feature = "metal")]
+            return Ok(zeph_llm::candle_provider::Device::new_metal(0)?);
+            #[cfg(not(feature = "metal"))]
+            bail!("candle compiled without metal feature");
+        }
+        "cuda" => {
+            #[cfg(feature = "cuda")]
+            return Ok(zeph_llm::candle_provider::Device::new_cuda(0)?);
+            #[cfg(not(feature = "cuda"))]
+            bail!("candle compiled without cuda feature");
+        }
+        "auto" => {
+            #[cfg(feature = "metal")]
+            if let Ok(device) = zeph_llm::candle_provider::Device::new_metal(0) {
+                return Ok(device);
+            }
+            #[cfg(feature = "cuda")]
+            if let Ok(device) = zeph_llm::candle_provider::Device::new_cuda(0) {
+                return Ok(device);
+            }
+            Ok(zeph_llm::candle_provider::Device::Cpu)
+        }
+        _ => Ok(zeph_llm::candle_provider::Device::Cpu),
+    }
+}
+
+#[cfg(feature = "orchestrator")]
+fn build_orchestrator(
+    config: &Config,
+) -> anyhow::Result<zeph_llm::orchestrator::ModelOrchestrator> {
+    use std::collections::HashMap;
+    use zeph_llm::orchestrator::{ModelOrchestrator, SubProvider, TaskType};
+
+    let orch_cfg = config
+        .llm
+        .orchestrator
+        .as_ref()
+        .context("llm.orchestrator config section required for orchestrator provider")?;
+
+    let mut providers = HashMap::new();
+    for (name, pcfg) in &orch_cfg.providers {
+        let provider = match pcfg.provider_type.as_str() {
+            "ollama" => {
+                let model = pcfg.model.as_deref().unwrap_or(&config.llm.model);
+                SubProvider::Ollama(OllamaProvider::new(
+                    &config.llm.base_url,
+                    model.to_owned(),
+                    config.llm.embedding_model.clone(),
+                ))
+            }
+            "claude" => {
+                let cloud = config
+                    .llm
+                    .cloud
+                    .as_ref()
+                    .context("llm.cloud config required for claude sub-provider")?;
+                let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
+                    .context("ZEPH_CLAUDE_API_KEY required for claude sub-provider")?;
+                let model = pcfg.model.as_deref().unwrap_or(&cloud.model);
+                SubProvider::Claude(ClaudeProvider::new(
+                    api_key,
+                    model.to_owned(),
+                    cloud.max_tokens,
+                ))
+            }
+            #[cfg(feature = "candle")]
+            "candle" => {
+                let candle_cfg = config
+                    .llm
+                    .candle
+                    .as_ref()
+                    .context("llm.candle config required for candle sub-provider")?;
+                let source = match candle_cfg.source.as_str() {
+                    "local" => zeph_llm::candle_provider::loader::ModelSource::Local {
+                        path: std::path::PathBuf::from(&candle_cfg.local_path),
+                    },
+                    _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
+                        repo_id: pcfg
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| config.llm.model.clone()),
+                        filename: candle_cfg.filename.clone(),
+                    },
+                };
+                let template = zeph_llm::candle_provider::template::ChatTemplate::parse_str(
+                    &candle_cfg.chat_template,
+                );
+                let device_pref = pcfg.device.as_deref().unwrap_or(&candle_cfg.device);
+                let device = select_device(device_pref)?;
+                let gen_config = zeph_llm::candle_provider::generate::GenerationConfig {
+                    temperature: candle_cfg.generation.temperature,
+                    top_p: candle_cfg.generation.top_p,
+                    top_k: candle_cfg.generation.top_k,
+                    max_tokens: candle_cfg.generation.capped_max_tokens(),
+                    seed: candle_cfg.generation.seed,
+                    repeat_penalty: candle_cfg.generation.repeat_penalty,
+                    repeat_last_n: candle_cfg.generation.repeat_last_n,
+                };
+                let candle_provider = zeph_llm::candle_provider::CandleProvider::new(
+                    &source,
+                    template,
+                    gen_config,
+                    candle_cfg.embedding_repo.as_deref(),
+                    device,
+                )?;
+                SubProvider::Candle(candle_provider)
+            }
+            other => bail!("unknown orchestrator sub-provider type: {other}"),
+        };
+        providers.insert(name.clone(), provider);
+    }
+
+    let mut routes = HashMap::new();
+    for (task_str, chain) in &orch_cfg.routes {
+        let task = TaskType::parse_str(task_str);
+        routes.insert(task, chain.clone());
+    }
+
+    ModelOrchestrator::new(
+        routes,
+        providers,
+        orch_cfg.default.clone(),
+        orch_cfg.embed.clone(),
+    )
 }
 
 fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {

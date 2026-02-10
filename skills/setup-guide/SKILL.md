@@ -125,6 +125,61 @@ GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_PERSONAL_ACCESS_TOKEN}"
 
 MCP tools are discovered at startup, embedded into Qdrant (`zeph_mcp_tools` collection), and matched per query alongside skills. Tool invocations use ` ```mcp ` fenced blocks with JSON payloads.
 
+## Candle Local Inference
+
+Build with `--features candle` to enable HuggingFace direct inference via candle ML framework. Supports GGUF quantized models.
+
+```bash
+export ZEPH_LLM_PROVIDER=candle
+```
+
+Config in `config/default.toml`:
+```toml
+[llm.candle]
+source = "huggingface"
+repo_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+chat_template = "mistral"
+device = "auto"
+embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
+
+[llm.candle.generation]
+temperature = 0.7
+max_tokens = 2048
+```
+
+Device selection: `auto` picks Metal on macOS, CUDA on Linux with GPU, CPU otherwise. Build with `--features metal` or `--features cuda` for GPU acceleration.
+
+Chat templates: `llama3`, `chatml`, `mistral`, `phi3`, `raw`.
+
+## Model Orchestrator
+
+Build with `--features orchestrator` to enable multi-model routing with task classification and fallback chains.
+
+```bash
+export ZEPH_LLM_PROVIDER=orchestrator
+```
+
+Config in `config/default.toml`:
+```toml
+[llm.orchestrator]
+default = "ollama"
+embed = "ollama"
+
+[llm.orchestrator.providers.ollama]
+provider_type = "ollama"
+
+[llm.orchestrator.providers.claude]
+provider_type = "claude"
+
+[llm.orchestrator.routes]
+coding = ["claude", "ollama"]
+creative = ["claude", "ollama"]
+general = ["ollama"]
+```
+
+Task types: `coding`, `creative`, `analysis`, `translation`, `summarization`, `general`. Each route is a fallback chain — if the first provider fails, the next one is tried.
+
 ## Skills
 
 ```bash

@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `CandleProvider`: local GGUF model inference via candle ML framework with chat templates (Llama3, ChatML, Mistral, Phi3, Raw), token generation with top-k/top-p sampling, and repeat penalty (Issue #125)
+- `CandleProvider` embeddings: BERT-based embedding model loaded from HuggingFace Hub with mean pooling and L2 normalization (Issue #126)
+- `ModelOrchestrator`: task-aware multi-model routing with keyword-based classification (coding, creative, analysis, translation, summarization, general) and provider fallback chains (Issue #127)
+- `SubProvider` enum breaking recursive type cycle between `AnyProvider` and `ModelOrchestrator`
+- Device auto-detection: Metal on macOS, CUDA on Linux with GPU, CPU fallback (Issue #128)
+- Feature flags: `candle`, `metal`, `cuda`, `orchestrator` on workspace and zeph-llm crate
+- `CandleConfig`, `GenerationParams`, `OrchestratorConfig` in zeph-core config
+- Config examples for candle and orchestrator in `config/default.toml`
+- Setup guide sections for candle local inference and model orchestrator
+- 15 new unit tests for orchestrator, chat templates, generation config, and loader
 - Bundled `setup-guide` skill with configuration reference for all env vars, TOML keys, and operating modes
 - Bundled `skill-audit` skill for spec compliance and security review of installed skills
 - `allowed_commands` shell config to override default blocklist entries via `ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS`
@@ -29,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Skill matcher creation extracted to `create_skill_matcher()` in `main.rs`
 
 ### Dependencies
+- Added `candle-core` 0.9, `candle-nn` 0.9, `candle-transformers` 0.9 to workspace (optional, behind `candle` feature)
+- Added `hf-hub` 0.4 to workspace (HuggingFace model downloads with rustls-tls)
+- Added `tokenizers` 0.22 to workspace (BPE tokenization with fancy-regex)
 - Added `blake3` 1.8 to workspace
 - Added `rmcp` 0.14 to workspace (MCP protocol SDK)
 

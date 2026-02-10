@@ -1,0 +1,494 @@
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+
+#[cfg(feature = "candle")]
+use crate::candle_provider::CandleProvider;
+use crate::claude::ClaudeProvider;
+use crate::ollama::OllamaProvider;
+use crate::provider::{ChatStream, LlmProvider, Message, Role};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskType {
+    Coding,
+    Creative,
+    Analysis,
+    Translation,
+    Summarization,
+    General,
+}
+
+impl TaskType {
+    #[must_use]
+    pub fn classify(messages: &[Message]) -> Self {
+        let last_user_msg = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.content.to_lowercase())
+            .unwrap_or_default();
+
+        if contains_code_indicators(&last_user_msg) {
+            Self::Coding
+        } else if contains_translation_indicators(&last_user_msg) {
+            Self::Translation
+        } else if contains_summary_indicators(&last_user_msg) {
+            Self::Summarization
+        } else if contains_creative_indicators(&last_user_msg) {
+            Self::Creative
+        } else if contains_analysis_indicators(&last_user_msg) {
+            Self::Analysis
+        } else {
+            Self::General
+        }
+    }
+
+    #[must_use]
+    pub fn parse_str(s: &str) -> Self {
+        match s {
+            "coding" => Self::Coding,
+            "creative" => Self::Creative,
+            "analysis" => Self::Analysis,
+            "translation" => Self::Translation,
+            "summarization" => Self::Summarization,
+            _ => Self::General,
+        }
+    }
+}
+
+fn contains_code_indicators(text: &str) -> bool {
+    const INDICATORS: &[&str] = &[
+        "code",
+        "function",
+        "implement",
+        "debug",
+        "compile",
+        "syntax",
+        "refactor",
+        "algorithm",
+        "class",
+        "struct",
+        "enum",
+        "trait",
+        "bug",
+        "error",
+        "fix",
+        "rust",
+        "python",
+        "javascript",
+        "typescript",
+        "```",
+        "fn ",
+        "def ",
+        "async fn",
+        "pub fn",
+    ];
+    INDICATORS.iter().any(|kw| text.contains(kw))
+}
+
+fn contains_translation_indicators(text: &str) -> bool {
+    const INDICATORS: &[&str] = &[
+        "translate",
+        "translation",
+        "переведи",
+        "перевод",
+        "to english",
+        "to russian",
+        "to spanish",
+        "to french",
+        "на английский",
+        "на русский",
+    ];
+    INDICATORS.iter().any(|kw| text.contains(kw))
+}
+
+fn contains_summary_indicators(text: &str) -> bool {
+    const INDICATORS: &[&str] = &[
+        "summarize",
+        "summary",
+        "tldr",
+        "tl;dr",
+        "brief",
+        "кратко",
+        "резюме",
+        "суммируй",
+    ];
+    INDICATORS.iter().any(|kw| text.contains(kw))
+}
+
+fn contains_creative_indicators(text: &str) -> bool {
+    const INDICATORS: &[&str] = &[
+        "write a story",
+        "poem",
+        "creative",
+        "imagine",
+        "fiction",
+        "narrative",
+        "compose",
+        "стих",
+        "рассказ",
+        "сочини",
+    ];
+    INDICATORS.iter().any(|kw| text.contains(kw))
+}
+
+fn contains_analysis_indicators(text: &str) -> bool {
+    const INDICATORS: &[&str] = &[
+        "analyze",
+        "analysis",
+        "compare",
+        "evaluate",
+        "assess",
+        "review",
+        "critique",
+        "examine",
+        "pros and cons",
+        "анализ",
+        "сравни",
+        "оцени",
+    ];
+    INDICATORS.iter().any(|kw| text.contains(kw))
+}
+
+/// Inner provider enum without the Orchestrator variant to break recursive type cycles.
+#[derive(Debug, Clone)]
+pub enum SubProvider {
+    Ollama(OllamaProvider),
+    Claude(ClaudeProvider),
+    #[cfg(feature = "candle")]
+    Candle(CandleProvider),
+}
+
+impl LlmProvider for SubProvider {
+    async fn chat(&self, messages: &[Message]) -> Result<String> {
+        match self {
+            Self::Ollama(p) => p.chat(messages).await,
+            Self::Claude(p) => p.chat(messages).await,
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.chat(messages).await,
+        }
+    }
+
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream> {
+        match self {
+            Self::Ollama(p) => p.chat_stream(messages).await,
+            Self::Claude(p) => p.chat_stream(messages).await,
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.chat_stream(messages).await,
+        }
+    }
+
+    fn supports_streaming(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_streaming(),
+            Self::Claude(p) => p.supports_streaming(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.supports_streaming(),
+        }
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        match self {
+            Self::Ollama(p) => p.embed(text).await,
+            Self::Claude(p) => p.embed(text).await,
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.embed(text).await,
+        }
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_embeddings(),
+            Self::Claude(p) => p.supports_embeddings(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.supports_embeddings(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Ollama(p) => p.name(),
+            Self::Claude(p) => p.name(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.name(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelOrchestrator {
+    routes: HashMap<TaskType, Vec<String>>,
+    providers: HashMap<String, SubProvider>,
+    default_provider: String,
+    embed_provider: String,
+}
+
+impl ModelOrchestrator {
+    /// Create a new `ModelOrchestrator`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default or embed provider is not found.
+    pub fn new(
+        routes: HashMap<TaskType, Vec<String>>,
+        providers: HashMap<String, SubProvider>,
+        default_provider: String,
+        embed_provider: String,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            providers.contains_key(&default_provider),
+            "default provider '{default_provider}' not found in providers"
+        );
+        anyhow::ensure!(
+            providers.contains_key(&embed_provider),
+            "embed provider '{embed_provider}' not found in providers"
+        );
+        Ok(Self {
+            routes,
+            providers,
+            default_provider,
+            embed_provider,
+        })
+    }
+
+    #[must_use]
+    pub fn providers(&self) -> &HashMap<String, SubProvider> {
+        &self.providers
+    }
+
+    #[cfg(test)]
+    fn select_provider(&self, messages: &[Message]) -> &SubProvider {
+        let task = TaskType::classify(messages);
+        tracing::debug!("classified task as {task:?}");
+
+        if let Some(chain) = self.routes.get(&task) {
+            for name in chain {
+                if let Some(provider) = self.providers.get(name) {
+                    return provider;
+                }
+            }
+        }
+
+        self.providers
+            .get(&self.default_provider)
+            .expect("default provider must exist")
+    }
+
+    async fn chat_with_fallback(&self, messages: &[Message]) -> Result<String> {
+        let task = TaskType::classify(messages);
+        let chain = self
+            .routes
+            .get(&task)
+            .or_else(|| self.routes.get(&TaskType::General))
+            .context("no route configured")?;
+
+        let mut last_error = None;
+        for name in chain {
+            let Some(provider) = self.providers.get(name) else {
+                continue;
+            };
+            match provider.chat(messages).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    tracing::warn!("provider {name} failed: {e:#}, trying next");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no providers available")))
+    }
+
+    async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream> {
+        let task = TaskType::classify(messages);
+        let chain = self
+            .routes
+            .get(&task)
+            .or_else(|| self.routes.get(&TaskType::General))
+            .context("no route configured")?;
+
+        let mut last_error = None;
+        for name in chain {
+            let Some(provider) = self.providers.get(name) else {
+                continue;
+            };
+            match provider.chat_stream(messages).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    tracing::warn!("provider {name} stream failed: {e:#}, trying next");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no providers available")))
+    }
+}
+
+impl LlmProvider for ModelOrchestrator {
+    async fn chat(&self, messages: &[Message]) -> Result<String> {
+        self.chat_with_fallback(messages).await
+    }
+
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream> {
+        self.stream_with_fallback(messages).await
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.providers
+            .get(&self.default_provider)
+            .is_some_and(LlmProvider::supports_streaming)
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let provider = self
+            .providers
+            .get(&self.embed_provider)
+            .context("embed provider not found")?;
+        provider.embed(text).await
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        self.providers
+            .get(&self.embed_provider)
+            .is_some_and(LlmProvider::supports_embeddings)
+    }
+
+    fn name(&self) -> &'static str {
+        "orchestrator"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Message;
+
+    fn user_msg(content: &str) -> Vec<Message> {
+        vec![Message {
+            role: Role::User,
+            content: content.into(),
+        }]
+    }
+
+    #[test]
+    fn classify_coding() {
+        assert_eq!(
+            TaskType::classify(&user_msg("write a function to sort")),
+            TaskType::Coding
+        );
+        assert_eq!(
+            TaskType::classify(&user_msg("debug this error")),
+            TaskType::Coding
+        );
+        assert_eq!(
+            TaskType::classify(&user_msg("implement a struct")),
+            TaskType::Coding
+        );
+    }
+
+    #[test]
+    fn classify_translation() {
+        assert_eq!(
+            TaskType::classify(&user_msg("translate this to english")),
+            TaskType::Translation
+        );
+    }
+
+    #[test]
+    fn classify_summarization() {
+        assert_eq!(
+            TaskType::classify(&user_msg("summarize this article")),
+            TaskType::Summarization
+        );
+        assert_eq!(
+            TaskType::classify(&user_msg("give me a tldr")),
+            TaskType::Summarization
+        );
+    }
+
+    #[test]
+    fn classify_creative() {
+        assert_eq!(
+            TaskType::classify(&user_msg("write a story about a dragon")),
+            TaskType::Creative
+        );
+        assert_eq!(
+            TaskType::classify(&user_msg("compose a poem")),
+            TaskType::Creative
+        );
+    }
+
+    #[test]
+    fn classify_analysis() {
+        assert_eq!(
+            TaskType::classify(&user_msg("analyze this data")),
+            TaskType::Analysis
+        );
+        assert_eq!(
+            TaskType::classify(&user_msg("compare these two approaches")),
+            TaskType::Analysis
+        );
+    }
+
+    #[test]
+    fn classify_general() {
+        assert_eq!(TaskType::classify(&user_msg("hello")), TaskType::General);
+        assert_eq!(
+            TaskType::classify(&user_msg("what time is it")),
+            TaskType::General
+        );
+    }
+
+    #[test]
+    fn classify_empty_messages() {
+        assert_eq!(TaskType::classify(&[]), TaskType::General);
+    }
+
+    #[test]
+    fn task_type_from_str() {
+        assert_eq!(TaskType::parse_str("coding"), TaskType::Coding);
+        assert_eq!(TaskType::parse_str("creative"), TaskType::Creative);
+        assert_eq!(TaskType::parse_str("analysis"), TaskType::Analysis);
+        assert_eq!(TaskType::parse_str("translation"), TaskType::Translation);
+        assert_eq!(
+            TaskType::parse_str("summarization"),
+            TaskType::Summarization
+        );
+        assert_eq!(TaskType::parse_str("general"), TaskType::General);
+        assert_eq!(TaskType::parse_str("unknown"), TaskType::General);
+    }
+
+    #[test]
+    fn orchestrator_requires_valid_providers() {
+        let providers = HashMap::new();
+        let routes = HashMap::new();
+        let result = ModelOrchestrator::new(routes, providers, "missing".into(), "missing".into());
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn orchestrator_routes_to_correct_provider() {
+        let ollama = SubProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "test-embed".into(),
+        ));
+        let mut providers = HashMap::new();
+        providers.insert("ollama".into(), ollama);
+
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::General, vec!["ollama".into()]);
+        routes.insert(TaskType::Coding, vec!["ollama".into()]);
+
+        let orch =
+            ModelOrchestrator::new(routes, providers, "ollama".into(), "ollama".into()).unwrap();
+
+        assert_eq!(orch.name(), "orchestrator");
+        assert!(orch.supports_streaming());
+        assert!(orch.supports_embeddings());
+
+        let provider = orch.select_provider(&user_msg("write code"));
+        assert_eq!(provider.name(), "ollama");
+    }
+}

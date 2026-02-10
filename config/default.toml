@@ -18,6 +18,37 @@ model = "claude-sonnet-4-5-20250929"
 # Maximum tokens for Claude responses
 max_tokens = 4096
 
+# Candle local inference (requires --features candle)
+# [llm.candle]
+# source = "huggingface"  # "local" or "huggingface"
+# repo_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+# filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+# local_path = ""          # used when source = "local"
+# chat_template = "mistral"  # llama3, chatml, mistral, phi3, raw
+# device = "auto"          # auto, cpu, metal, cuda
+# embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
+# [llm.candle.generation]
+# temperature = 0.7
+# top_p = 0.9
+# top_k = 40
+# max_tokens = 2048
+# seed = 42
+# repeat_penalty = 1.1
+
+# Model orchestrator (requires --features orchestrator)
+# Routes tasks to different providers with fallback chains
+# [llm.orchestrator]
+# default = "ollama"
+# embed = "ollama"
+# [llm.orchestrator.providers.ollama]
+# provider_type = "ollama"
+# [llm.orchestrator.providers.claude]
+# provider_type = "claude"
+# [llm.orchestrator.routes]
+# coding = ["claude", "ollama"]
+# creative = ["claude", "ollama"]
+# general = ["ollama"]
+
 [skills]
 # Directories to scan for SKILL.md files
 paths = ["./skills"]
