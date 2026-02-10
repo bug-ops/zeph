@@ -136,6 +136,9 @@ blocked_commands = []  # Additional patterns beyond defaults
 timeout = 15
 max_body_bytes = 1048576  # 1MB
 
+[vault]
+backend = "env"  # "env" (default) or "age"
+
 [a2a]
 enabled = false
 host = "0.0.0.0"
@@ -335,6 +338,23 @@ docker compose --profile gpu run --rm ollama ollama pull qwen3-embedding
 docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
 ```
 
+### Age Vault (Encrypted Secrets)
+
+```bash
+# Mount key and vault files into container
+docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+```
+
+Override file paths via environment variables:
+
+```bash
+ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
+  docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+```
+
+> [!IMPORTANT]
+> The image must be built with `vault-age` feature enabled. Pre-built images include this feature by default.
+
 ### Using Specific Version
 
 ```bash
@@ -432,10 +452,34 @@ Rust-native memory safety guarantees:
 ### Secrets Management
 
 > [!CAUTION]
-> API keys and tokens must be passed via environment variables. Never commit secrets to version control.
+> Never commit secrets to version control. Use environment variables or age-encrypted vault files.
 
-**Current:** Environment variables (`ZEPH_CLAUDE_API_KEY`, `ZEPH_TELEGRAM_TOKEN`)
-**Planned:** Vault integration for centralized secret rotation (see [#70](https://github.com/bug-ops/zeph/issues/70))
+Zeph resolves secrets (`ZEPH_CLAUDE_API_KEY`, `ZEPH_TELEGRAM_TOKEN`, `ZEPH_A2A_AUTH_TOKEN`) through a pluggable `VaultProvider` with redacted debug output via the `Secret` newtype.
+
+**Backends:**
+
+| Backend | Description | Activation |
+|---------|-------------|------------|
+| `env` (default) | Read secrets from environment variables | `--vault env` or omit |
+| `age` | Decrypt age-encrypted JSON vault file at startup | `--vault age --vault-key <identity> --vault-path <vault.age>` |
+
+**Age vault workflow:**
+
+```bash
+# Generate an age identity key
+age-keygen -o key.txt
+
+# Create a JSON secrets file and encrypt it
+echo '{"ZEPH_CLAUDE_API_KEY":"sk-...","ZEPH_TELEGRAM_TOKEN":"123:ABC"}' | \
+  age -r $(grep 'public key' key.txt | awk '{print $NF}') -o secrets.age
+
+# Run with age vault
+cargo build --release --features vault-age
+./target/release/zeph --vault age --vault-key key.txt --vault-path secrets.age
+```
+
+> [!TIP]
+> The `vault-age` feature flag is disabled by default for zero build-time cost. Enable it only when age vault support is needed.
 
 ### Reporting Security Issues
 
@@ -603,6 +647,7 @@ cooldown_minutes = 60     # cooldown between improvements for same skill
 | `metal` | Disabled | Metal GPU acceleration for candle on macOS (implies `candle`) |
 | `cuda` | Disabled | CUDA GPU acceleration for candle on Linux (implies `candle`) |
 | `orchestrator` | Disabled | Multi-model routing with task-based classification and fallback chains |
+| `vault-age` | Disabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
 | `self-learning` | Disabled | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
 
 Build with specific features:
@@ -612,6 +657,7 @@ cargo build --release                                     # default (a2a only)
 cargo build --release --features candle,orchestrator      # local inference + orchestrator
 cargo build --release --features candle,metal             # macOS with Metal GPU
 cargo build --release --features self-learning            # skill evolution system
+cargo build --release --features vault-age               # age-encrypted secrets vault
 cargo build --release --no-default-features               # minimal binary
 ```
 

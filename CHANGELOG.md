@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `VaultProvider` trait with pluggable secret backends, `Secret` newtype with redacted debug output, `EnvVaultProvider` for environment variable secrets (Issue #70)
+- `AgeVaultProvider`: age-encrypted JSON vault backend with x25519 identity key decryption (Issue #70)
+- `Config::resolve_secrets()`: async secret resolution through vault provider for API keys and tokens
+- CLI vault args: `--vault <backend>`, `--vault-key <path>`, `--vault-path <path>`
+- `vault-age` feature flag on `zeph-core` and root binary
+- `[vault]` config section with `backend` field (default: `env`)
 - `CandleProvider`: local GGUF model inference via candle ML framework with chat templates (Llama3, ChatML, Mistral, Phi3, Raw), token generation with top-k/top-p sampling, and repeat penalty (Issue #125)
 - `CandleProvider` embeddings: BERT-based embedding model loaded from HuggingFace Hub with mean pooling and L2 normalization (Issue #126)
 - `ModelOrchestrator`: task-aware multi-model routing with keyword-based classification (coding, creative, analysis, translation, summarization, general) and provider fallback chains (Issue #127)
@@ -57,6 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Skill matcher creation extracted to `create_skill_matcher()` in `main.rs`
 
 ### Dependencies
+- Added `age` 0.11.2 to workspace (optional, behind `vault-age` feature, `default-features = false`)
 - Added `candle-core` 0.9, `candle-nn` 0.9, `candle-transformers` 0.9 to workspace (optional, behind `candle` feature)
 - Added `hf-hub` 0.4 to workspace (HuggingFace model downloads with rustls-tls)
 - Added `tokenizers` 0.22 to workspace (BPE tokenization with fancy-regex)

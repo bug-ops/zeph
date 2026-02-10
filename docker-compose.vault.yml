@@ -1,0 +1,6 @@
+services:
+  zeph:
+    volumes:
+      - ${ZEPH_VAULT_KEY:-./key.txt}:/app/vault/key.txt:ro
+      - ${ZEPH_VAULT_PATH:-./secrets.age}:/app/vault/secrets.age:ro
+    command: ["--vault", "age", "--vault-key", "/app/vault/key.txt", "--vault-path", "/app/vault/secrets.age"]
