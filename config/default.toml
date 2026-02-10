@@ -91,6 +91,10 @@ enabled = false
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
+[vault]
+# Secret retrieval backend: "env" reads from environment variables
+backend = "env"
+
 [a2a]
 # Enable A2A server for agent-to-agent communication
 enabled = false

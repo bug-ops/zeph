@@ -6,6 +6,7 @@ use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
 use zeph_core::config::Config;
+use zeph_core::vault::{EnvVaultProvider, VaultProvider};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
@@ -63,10 +64,18 @@ impl Channel for AnyChannel {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let config = Config::load(Path::new("config/default.toml"))?;
+    let vault_backend = parse_vault_arg();
+    let vault: Box<dyn VaultProvider> = match vault_backend.as_str() {
+        "env" => Box::new(EnvVaultProvider),
+        other => bail!("unknown vault backend: {other}"),
+    };
+
+    let mut config = Config::load(Path::new("config/default.toml"))?;
+    config.resolve_secrets(vault.as_ref()).await?;
 
     let provider = create_provider(&config)?;
 
@@ -262,8 +271,13 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 .as_ref()
                 .context("llm.cloud config section required for Claude provider")?;
 
-            let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
-                .context("ZEPH_CLAUDE_API_KEY env var required for Claude provider")?;
+            let api_key = config
+                .secrets
+                .claude_api_key
+                .as_ref()
+                .context("ZEPH_CLAUDE_API_KEY not found in vault")?
+                .expose()
+                .to_owned();
 
             let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens);
             Ok(AnyProvider::Claude(provider))
@@ -499,8 +513,13 @@ fn build_orchestrator(
                     .cloud
                     .as_ref()
                     .context("llm.cloud config required for claude sub-provider")?;
-                let api_key = std::env::var("ZEPH_CLAUDE_API_KEY")
-                    .context("ZEPH_CLAUDE_API_KEY required for claude sub-provider")?;
+                let api_key = config
+                    .secrets
+                    .claude_api_key
+                    .as_ref()
+                    .context("ZEPH_CLAUDE_API_KEY required for claude sub-provider")?
+                    .expose()
+                    .to_owned();
                 let model = pcfg.model.as_deref().unwrap_or(&cloud.model);
                 SubProvider::Claude(ClaudeProvider::new(
                     api_key,
@@ -567,6 +586,13 @@ fn build_orchestrator(
         orch_cfg.default.clone(),
         orch_cfg.embed.clone(),
     )
+}
+
+fn parse_vault_arg() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|w| w[0] == "--vault")
+        .map_or_else(|| "env".into(), |w| w[1].clone())
 }
 
 fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {

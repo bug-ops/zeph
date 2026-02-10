@@ -5,6 +5,8 @@ use anyhow::Context;
 use serde::Deserialize;
 use zeph_tools::ToolsConfig;
 
+use crate::vault::{Secret, VaultProvider};
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub agent: AgentConfig,
@@ -18,6 +20,10 @@ pub struct Config {
     pub a2a: A2aServerConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub vault: VaultConfig,
+    #[serde(skip)]
+    pub secrets: ResolvedSecrets,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,14 +284,23 @@ fn default_recall_limit() -> usize {
     5
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TelegramConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub allowed_users: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+impl std::fmt::Debug for TelegramConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramConfig")
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("allowed_users", &self.allowed_users)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct A2aServerConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -299,6 +314,22 @@ pub struct A2aServerConfig {
     pub auth_token: Option<String>,
     #[serde(default = "default_a2a_rate_limit")]
     pub rate_limit: u32,
+}
+
+impl std::fmt::Debug for A2aServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("A2aServerConfig")
+            .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("public_url", &self.public_url)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("rate_limit", &self.rate_limit)
+            .finish()
+    }
 }
 
 fn default_a2a_host() -> String {
@@ -365,6 +396,29 @@ fn default_mcp_timeout() -> u64 {
     30
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VaultConfig {
+    #[serde(default = "default_vault_backend")]
+    pub backend: String,
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_vault_backend(),
+        }
+    }
+}
+
+fn default_vault_backend() -> String {
+    "env".into()
+}
+
+#[derive(Debug, Default)]
+pub struct ResolvedSecrets {
+    pub claude_api_key: Option<Secret>,
+}
+
 impl Config {
     /// Load configuration from a TOML file with env var overrides.
     ///
@@ -385,7 +439,6 @@ impl Config {
         Ok(config)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             self.llm.provider = v;
@@ -430,13 +483,6 @@ impl Config {
         {
             self.skills.max_active_skills = n;
         }
-        if let Ok(v) = std::env::var("ZEPH_TELEGRAM_TOKEN") {
-            let tg = self.telegram.get_or_insert(TelegramConfig {
-                token: None,
-                allowed_users: Vec::new(),
-            });
-            tg.token = Some(v);
-        }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS") {
             self.tools.shell.allowed_commands = v
                 .split(',')
@@ -475,9 +521,6 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_A2A_PUBLIC_URL") {
             self.a2a.public_url = v;
         }
-        if let Ok(v) = std::env::var("ZEPH_A2A_AUTH_TOKEN") {
-            self.a2a.auth_token = Some(v);
-        }
         if let Ok(v) = std::env::var("ZEPH_A2A_RATE_LIMIT")
             && let Ok(rate) = v.parse::<u32>()
         {
@@ -493,6 +536,28 @@ impl Config {
         {
             self.skills.learning.auto_activate = auto_activate;
         }
+    }
+
+    /// Resolve sensitive configuration values through the vault.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault backend fails.
+    pub async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> anyhow::Result<()> {
+        if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {
+            self.secrets.claude_api_key = Some(Secret::new(val));
+        }
+        if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await? {
+            let tg = self.telegram.get_or_insert(TelegramConfig {
+                token: None,
+                allowed_users: Vec::new(),
+            });
+            tg.token = Some(val);
+        }
+        if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
+            self.a2a.auth_token = Some(val);
+        }
+        Ok(())
     }
 
     fn default() -> Self {
@@ -526,6 +591,8 @@ impl Config {
             tools: ToolsConfig::default(),
             a2a: A2aServerConfig::default(),
             mcp: McpConfig::default(),
+            vault: VaultConfig::default(),
+            secrets: ResolvedSecrets::default(),
         }
     }
 }
@@ -538,7 +605,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 15] = [
+    const ENV_KEYS: [&str; 16] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -550,6 +617,7 @@ mod tests {
         "ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS",
         "ZEPH_SKILLS_MAX_ACTIVE",
         "ZEPH_TELEGRAM_TOKEN",
+        "ZEPH_A2A_AUTH_TOKEN",
         "ZEPH_TOOLS_TIMEOUT",
         "ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS",
         "ZEPH_SKILLS_LEARNING_ENABLED",
@@ -705,19 +773,14 @@ allowed_users = ["alice", "bob"]
         assert_eq!(tg.allowed_users, vec!["alice", "bob"]);
     }
 
-    #[test]
-    #[serial]
-    fn telegram_env_override() {
-        clear_env();
+    #[tokio::test]
+    async fn resolve_secrets_populates_telegram_token() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new().with_secret("ZEPH_TELEGRAM_TOKEN", "vault-token");
         let mut config = Config::default();
-        assert!(config.telegram.is_none());
-
-        unsafe { std::env::set_var("ZEPH_TELEGRAM_TOKEN", "env-token") };
-        config.apply_env_overrides();
-        unsafe { std::env::remove_var("ZEPH_TELEGRAM_TOKEN") };
-
+        config.resolve_secrets(&vault).await.unwrap();
         let tg = config.telegram.unwrap();
-        assert_eq!(tg.token.as_deref(), Some("env-token"));
+        assert_eq!(tg.token.as_deref(), Some("vault-token"));
     }
 
     #[test]
@@ -1214,5 +1277,79 @@ history_limit = 50
         unsafe { std::env::remove_var("ZEPH_SKILLS_LEARNING_ENABLED") };
 
         assert!(!config.skills.learning.enabled);
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_populates_claude_api_key() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new().with_secret("ZEPH_CLAUDE_API_KEY", "sk-test-123");
+        let mut config = Config::default();
+        config.resolve_secrets(&vault).await.unwrap();
+        assert_eq!(
+            config.secrets.claude_api_key.as_ref().unwrap().expose(),
+            "sk-test-123"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_populates_a2a_auth_token() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new().with_secret("ZEPH_A2A_AUTH_TOKEN", "a2a-secret");
+        let mut config = Config::default();
+        config.resolve_secrets(&vault).await.unwrap();
+        assert_eq!(config.a2a.auth_token.as_deref(), Some("a2a-secret"));
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_empty_vault_leaves_defaults() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new();
+        let mut config = Config::default();
+        config.resolve_secrets(&vault).await.unwrap();
+        assert!(config.secrets.claude_api_key.is_none());
+        assert!(config.telegram.is_none());
+        assert!(config.a2a.auth_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_overrides_toml_values() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new().with_secret("ZEPH_TELEGRAM_TOKEN", "vault-token");
+        let mut config = Config::default();
+        config.telegram = Some(TelegramConfig {
+            token: Some("toml-token".into()),
+            allowed_users: Vec::new(),
+        });
+        config.resolve_secrets(&vault).await.unwrap();
+        let tg = config.telegram.unwrap();
+        assert_eq!(tg.token.as_deref(), Some("vault-token"));
+    }
+
+    #[test]
+    fn telegram_debug_redacts_token() {
+        let tg = TelegramConfig {
+            token: Some("secret-token".into()),
+            allowed_users: vec!["alice".into()],
+        };
+        let debug = format!("{tg:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn a2a_debug_redacts_auth_token() {
+        let a2a = A2aServerConfig {
+            auth_token: Some("secret-auth".into()),
+            ..A2aServerConfig::default()
+        };
+        let debug = format!("{a2a:?}");
+        assert!(!debug.contains("secret-auth"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn vault_config_default_backend() {
+        let config = Config::default();
+        assert_eq!(config.vault.backend, "env");
     }
 }
