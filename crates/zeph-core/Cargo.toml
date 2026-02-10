@@ -10,10 +10,14 @@ repository.workspace = true
 default = []
 mcp = ["dep:zeph-mcp"]
 self-learning = ["zeph-skills/self-learning"]
+vault-age = ["dep:age", "dep:serde_json", "dep:thiserror"]
 
 [dependencies]
+age = { workspace = true, optional = true }
 anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 toml.workspace = true

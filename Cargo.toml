@@ -11,6 +11,7 @@ license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
 
 [workspace.dependencies]
+age = { version = "0.11.2", default-features = false }
 anyhow = "1.0"
 candle-core = { version = "0.9", default-features = false }
 candle-nn = { version = "0.9", default-features = false }
@@ -80,6 +81,7 @@ metal = ["zeph-llm/metal"]
 cuda = ["zeph-llm/cuda"]
 orchestrator = ["zeph-llm/orchestrator"]
 self-learning = ["zeph-core/self-learning"]
+vault-age = ["zeph-core/vault-age"]
 
 [dependencies]
 anyhow.workspace = true

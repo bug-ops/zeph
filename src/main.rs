@@ -6,6 +6,8 @@ use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
 use zeph_core::config::Config;
+#[cfg(feature = "vault-age")]
+use zeph_core::vault::AgeVaultProvider;
 use zeph_core::vault::{EnvVaultProvider, VaultProvider};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
@@ -68,9 +70,19 @@ impl Channel for AnyChannel {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let vault_backend = parse_vault_arg();
-    let vault: Box<dyn VaultProvider> = match vault_backend.as_str() {
+    let vault_args = parse_vault_args();
+    let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
         "env" => Box::new(EnvVaultProvider),
+        #[cfg(feature = "vault-age")]
+        "age" => {
+            let key = vault_args
+                .key_path
+                .context("--vault-key required for age backend")?;
+            let path = vault_args
+                .vault_path
+                .context("--vault-path required for age backend")?;
+            Box::new(AgeVaultProvider::new(Path::new(&key), Path::new(&path))?)
+        }
         other => bail!("unknown vault backend: {other}"),
     };
 
@@ -588,11 +600,32 @@ fn build_orchestrator(
     )
 }
 
-fn parse_vault_arg() -> String {
+#[cfg_attr(not(feature = "vault-age"), allow(dead_code))]
+struct VaultArgs {
+    backend: String,
+    key_path: Option<String>,
+    vault_path: Option<String>,
+}
+
+fn parse_vault_args() -> VaultArgs {
     let args: Vec<String> = std::env::args().collect();
-    args.windows(2)
+    let backend = args
+        .windows(2)
         .find(|w| w[0] == "--vault")
-        .map_or_else(|| "env".into(), |w| w[1].clone())
+        .map_or_else(|| "env".into(), |w| w[1].clone());
+    let key_path = args
+        .windows(2)
+        .find(|w| w[0] == "--vault-key")
+        .map(|w| w[1].clone());
+    let vault_path = args
+        .windows(2)
+        .find(|w| w[0] == "--vault-path")
+        .map(|w| w[1].clone());
+    VaultArgs {
+        backend,
+        key_path,
+        vault_path,
+    }
 }
 
 fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
