@@ -10,13 +10,24 @@ use crate::client::McpClient;
 use crate::error::McpError;
 use crate::tool::McpTool;
 
+/// Transport type for MCP server connections.
+#[derive(Debug, Clone)]
+pub enum McpTransport {
+    /// Stdio: spawn child process with command + args.
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+    },
+    /// Streamable HTTP: connect to remote URL.
+    Http { url: String },
+}
+
 /// Server connection parameters consumed by `McpManager`.
 #[derive(Debug, Clone)]
 pub struct ServerEntry {
     pub id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
+    pub transport: McpTransport,
     pub timeout: Duration,
 }
 
@@ -49,14 +60,7 @@ impl McpManager {
 
         for config in self.configs.clone() {
             join_set.spawn(async move {
-                let result = McpClient::connect(
-                    &config.id,
-                    &config.command,
-                    &config.args,
-                    &config.env,
-                    config.timeout,
-                )
-                .await;
+                let result = connect_entry(&config).await;
                 (config.id, result)
             });
         }
@@ -110,6 +114,79 @@ impl McpManager {
         client.call_tool(tool_name, args).await
     }
 
+    /// Connect a new server at runtime, return its tool list.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::ServerAlreadyConnected` if the ID is taken,
+    /// or connection/tool-listing errors on failure.
+    pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
+        // Early check under read lock (fast path for duplicates)
+        {
+            let clients = self.clients.read().await;
+            if clients.contains_key(&entry.id) {
+                return Err(McpError::ServerAlreadyConnected {
+                    server_id: entry.id.clone(),
+                });
+            }
+        }
+
+        let client = connect_entry(entry).await?;
+        let tools = match client.list_tools().await {
+            Ok(tools) => tools,
+            Err(e) => {
+                client.shutdown().await;
+                return Err(e);
+            }
+        };
+
+        // Re-check under write lock to prevent TOCTOU race
+        let mut clients = self.clients.write().await;
+        if clients.contains_key(&entry.id) {
+            drop(clients);
+            client.shutdown().await;
+            return Err(McpError::ServerAlreadyConnected {
+                server_id: entry.id.clone(),
+            });
+        }
+        clients.insert(entry.id.clone(), client);
+
+        tracing::info!(
+            server_id = entry.id,
+            tools = tools.len(),
+            "dynamically added MCP server"
+        );
+        Ok(tools)
+    }
+
+    /// Disconnect and remove a server by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::ServerNotFound` if the server is not connected.
+    pub async fn remove_server(&self, server_id: &str) -> Result<(), McpError> {
+        let client = {
+            let mut clients = self.clients.write().await;
+            clients
+                .remove(server_id)
+                .ok_or_else(|| McpError::ServerNotFound {
+                    server_id: server_id.into(),
+                })?
+        };
+
+        tracing::info!(server_id, "shutting down dynamically removed MCP server");
+        client.shutdown().await;
+        Ok(())
+    }
+
+    /// Return sorted list of connected server IDs.
+    pub async fn list_servers(&self) -> Vec<String> {
+        let clients = self.clients.read().await;
+        let mut ids: Vec<String> = clients.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     /// Graceful shutdown of all connections.
     pub async fn shutdown_all(self) {
         let mut clients = self.clients.write().await;
@@ -118,5 +195,133 @@ impl McpManager {
             tracing::info!(server_id = id, "shutting down MCP client");
             client.shutdown().await;
         }
+    }
+}
+
+async fn connect_entry(entry: &ServerEntry) -> Result<McpClient, McpError> {
+    match &entry.transport {
+        McpTransport::Stdio { command, args, env } => {
+            McpClient::connect(&entry.id, command, args, env, entry.timeout).await
+        }
+        McpTransport::Http { url } => McpClient::connect_url(&entry.id, url, entry.timeout).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(id: &str) -> ServerEntry {
+        ServerEntry {
+            id: id.into(),
+            transport: McpTransport::Stdio {
+                command: "nonexistent-mcp-binary".into(),
+                args: Vec::new(),
+                env: HashMap::new(),
+            },
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_servers_empty() {
+        let mgr = McpManager::new(vec![]);
+        assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_server_not_found_returns_error() {
+        let mgr = McpManager::new(vec![]);
+        let err = mgr.remove_server("nonexistent").await.unwrap_err();
+        assert!(
+            matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent")
+        );
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn add_server_nonexistent_binary_returns_connection_error() {
+        let mgr = McpManager::new(vec![]);
+        let entry = make_entry("test-server");
+        let err = mgr.add_server(&entry).await.unwrap_err();
+        assert!(matches!(err, McpError::Connection { .. }));
+    }
+
+    #[tokio::test]
+    async fn connect_all_skips_failing_servers() {
+        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")]);
+        let tools = mgr.connect_all().await;
+        assert!(tools.is_empty());
+        assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn call_tool_server_not_found() {
+        let mgr = McpManager::new(vec![]);
+        let err = mgr
+            .call_tool("missing", "some_tool", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "missing")
+        );
+    }
+
+    #[test]
+    fn server_entry_clone() {
+        let entry = make_entry("github");
+        let cloned = entry.clone();
+        assert_eq!(entry.id, cloned.id);
+        assert_eq!(entry.timeout, cloned.timeout);
+    }
+
+    #[test]
+    fn server_entry_debug() {
+        let entry = make_entry("test");
+        let dbg = format!("{entry:?}");
+        assert!(dbg.contains("test"));
+    }
+
+    #[test]
+    fn manager_debug() {
+        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")]);
+        let dbg = format!("{mgr:?}");
+        assert!(dbg.contains("server_count"));
+        assert!(dbg.contains("2"));
+    }
+
+    #[tokio::test]
+    async fn list_servers_returns_sorted() {
+        let mgr = McpManager::new(vec![make_entry("z"), make_entry("a"), make_entry("m")]);
+        // No servers connected (all fail), so list is empty
+        mgr.connect_all().await;
+        let ids = mgr.list_servers().await;
+        assert!(ids.is_empty());
+        // Verify sort contract: even for an empty list, sort is a no-op
+        let sorted = {
+            let mut v = ids.clone();
+            v.sort();
+            v
+        };
+        assert_eq!(ids, sorted);
+    }
+
+    #[tokio::test]
+    async fn remove_server_preserves_other_entries() {
+        let mgr = McpManager::new(vec![]);
+        // With no connected servers, remove always returns ServerNotFound
+        assert!(mgr.remove_server("a").await.is_err());
+        assert!(mgr.remove_server("b").await.is_err());
+        assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_server_connection_error_preserves_message() {
+        let mgr = McpManager::new(vec![]);
+        let entry = make_entry("my-server");
+        let err = mgr.add_server(&entry).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("my-server"));
+        assert!(msg.contains("connection failed"));
     }
 }

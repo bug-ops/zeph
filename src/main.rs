@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
     let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
 
     #[cfg(feature = "mcp")]
-    let (tool_executor, mcp_tools) = {
+    let (tool_executor, mcp_tools, mcp_manager) = {
         let mcp_manager = std::sync::Arc::new(create_mcp_manager(&config));
         let mcp_tools = mcp_manager.connect_all().await;
         tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
@@ -166,7 +166,7 @@ async fn main() -> anyhow::Result<()> {
         let base_executor = CompositeExecutor::new(shell_executor, scrape_executor);
         let executor = CompositeExecutor::new(base_executor, mcp_executor);
 
-        (executor, mcp_tools)
+        (executor, mcp_tools, mcp_manager)
     };
 
     #[cfg(not(feature = "mcp"))]
@@ -213,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
     .with_security(config.security, config.timeouts);
 
     #[cfg(feature = "mcp")]
-    let agent = agent.with_mcp(mcp_tools, mcp_registry);
+    let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
 
     #[cfg(feature = "self-learning")]
     let agent = agent.with_learning(config.skills.learning);
@@ -436,12 +436,21 @@ fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
         .mcp
         .servers
         .iter()
-        .map(|s| zeph_mcp::ServerEntry {
-            id: s.id.clone(),
-            command: s.command.clone(),
-            args: s.args.clone(),
-            env: s.env.clone(),
-            timeout: std::time::Duration::from_secs(s.timeout),
+        .map(|s| {
+            let transport = if let Some(ref url) = s.url {
+                zeph_mcp::McpTransport::Http { url: url.clone() }
+            } else {
+                zeph_mcp::McpTransport::Stdio {
+                    command: s.command.clone().unwrap_or_default(),
+                    args: s.args.clone(),
+                    env: s.env.clone(),
+                }
+            };
+            zeph_mcp::ServerEntry {
+                id: s.id.clone(),
+                transport,
+                timeout: std::time::Duration::from_secs(s.timeout),
+            }
         })
         .collect();
     zeph_mcp::McpManager::new(entries)

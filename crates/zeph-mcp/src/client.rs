@@ -6,6 +6,7 @@ use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use tokio::process::Command;
 
 use crate::error::McpError;
@@ -51,6 +52,33 @@ impl McpClient {
             server_id: server_id.into(),
             source: e.into(),
         })?;
+
+        let service =
+            ().serve(transport)
+                .await
+                .map_err(|e| McpError::Connection {
+                    server_id: server_id.into(),
+                    source: anyhow::anyhow!("{e}"),
+                })?;
+
+        Ok(Self {
+            server_id: server_id.into(),
+            service: Arc::new(service),
+            timeout,
+        })
+    }
+
+    /// Connect to a remote MCP server over Streamable HTTP.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::Connection` if the HTTP connection or handshake fails.
+    pub async fn connect_url(
+        server_id: &str,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<Self, McpError> {
+        let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
 
         let service =
             ().serve(transport)

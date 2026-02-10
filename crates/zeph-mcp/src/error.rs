@@ -16,6 +16,9 @@ pub enum McpError {
     #[error("server '{server_id}' not found")]
     ServerNotFound { server_id: String },
 
+    #[error("server '{server_id}' is already connected")]
+    ServerAlreadyConnected { server_id: String },
+
     #[error("tool '{tool_name}' not found on server '{server_id}'")]
     ToolNotFound {
         server_id: String,
@@ -71,6 +74,14 @@ mod tests {
             tool_name: "delete".into(),
         };
         assert_eq!(err.to_string(), "tool 'delete' not found on server 'fs'");
+    }
+
+    #[test]
+    fn server_already_connected_display() {
+        let err = McpError::ServerAlreadyConnected {
+            server_id: "github".into(),
+        };
+        assert_eq!(err.to_string(), "server 'github' is already connected");
     }
 
     #[test]

@@ -431,16 +431,27 @@ impl Default for TimeoutConfig {
 pub struct McpConfig {
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+    #[serde(default = "default_max_dynamic_servers")]
+    pub max_dynamic_servers: usize,
+}
+
+fn default_max_dynamic_servers() -> usize {
+    10
 }
 
 #[derive(Clone, Deserialize)]
 pub struct McpServerConfig {
     pub id: String,
-    pub command: String,
+    /// Stdio transport: command to spawn.
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// HTTP transport: remote MCP server URL.
+    pub url: Option<String>,
     #[serde(default = "default_mcp_timeout")]
     pub timeout: u64,
 }
@@ -457,6 +468,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("command", &self.command)
             .field("args", &self.args)
             .field("env", &redacted)
+            .field("url", &self.url)
             .field("timeout", &self.timeout)
             .finish()
     }

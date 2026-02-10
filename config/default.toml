@@ -91,6 +91,25 @@ enabled = false
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
+[mcp]
+# Allowlist of permitted commands for /mcp add (empty = allow all)
+allowed_commands = ["npx", "uvx", "node", "python", "python3"]
+# Maximum number of dynamically added MCP servers
+max_dynamic_servers = 10
+
+# Stdio transport (spawn child process):
+# [[mcp.servers]]
+# id = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# timeout = 30
+
+# HTTP transport (remote MCP server, e.g. Docker container):
+# [[mcp.servers]]
+# id = "remote-tools"
+# url = "http://localhost:3001/mcp"
+# timeout = 30
+
 [vault]
 # Secret retrieval backend: "env" reads from environment variables
 backend = "env"

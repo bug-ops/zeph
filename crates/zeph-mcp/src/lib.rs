@@ -11,7 +11,7 @@ pub mod tool;
 
 pub use error::McpError;
 pub use executor::McpToolExecutor;
-pub use manager::{McpManager, ServerEntry};
+pub use manager::{McpManager, McpTransport, ServerEntry};
 pub use prompt::format_mcp_tools_prompt;
 #[cfg(feature = "qdrant")]
 pub use registry::McpToolRegistry;

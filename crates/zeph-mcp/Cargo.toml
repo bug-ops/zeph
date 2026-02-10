@@ -14,7 +14,7 @@ qdrant = ["dep:blake3", "dep:qdrant-client", "dep:uuid"]
 anyhow.workspace = true
 blake3 = { workspace = true, optional = true }
 qdrant-client = { workspace = true, optional = true, features = ["serde"] }
-rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

@@ -50,6 +50,12 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_tools: Vec<zeph_mcp::McpTool>,
     #[cfg(feature = "mcp")]
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
+    #[cfg(feature = "mcp")]
+    mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    #[cfg(feature = "mcp")]
+    mcp_allowed_commands: Vec<String>,
+    #[cfg(feature = "mcp")]
+    mcp_max_dynamic: usize,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -102,6 +108,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_tools: Vec::new(),
             #[cfg(feature = "mcp")]
             mcp_registry: None,
+            #[cfg(feature = "mcp")]
+            mcp_manager: None,
+            #[cfg(feature = "mcp")]
+            mcp_allowed_commands: Vec::new(),
+            #[cfg(feature = "mcp")]
+            mcp_max_dynamic: 10,
         }
     }
 
@@ -158,9 +170,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         mut self,
         tools: Vec<zeph_mcp::McpTool>,
         registry: Option<zeph_mcp::McpToolRegistry>,
+        manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+        mcp_config: &crate::config::McpConfig,
     ) -> Self {
         self.mcp_tools = tools;
         self.mcp_registry = registry;
+        self.mcp_manager = manager;
+        self.mcp_allowed_commands
+            .clone_from(&mcp_config.allowed_commands);
+        self.mcp_max_dynamic = mcp_config.max_dynamic_servers;
         self
     }
 
@@ -244,6 +262,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
             if let Some(rest) = trimmed.strip_prefix("/feedback ") {
                 self.handle_feedback(rest).await?;
+                continue;
+            }
+
+            #[cfg(feature = "mcp")]
+            if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+                let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
+                self.handle_mcp_command(args).await?;
                 continue;
             }
 
@@ -548,6 +573,157 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
+    #[cfg(feature = "mcp")]
+    async fn handle_mcp_command(&mut self, args: &str) -> anyhow::Result<()> {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        match parts.first().copied() {
+            Some("add") => self.handle_mcp_add(&parts[1..]).await,
+            Some("list") => self.handle_mcp_list().await,
+            Some("remove") => self.handle_mcp_remove(parts.get(1).copied()).await,
+            _ => self
+                .channel
+                .send("Usage: /mcp add <id> <command|url> [args...] | /mcp list | /mcp remove <id>")
+                .await,
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn handle_mcp_add(&mut self, args: &[&str]) -> anyhow::Result<()> {
+        if args.len() < 2 {
+            return self
+                .channel
+                .send("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>")
+                .await;
+        }
+
+        let Some(ref manager) = self.mcp_manager else {
+            return self.channel.send("MCP is not enabled.").await;
+        };
+
+        let target = args[1];
+        let is_url = target.starts_with("http://") || target.starts_with("https://");
+
+        // SEC-MCP-01: validate command against allowlist (stdio only)
+        if !is_url
+            && !self.mcp_allowed_commands.is_empty()
+            && !self.mcp_allowed_commands.iter().any(|c| c == target)
+        {
+            return self
+                .channel
+                .send(&format!(
+                    "Command '{target}' is not allowed. Permitted: {}",
+                    self.mcp_allowed_commands.join(", ")
+                ))
+                .await;
+        }
+
+        // SEC-MCP-03: enforce server limit
+        let current_count = manager.list_servers().await.len();
+        if current_count >= self.mcp_max_dynamic {
+            return self
+                .channel
+                .send(&format!(
+                    "Server limit reached ({}/{}).",
+                    current_count, self.mcp_max_dynamic
+                ))
+                .await;
+        }
+
+        let transport = if is_url {
+            zeph_mcp::McpTransport::Http {
+                url: target.to_owned(),
+            }
+        } else {
+            zeph_mcp::McpTransport::Stdio {
+                command: target.to_owned(),
+                args: args[2..].iter().map(|&s| s.to_owned()).collect(),
+                env: std::collections::HashMap::new(),
+            }
+        };
+
+        let entry = zeph_mcp::ServerEntry {
+            id: args[0].to_owned(),
+            transport,
+            timeout: std::time::Duration::from_secs(30),
+        };
+
+        match manager.add_server(&entry).await {
+            Ok(tools) => {
+                let count = tools.len();
+                self.mcp_tools.extend(tools);
+                self.sync_mcp_registry().await;
+                self.channel
+                    .send(&format!(
+                        "Connected MCP server '{}' ({count} tool(s))",
+                        entry.id
+                    ))
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
+                self.channel
+                    .send(&format!("Failed to connect server '{}': {e}", entry.id))
+                    .await
+            }
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn handle_mcp_list(&mut self) -> anyhow::Result<()> {
+        use std::fmt::Write;
+
+        let Some(ref manager) = self.mcp_manager else {
+            return self.channel.send("MCP is not enabled.").await;
+        };
+
+        let server_ids = manager.list_servers().await;
+        if server_ids.is_empty() {
+            return self.channel.send("No MCP servers connected.").await;
+        }
+
+        let mut output = String::from("Connected MCP servers:\n");
+        let mut total = 0usize;
+        for id in &server_ids {
+            let count = self.mcp_tools.iter().filter(|t| t.server_id == *id).count();
+            total += count;
+            let _ = writeln!(output, "- {id} ({count} tools)");
+        }
+        let _ = write!(output, "Total: {total} tool(s)");
+
+        self.channel.send(&output).await
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn handle_mcp_remove(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
+        let Some(server_id) = server_id else {
+            return self.channel.send("Usage: /mcp remove <id>").await;
+        };
+
+        let Some(ref manager) = self.mcp_manager else {
+            return self.channel.send("MCP is not enabled.").await;
+        };
+
+        match manager.remove_server(server_id).await {
+            Ok(()) => {
+                let before = self.mcp_tools.len();
+                self.mcp_tools.retain(|t| t.server_id != server_id);
+                let removed = before - self.mcp_tools.len();
+                self.sync_mcp_registry().await;
+                self.channel
+                    .send(&format!(
+                        "Disconnected MCP server '{server_id}' (removed {removed} tools)"
+                    ))
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(server_id, "MCP remove failed: {e:#}");
+                self.channel
+                    .send(&format!("Failed to remove server '{server_id}': {e}"))
+                    .await
+            }
+        }
+    }
+
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_paths);
         if new_registry.fingerprint() == self.registry.fingerprint() {
@@ -670,6 +846,25 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 Box::pin(async move { p.embed(&owned).await })
             })
             .await
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn sync_mcp_registry(&mut self) {
+        let Some(ref mut registry) = self.mcp_registry else {
+            return;
+        };
+        let provider = self.provider.clone();
+        let embed_fn = |text: &str| -> zeph_mcp::registry::EmbedFuture {
+            let owned = text.to_owned();
+            let p = provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        };
+        if let Err(e) = registry
+            .sync(&self.mcp_tools, &self.embedding_model, embed_fn)
+            .await
+        {
+            tracing::warn!("failed to sync MCP tool registry: {e:#}");
+        }
     }
 
     async fn process_response(&mut self) -> anyhow::Result<()> {

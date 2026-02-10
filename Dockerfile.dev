@@ -16,6 +16,7 @@ COPY crates/zeph-skills/Cargo.toml crates/zeph-skills/Cargo.toml
 COPY crates/zeph-memory/Cargo.toml crates/zeph-memory/Cargo.toml
 COPY crates/zeph-channels/Cargo.toml crates/zeph-channels/Cargo.toml
 COPY crates/zeph-tools/Cargo.toml crates/zeph-tools/Cargo.toml
+COPY crates/zeph-mcp/Cargo.toml crates/zeph-mcp/Cargo.toml
 COPY crates/zeph-a2a/Cargo.toml crates/zeph-a2a/Cargo.toml
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
     for d in crates/*/; do mkdir -p "$d/src" && echo '' > "$d/src/lib.rs"; done && \
@@ -28,9 +29,11 @@ RUN touch src/main.rs && \
 
 FROM container-registry.oracle.com/os/oraclelinux:9-slim
 
-RUN microdnf install -y \
+RUN microdnf module enable nodejs:20 -y && \
+    microdnf install -y \
     shadow-utils ca-certificates \
-    curl wget git jq file findutils procps-ng && \
+    curl wget git jq file findutils procps-ng \
+    nodejs npm python3 && \
     microdnf clean all && \
     useradd --system --no-create-home --shell /sbin/nologin zeph
 

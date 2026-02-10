@@ -2,9 +2,11 @@ FROM container-registry.oracle.com/os/oraclelinux:9-slim
 
 ARG TARGETARCH
 
-RUN microdnf install -y \
+RUN microdnf module enable nodejs:20 -y && \
+    microdnf install -y \
     shadow-utils ca-certificates \
-    curl wget git jq file findutils procps-ng && \
+    curl wget git jq file findutils procps-ng \
+    nodejs npm python3 && \
     microdnf clean all && \
     useradd --system --no-create-home --shell /sbin/nologin zeph
 

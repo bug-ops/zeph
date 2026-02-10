@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `/mcp add <id> <command> [args...]` for dynamic stdio MCP server connection at runtime
+- `/mcp add <id> <url>` for HTTP transport (remote MCP servers in Docker/cloud)
+- `/mcp list` command to show connected servers and tool counts
+- `/mcp remove <id>` command to disconnect MCP servers
+- `McpTransport` enum: `Stdio` (child process) and `Http` (Streamable HTTP) transports
+- HTTP MCP server config via `url` field in `[[mcp.servers]]`
+- `mcp.allowed_commands` config for command allowlist (security hardening)
+- `mcp.max_dynamic_servers` config to limit concurrent dynamic servers (default 10)
+- Qdrant registry sync after dynamic MCP add/remove for semantic tool matching
+
+### Changed
+- Docker images now include Node.js, npm, and Python 3 for MCP server runtime
+- `ServerEntry` uses `McpTransport` enum instead of flat command/args/env fields
+
+### Fixed
+- Skill watcher no longer loops in Docker containers (overlayfs phantom events)
+
 ## [0.8.2] - 2026-02-10
 
 ### Changed
