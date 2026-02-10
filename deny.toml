@@ -4,14 +4,17 @@ targets = [
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 ]
-all-features = true
+all-features = false
+features = ["candle", "orchestrator"]
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # rustls-pemfile unmaintained (via qdrant-client -> tonic)
 # Cannot fix directly, monitoring upstream
-ignore = ["RUSTSEC-2025-0134"]
+# number_prefix unmaintained (via indicatif -> hf-hub, candle transitive dep)
+# paste unmaintained (via gemm -> candle-core, tokenizers transitive dep)
+ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436", "RUSTSEC-2025-0119"]
 
 [licenses]
 confidence-threshold = 0.93
