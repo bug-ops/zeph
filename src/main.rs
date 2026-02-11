@@ -1199,9 +1199,12 @@ mod tests {
 
     #[tokio::test]
     async fn create_skill_matcher_when_semantic_disabled() {
-        let config_path = Path::new("/nonexistent");
-        let mut config = Config::load(config_path).unwrap();
+        let tmp = std::env::temp_dir().join("zeph_test_skill_matcher.db");
+        let tmp_path = tmp.to_string_lossy().to_string();
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.memory.semantic.enabled = false;
+        config.memory.sqlite_path = tmp_path.clone();
 
         let provider = AnyProvider::Ollama(OllamaProvider::new(
             "http://localhost:11434",
@@ -1210,7 +1213,7 @@ mod tests {
         ));
 
         let memory = SemanticMemory::new(
-            &config.memory.sqlite_path,
+            &tmp_path,
             &config.memory.qdrant_url,
             provider.clone(),
             &config.llm.embedding_model,
@@ -1221,6 +1224,8 @@ mod tests {
         let meta: Vec<&SkillMeta> = vec![];
         let result = create_skill_matcher(&config, &provider, &meta, &memory).await;
         assert!(result.is_none());
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
