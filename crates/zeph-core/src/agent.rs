@@ -581,10 +581,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             Some("list") => self.handle_mcp_list().await,
             Some("tools") => self.handle_mcp_tools(parts.get(1).copied()).await,
             Some("remove") => self.handle_mcp_remove(parts.get(1).copied()).await,
-            _ => self
-                .channel
-                .send("Usage: /mcp add|list|tools|remove")
-                .await,
+            _ => self.channel.send("Usage: /mcp add|list|tools|remove").await,
         }
     }
 
@@ -699,10 +696,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         use std::fmt::Write;
 
         let Some(server_id) = server_id else {
-            return self
-                .channel
-                .send("Usage: /mcp tools <server_id>")
-                .await;
+            return self.channel.send("Usage: /mcp tools <server_id>").await;
         };
 
         let tools: Vec<_> = self
