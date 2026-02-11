@@ -33,15 +33,17 @@ Config in `config/default.toml`:
 ```toml
 [llm.openai]
 base_url = "https://api.openai.com/v1"
-model = "gpt-4o"
+model = "gpt-5.2"
 max_tokens = 4096
 embedding_model = "text-embedding-3-small"
+reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 ```
 
 - `llm.openai.base_url`: API endpoint (change for Together, Groq, Fireworks, etc.)
 - `llm.openai.model`: chat model name
 - `llm.openai.max_tokens`: max response tokens (default: 4096)
 - `llm.openai.embedding_model`: optional, enables embeddings support
+- `llm.openai.reasoning_effort`: optional, `low`/`medium`/`high` for reasoning models (o3, etc.)
 
 ## Embeddings
 

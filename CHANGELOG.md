@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - OpenAI-compatible LLM provider with chat, streaming, and embeddings support
 - Feature-gated `openai` feature (enabled by default)
 - Support for OpenAI, Together AI, Groq, Fireworks, and any OpenAI-compatible API via configurable `base_url`
+- `reasoning_effort` parameter for OpenAI reasoning models (low/medium/high)
 - `/mcp add <id> <command> [args...]` for dynamic stdio MCP server connection at runtime
 - `/mcp add <id> <url>` for HTTP transport (remote MCP servers in Docker/cloud)
 - `/mcp list` command to show connected servers and tool counts
@@ -25,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ServerEntry` uses `McpTransport` enum instead of flat command/args/env fields
 
 ### Fixed
+- Effective embedding model resolution: Qdrant subsystems now use the correct provider-specific embedding model name when provider is `openai` or orchestrator routes to OpenAI
 - Skill watcher no longer loops in Docker containers (overlayfs phantom events)
 
 ## [0.8.2] - 2026-02-10

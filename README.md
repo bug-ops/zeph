@@ -7,7 +7,7 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Lightweight AI agent with hybrid inference (Ollama / Claude / HuggingFace via candle), skills-first architecture, semantic memory with Qdrant, MCP client, A2A protocol support, multi-model orchestration, self-learning skill evolution, and multi-channel I/O. **Cross-platform**: Linux, macOS, Windows (x86_64 + ARM64).
+Lightweight AI agent with hybrid inference (Ollama / Claude / OpenAI / HuggingFace via candle), skills-first architecture, semantic memory with Qdrant, MCP client, A2A protocol support, multi-model orchestration, self-learning skill evolution, and multi-channel I/O. **Cross-platform**: Linux, macOS, Windows (x86_64 + ARM64).
 
 <div align="center">
   <img src="asset/zeph-logo.png" alt="Zeph" width="600">
@@ -48,7 +48,7 @@ docker pull ghcr.io/bug-ops/zeph:latest
 Or use a specific version:
 
 ```bash
-docker pull ghcr.io/bug-ops/zeph:v0.8.1
+docker pull ghcr.io/bug-ops/zeph:v0.8.2
 ```
 
 **Security:** Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
@@ -110,6 +110,13 @@ embedding_model = "qwen3-embedding"  # Model for text embeddings
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"
 max_tokens = 4096
+
+# [llm.openai]
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-5.2"
+# max_tokens = 4096
+# embedding_model = "text-embedding-3-small"
+# reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
 [skills]
 paths = ["./skills"]
@@ -174,11 +181,12 @@ rate_limit = 60
 
 | Variable | Description |
 |----------|-------------|
-| `ZEPH_LLM_PROVIDER` | `ollama`, `claude`, `candle`, or `orchestrator` |
+| `ZEPH_LLM_PROVIDER` | `ollama`, `claude`, `openai`, `candle`, or `orchestrator` |
 | `ZEPH_LLM_BASE_URL` | Ollama API endpoint |
 | `ZEPH_LLM_MODEL` | Model name for Ollama |
 | `ZEPH_LLM_EMBEDDING_MODEL` | Embedding model for Ollama (default: `qwen3-embedding`) |
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
+| `ZEPH_OPENAI_API_KEY` | OpenAI API key (required for OpenAI provider) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
 | `ZEPH_SQLITE_PATH` | SQLite database path |
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
@@ -326,7 +334,7 @@ context_budget_tokens = 8000  # Set to LLM context window size (0 = unlimited)
 
 ## Docker
 
-**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.1`.
+**Note:** Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.2`.
 
 <details>
 <summary><b>🐳 Docker Deployment Options</b> (click to expand)</summary>
@@ -386,7 +394,7 @@ ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.1 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.8.2 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up
@@ -594,6 +602,47 @@ The server exposes:
 > [!TIP]
 > Set `ZEPH_A2A_AUTH_TOKEN` to secure the server with bearer token authentication. The agent card endpoint remains public per A2A spec.
 
+## OpenAI Provider
+
+Connect to OpenAI API or any OpenAI-compatible service (Together AI, Groq, Fireworks, Perplexity).
+
+```bash
+ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
+```
+
+<details>
+<summary><b>OpenAI Configuration</b> (click to expand)</summary>
+
+```toml
+[llm]
+provider = "openai"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.2"
+max_tokens = 4096
+embedding_model = "text-embedding-3-small"   # optional, enables vector embeddings
+reasoning_effort = "medium"                  # optional: low, medium, high (for o3, etc.)
+```
+
+Change `base_url` to point to any OpenAI-compatible API:
+
+```toml
+# Together AI
+base_url = "https://api.together.xyz/v1"
+
+# Groq
+base_url = "https://api.groq.com/openai/v1"
+
+# Fireworks
+base_url = "https://api.fireworks.ai/inference/v1"
+```
+
+</details>
+
+> [!TIP]
+> When `embedding_model` is set, Qdrant subsystems automatically use it for skill matching and semantic memory instead of the global `llm.embedding_model`.
+
 ## Local Inference (Optional)
 
 Run HuggingFace models locally via [candle](https://github.com/huggingface/candle) without external API dependencies. Supports GGUF quantized models with Metal/CUDA acceleration.
@@ -733,22 +782,21 @@ cooldown_minutes = 60     # cooldown between improvements for same skill
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `a2a` | Enabled | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
-| `mcp` | Disabled | MCP client for external tool servers via stdio transport |
-| `candle` | Disabled | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) |
+| `openai` | Enabled | OpenAI-compatible provider (GPT, Together, Groq, Fireworks, etc.) |
+| `mcp` | Enabled | MCP client for external tool servers via stdio/HTTP transport |
+| `candle` | Enabled | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) |
+| `orchestrator` | Enabled | Multi-model routing with task-based classification and fallback chains |
+| `self-learning` | Enabled | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
+| `vault-age` | Enabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
 | `metal` | Disabled | Metal GPU acceleration for candle on macOS (implies `candle`) |
 | `cuda` | Disabled | CUDA GPU acceleration for candle on Linux (implies `candle`) |
-| `orchestrator` | Disabled | Multi-model routing with task-based classification and fallback chains |
-| `vault-age` | Disabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
-| `self-learning` | Disabled | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
 
 Build with specific features:
 
 ```bash
-cargo build --release                                     # default (a2a only)
-cargo build --release --features candle,orchestrator      # local inference + orchestrator
-cargo build --release --features candle,metal             # macOS with Metal GPU
-cargo build --release --features self-learning            # skill evolution system
-cargo build --release --features vault-age               # age-encrypted secrets vault
+cargo build --release                                     # all default features
+cargo build --release --features metal                    # macOS with Metal GPU
+cargo build --release --features cuda                     # Linux with NVIDIA GPU
 cargo build --release --no-default-features               # minimal binary
 ```
 
@@ -760,7 +808,7 @@ cargo build --release --no-default-features               # minimal binary
 ```
 zeph (binary)
 ├── zeph-core       Agent loop, config, channel trait, context builder
-├── zeph-llm        LlmProvider trait, Ollama + Claude + Candle backends, orchestrator, embeddings
+├── zeph-llm        LlmProvider trait, Ollama + Claude + OpenAI + Candle backends, orchestrator, embeddings
 ├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
