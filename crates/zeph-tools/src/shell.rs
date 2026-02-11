@@ -857,12 +857,14 @@ mod tests {
         assert!(parsed > 0);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_error_handling() {
         let result = execute_bash("false", Duration::from_secs(5)).await;
         assert_eq!(result, "(no output)");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_command_not_found() {
         let result = execute_bash("nonexistent-command-xyz", Duration::from_secs(5)).await;
