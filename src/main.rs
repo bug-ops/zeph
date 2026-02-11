@@ -258,6 +258,21 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "self-learning")]
     let agent = agent.with_learning(config.skills.learning);
 
+    #[cfg(feature = "tui")]
+    let tui_metrics_rx;
+    #[cfg(feature = "tui")]
+    let agent = if tui_active {
+        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+        tx.send_modify(|m| {
+            m.model_name = config.llm.model.clone();
+        });
+        tui_metrics_rx = Some(rx);
+        agent.with_metrics(tx)
+    } else {
+        tui_metrics_rx = None;
+        agent
+    };
+
     let mut agent = agent;
 
     agent.load_history().await?;
@@ -269,7 +284,10 @@ async fn main() -> anyhow::Result<()> {
         let reader = EventReader::new(event_tx, Duration::from_millis(100));
         std::thread::spawn(move || reader.run());
 
-        let app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+        let mut app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+        if let Some(rx) = tui_metrics_rx {
+            app = app.with_metrics_rx(rx);
+        }
 
         let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
         let agent_task = tokio::spawn(async move { agent.run().await });

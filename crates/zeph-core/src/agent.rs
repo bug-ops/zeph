@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{LlmProvider, Message, Role};
+
+use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::role_str;
 use zeph_skills::loader::Skill;
@@ -40,6 +42,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     summarization_threshold: usize,
     shutdown: watch::Receiver<bool>,
     active_skill_names: Vec<String>,
+    metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     security: SecurityConfig,
     timeouts: TimeoutConfig,
     #[cfg(feature = "self-learning")]
@@ -98,6 +101,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             summarization_threshold: 100,
             shutdown: rx,
             active_skill_names: Vec::new(),
+            metrics_tx: None,
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
             #[cfg(feature = "self-learning")]
@@ -126,11 +130,16 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         recall_limit: usize,
         summarization_threshold: usize,
     ) -> Self {
+        let has_qdrant = memory.has_qdrant();
         self.memory = Some(memory);
         self.conversation_id = Some(conversation_id);
         self.history_limit = history_limit;
         self.recall_limit = recall_limit;
         self.summarization_threshold = summarization_threshold;
+        self.update_metrics(|m| {
+            m.qdrant_available = has_qdrant;
+            m.sqlite_conversation_id = Some(conversation_id);
+        });
         self
     }
 
@@ -189,6 +198,31 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self
     }
 
+    #[must_use]
+    pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
+        let provider_name = self.provider.name().to_string();
+        let total_skills = self.registry.all_meta().len();
+        let qdrant_available = self
+            .memory
+            .as_ref()
+            .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
+        let conversation_id = self.conversation_id;
+        tx.send_modify(|m| {
+            m.provider_name = provider_name;
+            m.total_skills = total_skills;
+            m.qdrant_available = qdrant_available;
+            m.sqlite_conversation_id = conversation_id;
+        });
+        self.metrics_tx = Some(tx);
+        self
+    }
+
+    fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
+        if let Some(ref tx) = self.metrics_tx {
+            tx.send_modify(f);
+        }
+    }
+
     /// Load conversation history from memory and inject into messages.
     ///
     /// # Errors
@@ -222,6 +256,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 tracing::warn!("skipped {skipped} empty message(s) from history");
             }
         }
+
+        if let Ok(count) = memory.message_count(cid).await {
+            let count_u64 = u64::try_from(count).unwrap_or(0);
+            self.update_metrics(|m| {
+                m.sqlite_message_count = count_u64;
+            });
+        }
+
         Ok(())
     }
 
@@ -821,6 +863,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
             .collect();
 
+        let skill_names = self.active_skill_names.clone();
+        let total = all_meta.len();
+        self.update_metrics(|m| {
+            m.active_skills = skill_names;
+            m.total_skills = total;
+        });
+
         if !self.active_skill_names.is_empty()
             && let Some(memory) = &self.memory
         {
@@ -944,11 +993,24 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     async fn call_llm_with_timeout(&mut self) -> anyhow::Result<Option<String>> {
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
+        let start = std::time::Instant::now();
+        let prompt_estimate: u64 = self
+            .messages
+            .iter()
+            .map(|m| u64::try_from(m.content.len()).unwrap_or(0) / 4)
+            .sum();
 
         if self.provider.supports_streaming() {
             if let Ok(r) =
                 tokio::time::timeout(llm_timeout, self.process_response_streaming()).await
             {
+                let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.update_metrics(|m| {
+                    m.api_calls += 1;
+                    m.last_llm_latency_ms = latency;
+                    m.prompt_tokens += prompt_estimate;
+                    m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                });
                 Ok(Some(r?))
             } else {
                 self.channel
@@ -959,6 +1021,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         } else {
             match tokio::time::timeout(llm_timeout, self.provider.chat(&self.messages)).await {
                 Ok(Ok(resp)) => {
+                    let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let completion_estimate = u64::try_from(resp.len()).unwrap_or(0) / 4;
+                    self.update_metrics(|m| {
+                        m.api_calls += 1;
+                        m.last_llm_latency_ms = latency;
+                        m.prompt_tokens += prompt_estimate;
+                        m.completion_tokens += completion_estimate;
+                        m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                    });
                     let display = self.maybe_redact(&resp);
                     self.channel.send(&display).await?;
                     Ok(Some(resp))
@@ -1082,6 +1153,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         self.channel.flush_chunks().await?;
+
+        let completion_estimate = u64::try_from(response.len()).unwrap_or(0) / 4;
+        self.update_metrics(|m| {
+            m.completion_tokens += completion_estimate;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+        });
+
         Ok(response)
     }
 
@@ -1101,6 +1179,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tracing::error!("failed to persist message: {e:#}");
             return;
         }
+
+        self.update_metrics(|m| {
+            m.sqlite_message_count += 1;
+        });
 
         self.check_summarization().await;
     }
@@ -1131,6 +1213,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             match memory.summarize(cid, batch_size).await {
                 Ok(Some(summary_id)) => {
                     tracing::info!("created summary {summary_id} for conversation {cid}");
+                    self.update_metrics(|m| {
+                        m.summaries_count += 1;
+                    });
                 }
                 Ok(None) => {
                     tracing::debug!("no summarization needed");
@@ -2308,5 +2393,98 @@ mod agent_tests {
     fn timeout_config_default() {
         let config = TimeoutConfig::default();
         let _ = format!("{config:?}");
+    }
+
+    #[tokio::test]
+    async fn agent_with_metrics_sets_initial_values() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let _agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        let snapshot = rx.borrow().clone();
+        assert_eq!(snapshot.provider_name, "mock");
+        assert_eq!(snapshot.total_skills, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_metrics_update_on_llm_call() {
+        let provider = MockProvider::new(vec!["response".to_string()]);
+        let channel = MockChannel::new(vec!["hello".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.run().await.unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert_eq!(snapshot.api_calls, 1);
+        assert!(snapshot.total_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn agent_metrics_streaming_updates_completion_tokens() {
+        let provider = MockProvider::new(vec!["streaming response".to_string()]).with_streaming();
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.run().await.unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert!(snapshot.completion_tokens > 0);
+        assert_eq!(snapshot.api_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_metrics_persist_increments_count() {
+        let provider = MockProvider::new(vec!["response".to_string()]);
+        let channel = MockChannel::new(vec!["hello".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.run().await.unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert!(snapshot.sqlite_message_count == 0, "no memory = no persist");
+    }
+
+    #[tokio::test]
+    async fn agent_metrics_skills_updated_on_prompt_rebuild() {
+        let provider = MockProvider::new(vec!["response".to_string()]);
+        let channel = MockChannel::new(vec!["hello".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.run().await.unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert_eq!(snapshot.total_skills, 1);
+        assert!(!snapshot.active_skills.is_empty());
+    }
+
+    #[test]
+    fn update_metrics_noop_when_none() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.update_metrics(|m| m.api_calls = 999);
     }
 }

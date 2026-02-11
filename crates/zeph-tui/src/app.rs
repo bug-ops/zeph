@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::event::{AgentEvent, AppEvent};
 use crate::layout::AppLayout;
@@ -42,6 +42,7 @@ pub struct App {
     messages: Vec<ChatMessage>,
     scroll_offset: usize,
     pub metrics: MetricsSnapshot,
+    metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
@@ -61,10 +62,25 @@ impl App {
             messages: Vec::new(),
             scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
+            metrics_rx: None,
             active_panel: Panel::Chat,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
+        }
+    }
+
+    #[must_use]
+    pub fn with_metrics_rx(mut self, rx: watch::Receiver<MetricsSnapshot>) -> Self {
+        self.metrics_rx = Some(rx);
+        self
+    }
+
+    pub fn poll_metrics(&mut self) {
+        if let Some(ref mut rx) = self.metrics_rx
+            && rx.has_changed().unwrap_or(false)
+        {
+            self.metrics = rx.borrow_and_update().clone();
         }
     }
 
@@ -142,9 +158,6 @@ impl App {
                 }
             }
             AgentEvent::Typing => {}
-            AgentEvent::MetricsUpdate(snapshot) => {
-                self.metrics = snapshot;
-            }
         }
     }
 
@@ -186,72 +199,9 @@ impl App {
     }
 
     fn draw_side_panel(&self, frame: &mut ratatui::Frame, layout: &AppLayout) {
-        use ratatui::text::Line;
-        use ratatui::widgets::{Block, Borders, Paragraph};
-
-        let theme = Theme::default();
-
-        // Skills panel
-        let skill_lines: Vec<Line<'_>> = self
-            .metrics
-            .active_skills
-            .iter()
-            .map(|s| Line::from(format!("  - {s}")))
-            .collect();
-        let skills = Paragraph::new(skill_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(format!(
-                    " Skills ({}/{}) ",
-                    self.metrics.active_skills.len(),
-                    self.metrics.total_skills
-                )),
-        );
-        frame.render_widget(skills, layout.skills);
-
-        // Memory panel
-        let mem_lines = vec![
-            Line::from(format!(
-                "  SQLite: {} msgs",
-                self.metrics.sqlite_message_count
-            )),
-            Line::from(format!(
-                "  Qdrant: {}",
-                if self.metrics.qdrant_available {
-                    "connected"
-                } else {
-                    "---"
-                }
-            )),
-            Line::from(format!(
-                "  Conv ID: {}",
-                self.metrics
-                    .sqlite_conversation_id
-                    .map_or_else(|| "---".to_string(), |id| id.to_string())
-            )),
-        ];
-        let memory = Paragraph::new(mem_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(" Memory "),
-        );
-        frame.render_widget(memory, layout.memory);
-
-        // Resources panel
-        let res_lines = vec![
-            Line::from(format!("  Tokens: {}", self.metrics.total_tokens)),
-            Line::from(format!("  API calls: {}", self.metrics.api_calls)),
-            Line::from(format!("  Latency: {}ms", self.metrics.last_llm_latency_ms)),
-        ];
-        let resources = Paragraph::new(res_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(" Resources "),
-        );
-        frame.render_widget(resources, layout.resources);
+        widgets::skills::render(&self.metrics, frame, layout.skills);
+        widgets::memory::render(&self.metrics, frame, layout.memory);
+        widgets::resources::render(&self.metrics, frame, layout.resources);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -588,15 +538,6 @@ mod tests {
         app.handle_event(AppEvent::Key(key)).unwrap();
         assert_eq!(app.input(), "ac");
         assert_eq!(app.cursor_position(), 1);
-    }
-
-    #[test]
-    fn metrics_update_event() {
-        let (mut app, _rx, _tx) = make_app();
-        let mut m = MetricsSnapshot::default();
-        m.api_calls = 42;
-        app.handle_agent_event(AgentEvent::MetricsUpdate(m));
-        assert_eq!(app.metrics.api_calls, 42);
     }
 
     #[test]

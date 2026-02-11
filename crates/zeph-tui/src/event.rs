@@ -3,8 +3,6 @@ use std::time::Duration;
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
 use tokio::sync::mpsc;
 
-use crate::metrics::MetricsSnapshot;
-
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
@@ -19,7 +17,6 @@ pub enum AgentEvent {
     FullMessage(String),
     Flush,
     Typing,
-    MetricsUpdate(MetricsSnapshot),
 }
 
 pub struct EventReader {

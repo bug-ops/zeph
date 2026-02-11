@@ -50,6 +50,7 @@ async fn tui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> anyhow::Result<()> {
     loop {
+        app.poll_metrics();
         terminal.draw(|frame| app.draw(frame))?;
 
         tokio::select! {
