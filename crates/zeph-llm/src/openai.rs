@@ -343,7 +343,7 @@ mod tests {
         OpenAiProvider::new(
             "sk-test-key".into(),
             "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
+            "gpt-5.2".into(),
             4096,
             Some("text-embedding-3-small".into()),
         )
@@ -353,7 +353,7 @@ mod tests {
         OpenAiProvider::new(
             "sk-test-key".into(),
             "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
+            "gpt-5.2".into(),
             4096,
             None,
         )
@@ -364,7 +364,7 @@ mod tests {
         let p = test_provider();
         assert_eq!(p.api_key, "sk-test-key");
         assert_eq!(p.base_url, "https://api.openai.com/v1");
-        assert_eq!(p.model, "gpt-4o");
+        assert_eq!(p.model, "gpt-5.2");
         assert_eq!(p.max_tokens, 4096);
         assert_eq!(p.embedding_model.as_deref(), Some("text-embedding-3-small"));
     }
@@ -386,7 +386,7 @@ mod tests {
         let debug = format!("{p:?}");
         assert!(!debug.contains("sk-test-key"));
         assert!(debug.contains("<redacted>"));
-        assert!(debug.contains("gpt-4o"));
+        assert!(debug.contains("gpt-5.2"));
         assert!(debug.contains("api.openai.com"));
     }
 
@@ -417,13 +417,13 @@ mod tests {
             content: "hello",
         }];
         let body = ChatRequest {
-            model: "gpt-4o",
+            model: "gpt-5.2",
             messages: &msgs,
             max_tokens: 1024,
             stream: false,
         };
         let json = serde_json::to_string(&body).unwrap();
-        assert!(json.contains("\"model\":\"gpt-4o\""));
+        assert!(json.contains("\"model\":\"gpt-5.2\""));
         assert!(json.contains("\"max_tokens\":1024"));
         assert!(json.contains("\"role\":\"user\""));
         assert!(!json.contains("\"stream\""));
@@ -433,7 +433,7 @@ mod tests {
     fn chat_request_with_stream_flag() {
         let msgs = [];
         let body = ChatRequest {
-            model: "gpt-4o",
+            model: "gpt-5.2",
             messages: &msgs,
             max_tokens: 100,
             stream: true,
@@ -642,7 +642,7 @@ mod tests {
         let provider = OpenAiProvider::new(
             api_key,
             "https://api.openai.com/v1".into(),
-            "gpt-4o-mini".into(),
+            "gpt-5.2".into(),
             256,
             None,
         );
@@ -664,7 +664,7 @@ mod tests {
         let provider = OpenAiProvider::new(
             api_key,
             "https://api.openai.com/v1".into(),
-            "gpt-4o-mini".into(),
+            "gpt-5.2".into(),
             256,
             None,
         );
@@ -694,7 +694,7 @@ mod tests {
         let provider = OpenAiProvider::new(
             api_key,
             "https://api.openai.com/v1".into(),
-            "gpt-4o-mini".into(),
+            "gpt-5.2".into(),
             256,
             Some("text-embedding-3-small".into()),
         );
