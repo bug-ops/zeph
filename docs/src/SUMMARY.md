@@ -21,6 +21,8 @@
 - [Self-Learning Skills](guide/self-learning.md)
 - [A2A Protocol](guide/a2a.md)
 - [Secrets Management](guide/vault.md)
+- [Channels (CLI, Telegram, TUI)](guide/channels.md)
+- [TUI Dashboard](guide/tui.md)
 
 # Architecture
 

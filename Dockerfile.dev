@@ -18,6 +18,7 @@ COPY crates/zeph-channels/Cargo.toml crates/zeph-channels/Cargo.toml
 COPY crates/zeph-tools/Cargo.toml crates/zeph-tools/Cargo.toml
 COPY crates/zeph-mcp/Cargo.toml crates/zeph-mcp/Cargo.toml
 COPY crates/zeph-a2a/Cargo.toml crates/zeph-a2a/Cargo.toml
+COPY crates/zeph-tui/Cargo.toml crates/zeph-tui/Cargo.toml
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
     for d in crates/*/; do mkdir -p "$d/src" && echo '' > "$d/src/lib.rs"; done && \
     cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES} 2>/dev/null || true

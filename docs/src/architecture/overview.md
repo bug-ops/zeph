@@ -15,7 +15,8 @@ zeph (binary) — thin bootstrap glue
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 ├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
 ├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
-└── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
+├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
+└── zeph-tui        ratatui TUI dashboard with real-time metrics (optional)
 ```
 
 ## Dependency Graph
@@ -29,7 +30,8 @@ zeph (binary)
         ├── zeph-channels (leaf)
         ├── zeph-tools (leaf)
         ├── zeph-mcp (optional, leaf)
-        └── zeph-a2a (optional, leaf)
+        ├── zeph-a2a (optional, leaf)
+        └── zeph-tui (optional, leaf)
 ```
 
 `zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation.
@@ -41,4 +43,4 @@ zeph (binary)
 - **Errors:** `thiserror` for library crates, `anyhow` for application code (`zeph-core`, `main.rs`)
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
-- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`) are feature-gated in the binary
+- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary

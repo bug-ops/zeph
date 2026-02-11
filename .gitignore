@@ -6,3 +6,4 @@
 data/
 .local/
 docs/book/
+*.log

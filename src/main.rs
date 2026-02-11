@@ -128,7 +128,8 @@ async fn main() -> anyhow::Result<()> {
         other => bail!("unknown vault backend: {other}"),
     };
 
-    let mut config = Config::load(Path::new("config/default.toml"))?;
+    let config_path = resolve_config_path();
+    let mut config = Config::load(&config_path)?;
     config.resolve_secrets(vault.as_ref()).await?;
 
     let provider = create_provider(&config)?;
@@ -796,6 +797,17 @@ fn parse_vault_args() -> VaultArgs {
         key_path,
         vault_path,
     }
+}
+
+fn resolve_config_path() -> PathBuf {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(path) = args.windows(2).find(|w| w[0] == "--config").map(|w| &w[1]) {
+        return PathBuf::from(path);
+    }
+    if let Ok(path) = std::env::var("ZEPH_CONFIG") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from("config/default.toml")
 }
 
 #[cfg(feature = "tui")]

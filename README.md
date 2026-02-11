@@ -72,8 +72,15 @@ ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... ./target/release/zeph
 ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
 ```
 
+For TUI dashboard (requires `tui` feature):
+
+```bash
+cargo build --release --features tui
+./target/release/zeph --tui
+```
+
 > [!TIP]
-> Full configuration reference with TOML config and environment variables: [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html)
+> Use `--config /path/to/config.toml` or `ZEPH_CONFIG=...` to override the default config path. Full reference: [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html)
 
 ## Key Features
 
@@ -86,7 +93,8 @@ ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
 | **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
-| **Multi-Channel I/O** | CLI and Telegram with streaming support | [Quick Start](https://bug-ops.github.io/zeph/getting-started/quick-start.html) |
+| **TUI Dashboard** | ratatui terminal UI with real-time metrics, streaming chat feed | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
+| **Multi-Channel I/O** | CLI, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
 | **Defense-in-Depth** | Shell sandbox, command filter, secret redaction, audit log, SSRF protection | [Security](https://bug-ops.github.io/zeph/security.html) |
 
 ## Architecture
@@ -100,7 +108,8 @@ zeph (binary)
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming
 ├── zeph-tools      — shell executor, web scraper, composite tool dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
-└── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
+├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
+└── zeph-tui        — ratatui TUI dashboard with real-time metrics (optional)
 ```
 
 > [!IMPORTANT]
@@ -120,12 +129,14 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 | `self-learning` | On | Skill evolution system |
 | `vault-age` | On | Age-encrypted secret storage |
 | `metal` | Off | Metal GPU acceleration (macOS) |
+| `tui` | Off | ratatui TUI dashboard with real-time metrics |
 | `cuda` | Off | CUDA GPU acceleration (Linux) |
 
 ```bash
 cargo build --release                        # all defaults
 cargo build --release --features metal       # macOS Metal GPU
 cargo build --release --no-default-features  # minimal binary
+cargo build --release --features tui         # with TUI dashboard
 ```
 
 Full details: [Feature Flags](https://bug-ops.github.io/zeph/feature-flags.html)

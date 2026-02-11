@@ -2,6 +2,21 @@
 
 Zeph loads `config/default.toml` at startup and applies environment variable overrides.
 
+The config path can be overridden via CLI argument or environment variable:
+
+```bash
+# CLI argument (highest priority)
+zeph --config /path/to/custom.toml
+
+# Environment variable
+ZEPH_CONFIG=/path/to/custom.toml zeph
+
+# Default (fallback)
+# config/default.toml
+```
+
+Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
+
 ## Configuration File
 
 ```toml
@@ -116,3 +131,5 @@ rate_limit = 60
 | `ZEPH_TIMEOUT_LLM` | LLM call timeout in seconds (default: 120) |
 | `ZEPH_TIMEOUT_EMBEDDING` | Embedding generation timeout in seconds (default: 30) |
 | `ZEPH_TIMEOUT_A2A` | A2A remote call timeout in seconds (default: 30) |
+| `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
+| `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |

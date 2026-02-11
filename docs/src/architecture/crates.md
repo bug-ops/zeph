@@ -79,3 +79,15 @@ A2A protocol client and server (optional, feature-gated).
 - `AgentCardBuilder` — construct agent cards from runtime config
 - A2A Server — axum-based HTTP server with bearer auth, rate limiting, body size limits
 - `TaskManager` — in-memory task lifecycle management
+
+## zeph-tui
+
+ratatui-based TUI dashboard (optional, feature-gated).
+
+- `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc
+- `App` — TUI state machine with Normal/Insert modes, keybindings, scroll
+- `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
+- `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch`
+- Chat widget with bottom-up message feed and streaming cursor
+- Status bar with mode, skill count, tokens, Qdrant status, uptime
+- Panic hook for terminal state restoration
