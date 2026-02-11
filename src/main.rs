@@ -667,3 +667,169 @@ fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
         Ok(AnyChannel::Cli(CliChannel::new()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeph_core::channel::Channel;
+
+    #[test]
+    fn vault_args_defaults_in_test_context() {
+        let args = parse_vault_args();
+        assert_eq!(args.backend, "env");
+        assert!(args.key_path.is_none());
+        assert!(args.vault_path.is_none());
+    }
+
+    #[test]
+    fn vault_args_struct_construction() {
+        let args = VaultArgs {
+            backend: "age".into(),
+            key_path: Some("/tmp/key".into()),
+            vault_path: Some("/tmp/vault".into()),
+        };
+        assert_eq!(args.backend, "age");
+        assert_eq!(args.key_path.as_deref(), Some("/tmp/key"));
+        assert_eq!(args.vault_path.as_deref(), Some("/tmp/vault"));
+    }
+
+    #[test]
+    fn vault_args_struct_env_backend() {
+        let args = VaultArgs {
+            backend: "env".into(),
+            key_path: None,
+            vault_path: None,
+        };
+        assert_eq!(args.backend, "env");
+        assert!(args.key_path.is_none());
+        assert!(args.vault_path.is_none());
+    }
+
+    #[test]
+    fn create_channel_returns_cli_when_no_telegram() {
+        let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+        let channel = create_channel(&config).unwrap();
+        assert!(matches!(channel, AnyChannel::Cli(_)));
+    }
+
+    #[test]
+    fn any_channel_debug_cli() {
+        let ch = AnyChannel::Cli(CliChannel::new());
+        let debug = format!("{ch:?}");
+        assert!(debug.contains("Cli"));
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        let result = ch.send("test message").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send_chunk() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        let result = ch.send_chunk("chunk").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_flush_chunks() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        ch.send_chunk("data").await.unwrap();
+        let result = ch.flush_chunks().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send_typing() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        let result = ch.send_typing().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_loading_from_default_toml() {
+        let config = Config::load(Path::new("config/default.toml"));
+        assert!(config.is_ok());
+    }
+
+    #[test]
+    fn config_loading_nonexistent_uses_defaults() {
+        let config = Config::load(Path::new("/does/not/exist.toml")).unwrap();
+        assert_eq!(config.llm.provider, "ollama");
+        assert_eq!(config.agent.name, "Zeph");
+    }
+
+    #[test]
+    fn create_provider_ollama() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let provider = create_provider(&config).unwrap();
+        assert!(matches!(provider, AnyProvider::Ollama(_)));
+        assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    fn create_provider_unknown_errors() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = "unknown_provider".into();
+        let result = create_provider(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unknown LLM provider")
+        );
+    }
+
+    #[test]
+    fn create_provider_claude_without_cloud_config_errors() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = "claude".into();
+        config.llm.cloud = None;
+        let result = create_provider(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("llm.cloud config section required")
+        );
+    }
+
+    #[test]
+    fn create_channel_no_telegram_config() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.telegram = None;
+        let channel = create_channel(&config).unwrap();
+        assert!(matches!(channel, AnyChannel::Cli(_)));
+    }
+
+    #[test]
+    fn create_channel_telegram_without_token() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.telegram = Some(zeph_core::config::TelegramConfig {
+            token: None,
+            allowed_users: vec![],
+        });
+        let channel = create_channel(&config).unwrap();
+        assert!(matches!(channel, AnyChannel::Cli(_)));
+    }
+
+    #[tokio::test]
+    async fn health_check_ollama_unreachable() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://127.0.0.1:1",
+            "test".into(),
+            "embed".into(),
+        ));
+        health_check(&provider).await;
+    }
+
+    #[tokio::test]
+    async fn health_check_claude_noop() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        health_check(&provider).await;
+    }
+}

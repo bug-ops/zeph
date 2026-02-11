@@ -437,4 +437,201 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), A2aError::Http(_)));
     }
+
+    #[tokio::test]
+    async fn stream_message_connection_error() {
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("stream me"),
+            configuration: None,
+        };
+        let result = client
+            .stream_message("http://127.0.0.1:1/rpc", params, None)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_message_tls_required_rejects_http() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let params = SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        };
+        let result = client
+            .stream_message("http://example.com/rpc", params, None)
+            .await;
+        match result {
+            Err(A2aError::Security(msg)) => assert!(msg.contains("TLS required")),
+            _ => panic!("expected Security error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_tls_required_rejects_http() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let params = SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        };
+        let result = client
+            .send_message("http://example.com/rpc", params, None)
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+    }
+
+    #[tokio::test]
+    async fn get_task_tls_required_rejects_http() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let params = TaskIdParams {
+            id: "t-1".into(),
+            history_length: None,
+        };
+        let result = client
+            .get_task("http://example.com/rpc", params, None)
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+    }
+
+    #[tokio::test]
+    async fn cancel_task_tls_required_rejects_http() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let params = TaskIdParams {
+            id: "t-1".into(),
+            history_length: None,
+        };
+        let result = client
+            .cancel_task("http://example.com/rpc", params, None)
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_endpoint_invalid_url_with_ssrf() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(false, true);
+        let result = client.validate_endpoint("not-a-url").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+    }
+
+    #[test]
+    fn with_security_returns_configured_client() {
+        let client = A2aClient::new(reqwest::Client::new()).with_security(true, true);
+        assert!(client.require_tls);
+        assert!(client.ssrf_protection);
+    }
+
+    #[test]
+    fn default_client_no_security() {
+        let client = A2aClient::new(reqwest::Client::new());
+        assert!(!client.require_tls);
+        assert!(!client.ssrf_protection);
+    }
+
+    #[test]
+    fn task_event_clone() {
+        let event = TaskEvent::StatusUpdate(TaskStatusUpdateEvent {
+            kind: "status-update".into(),
+            task_id: "t-1".into(),
+            context_id: None,
+            status: TaskStatus {
+                state: TaskState::Working,
+                timestamp: "ts".into(),
+                message: None,
+            },
+            is_final: false,
+        });
+        let cloned = event.clone();
+        let json1 = serde_json::to_string(&event).unwrap();
+        let json2 = serde_json::to_string(&cloned).unwrap();
+        assert_eq!(json1, json2);
+    }
+
+    #[test]
+    fn task_event_debug() {
+        let event = TaskEvent::ArtifactUpdate(TaskArtifactUpdateEvent {
+            kind: "artifact-update".into(),
+            task_id: "t-1".into(),
+            context_id: None,
+            artifact: Artifact {
+                artifact_id: "a-1".into(),
+                name: None,
+                parts: vec![Part::text("data")],
+                metadata: None,
+            },
+            is_final: true,
+        });
+        let dbg = format!("{event:?}");
+        assert!(dbg.contains("ArtifactUpdate"));
+    }
+
+    #[test]
+    fn is_private_ip_ipv4_non_private() {
+        assert!(!is_private_ip("93.184.216.34".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_ipv6_non_private() {
+        assert!(!is_private_ip("2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rpc_response_error_takes_priority_over_result() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::Value::String("1".into()),
+            result: Some(Task {
+                id: "t-1".into(),
+                context_id: None,
+                status: TaskStatus {
+                    state: TaskState::Completed,
+                    timestamp: "ts".into(),
+                    message: None,
+                },
+                artifacts: vec![],
+                history: vec![],
+                metadata: None,
+            }),
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: "error".into(),
+                data: None,
+            }),
+        };
+        let err = resp.into_result().unwrap_err();
+        assert_eq!(err.code, -32001);
+    }
+
+    #[test]
+    fn rpc_response_neither_result_nor_error() {
+        let resp: JsonRpcResponse<Task> = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::Value::String("1".into()),
+            result: None,
+            error: None,
+        };
+        let err = resp.into_result().unwrap_err();
+        assert_eq!(err.code, -32603);
+    }
+
+    #[test]
+    fn task_event_serialize_round_trip() {
+        let event = TaskEvent::StatusUpdate(TaskStatusUpdateEvent {
+            kind: "status-update".into(),
+            task_id: "t-1".into(),
+            context_id: Some("ctx-1".into()),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                timestamp: "2025-01-01T00:00:00Z".into(),
+                message: Some(Message::user_text("done")),
+            },
+            is_final: true,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let back: TaskEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, TaskEvent::StatusUpdate(_)));
+    }
 }

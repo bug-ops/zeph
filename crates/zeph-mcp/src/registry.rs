@@ -507,4 +507,159 @@ mod tests {
         let results = registry.search("test query", 5, embed_fn).await;
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn registry_new_with_invalid_url_fails() {
+        let result = McpToolRegistry::new("not a valid url");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn content_hash_length_is_blake3_hex() {
+        let tool = make_tool("server", "tool");
+        let hash = content_hash(&tool);
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn content_hash_same_input_same_hash() {
+        let t1 = McpTool {
+            server_id: "s".into(),
+            name: "t".into(),
+            description: "desc".into(),
+            input_schema: serde_json::json!({"type": "string"}),
+        };
+        let t2 = McpTool {
+            server_id: "s".into(),
+            name: "t".into(),
+            description: "desc".into(),
+            input_schema: serde_json::json!({"type": "string"}),
+        };
+        assert_eq!(content_hash(&t1), content_hash(&t2));
+    }
+
+    #[test]
+    fn content_hash_different_name_different_hash() {
+        let t1 = make_tool("s", "tool_a");
+        let t2 = make_tool("s", "tool_b");
+        assert_ne!(content_hash(&t1), content_hash(&t2));
+    }
+
+    #[test]
+    fn tool_point_id_format_uuid_v5() {
+        let id = tool_point_id("github:create_issue");
+        let parsed = uuid::Uuid::parse_str(&id).unwrap();
+        assert_eq!(parsed.get_version_num(), 5);
+    }
+
+    #[test]
+    fn tool_point_id_consistent_across_calls() {
+        let key = "server:tool_name";
+        let ids: Vec<String> = (0..10).map(|_| tool_point_id(key)).collect();
+        for id in &ids {
+            assert_eq!(id, &ids[0]);
+        }
+    }
+
+    #[test]
+    fn collection_name_constant() {
+        assert_eq!(COLLECTION_NAME, "zeph_mcp_tools");
+    }
+
+    #[tokio::test]
+    async fn search_with_embedding_failure_returns_empty() {
+        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
+            Box::pin(async { Err(anyhow::anyhow!("embedding model not loaded")) })
+        };
+        let results = registry.search("search query", 10, embed_fn).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_with_zero_limit() {
+        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
+            Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) })
+        };
+        let results = registry.search("query", 0, embed_fn).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_with_unreachable_qdrant_fails() {
+        let mut registry = McpToolRegistry::new("http://127.0.0.1:1").unwrap();
+        let tools = vec![make_tool("server", "tool")];
+        let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
+            Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) })
+        };
+        let result = registry.sync(&tools, "test-model", embed_fn).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn sync_with_empty_tools_and_unreachable_qdrant_fails() {
+        let mut registry = McpToolRegistry::new("http://127.0.0.1:1").unwrap();
+        let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
+            Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) })
+        };
+        let result = registry.sync(&[], "test-model", embed_fn).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_string_from_double_value_returns_none() {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "key".into(),
+            qdrant_client::qdrant::Value {
+                kind: Some(Kind::DoubleValue(3.14)),
+            },
+        );
+        assert_eq!(extract_string(&payload, "key"), None);
+    }
+
+    #[test]
+    fn extract_string_from_bool_value_returns_none() {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "key".into(),
+            qdrant_client::qdrant::Value {
+                kind: Some(Kind::BoolValue(true)),
+            },
+        );
+        assert_eq!(extract_string(&payload, "key"), None);
+    }
+
+    #[test]
+    fn content_hash_empty_description() {
+        let tool = McpTool {
+            server_id: "s".into(),
+            name: "t".into(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+        };
+        let hash = content_hash(&tool);
+        assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn tool_point_id_empty_key() {
+        let id = tool_point_id("");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn sync_stats_all_fields_settable() {
+        let stats = SyncStats {
+            added: 10,
+            updated: 20,
+            removed: 5,
+            unchanged: 100,
+        };
+        assert_eq!(stats.added, 10);
+        assert_eq!(stats.updated, 20);
+        assert_eq!(stats.removed, 5);
+        assert_eq!(stats.unchanged, 100);
+    }
 }

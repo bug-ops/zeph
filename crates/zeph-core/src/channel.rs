@@ -217,4 +217,59 @@ mod tests {
         let result = ch.confirm("Delete everything?").await.unwrap();
         assert!(result);
     }
+
+    #[tokio::test]
+    async fn stub_channel_send_typing_default() {
+        let mut ch = StubChannel;
+        ch.send_typing().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stub_channel_recv_returns_none() {
+        let mut ch = StubChannel;
+        let msg = ch.recv().await.unwrap();
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn stub_channel_send_ok() {
+        let mut ch = StubChannel;
+        ch.send("hello").await.unwrap();
+    }
+
+    #[test]
+    fn channel_message_clone() {
+        let msg = ChannelMessage {
+            text: "test".to_string(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.text, "test");
+    }
+
+    #[test]
+    fn channel_message_debug() {
+        let msg = ChannelMessage {
+            text: "debug".to_string(),
+        };
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("debug"));
+    }
+
+    #[test]
+    fn cli_channel_new() {
+        let ch = CliChannel::new();
+        assert!(ch.accumulated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cli_channel_send_returns_ok() {
+        let mut ch = CliChannel::new();
+        ch.send("test message").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cli_channel_flush_returns_ok() {
+        let mut ch = CliChannel::new();
+        ch.flush_chunks().await.unwrap();
+    }
 }

@@ -820,4 +820,253 @@ mod tests {
         assert_eq!(history[1].role, Role::Assistant);
         assert_eq!(history[2].role, Role::System);
     }
+
+    #[tokio::test]
+    async fn new_with_invalid_qdrant_url_graceful() {
+        let provider = TestProvider {
+            embedding: vec![0.1, 0.2, 0.3],
+            supports_embeddings: true,
+        };
+        let result =
+            SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn remember_with_embeddings_supported_but_no_qdrant() {
+        let memory = test_semantic_memory(true).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        let msg_id = memory.remember(cid, "user", "hello embed").await.unwrap();
+        assert!(msg_id > 0);
+
+        let history = memory.sqlite.load_history(cid, 50).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "hello embed");
+    }
+
+    #[tokio::test]
+    async fn remember_verifies_content_via_load_history() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory.remember(cid, "user", "alpha").await.unwrap();
+        memory.remember(cid, "assistant", "beta").await.unwrap();
+        memory.remember(cid, "user", "gamma").await.unwrap();
+
+        let history = memory.sqlite().load_history(cid, 50).await.unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].content, "alpha");
+        assert_eq!(history[1].content, "beta");
+        assert_eq!(history[2].content, "gamma");
+    }
+
+    #[tokio::test]
+    async fn message_count_multiple_conversations_isolated() {
+        let memory = test_semantic_memory(false).await;
+        let cid1 = memory.sqlite().create_conversation().await.unwrap();
+        let cid2 = memory.sqlite().create_conversation().await.unwrap();
+        let cid3 = memory.sqlite().create_conversation().await.unwrap();
+
+        for _ in 0..5 {
+            memory.remember(cid1, "user", "msg").await.unwrap();
+        }
+        for _ in 0..3 {
+            memory.remember(cid2, "user", "msg").await.unwrap();
+        }
+
+        assert_eq!(memory.message_count(cid1).await.unwrap(), 5);
+        assert_eq!(memory.message_count(cid2).await.unwrap(), 3);
+        assert_eq!(memory.message_count(cid3).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn summarize_empty_messages_range_returns_none() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..6 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        memory.summarize(cid, 3).await.unwrap();
+        memory.summarize(cid, 3).await.unwrap();
+
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn summarize_token_estimate_populated() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..5 {
+            memory
+                .remember(cid, "user", &format!("message {i}"))
+                .await
+                .unwrap();
+        }
+
+        memory.summarize(cid, 3).await.unwrap();
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        let token_est = summaries[0].token_estimate;
+        let expected = i64::try_from(estimate_tokens(&summaries[0].content)).unwrap();
+        assert_eq!(token_est, expected);
+    }
+
+    struct FailChatProvider;
+
+    impl Clone for FailChatProvider {
+        fn clone(&self) -> Self {
+            Self
+        }
+    }
+
+    impl LlmProvider for FailChatProvider {
+        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            Err(anyhow::anyhow!("chat failed"))
+        }
+
+        async fn chat_stream(&self, _messages: &[Message]) -> anyhow::Result<ChatStream> {
+            Err(anyhow::anyhow!("stream failed"))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Err(anyhow::anyhow!("embed not supported"))
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "fail"
+        }
+    }
+
+    #[tokio::test]
+    async fn summarize_fails_when_provider_chat_fails() {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let memory = SemanticMemory {
+            sqlite,
+            qdrant: None,
+            provider: FailChatProvider,
+            embedding_model: "test".into(),
+        };
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..5 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        let result = memory.summarize(cid, 3).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn embed_missing_without_embedding_support_returns_zero() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory
+            .sqlite()
+            .save_message(cid, "user", "test message")
+            .await
+            .unwrap();
+
+        let count = memory.embed_missing().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn has_embedding_returns_false_when_no_qdrant() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+        let msg_id = memory.remember(cid, "user", "test").await.unwrap();
+        assert!(!memory.has_embedding(msg_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn recall_empty_without_qdrant_regardless_of_filter() {
+        let memory = test_semantic_memory(true).await;
+        let filter = SearchFilter {
+            conversation_id: Some(1),
+            role: None,
+        };
+        let recalled = memory.recall("query", 10, Some(filter)).await.unwrap();
+        assert!(recalled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summarize_message_range_bounds() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..8 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        let summary_id = memory.summarize(cid, 4).await.unwrap().unwrap();
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, summary_id);
+        assert!(summaries[0].first_message_id >= 1);
+        assert!(summaries[0].last_message_id >= summaries[0].first_message_id);
+    }
+
+    #[test]
+    fn build_summarization_prompt_preserves_order() {
+        let messages = vec![
+            (1, "user".into(), "first".into()),
+            (2, "assistant".into(), "second".into()),
+            (3, "user".into(), "third".into()),
+        ];
+        let prompt = build_summarization_prompt(&messages);
+        let first_pos = prompt.find("user: first").unwrap();
+        let second_pos = prompt.find("assistant: second").unwrap();
+        let third_pos = prompt.find("user: third").unwrap();
+        assert!(first_pos < second_pos);
+        assert!(second_pos < third_pos);
+    }
+
+    #[test]
+    fn summary_debug() {
+        let summary = Summary {
+            id: 1,
+            conversation_id: 2,
+            content: "test".into(),
+            first_message_id: 1,
+            last_message_id: 5,
+            token_estimate: 10,
+        };
+        let dbg = format!("{summary:?}");
+        assert!(dbg.contains("Summary"));
+    }
+
+    #[tokio::test]
+    async fn message_count_nonexistent_conversation() {
+        let memory = test_semantic_memory(false).await;
+        let count = memory.message_count(999).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn load_summaries_nonexistent_conversation() {
+        let memory = test_semantic_memory(false).await;
+        let summaries = memory.load_summaries(999).await.unwrap();
+        assert!(summaries.is_empty());
+    }
 }

@@ -2307,3 +2307,1394 @@ async fn agent_no_tool_output_stops_loop() {
 
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
+
+// --- Self-learning agent tests ---
+
+#[cfg(feature = "self-learning")]
+mod self_learning {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use zeph_core::agent::Agent;
+    use zeph_core::channel::{Channel, ChannelMessage};
+    use zeph_core::config::LearningConfig;
+    use zeph_llm::provider::{LlmProvider, Message};
+    use zeph_memory::semantic::SemanticMemory;
+    use zeph_memory::sqlite::SqliteStore;
+    use zeph_skills::registry::SkillRegistry;
+    use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
+
+    #[derive(Clone)]
+    struct MockProvider {
+        response: String,
+    }
+
+    impl MockProvider {
+        fn new(response: &str) -> Self {
+            Self {
+                response: response.to_string(),
+            }
+        }
+    }
+
+    impl LlmProvider for MockProvider {
+        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            Ok(self.response.clone())
+        }
+
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+            let response = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(response))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2, 0.3])
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    #[derive(Clone)]
+    struct SequentialProvider {
+        responses: Arc<Mutex<VecDeque<String>>>,
+        call_count: Arc<AtomicUsize>,
+    }
+
+    impl LlmProvider for SequentialProvider {
+        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            let mut q = self.responses.lock().unwrap();
+            Ok(q.pop_front().unwrap_or_default())
+        }
+
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+            let response = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(response))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2, 0.3])
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "sequential"
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockChannel {
+        inputs: VecDeque<String>,
+        outputs: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockChannel {
+        fn new(inputs: Vec<&str>, outputs: Arc<Mutex<Vec<String>>>) -> Self {
+            Self {
+                inputs: inputs.into_iter().map(String::from).collect(),
+                outputs,
+            }
+        }
+    }
+
+    impl Channel for MockChannel {
+        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+            Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+        }
+
+        async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+            self.outputs.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+
+        async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct MockToolExecutor;
+
+    impl ToolExecutor for MockToolExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+    }
+
+    struct ErrorToolExecutor;
+
+    impl ToolExecutor for ErrorToolExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                summary: "[error] command failed".into(),
+                blocks_executed: 1,
+            }))
+        }
+    }
+
+    async fn make_memory(provider: &MockProvider) -> (SemanticMemory<MockProvider>, i64) {
+        let memory =
+            SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
+                .await
+                .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        (memory, cid)
+    }
+
+    async fn make_memory_file<P: LlmProvider + Clone>(
+        provider: &P,
+        db_path: &str,
+    ) -> (SemanticMemory<P>, i64) {
+        let memory = SemanticMemory::new(db_path, "http://invalid:6334", provider.clone(), "test")
+            .await
+            .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        (memory, cid)
+    }
+
+    fn learning_config(enabled: bool) -> LearningConfig {
+        LearningConfig {
+            enabled,
+            auto_activate: false,
+            min_failures: 3,
+            improve_threshold: 0.7,
+            rollback_threshold: 0.5,
+            min_evaluations: 5,
+            max_versions: 10,
+            cooldown_minutes: 0,
+        }
+    }
+
+    fn make_skill_dir() -> (tempfile::TempDir, SkillRegistry) {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill.\n---\nDo test stuff.",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        (dir, registry)
+    }
+
+    // -- /skill stats --
+
+    #[tokio::test]
+    async fn skill_stats_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill stats"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn skill_stats_empty_data() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill stats"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("No skill outcome data"))
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_stats_with_outcomes() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill stats"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        memory
+            .sqlite()
+            .record_skill_outcome("git", None, Some(cid), "success", None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .record_skill_outcome("git", None, Some(cid), "tool_failure", Some("err"))
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        let stats_output = collected
+            .iter()
+            .find(|o| o.contains("Skill outcome statistics"));
+        assert!(stats_output.is_some());
+        assert!(stats_output.unwrap().contains("git"));
+    }
+
+    // -- /skill versions --
+
+    #[tokio::test]
+    async fn skill_versions_no_name() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill versions"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn skill_versions_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill versions git"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn skill_versions_empty() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill versions nonexistent"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("No versions found")));
+    }
+
+    #[tokio::test]
+    async fn skill_versions_with_data() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill versions git"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("git", v1)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .save_skill_version("git", 2, "body v2", "Git helper", "auto", None, Some(v1))
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        let versions_output = collected.iter().find(|o| o.contains("Versions for"));
+        assert!(versions_output.is_some());
+        let text = versions_output.unwrap();
+        assert!(text.contains("v1"));
+        assert!(text.contains("v2"));
+        assert!(text.contains("active"));
+    }
+
+    // -- /skill activate --
+
+    #[tokio::test]
+    async fn skill_activate_missing_args() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill activate"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn skill_activate_invalid_version() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill activate git abc"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Invalid version")));
+    }
+
+    #[tokio::test]
+    async fn skill_activate_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill activate git 1"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn skill_activate_version_not_found() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill activate git 99"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("not found")));
+    }
+
+    #[tokio::test]
+    async fn skill_activate_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("git");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: git\ndescription: Git helper\n---\nold body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill activate git 2"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("git", v1)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .save_skill_version("git", 2, "body v2", "Git helper v2", "auto", None, Some(v1))
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Activated v2")));
+
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("body v2"));
+    }
+
+    // -- /skill approve --
+
+    #[tokio::test]
+    async fn skill_approve_no_name() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill approve"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn skill_approve_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill approve git"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn skill_approve_no_pending() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill approve git"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("git", 1, "body", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("git", v1)
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("No pending auto version"))
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_approve_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("git");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: git\ndescription: Git helper\n---\nold body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill approve git"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("git", 1, "body v1", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("git", v1)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .save_skill_version("git", 2, "improved body", "desc", "auto", None, Some(v1))
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("Approved and activated v2"))
+        );
+
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("improved body"));
+    }
+
+    // -- /skill reset --
+
+    #[tokio::test]
+    async fn skill_reset_no_name() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill reset"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn skill_reset_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill reset git"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn skill_reset_no_v1() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill reset git"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("Original version not found"))
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_reset_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("git");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: git\ndescription: Git helper\n---\nmodified body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill reset git"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version(
+                "git",
+                1,
+                "original body",
+                "Git helper",
+                "manual",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let v2 = memory
+            .sqlite()
+            .save_skill_version(
+                "git",
+                2,
+                "modified body",
+                "Git helper",
+                "auto",
+                None,
+                Some(v1),
+            )
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("git", v2)
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("Reset \"git\" to original v1"))
+        );
+
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("original body"));
+    }
+
+    // -- /skill unknown subcommand --
+
+    #[tokio::test]
+    async fn skill_unknown_subcommand() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill bogus"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected
+                .iter()
+                .any(|o| o.contains("Unknown /skill subcommand"))
+        );
+    }
+
+    // -- /feedback --
+
+    #[tokio::test]
+    async fn feedback_no_message() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn feedback_empty_message() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill \"\""], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Usage:")));
+    }
+
+    #[tokio::test]
+    async fn feedback_no_memory() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill bad output"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn feedback_records_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill bad output"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let stats = store.load_skill_outcome_stats().await.unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].skill_name, "test-skill");
+    }
+
+    #[tokio::test]
+    async fn feedback_with_learning_triggers_improvement() {
+        let (dir, registry) = make_skill_dir();
+
+        let provider = MockProvider::new("improved skill body content");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(
+            vec!["/feedback test-skill \"the output is wrong\""],
+            outputs.clone(),
+        );
+        let (memory, cid) = make_memory(&provider).await;
+
+        let config = learning_config(true);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+    }
+
+    // -- is_learning_enabled --
+
+    #[tokio::test]
+    async fn learning_enabled_with_config() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["hello"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let config = learning_config(true);
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100)
+        .with_learning(config);
+
+        agent.run().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn learning_disabled_without_config() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["hello"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+
+        agent.run().await.unwrap();
+    }
+
+    // -- record_skill_outcomes --
+
+    #[tokio::test]
+    async fn record_skill_outcomes_with_active_skills() {
+        let (dir, registry) = make_skill_dir();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["hello"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let config = learning_config(false);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let stats = store.load_skill_outcome_stats().await.unwrap();
+        assert!(stats.iter().any(|s| s.skill_name == "test-skill"));
+    }
+
+    #[tokio::test]
+    async fn record_skill_outcomes_tool_failure() {
+        let (dir, registry) = make_skill_dir();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("response");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["do it"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let config = learning_config(false);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let stats = store.load_skill_outcome_stats().await.unwrap();
+        let skill_stats = stats.iter().find(|s| s.skill_name == "test-skill");
+        assert!(skill_stats.is_some());
+        assert!(skill_stats.unwrap().failures > 0);
+    }
+
+    // -- check_rollback --
+
+    #[tokio::test]
+    async fn check_rollback_triggers_on_low_success_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test.\n---\nauto body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("response");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["do it"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("test-skill", 1, "original", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        let v2 = memory
+            .sqlite()
+            .save_skill_version("test-skill", 2, "auto body", "desc", "auto", None, Some(v1))
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("test-skill", v2)
+            .await
+            .unwrap();
+
+        for _ in 0..6 {
+            memory
+                .sqlite()
+                .record_skill_outcome("test-skill", None, Some(cid), "tool_failure", Some("err"))
+                .await
+                .unwrap();
+        }
+
+        let config = LearningConfig {
+            enabled: true,
+            auto_activate: false,
+            min_failures: 1,
+            improve_threshold: 0.7,
+            rollback_threshold: 0.5,
+            min_evaluations: 5,
+            max_versions: 10,
+            cooldown_minutes: 0,
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let active = store.active_skill_version("test-skill").await.unwrap();
+        assert!(active.is_some());
+        assert_eq!(active.unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn check_rollback_skips_when_not_auto() {
+        let (dir, registry) = make_skill_dir();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("response");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["do it"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let v1 = memory
+            .sqlite()
+            .save_skill_version("test-skill", 1, "original", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .activate_skill_version("test-skill", v1)
+            .await
+            .unwrap();
+
+        for _ in 0..6 {
+            memory
+                .sqlite()
+                .record_skill_outcome("test-skill", None, Some(cid), "tool_failure", None)
+                .await
+                .unwrap();
+        }
+
+        let config = LearningConfig {
+            enabled: true,
+            auto_activate: false,
+            min_failures: 1,
+            improve_threshold: 0.7,
+            rollback_threshold: 0.5,
+            min_evaluations: 5,
+            max_versions: 10,
+            cooldown_minutes: 0,
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let active = store.active_skill_version("test-skill").await.unwrap();
+        assert!(active.is_some());
+        assert_eq!(active.unwrap().version, 1);
+    }
+
+    // -- check_improvement_allowed --
+
+    #[tokio::test]
+    async fn improvement_blocked_by_min_failures() {
+        let (dir, registry) = make_skill_dir();
+        let provider = MockProvider::new("improved body");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill bad result"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        memory
+            .sqlite()
+            .ensure_skill_version_exists("test-skill", "Do test stuff.", "A test skill.")
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .record_skill_outcome("test-skill", None, Some(cid), "success", None)
+            .await
+            .unwrap();
+
+        let config = LearningConfig {
+            enabled: true,
+            auto_activate: false,
+            min_failures: 100,
+            improve_threshold: 0.7,
+            rollback_threshold: 0.5,
+            min_evaluations: 5,
+            max_versions: 10,
+            cooldown_minutes: 0,
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+    }
+
+    // -- generate_improved_skill + store_improved_version with auto_activate --
+
+    #[tokio::test]
+    async fn generate_and_auto_activate_improvement() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill.\n---\nDo test stuff.",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("improved test stuff");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(
+            vec!["/feedback test-skill \"needs improvement\""],
+            outputs.clone(),
+        );
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let config = LearningConfig {
+            enabled: true,
+            auto_activate: true,
+            min_failures: 0,
+            improve_threshold: 1.0,
+            rollback_threshold: 0.5,
+            min_evaluations: 5,
+            max_versions: 10,
+            cooldown_minutes: 0,
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let versions = store.load_skill_versions("test-skill").await.unwrap();
+        assert!(versions.len() >= 2);
+        let active = store.active_skill_version("test-skill").await.unwrap();
+        assert!(active.is_some());
+        assert!(active.unwrap().version >= 2);
+    }
+
+    // -- attempt_self_reflection --
+
+    #[tokio::test]
+    async fn self_reflection_on_empty_response() {
+        let (dir, registry) = make_skill_dir();
+
+        let responses: VecDeque<String> =
+            vec![String::new(), "recovered response".to_string()].into();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let provider = SequentialProvider {
+            responses: Arc::new(Mutex::new(responses)),
+            call_count: call_count.clone(),
+        };
+
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["hello"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, ":memory:").await;
+
+        let config = learning_config(true);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        assert!(call_count.load(Ordering::SeqCst) >= 2);
+    }
+
+    // -- with_learning builder --
+
+    #[tokio::test]
+    async fn with_learning_builder() {
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["test"], outputs.clone());
+
+        let config = learning_config(true);
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_learning(config);
+
+        agent.run().await.unwrap();
+        let collected = outputs.lock().unwrap();
+        assert_eq!(collected.len(), 1);
+    }
+
+    // -- feedback with learning disabled does not generate improvement --
+
+    #[tokio::test]
+    async fn feedback_learning_disabled_no_improvement() {
+        let (dir, registry) = make_skill_dir();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/feedback test-skill bad result"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let config = learning_config(false);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_learning(config)
+            .with_skill_reload(vec![dir.path().to_path_buf()], rx);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let versions = store.load_skill_versions("test-skill").await.unwrap();
+        assert!(versions.is_empty());
+    }
+
+    // -- record_skill_outcomes with no active skills is a no-op --
+
+    #[tokio::test]
+    async fn record_outcomes_no_active_skills() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let provider = MockProvider::new("ok");
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["hello"], outputs.clone());
+        let (memory, cid) = make_memory_file(&provider, db_str).await;
+
+        let config = learning_config(true);
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100)
+        .with_learning(config);
+        agent.run().await.unwrap();
+
+        let store = SqliteStore::new(db_str).await.unwrap();
+        let stats = store.load_skill_outcome_stats().await.unwrap();
+        assert!(stats.is_empty());
+    }
+}

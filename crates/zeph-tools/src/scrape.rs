@@ -610,4 +610,163 @@ mod tests {
         let result = executor.execute(response).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
+
+    #[tokio::test]
+    async fn executor_unreachable_host_returns_error() {
+        let config = ScrapeConfig {
+            timeout: 1,
+            max_body_bytes: 1_048_576,
+        };
+        let executor = WebScrapeExecutor::new(&config);
+        let response = "```scrape\n{\"url\":\"https://192.0.2.1:1/page\",\"select\":\"h1\"}\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Execution(_))));
+    }
+
+    #[tokio::test]
+    async fn executor_localhost_url_blocked() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let response = "```scrape\n{\"url\":\"https://localhost:9999/api\",\"select\":\"h1\"}\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn executor_empty_text_returns_none() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let result = executor.execute("").await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn executor_multiple_blocks_first_blocked() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let response = "```scrape\n{\"url\":\"http://evil.com\",\"select\":\"h1\"}\n```\n\
+             ```scrape\n{\"url\":\"https://ok.com\",\"select\":\"h1\"}\n```";
+        let result = executor.execute(response).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_url_empty_string() {
+        let err = validate_url("").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn validate_url_javascript_scheme_blocked() {
+        let err = validate_url("javascript:alert(1)").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn validate_url_data_scheme_blocked() {
+        let err = validate_url("data:text/html,<h1>hi</h1>").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn is_private_host_public_domain_is_false() {
+        let host: url::Host<&str> = url::Host::Domain("example.com");
+        assert!(!is_private_host(&host));
+    }
+
+    #[test]
+    fn is_private_host_localhost_is_true() {
+        let host: url::Host<&str> = url::Host::Domain("localhost");
+        assert!(is_private_host(&host));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_unspecified_is_true() {
+        let host = url::Host::Ipv6(std::net::Ipv6Addr::UNSPECIFIED);
+        assert!(is_private_host(&host));
+    }
+
+    #[test]
+    fn is_private_host_public_ipv6_is_false() {
+        let host = url::Host::Ipv6("2001:db8::1".parse().unwrap());
+        assert!(!is_private_host(&host));
+    }
+
+    #[test]
+    fn extract_scrape_blocks_empty_block_content() {
+        let text = "```scrape\n\n```";
+        let blocks = extract_scrape_blocks(text);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].is_empty());
+    }
+
+    #[test]
+    fn extract_scrape_blocks_whitespace_only() {
+        let text = "```scrape\n   \n```";
+        let blocks = extract_scrape_blocks(text);
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn parse_and_extract_multiple_selectors() {
+        let html = "<div><h1>Title</h1><p>Para</p></div>";
+        let result = parse_and_extract(html, "h1, p", &ExtractMode::Text, 10).unwrap();
+        assert!(result.contains("Title"));
+        assert!(result.contains("Para"));
+    }
+
+    #[test]
+    fn webscrape_executor_new_with_custom_config() {
+        let config = ScrapeConfig {
+            timeout: 60,
+            max_body_bytes: 512,
+        };
+        let executor = WebScrapeExecutor::new(&config);
+        assert_eq!(executor.max_body_bytes, 512);
+    }
+
+    #[test]
+    fn webscrape_executor_debug() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let dbg = format!("{executor:?}");
+        assert!(dbg.contains("WebScrapeExecutor"));
+    }
+
+    #[test]
+    fn extract_mode_attr_empty_name() {
+        let mode = ExtractMode::parse("attr:");
+        assert!(matches!(mode, ExtractMode::Attr(ref s) if s.is_empty()));
+    }
+
+    #[test]
+    fn default_extract_returns_text() {
+        assert_eq!(default_extract(), "text");
+    }
+
+    #[test]
+    fn scrape_instruction_debug() {
+        let json = r#"{"url":"https://example.com","select":"h1"}"#;
+        let instr: ScrapeInstruction = serde_json::from_str(json).unwrap();
+        let dbg = format!("{instr:?}");
+        assert!(dbg.contains("ScrapeInstruction"));
+    }
+
+    #[test]
+    fn extract_mode_debug() {
+        let mode = ExtractMode::Text;
+        let dbg = format!("{mode:?}");
+        assert!(dbg.contains("Text"));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_link_local_blocked() {
+        let err = validate_url("https://[::ffff:169.254.0.1]/path").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_public_allowed() {
+        assert!(validate_url("https://[::ffff:93.184.216.34]/path").is_ok());
+    }
 }

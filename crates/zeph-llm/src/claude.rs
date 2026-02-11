@@ -601,6 +601,174 @@ mod tests {
     }
 
     #[test]
+    fn parse_sse_content_block_start_skipped() {
+        let data = r#"{"type":"content_block_start","index":0}"#;
+        let result = parse_sse_event(data, "content_block_start");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_content_block_stop_skipped() {
+        let data = r#"{"type":"content_block_stop","index":0}"#;
+        let result = parse_sse_event(data, "content_block_stop");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_message_delta_skipped() {
+        let data = r#"{"type":"message_delta","usage":{}}"#;
+        let result = parse_sse_event(data, "message_delta");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_error_invalid_json() {
+        let result = parse_sse_event("{broken", "error");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Claude stream error"));
+    }
+
+    #[test]
+    fn stream_event_deserializes_with_delta() {
+        let json = r#"{"delta":{"type":"text_delta","text":"hi"}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        let delta = event.delta.unwrap();
+        assert_eq!(delta.delta_type, "text_delta");
+        assert_eq!(delta.text, "hi");
+    }
+
+    #[test]
+    fn stream_event_deserializes_with_error() {
+        let json = r#"{"error":{"type":"rate_limit","message":"too fast"}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        let err = event.error.unwrap();
+        assert_eq!(err.error_type, "rate_limit");
+        assert_eq!(err.message, "too fast");
+    }
+
+    #[test]
+    fn stream_event_deserializes_empty() {
+        let json = r#"{}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert!(event.delta.is_none());
+        assert!(event.error.is_none());
+    }
+
+    #[test]
+    fn delta_default_text_is_empty() {
+        let json = r#"{"type":"text_delta"}"#;
+        let delta: Delta = serde_json::from_str(json).unwrap();
+        assert_eq!(delta.delta_type, "text_delta");
+        assert!(delta.text.is_empty());
+    }
+
+    #[test]
+    fn api_message_serializes() {
+        let msg = ApiMessage {
+            role: "user",
+            content: "hello world",
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"content\":\"hello world\""));
+    }
+
+    #[test]
+    fn content_block_deserializes() {
+        let json = r#"{"text":"response text"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        assert_eq!(block.text, "response text");
+    }
+
+    #[test]
+    fn api_response_multiple_content_blocks() {
+        let json = r#"{"content":[{"text":"first"},{"text":"second"}]}"#;
+        let resp: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content.len(), 2);
+        assert_eq!(resp.content[0].text, "first");
+        assert_eq!(resp.content[1].text, "second");
+    }
+
+    #[tokio::test]
+    async fn chat_with_unreachable_endpoint_errors() {
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let messages = vec![Message {
+            role: Role::User,
+            content: "test".into(),
+        }];
+        let result = provider.chat(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_with_unreachable_endpoint_errors() {
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let messages = vec![Message {
+            role: Role::User,
+            content: "test".into(),
+        }];
+        let result = provider.chat_stream(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn split_messages_only_system() {
+        let messages = vec![Message {
+            role: Role::System,
+            content: "instruction".into(),
+        }];
+        let (system, chat) = split_messages(&messages);
+        assert_eq!(system.unwrap(), "instruction");
+        assert!(chat.is_empty());
+    }
+
+    #[test]
+    fn split_messages_only_assistant() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: "reply".into(),
+        }];
+        let (system, chat) = split_messages(&messages);
+        assert!(system.is_none());
+        assert_eq!(chat.len(), 1);
+        assert_eq!(chat[0].role, "assistant");
+    }
+
+    #[test]
+    fn split_messages_interleaved_system() {
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "first".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "question".into(),
+            },
+            Message {
+                role: Role::System,
+                content: "second".into(),
+            },
+        ];
+        let (system, chat) = split_messages(&messages);
+        assert_eq!(system.unwrap(), "first\n\nsecond");
+        assert_eq!(chat.len(), 1);
+    }
+
+    #[test]
+    fn request_body_serializes_with_stream_false_omits_stream() {
+        let body = RequestBody {
+            model: "test",
+            max_tokens: 100,
+            system: None,
+            messages: &[],
+            stream: false,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("stream"));
+    }
+
+    #[test]
     fn api_response_deserializes() {
         let json = r#"{"content":[{"text":"Hello world"}]}"#;
         let resp: ApiResponse = serde_json::from_str(json).unwrap();

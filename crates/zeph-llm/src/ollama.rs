@@ -253,6 +253,126 @@ mod tests {
         assert_eq!(cm.content, "reply text");
     }
 
+    #[test]
+    fn parse_host_port_empty_string() {
+        let (host, port) = parse_host_port("");
+        assert_eq!(host, "");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_only_scheme() {
+        let (host, port) = parse_host_port("http://localhost");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_port_zero() {
+        let (host, port) = parse_host_port("http://localhost:0");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 0);
+    }
+
+    #[test]
+    fn parse_host_port_max_port() {
+        let (host, port) = parse_host_port("http://localhost:65535");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 65535);
+    }
+
+    #[test]
+    fn parse_host_port_port_overflow_falls_back() {
+        let (host, port) = parse_host_port("http://localhost:99999");
+        assert_eq!(host, "http://localhost:99999");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_ipv4() {
+        let (host, port) = parse_host_port("http://192.168.1.1:8080");
+        assert_eq!(host, "http://192.168.1.1");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn parse_host_port_multiple_trailing_slashes() {
+        let (host, port) = parse_host_port("http://localhost:11434///");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn convert_message_preserves_content() {
+        let msg = Message {
+            role: Role::User,
+            content: "multi\nline\ncontent".into(),
+        };
+        let cm = convert_message(&msg);
+        assert_eq!(cm.content, "multi\nline\ncontent");
+    }
+
+    #[test]
+    fn convert_message_empty_content() {
+        let msg = Message {
+            role: Role::User,
+            content: String::new(),
+        };
+        let cm = convert_message(&msg);
+        assert!(cm.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_with_unreachable_endpoint_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hello".into(),
+        }];
+        let result = provider.chat(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn embed_with_unreachable_endpoint_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let result = provider.embed("test text").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_with_unreachable_endpoint_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hello".into(),
+        }];
+        let result = provider.chat_stream(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn health_check_unreachable_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let result = provider.health_check().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ollama"));
+    }
+
+    #[test]
+    fn new_with_different_urls() {
+        let p1 = OllamaProvider::new("http://host1:1234", "m1".into(), "e1".into());
+        let p2 = OllamaProvider::new("http://host2:5678", "m2".into(), "e2".into());
+        assert_eq!(p1.model, "m1");
+        assert_eq!(p2.model, "m2");
+        assert_eq!(p1.embedding_model, "e1");
+        assert_eq!(p2.embedding_model, "e2");
+    }
+
     #[tokio::test]
     #[ignore = "requires running Ollama instance"]
     async fn integration_ollama_chat_stream() {
