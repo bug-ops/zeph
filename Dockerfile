@@ -2,7 +2,8 @@ FROM container-registry.oracle.com/os/oraclelinux:9-slim
 
 ARG TARGETARCH
 
-RUN microdnf module enable nodejs:20 -y && \
+RUN microdnf update -y && \
+    microdnf module enable nodejs:20 -y && \
     microdnf install -y \
     shadow-utils ca-certificates \
     curl wget git jq file findutils procps-ng \
