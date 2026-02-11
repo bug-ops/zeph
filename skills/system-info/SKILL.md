@@ -4,22 +4,20 @@ description: Retrieve system diagnostics and resource usage. Use when the user a
 ---
 # System Info
 
-## OS info
+Collect host diagnostics and resource metrics.
+
+Before running commands, detect the OS and use the matching reference:
+
+- **Linux**: `references/linux.md`
+- **macOS**: `references/macos.md`
+- **Windows**: `references/windows.md` (PowerShell)
+
 ```bash
-uname -a
+uname -s 2>/dev/null || echo Windows
 ```
 
-## Disk usage
-```bash
-df -h
-```
-
-## Running processes
-```bash
-ps aux | head -20
-```
-
-## System uptime
-```bash
-uptime
-```
+## Workflow
+1. Gather only the metrics the user requested.
+2. Prefer read-only commands first.
+3. If a command is unavailable, use a fallback from the same OS reference.
+4. Return a short summary with key numbers (percentages, GB usage, top processes).

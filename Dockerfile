@@ -9,7 +9,7 @@ RUN microdnf update -y && \
      microdnf module enable nodejs:20 -y) && \
     microdnf install -y \
     shadow-utils ca-certificates \
-    curl wget git jq file findutils procps-ng \
+    curl wget git jq file findutils iproute procps-ng systemd util-linux \
     nodejs npm python3 && \
     microdnf clean all && \
     useradd --system --create-home --shell /sbin/nologin zeph

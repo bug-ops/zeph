@@ -73,7 +73,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
-        let skills_prompt = format_skills_prompt(&all_skills);
+        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
         let system_prompt = build_system_prompt(&skills_prompt);
 
         let (_tx, rx) = watch::channel(false);
@@ -792,7 +792,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .filter_map(|m| self.registry.get_skill(&m.name).ok())
             .collect();
-        let skills_prompt = format_skills_prompt(&all_skills);
+        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
         let system_prompt = build_system_prompt(&skills_prompt);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
@@ -836,7 +836,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|name| self.registry.get_skill(name).ok())
             .collect();
 
-        let skills_prompt = format_skills_prompt(&active_skills);
+        let skills_prompt = format_skills_prompt(&active_skills, std::env::consts::OS);
         #[allow(unused_mut)]
         let mut system_prompt = build_system_prompt(&skills_prompt);
 
