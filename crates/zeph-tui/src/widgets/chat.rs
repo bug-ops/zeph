@@ -19,7 +19,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     for msg in app.messages() {
         let (prefix, style) = match msg.role {
             MessageRole::User => ("[user] ", theme.user_message),
-            MessageRole::Assistant => ("[assistant] ", theme.assistant_message),
+            MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
             MessageRole::System => ("[system] ", theme.system_message),
         };
 
