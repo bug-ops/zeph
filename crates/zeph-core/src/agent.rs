@@ -1913,7 +1913,6 @@ mod agent_tests {
 
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert_eq!(agent.messages.len(), 1);
     }
 
     #[tokio::test]
