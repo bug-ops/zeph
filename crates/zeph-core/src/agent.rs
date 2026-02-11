@@ -853,6 +853,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let Some(ref mut registry) = self.mcp_registry else {
             return;
         };
+        if !self.provider.supports_embeddings() {
+            return;
+        }
         let provider = self.provider.clone();
         let embed_fn = |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
