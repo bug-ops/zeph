@@ -1661,11 +1661,6 @@ mod agent_tests {
             self.streaming = true;
             self
         }
-
-        fn with_embeddings(mut self) -> Self {
-            self.embeddings = true;
-            self
-        }
     }
 
     impl LlmProvider for MockProvider {
@@ -1720,10 +1715,6 @@ mod agent_tests {
                 chunks: Arc::new(Mutex::new(Vec::new())),
                 confirmations: Arc::new(Mutex::new(Vec::new())),
             }
-        }
-
-        fn sent_messages(&self) -> Vec<String> {
-            self.sent.lock().unwrap().clone()
         }
 
         fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
@@ -1918,7 +1909,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_skills_command() {
         let provider = MockProvider::new(vec![]);
-        let channel = MockChannel::new(vec!["/skills".to_string()]);
+        let _channel = MockChannel::new(vec!["/skills".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
@@ -1938,7 +1929,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_process_response_handles_empty_response() {
         let provider = MockProvider::new(vec!["".to_string()]);
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
@@ -1957,7 +1948,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_tool_execution_success() {
         let provider = MockProvider::new(vec!["response with tool".to_string()]);
-        let channel = MockChannel::new(vec!["execute tool".to_string()]);
+        let _channel = MockChannel::new(vec!["execute tool".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
             summary: "tool executed successfully".to_string(),
@@ -1983,7 +1974,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_tool_blocked_error() {
         let provider = MockProvider::new(vec!["run blocked command".to_string()]);
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
             command: "rm -rf /".to_string(),
@@ -2008,7 +1999,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_tool_sandbox_violation() {
         let provider = MockProvider::new(vec!["access forbidden path".to_string()]);
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::SandboxViolation {
             path: "/etc/passwd".to_string(),
@@ -2029,7 +2020,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_tool_confirmation_approved() {
         let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
             command: "dangerous command".to_string(),
@@ -2051,7 +2042,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_tool_confirmation_denied() {
         let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
             command: "dangerous command".to_string(),
@@ -2073,7 +2064,7 @@ mod agent_tests {
     #[tokio::test]
     async fn agent_handles_streaming_response() {
         let provider = MockProvider::new(vec!["streaming response".to_string()]).with_streaming();
-        let channel = MockChannel::new(vec!["test".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
