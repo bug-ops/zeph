@@ -75,15 +75,34 @@ ZEPH_TUI=true zeph
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
 
+## Live Metrics
+
+The TUI dashboard displays real-time metrics collected from the agent loop via `tokio::sync::watch` channel:
+
+| Panel | Metrics |
+|-------|---------|
+| **Skills** | Active/total skill count, matched skill names per query |
+| **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count |
+| **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name |
+
+Metrics are updated at key instrumentation points in the agent loop:
+- After each LLM call (api_calls, latency, prompt tokens)
+- After streaming completes (completion tokens)
+- After skill matching (active skills, total skills)
+- After message persistence (sqlite message count)
+- After summarization (summaries count)
+
+Token counts use a `chars/4` estimation (sufficient for dashboard display).
+
 ## Architecture
 
 The TUI runs as three concurrent loops:
 
 1. **Crossterm event reader** — dedicated OS thread (`std::thread`), sends key/tick/resize events via mpsc
-2. **TUI render loop** — tokio task, draws frames at 10 FPS via `tokio::select!`
-3. **Agent loop** — existing `Agent::run()`, communicates via `TuiChannel`
+2. **TUI render loop** — tokio task, draws frames at 10 FPS via `tokio::select!`, polls `watch::Receiver` for latest metrics before each draw
+3. **Agent loop** — existing `Agent::run()`, communicates via `TuiChannel` and emits metrics via `watch::Sender`
 
-`TuiChannel` implements the `Channel` trait, so it plugs into the agent with zero changes to the generic signature.
+`TuiChannel` implements the `Channel` trait, so it plugs into the agent with zero changes to the generic signature. `MetricsSnapshot` and `MetricsCollector` live in `zeph-core` to avoid circular dependencies — `zeph-tui` re-exports them.
 
 ## Tracing
 

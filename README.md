@@ -93,7 +93,7 @@ cargo build --release --features tui
 | **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
-| **TUI Dashboard** | ratatui terminal UI with real-time metrics, streaming chat feed | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
+| **TUI Dashboard** | ratatui terminal UI with live metrics (tokens, latency, skills, memory), streaming chat | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
 | **Multi-Channel I/O** | CLI, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
 | **Defense-in-Depth** | Shell sandbox, command filter, secret redaction, audit log, SSRF protection | [Security](https://bug-ops.github.io/zeph/security.html) |
 
@@ -101,7 +101,7 @@ cargo build --release --features tui
 
 ```
 zeph (binary)
-├── zeph-core       — agent loop, config, context builder
+├── zeph-core       — agent loop, config, context builder, metrics collector
 ├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, orchestrator
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization
@@ -109,7 +109,7 @@ zeph (binary)
 ├── zeph-tools      — shell executor, web scraper, composite tool dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
-└── zeph-tui        — ratatui TUI dashboard with real-time metrics (optional)
+└── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)
 ```
 
 > [!IMPORTANT]

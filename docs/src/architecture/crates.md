@@ -9,6 +9,7 @@ Agent loop, configuration loading, and context builder.
 - `Channel` trait — abstraction for I/O (CLI, Telegram)
 - Context builder — assembles system prompt from skills, memory, and summaries
 - `VaultProvider` trait — pluggable secret resolution
+- `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
 
 ## zeph-llm
 
@@ -85,9 +86,10 @@ A2A protocol client and server (optional, feature-gated).
 ratatui-based TUI dashboard (optional, feature-gated).
 
 - `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc
-- `App` — TUI state machine with Normal/Insert modes, keybindings, scroll
+- `App` — TUI state machine with Normal/Insert modes, keybindings, scroll, live metrics polling via `watch::Receiver`
 - `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
-- `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch`
+- Side panel widgets: `skills` (active/total), `memory` (SQLite, Qdrant, embeddings), `resources` (tokens, API calls, latency)
 - Chat widget with bottom-up message feed and streaming cursor
 - Status bar with mode, skill count, tokens, Qdrant status, uptime
 - Panic hook for terminal state restoration
+- Re-exports `MetricsSnapshot` / `MetricsCollector` from zeph-core

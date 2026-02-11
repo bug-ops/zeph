@@ -9,7 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - ratatui-based TUI dashboard with real-time agent metrics (feature-gated `tui`, opt-in)
 - `TuiChannel` as new `Channel` implementation with bottom-up chat feed, input line, and status bar
-- `MetricsSnapshot` and `MetricsCollector` via `tokio::sync::watch` for live metrics transport
+- `MetricsSnapshot` and `MetricsCollector` in zeph-core via `tokio::sync::watch` for live metrics transport
+- `with_metrics()` builder on Agent with instrumentation at 8 collection points: api_calls, latency, prompt/completion tokens, active skills, sqlite message count, qdrant status, summarization count
+- Side panel widgets (skills, memory, resources) with live data from agent loop
 - Panic hook for terminal state restoration on any panic during TUI execution
 - Unicode-safe char-index cursor tracking for multi-byte input in TUI
 - `--config <path>` CLI argument and `ZEPH_CONFIG` env var to override default config path
