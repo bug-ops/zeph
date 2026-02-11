@@ -8,7 +8,7 @@ RUN microdnf module enable nodejs:20 -y && \
     curl wget git jq file findutils procps-ng \
     nodejs npm python3 && \
     microdnf clean all && \
-    useradd --system --no-create-home --shell /sbin/nologin zeph
+    useradd --system --create-home --shell /sbin/nologin zeph
 
 WORKDIR /app
 
