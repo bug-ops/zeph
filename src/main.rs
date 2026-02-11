@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+#[cfg(feature = "tui")]
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tokio::sync::watch;
@@ -22,12 +24,16 @@ use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillWatcher;
 use zeph_tools::{CompositeExecutor, ShellExecutor, WebScrapeExecutor};
+#[cfg(feature = "tui")]
+use zeph_tui::{App, EventReader, TuiChannel};
 
 /// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
 #[derive(Debug)]
 enum AnyChannel {
     Cli(CliChannel),
     Telegram(TelegramChannel),
+    #[cfg(feature = "tui")]
+    Tui(TuiChannel),
 }
 
 impl Channel for AnyChannel {
@@ -35,6 +41,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.recv().await,
             Self::Telegram(c) => c.recv().await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.recv().await,
         }
     }
 
@@ -42,6 +50,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.send(text).await,
             Self::Telegram(c) => c.send(text).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send(text).await,
         }
     }
 
@@ -49,6 +59,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.send_chunk(chunk).await,
             Self::Telegram(c) => c.send_chunk(chunk).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send_chunk(chunk).await,
         }
     }
 
@@ -56,6 +68,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.flush_chunks().await,
             Self::Telegram(c) => c.flush_chunks().await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.flush_chunks().await,
         }
     }
 
@@ -63,6 +77,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.send_typing().await,
             Self::Telegram(c) => c.send_typing().await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send_typing().await,
         }
     }
 
@@ -70,6 +86,8 @@ impl Channel for AnyChannel {
         match self {
             Self::Cli(c) => c.confirm(prompt).await,
             Self::Telegram(c) => c.confirm(prompt).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.confirm(prompt).await,
         }
     }
 }
@@ -77,6 +95,21 @@ impl Channel for AnyChannel {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
+    // When TUI is active, redirect tracing to a file to avoid corrupting the terminal
+    #[cfg(feature = "tui")]
+    let tui_active = is_tui_requested();
+    #[cfg(feature = "tui")]
+    if tui_active {
+        let file = std::fs::File::create("zeph.log").ok();
+        if let Some(file) = file {
+            tracing_subscriber::fmt().with_writer(file).init();
+        } else {
+            tracing_subscriber::fmt::init();
+        }
+    } else {
+        tracing_subscriber::fmt::init();
+    }
+    #[cfg(not(feature = "tui"))]
     tracing_subscriber::fmt::init();
 
     let vault_args = parse_vault_args();
@@ -127,6 +160,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
     }
 
+    #[cfg(feature = "tui")]
+    let (channel, tui_handle) = create_channel_with_tui(&config)?;
+    #[cfg(not(feature = "tui"))]
     let channel = create_channel(&config)?;
 
     if matches!(channel, AnyChannel::Cli(_)) {
@@ -224,6 +260,29 @@ async fn main() -> anyhow::Result<()> {
     let mut agent = agent;
 
     agent.load_history().await?;
+
+    #[cfg(feature = "tui")]
+    if let Some(tui_handle) = tui_handle {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+
+        let reader = EventReader::new(event_tx, Duration::from_millis(100));
+        std::thread::spawn(move || reader.run());
+
+        let app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+
+        let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
+        let agent_task = tokio::spawn(async move { agent.run().await });
+
+        tokio::select! {
+            result = tui_task => {
+                return result?;
+            }
+            result = agent_task => {
+                return result?;
+            }
+        }
+    }
+
     agent.run().await
 }
 
@@ -739,7 +798,39 @@ fn parse_vault_args() -> VaultArgs {
     }
 }
 
+#[cfg(feature = "tui")]
+struct TuiHandle {
+    user_tx: tokio::sync::mpsc::Sender<String>,
+    agent_rx: tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>,
+}
+
+#[cfg(feature = "tui")]
+fn is_tui_requested() -> bool {
+    std::env::args().any(|a| a == "--tui")
+        || std::env::var("ZEPH_TUI")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false)
+}
+
+#[cfg(feature = "tui")]
+fn create_channel_with_tui(config: &Config) -> anyhow::Result<(AnyChannel, Option<TuiHandle>)> {
+    if is_tui_requested() {
+        let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
+        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
+        let channel = TuiChannel::new(user_rx, agent_tx);
+        let handle = TuiHandle { user_tx, agent_rx };
+        return Ok((AnyChannel::Tui(channel), Some(handle)));
+    }
+    let channel = create_channel_inner(config)?;
+    Ok((channel, None))
+}
+
+#[cfg_attr(feature = "tui", allow(dead_code))]
 fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
+    create_channel_inner(config)
+}
+
+fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
     let token = config.telegram.as_ref().and_then(|t| t.token.clone());
 
     if let Some(token) = token {

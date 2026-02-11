@@ -16,6 +16,7 @@ anyhow = "1.0"
 candle-core = { version = "0.9", default-features = false }
 candle-nn = { version = "0.9", default-features = false }
 candle-transformers = { version = "0.9", default-features = false }
+crossterm = "0.29"
 axum = "0.8"
 blake3 = "1.8"
 criterion = "0.8"
@@ -29,6 +30,7 @@ notify-debouncer-mini = "0.7"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 pulldown-cmark = "0.13"
 qdrant-client = { version = "1.16", default-features = false }
+ratatui = "0.30"
 reqwest = { version = "0.13", default-features = false }
 rmcp = "0.14"
 scrape-core = "0.2.2"
@@ -49,6 +51,7 @@ tower = "0.5"
 tower-http = "0.6"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+unicode-width = "0.2"
 url = "2.5"
 uuid = "1.20"
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.8.2" }
@@ -59,6 +62,7 @@ zeph-mcp = { path = "crates/zeph-mcp", version = "0.8.2" }
 zeph-memory = { path = "crates/zeph-memory", version = "0.8.2" }
 zeph-skills = { path = "crates/zeph-skills", version = "0.8.2" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.8.2" }
+zeph-tui = { path = "crates/zeph-tui", version = "0.8.2" }
 
 [workspace.lints.clippy]
 all = "warn"
@@ -82,6 +86,7 @@ cuda = ["zeph-llm/cuda"]
 openai = ["zeph-llm/openai"]
 orchestrator = ["zeph-llm/orchestrator"]
 self-learning = ["zeph-core/self-learning"]
+tui = ["dep:zeph-tui"]
 vault-age = ["zeph-core/vault-age"]
 
 [dependencies]
@@ -97,6 +102,7 @@ zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
+zeph-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

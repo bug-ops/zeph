@@ -1,0 +1,22 @@
+[package]
+name = "zeph-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tracing.workspace = true
+unicode-width.workspace = true
+zeph-core.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
