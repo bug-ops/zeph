@@ -178,4 +178,39 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(content.contains("\"tool\":\"shell\""));
     }
+
+    #[tokio::test]
+    async fn audit_logger_file_write_error_logged() {
+        let config = AuditConfig {
+            enabled: true,
+            destination: "/nonexistent/dir/audit.log".into(),
+        };
+        let result = AuditLogger::from_config(&config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn audit_logger_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let config = AuditConfig {
+            enabled: true,
+            destination: path.display().to_string(),
+        };
+        let logger = AuditLogger::from_config(&config).await.unwrap();
+
+        for i in 0..5 {
+            let entry = AuditEntry {
+                timestamp: i.to_string(),
+                tool: "shell".into(),
+                command: format!("cmd{i}"),
+                result: AuditResult::Success,
+                duration_ms: i,
+            };
+            logger.log(&entry).await;
+        }
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(content.lines().count(), 5);
+    }
 }

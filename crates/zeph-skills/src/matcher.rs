@@ -285,4 +285,38 @@ mod tests {
         assert_eq!(matcher.embeddings.len(), 1);
         assert_eq!(matcher.embeddings[0].0, 0);
     }
+
+    #[test]
+    fn test_cosine_similarity_zero_vector() {
+        let a = vec![1.0, 2.0];
+        let b = vec![0.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_match_skills_returns_all_when_k_larger() {
+        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let matched = matcher
+            .match_skills(refs.len(), "query", 100, embed_fn_constant)
+            .await;
+
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_match_skills_query_embed_fails() {
+        let metas = vec![make_meta("a", "alpha")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let matched = matcher
+            .match_skills(refs.len(), "query", 5, embed_fn_fail)
+            .await;
+
+        assert!(matched.is_empty());
+    }
 }

@@ -37,6 +37,7 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
     struct MatchingExecutor;
     impl ToolExecutor for MatchingExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -47,6 +48,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct NoMatchExecutor;
     impl ToolExecutor for NoMatchExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -54,6 +56,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct ErrorExecutor;
     impl ToolExecutor for ErrorExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -63,6 +66,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct SecondExecutor;
     impl ToolExecutor for SecondExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -106,5 +110,26 @@ mod tests {
         let composite = CompositeExecutor::new(NoMatchExecutor, ErrorExecutor);
         let result = composite.execute("anything").await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn execute_confirmed_first_matches() {
+        let composite = CompositeExecutor::new(MatchingExecutor, SecondExecutor);
+        let result = composite.execute_confirmed("anything").await.unwrap();
+        assert_eq!(result.unwrap().summary, "matched");
+    }
+
+    #[tokio::test]
+    async fn execute_confirmed_falls_through() {
+        let composite = CompositeExecutor::new(NoMatchExecutor, SecondExecutor);
+        let result = composite.execute_confirmed("anything").await.unwrap();
+        assert_eq!(result.unwrap().summary, "second");
+    }
+
+    #[test]
+    fn composite_debug() {
+        let composite = CompositeExecutor::new(MatchingExecutor, SecondExecutor);
+        let debug = format!("{composite:?}");
+        assert!(debug.contains("CompositeExecutor"));
     }
 }

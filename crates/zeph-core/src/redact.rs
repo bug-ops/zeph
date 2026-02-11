@@ -165,4 +165,26 @@ mod tests {
         let result = redact_secrets(text);
         assert!(matches!(result, Cow::Borrowed(_)));
     }
+
+    #[test]
+    fn all_secret_prefixes_tested() {
+        for prefix in super::SECRET_PREFIXES {
+            let text = format!("token: {prefix}abc123");
+            let result = redact_secrets(&text);
+            assert!(result.contains("[REDACTED]"), "Failed for prefix: {prefix}");
+            assert!(!result.contains(prefix), "Prefix not redacted: {prefix}");
+        }
+    }
+
+    #[test]
+    fn only_whitespace() {
+        assert_eq!(redact_secrets("   \n\t  "), "   \n\t  ");
+    }
+
+    #[test]
+    fn secret_at_end_of_line() {
+        let text = "token: sk-abc123";
+        let result = redact_secrets(text);
+        assert_eq!(result, "token: [REDACTED]");
+    }
 }

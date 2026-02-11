@@ -210,4 +210,59 @@ mod tests {
                 .contains("embed unavailable")
         );
     }
+
+    #[test]
+    fn role_serialization() {
+        let system = Role::System;
+        let user = Role::User;
+        let assistant = Role::Assistant;
+
+        assert_eq!(serde_json::to_string(&system).unwrap(), "\"system\"");
+        assert_eq!(serde_json::to_string(&user).unwrap(), "\"user\"");
+        assert_eq!(serde_json::to_string(&assistant).unwrap(), "\"assistant\"");
+    }
+
+    #[test]
+    fn role_deserialization() {
+        let system: Role = serde_json::from_str("\"system\"").unwrap();
+        let user: Role = serde_json::from_str("\"user\"").unwrap();
+        let assistant: Role = serde_json::from_str("\"assistant\"").unwrap();
+
+        assert_eq!(system, Role::System);
+        assert_eq!(user, Role::User);
+        assert_eq!(assistant, Role::Assistant);
+    }
+
+    #[test]
+    fn message_clone() {
+        let msg = Message {
+            role: Role::User,
+            content: "test".into(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.role, msg.role);
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    #[test]
+    fn message_debug() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: "response".into(),
+        };
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("Assistant"));
+        assert!(debug.contains("response"));
+    }
+
+    #[test]
+    fn message_serialization() {
+        let msg = Message {
+            role: Role::User,
+            content: "hello".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"content\":\"hello\""));
+    }
 }

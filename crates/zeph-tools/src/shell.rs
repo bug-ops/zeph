@@ -833,4 +833,63 @@ mod tests {
         assert!(config.confirm_patterns.contains(&"rm ".to_owned()));
         assert!(config.confirm_patterns.contains(&"git push -f".to_owned()));
     }
+
+    #[tokio::test]
+    async fn with_audit_attaches_logger() {
+        use crate::audit::AuditLogger;
+        use crate::config::AuditConfig;
+        let config = default_config();
+        let executor = ShellExecutor::new(&config);
+        let audit_config = AuditConfig {
+            enabled: true,
+            destination: "stdout".into(),
+        };
+        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let executor = executor.with_audit(logger);
+        assert!(executor.audit_logger.is_some());
+    }
+
+    #[test]
+    fn chrono_now_returns_valid_timestamp() {
+        let ts = chrono_now();
+        assert!(!ts.is_empty());
+        let parsed: u64 = ts.parse().unwrap();
+        assert!(parsed > 0);
+    }
+
+    #[tokio::test]
+    async fn execute_bash_error_handling() {
+        let result = execute_bash("false", Duration::from_secs(5)).await;
+        assert_eq!(result, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn execute_bash_command_not_found() {
+        let result = execute_bash("nonexistent-command-xyz", Duration::from_secs(5)).await;
+        assert!(result.contains("[stderr]") || result.contains("[error]"));
+    }
+
+    #[test]
+    fn extract_absolute_paths_empty() {
+        assert!(extract_absolute_paths("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocked_command_logged_to_audit() {
+        use crate::audit::AuditLogger;
+        use crate::config::AuditConfig;
+        let config = ShellConfig {
+            blocked_commands: vec!["dangerous".to_owned()],
+            ..default_config()
+        };
+        let audit_config = AuditConfig {
+            enabled: true,
+            destination: "stdout".into(),
+        };
+        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let executor = ShellExecutor::new(&config).with_audit(logger);
+        let response = "```bash\ndangerous command\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
 }

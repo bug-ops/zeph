@@ -220,6 +220,27 @@ mod tests {
         let result = vault.get_secret("MISSING").await.unwrap();
         assert!(result.is_none());
     }
+
+    #[test]
+    fn secret_from_string() {
+        let s = Secret::new(String::from("test"));
+        assert_eq!(s.expose(), "test");
+    }
+
+    #[test]
+    fn secret_clone() {
+        let s1 = Secret::new("test");
+        let s2 = s1.clone();
+        assert_eq!(s1.expose(), s2.expose());
+    }
+
+    #[test]
+    fn secret_deserialize() {
+        let json = "\"my-secret-value\"";
+        let secret: Secret = serde_json::from_str(json).unwrap();
+        assert_eq!(secret.expose(), "my-secret-value");
+        assert_eq!(format!("{secret:?}"), "[REDACTED]");
+    }
 }
 
 #[cfg(all(test, feature = "vault-age"))]
@@ -369,5 +390,37 @@ mod age_tests {
         );
         let tg = config.telegram.unwrap();
         assert_eq!(tg.token.as_deref(), Some("tg-token-456"));
+    }
+
+    #[test]
+    fn age_vault_debug_impl() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"KEY1": "value1", "KEY2": "value2"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        let debug = format!("{vault:?}");
+        assert!(debug.contains("AgeVaultProvider"));
+        assert!(debug.contains("[2 secrets]"));
+        assert!(!debug.contains("value1"));
+    }
+
+    #[test]
+    fn age_vault_error_display() {
+        let key_err =
+            AgeVaultError::KeyRead(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        assert!(key_err.to_string().contains("failed to read key file"));
+
+        let parse_err = AgeVaultError::KeyParse("bad key".into());
+        assert!(
+            parse_err
+                .to_string()
+                .contains("failed to parse age identity")
+        );
+
+        let vault_err =
+            AgeVaultError::VaultRead(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        assert!(vault_err.to_string().contains("failed to read vault file"));
     }
 }

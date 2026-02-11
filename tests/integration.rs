@@ -338,3 +338,156 @@ async fn agent_shutdown_via_watch() {
 
     agent.run().await.unwrap();
 }
+
+#[tokio::test]
+async fn agent_builder_with_embedding_model() {
+    let provider = MockProvider::new("ok");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["test"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    )
+    .with_embedding_model("custom-model".into());
+
+    agent.run().await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_load_history_with_memory() {
+    let provider = MockProvider::new("reply");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec![], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
+        .await
+        .unwrap();
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .sqlite()
+        .save_message(cid, "user", "hello")
+        .await
+        .unwrap();
+    memory
+        .sqlite()
+        .save_message(cid, "assistant", "world")
+        .await
+        .unwrap();
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    )
+    .with_memory(memory, cid, 50, 5, 100);
+
+    agent.load_history().await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_load_history_without_memory() {
+    let provider = MockProvider::new("reply");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec![], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
+
+    agent.load_history().await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_skills_command() {
+    let provider = MockProvider::new("ok");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["/skills"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
+
+    agent.run().await.unwrap();
+
+    let collected = outputs.lock().unwrap();
+    assert!(!collected.is_empty());
+}
+
+#[tokio::test]
+async fn agent_skill_activate_command() {
+    let provider = MockProvider::new("ok");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["/skill activate test-skill"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
+
+    agent.run().await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_skill_deactivate_command() {
+    let provider = MockProvider::new("ok");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["/skill deactivate test-skill"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
+
+    agent.run().await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_with_bash_tool_executor() {
+    let provider = MockProvider::new("```bash\necho hello\n```");
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["run command"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        SkillRegistry::default(),
+        None,
+        5,
+        executor,
+    );
+
+    agent.run().await.unwrap();
+}
