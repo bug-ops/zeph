@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -17,6 +17,10 @@ pub enum AgentEvent {
     FullMessage(String),
     Flush,
     Typing,
+    ConfirmRequest {
+        prompt: String,
+        response_tx: oneshot::Sender<bool>,
+    },
 }
 
 pub struct EventReader {
@@ -74,5 +78,17 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let reader = EventReader::new(tx, Duration::from_millis(100));
         assert_eq!(reader.tick_rate, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn confirm_request_debug() {
+        let (tx, _rx) = oneshot::channel();
+        let e = AgentEvent::ConfirmRequest {
+            prompt: "delete?".into(),
+            response_tx: tx,
+        };
+        let s = format!("{e:?}");
+        assert!(s.contains("ConfirmRequest"));
+        assert!(s.contains("delete?"));
     }
 }

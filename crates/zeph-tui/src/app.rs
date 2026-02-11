@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::event::{AgentEvent, AppEvent};
 use crate::layout::AppLayout;
@@ -35,6 +35,11 @@ pub enum Panel {
     Resources,
 }
 
+pub struct ConfirmState {
+    pub prompt: String,
+    pub response_tx: Option<oneshot::Sender<bool>>,
+}
+
 pub struct App {
     input: String,
     cursor_position: usize,
@@ -44,6 +49,7 @@ pub struct App {
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
+    confirm_state: Option<ConfirmState>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -64,6 +70,7 @@ impl App {
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
             active_panel: Panel::Chat,
+            confirm_state: None,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -158,7 +165,21 @@ impl App {
                 }
             }
             AgentEvent::Typing => {}
+            AgentEvent::ConfirmRequest {
+                prompt,
+                response_tx,
+            } => {
+                self.confirm_state = Some(ConfirmState {
+                    prompt,
+                    response_tx: Some(response_tx),
+                });
+            }
         }
+    }
+
+    #[must_use]
+    pub fn confirm_state(&self) -> Option<&ConfirmState> {
+        self.confirm_state.as_ref()
     }
 
     pub fn draw(&self, frame: &mut ratatui::Frame) {
@@ -169,6 +190,10 @@ impl App {
         self.draw_side_panel(frame, &layout);
         widgets::input::render(self, frame, layout.input);
         widgets::status::render(self, &self.metrics, frame, layout.status);
+
+        if let Some(state) = &self.confirm_state {
+            widgets::confirm::render(&state.prompt, frame, frame.area());
+        }
     }
 
     fn draw_header(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
@@ -210,9 +235,28 @@ impl App {
             return;
         }
 
+        if self.confirm_state.is_some() {
+            self.handle_confirm_key(key);
+            return;
+        }
+
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key),
             InputMode::Insert => self.handle_insert_key(key),
+        }
+    }
+
+    fn handle_confirm_key(&mut self, key: KeyEvent) {
+        let response = match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(true),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+            _ => None,
+        };
+        if let Some(answer) = response
+            && let Some(mut state) = self.confirm_state.take()
+            && let Some(tx) = state.response_tx.take()
+        {
+            let _ = tx.send(answer);
         }
     }
 
@@ -264,6 +308,11 @@ impl App {
 
     fn handle_insert_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let byte_offset = self.byte_offset_of_char(self.cursor_position);
+                self.input.insert(byte_offset, '\n');
+                self.cursor_position += 1;
+            }
             KeyCode::Enter => self.submit_input(),
             KeyCode::Esc => self.input_mode = InputMode::Normal,
             KeyCode::Backspace => {
@@ -573,5 +622,114 @@ mod tests {
         let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(end)).unwrap();
         assert_eq!(app.cursor_position(), 1);
+    }
+
+    #[test]
+    fn confirm_request_sets_state() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.handle_agent_event(AgentEvent::ConfirmRequest {
+            prompt: "delete?".into(),
+            response_tx: tx,
+        });
+        assert!(app.confirm_state.is_some());
+        assert_eq!(app.confirm_state.as_ref().unwrap().prompt, "delete?");
+    }
+
+    #[test]
+    fn confirm_modal_y_sends_true() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "proceed?".into(),
+            response_tx: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.confirm_state.is_none());
+        assert!(rx.try_recv().unwrap());
+    }
+
+    #[test]
+    fn confirm_modal_enter_sends_true() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "proceed?".into(),
+            response_tx: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.confirm_state.is_none());
+        assert!(rx.try_recv().unwrap());
+    }
+
+    #[test]
+    fn confirm_modal_n_sends_false() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "delete?".into(),
+            response_tx: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.confirm_state.is_none());
+        assert!(!rx.try_recv().unwrap());
+    }
+
+    #[test]
+    fn confirm_modal_escape_sends_false() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "delete?".into(),
+            response_tx: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.confirm_state.is_none());
+        assert!(!rx.try_recv().unwrap());
+    }
+
+    #[test]
+    fn confirm_modal_blocks_other_keys() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+        app.input_mode = InputMode::Insert;
+        app.confirm_state = Some(ConfirmState {
+            prompt: "test?".into(),
+            response_tx: Some(tx),
+        });
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.input().is_empty());
+        assert!(app.confirm_state.is_some());
+    }
+
+    #[test]
+    fn shift_enter_inserts_newline() {
+        let (mut app, mut rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello".into();
+        app.cursor_position = 5;
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.input(), "hello\n");
+        assert_eq!(app.cursor_position(), 6);
+        assert!(app.messages().is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn shift_enter_mid_input() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "ab".into();
+        app.cursor_position = 1;
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.input(), "a\nb");
+        assert_eq!(app.cursor_position(), 2);
     }
 }

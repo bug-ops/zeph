@@ -64,8 +64,17 @@ impl Channel for TuiChannel {
             .map_err(|_| anyhow::anyhow!("TUI channel closed"))
     }
 
-    async fn confirm(&mut self, _prompt: &str) -> anyhow::Result<bool> {
-        Ok(true)
+    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.agent_event_tx
+            .send(AgentEvent::ConfirmRequest {
+                prompt: prompt.to_owned(),
+                response_tx: tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("TUI channel closed"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("confirm dialog cancelled"))
     }
 }
 
@@ -134,9 +143,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_auto_approves() {
-        let (mut ch, _user_tx, _agent_rx) = make_channel();
-        assert!(ch.confirm("delete?").await.unwrap());
+    async fn confirm_sends_request_and_returns_response() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+
+        let confirm_fut = tokio::spawn(async move { ch.confirm("delete?").await.unwrap() });
+
+        let evt = agent_rx.recv().await.unwrap();
+        if let AgentEvent::ConfirmRequest {
+            prompt,
+            response_tx,
+        } = evt
+        {
+            assert_eq!(prompt, "delete?");
+            response_tx.send(true).unwrap();
+        } else {
+            panic!("expected ConfirmRequest");
+        }
+
+        assert!(confirm_fut.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn confirm_returns_false_on_rejection() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+
+        let confirm_fut = tokio::spawn(async move { ch.confirm("proceed?").await.unwrap() });
+
+        let evt = agent_rx.recv().await.unwrap();
+        if let AgentEvent::ConfirmRequest { response_tx, .. } = evt {
+            response_tx.send(false).unwrap();
+        } else {
+            panic!("expected ConfirmRequest");
+        }
+
+        assert!(!confirm_fut.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn confirm_errors_when_receiver_dropped() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+
+        let confirm_fut = tokio::spawn(async move { ch.confirm("test?").await });
+
+        let evt = agent_rx.recv().await.unwrap();
+        if let AgentEvent::ConfirmRequest { response_tx, .. } = evt {
+            drop(response_tx);
+        }
+
+        assert!(confirm_fut.await.unwrap().is_err());
     }
 
     #[tokio::test]

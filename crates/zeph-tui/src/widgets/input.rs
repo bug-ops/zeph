@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
@@ -21,16 +21,19 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
                 .border_style(theme.panel_border)
                 .title(title),
         )
-        .style(theme.input_cursor);
+        .style(theme.input_cursor)
+        .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
 
     if matches!(app.input_mode(), InputMode::Insert) {
-        // Use unicode display width for correct cursor placement with CJK/emoji
         let prefix: String = app.input().chars().take(app.cursor_position()).collect();
+        let last_line = prefix.rsplit('\n').next().unwrap_or(&prefix);
         #[allow(clippy::cast_possible_truncation)]
-        let cursor_x = area.x + prefix.width() as u16 + 1;
-        let cursor_y = area.y + 1;
+        let cursor_x = area.x + last_line.width() as u16 + 1;
+        let line_count = prefix.matches('\n').count();
+        #[allow(clippy::cast_possible_truncation)]
+        let cursor_y = area.y + 1 + line_count as u16;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }

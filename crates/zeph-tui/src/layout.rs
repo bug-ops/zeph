@@ -24,6 +24,19 @@ impl AppLayout {
             ])
             .split(area);
 
+        if area.width < 80 {
+            return Self {
+                header: outer[0],
+                chat: outer[1],
+                side_panel: Rect::default(),
+                skills: Rect::default(),
+                memory: Rect::default(),
+                resources: Rect::default(),
+                input: outer[2],
+                status: outer[3],
+            };
+        }
+
         let main_split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -88,5 +101,39 @@ mod tests {
         let layout = AppLayout::compute(area);
         assert!(layout.input.y > layout.chat.y);
         assert!(layout.status.y > layout.input.y);
+    }
+
+    #[test]
+    fn layout_narrow_hides_side_panels() {
+        let area = Rect::new(0, 0, 60, 24);
+        let layout = AppLayout::compute(area);
+        assert_eq!(layout.side_panel, Rect::default());
+        assert_eq!(layout.skills, Rect::default());
+        assert_eq!(layout.memory, Rect::default());
+        assert_eq!(layout.resources, Rect::default());
+        assert_eq!(layout.chat.width, area.width);
+    }
+
+    #[test]
+    fn layout_very_narrow_hides_side_panels() {
+        let area = Rect::new(0, 0, 30, 24);
+        let layout = AppLayout::compute(area);
+        assert_eq!(layout.side_panel, Rect::default());
+        assert_eq!(layout.skills, Rect::default());
+    }
+
+    #[test]
+    fn layout_boundary_at_80_shows_side_panels() {
+        let area = Rect::new(0, 0, 80, 24);
+        let layout = AppLayout::compute(area);
+        assert!(layout.side_panel.width > 0);
+        assert!(layout.skills.width > 0);
+    }
+
+    #[test]
+    fn layout_boundary_at_79_hides_side_panels() {
+        let area = Rect::new(0, 0, 79, 24);
+        let layout = AppLayout::compute(area);
+        assert_eq!(layout.side_panel, Rect::default());
     }
 }
