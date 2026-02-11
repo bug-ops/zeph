@@ -3,8 +3,10 @@ FROM container-registry.oracle.com/os/oraclelinux:9-slim
 ARG TARGETARCH
 
 RUN microdnf update -y && \
-    NODE_STREAM=$(microdnf module list nodejs 2>/dev/null | sed -n 's/^nodejs[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' | sort -rn | head -1) && \
-    microdnf module enable "nodejs:${NODE_STREAM}" -y && \
+    (microdnf module enable nodejs:25 -y 2>/dev/null || \
+     microdnf module enable nodejs:24 -y 2>/dev/null || \
+     microdnf module enable nodejs:22 -y 2>/dev/null || \
+     microdnf module enable nodejs:20 -y) && \
     microdnf install -y \
     shadow-utils ca-certificates \
     curl wget git jq file findutils procps-ng \
