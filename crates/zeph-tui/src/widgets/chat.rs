@@ -23,13 +23,25 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             MessageRole::System => ("[system] ", theme.system_message),
         };
 
-        let content = if msg.streaming {
-            format!("{}{}\u{258c}", prefix, msg.content)
-        } else {
-            format!("{}{}", prefix, msg.content)
-        };
+        let indent = " ".repeat(prefix.len());
+        let content_lines: Vec<&str> = msg.content.split('\n').collect();
 
-        lines.push(Line::from(Span::styled(content, style)));
+        for (i, line) in content_lines.iter().enumerate() {
+            let text = if i == 0 {
+                if msg.streaming && content_lines.len() == 1 {
+                    format!("{prefix}{line}\u{258c}")
+                } else {
+                    format!("{prefix}{line}")
+                }
+            } else if msg.streaming && i == content_lines.len() - 1 {
+                format!("{indent}{line}\u{258c}")
+            } else {
+                format!("{indent}{line}")
+            };
+            lines.push(Line::from(Span::styled(text, style)));
+        }
+
+        lines.push(Line::default());
     }
 
     let inner_height = area.height.saturating_sub(2) as usize;
