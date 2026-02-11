@@ -1,0 +1,26 @@
+[book]
+title = "Zeph Documentation"
+description = "Lightweight AI agent with hybrid inference and skills-first architecture"
+authors = ["bug-ops"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+smart-punctuation = true
+git-repository-url = "https://github.com/bug-ops/zeph"
+git-repository-icon = "fab-github"
+edit-url-template = "https://github.com/bug-ops/zeph/edit/main/docs/src/{path}"
+site-url = "/zeph/"
+no-section-label = true
+
+[output.html.search]
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
