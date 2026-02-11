@@ -579,10 +579,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         match parts.first().copied() {
             Some("add") => self.handle_mcp_add(&parts[1..]).await,
             Some("list") => self.handle_mcp_list().await,
+            Some("tools") => self.handle_mcp_tools(parts.get(1).copied()).await,
             Some("remove") => self.handle_mcp_remove(parts.get(1).copied()).await,
             _ => self
                 .channel
-                .send("Usage: /mcp add <id> <command|url> [args...] | /mcp list | /mcp remove <id>")
+                .send("Usage: /mcp add|list|tools|remove")
                 .await,
         }
     }
@@ -690,6 +691,41 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         let _ = write!(output, "Total: {total} tool(s)");
 
+        self.channel.send(&output).await
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn handle_mcp_tools(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
+        use std::fmt::Write;
+
+        let Some(server_id) = server_id else {
+            return self
+                .channel
+                .send("Usage: /mcp tools <server_id>")
+                .await;
+        };
+
+        let tools: Vec<_> = self
+            .mcp_tools
+            .iter()
+            .filter(|t| t.server_id == server_id)
+            .collect();
+
+        if tools.is_empty() {
+            return self
+                .channel
+                .send(&format!("No tools found for server '{server_id}'."))
+                .await;
+        }
+
+        let mut output = format!("Tools for '{server_id}' ({} total):\n", tools.len());
+        for t in &tools {
+            if t.description.is_empty() {
+                let _ = writeln!(output, "- {}", t.name);
+            } else {
+                let _ = writeln!(output, "- {} — {}", t.name, t.description);
+            }
+        }
         self.channel.send(&output).await
     }
 
