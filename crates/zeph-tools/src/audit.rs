@@ -71,6 +71,8 @@ impl AuditLogger {
                 let line = format!("{json}\n");
                 if let Err(e) = f.write_all(line.as_bytes()).await {
                     tracing::error!("failed to write audit log: {e}");
+                } else if let Err(e) = f.flush().await {
+                    tracing::error!("failed to flush audit log: {e}");
                 }
             }
         }
