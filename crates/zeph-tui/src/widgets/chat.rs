@@ -34,6 +34,16 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     let inner_height = area.height.saturating_sub(2) as usize;
     let total = lines.len();
+
+    // Push messages to the bottom when content doesn't fill viewport
+    if total < inner_height {
+        let padding = inner_height - total;
+        let mut padded = vec![Line::default(); padding];
+        padded.append(&mut lines);
+        lines = padded;
+    }
+
+    let total = lines.len();
     let max_scroll = total.saturating_sub(inner_height);
     let scroll = max_scroll.saturating_sub(app.scroll_offset());
 
