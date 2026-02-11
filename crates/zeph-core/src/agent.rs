@@ -1633,3 +1633,690 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use crate::channel::ChannelMessage;
+    use std::sync::{Arc, Mutex};
+    use zeph_llm::provider::ChatStream;
+
+    #[derive(Clone)]
+    struct MockProvider {
+        responses: Arc<Mutex<Vec<String>>>,
+        streaming: bool,
+        embeddings: bool,
+    }
+
+    impl MockProvider {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses)),
+                streaming: false,
+                embeddings: false,
+            }
+        }
+
+        fn with_streaming(mut self) -> Self {
+            self.streaming = true;
+            self
+        }
+
+        fn with_embeddings(mut self) -> Self {
+            self.embeddings = true;
+            self
+        }
+    }
+
+    impl LlmProvider for MockProvider {
+        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                Ok("default response".to_string())
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+
+        async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+            let response = self.chat(messages).await?;
+            let chunks: Vec<_> = response.chars().map(|c| c.to_string()).map(Ok).collect();
+            Ok(Box::pin(tokio_stream::iter(chunks)))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            self.streaming
+        }
+
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            if self.embeddings {
+                Ok(vec![0.1, 0.2, 0.3])
+            } else {
+                anyhow::bail!("embeddings not supported")
+            }
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            self.embeddings
+        }
+
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    struct MockChannel {
+        messages: Arc<Mutex<Vec<String>>>,
+        sent: Arc<Mutex<Vec<String>>>,
+        chunks: Arc<Mutex<Vec<String>>>,
+        confirmations: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl MockChannel {
+        fn new(messages: Vec<String>) -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(messages)),
+                sent: Arc::new(Mutex::new(Vec::new())),
+                chunks: Arc::new(Mutex::new(Vec::new())),
+                confirmations: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn sent_messages(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
+            self.confirmations = Arc::new(Mutex::new(confirmations));
+            self
+        }
+    }
+
+    impl Channel for MockChannel {
+        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+            let mut msgs = self.messages.lock().unwrap();
+            if msgs.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(ChannelMessage {
+                    text: msgs.remove(0),
+                }))
+            }
+        }
+
+        async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+            self.sent.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+
+        async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+            self.chunks.lock().unwrap().push(chunk.to_string());
+            Ok(())
+        }
+
+        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn confirm(&mut self, _prompt: &str) -> anyhow::Result<bool> {
+            let mut confs = self.confirmations.lock().unwrap();
+            Ok(if confs.is_empty() {
+                true
+            } else {
+                confs.remove(0)
+            })
+        }
+    }
+
+    struct MockToolExecutor {
+        outputs: Arc<Mutex<Vec<Result<Option<ToolOutput>, ToolError>>>>,
+    }
+
+    impl MockToolExecutor {
+        fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
+            Self {
+                outputs: Arc::new(Mutex::new(outputs)),
+            }
+        }
+
+        fn no_tools() -> Self {
+            Self::new(vec![Ok(None)])
+        }
+    }
+
+    impl ToolExecutor for MockToolExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            let mut outputs = self.outputs.lock().unwrap();
+            if outputs.is_empty() {
+                Ok(None)
+            } else {
+                outputs.remove(0)
+            }
+        }
+    }
+
+    fn create_test_registry() -> SkillRegistry {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+        )
+        .unwrap();
+        SkillRegistry::load(&[temp_dir.path().to_path_buf()])
+    }
+
+    #[tokio::test]
+    async fn agent_new_initializes_with_system_prompt() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert_eq!(agent.messages.len(), 1);
+        assert_eq!(agent.messages[0].role, Role::System);
+        assert!(!agent.messages[0].content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_with_embedding_model_sets_model() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_embedding_model("test-embed-model".to_string());
+
+        assert_eq!(agent.embedding_model, "test-embed-model");
+    }
+
+    #[tokio::test]
+    async fn agent_with_shutdown_sets_receiver() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (_tx, rx) = watch::channel(false);
+
+        let _agent = Agent::new(provider, channel, registry, None, 5, executor).with_shutdown(rx);
+    }
+
+    #[tokio::test]
+    async fn agent_with_security_sets_config() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let security = SecurityConfig {
+            redact_secrets: true,
+            ..Default::default()
+        };
+        let timeouts = TimeoutConfig {
+            llm_seconds: 60,
+            ..Default::default()
+        };
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_security(security, timeouts);
+
+        assert!(agent.security.redact_secrets);
+        assert_eq!(agent.timeouts.llm_seconds, 60);
+    }
+
+    #[tokio::test]
+    async fn agent_run_handles_empty_channel() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_run_processes_user_message() {
+        let provider = MockProvider::new(vec!["test response".to_string()]);
+        let channel = MockChannel::new(vec!["hello".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        assert_eq!(agent.messages.len(), 3);
+        assert_eq!(agent.messages[1].role, Role::User);
+        assert_eq!(agent.messages[1].content, "hello");
+        assert_eq!(agent.messages[2].role, Role::Assistant);
+    }
+
+    #[tokio::test]
+    async fn agent_run_handles_shutdown_signal() {
+        let provider = MockProvider::new(vec![]);
+        let (tx, rx) = watch::channel(false);
+        let channel = MockChannel::new(vec!["should not process".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_shutdown(rx);
+
+        tx.send(true).unwrap();
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        assert_eq!(agent.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_handles_skills_command() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec!["/skills".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent_channel = MockChannel::new(vec!["/skills".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(!sent_msgs.is_empty());
+        assert!(sent_msgs[0].contains("Available skills"));
+    }
+
+    #[tokio::test]
+    async fn agent_process_response_handles_empty_response() {
+        let provider = MockProvider::new(vec!["".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent_channel = MockChannel::new(vec!["test".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(sent_msgs.iter().any(|m| m.contains("empty response")));
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_execution_success() {
+        let provider = MockProvider::new(vec!["response with tool".to_string()]);
+        let channel = MockChannel::new(vec!["execute tool".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
+            summary: "tool executed successfully".to_string(),
+            blocks_executed: 1,
+        }))]);
+
+        let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(
+            sent_msgs
+                .iter()
+                .any(|m| m.contains("tool executed successfully"))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_blocked_error() {
+        let provider = MockProvider::new(vec!["run blocked command".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
+            command: "rm -rf /".to_string(),
+        })]);
+
+        let agent_channel = MockChannel::new(vec!["test".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(
+            sent_msgs
+                .iter()
+                .any(|m| m.contains("blocked by security policy"))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_sandbox_violation() {
+        let provider = MockProvider::new(vec!["access forbidden path".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::SandboxViolation {
+            path: "/etc/passwd".to_string(),
+        })]);
+
+        let agent_channel = MockChannel::new(vec!["test".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(sent_msgs.iter().any(|m| m.contains("outside the sandbox")));
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_confirmation_approved() {
+        let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
+            command: "dangerous command".to_string(),
+        })]);
+
+        let agent_channel =
+            MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![true]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(!sent_msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_confirmation_denied() {
+        let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
+            command: "dangerous command".to_string(),
+        })]);
+
+        let agent_channel =
+            MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![false]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(sent_msgs.iter().any(|m| m.contains("Command cancelled")));
+    }
+
+    #[tokio::test]
+    async fn agent_handles_streaming_response() {
+        let provider = MockProvider::new(vec!["streaming response".to_string()]).with_streaming();
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent_channel = MockChannel::new(vec!["test".to_string()]);
+        let chunks = agent_channel.chunks.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_chunks = chunks.lock().unwrap();
+        assert!(!sent_chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_maybe_redact_enabled() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let security = SecurityConfig {
+            redact_secrets: true,
+            ..Default::default()
+        };
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_security(security, TimeoutConfig::default());
+
+        let text = "token: sk-abc123secret";
+        let redacted = agent.maybe_redact(text);
+        assert_ne!(AsRef::<str>::as_ref(&redacted), text);
+    }
+
+    #[tokio::test]
+    async fn agent_maybe_redact_disabled() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let security = SecurityConfig {
+            redact_secrets: false,
+            ..Default::default()
+        };
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_security(security, TimeoutConfig::default());
+
+        let text = "password=secret123";
+        let redacted = agent.maybe_redact(text);
+        assert_eq!(AsRef::<str>::as_ref(&redacted), text);
+    }
+
+    #[tokio::test]
+    async fn agent_handles_multiple_messages() {
+        let provider = MockProvider::new(vec![
+            "first response".to_string(),
+            "second response".to_string(),
+        ]);
+        let channel = MockChannel::new(vec!["first".to_string(), "second".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Ok(None), Ok(None)]);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        assert_eq!(agent.messages.len(), 5);
+        assert_eq!(agent.messages[1].content, "first");
+        assert_eq!(agent.messages[3].content, "second");
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_output_with_error_marker() {
+        let provider = MockProvider::new(vec!["response".to_string(), "retry".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![
+            Ok(Some(ToolOutput {
+                summary: "[error] command failed [exit code 1]".to_string(),
+                blocks_executed: 1,
+            })),
+            Ok(None),
+        ]);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_handles_empty_tool_output() {
+        let provider = MockProvider::new(vec!["response".to_string()]);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
+            summary: "   ".to_string(),
+            blocks_executed: 1,
+        }))]);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_helper_returns_on_true() {
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            let mut rx_clone = rx;
+            shutdown_signal(&mut rx_clone).await;
+        });
+
+        tx.send(true).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recv_skill_event_returns_none_when_no_receiver() {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            recv_skill_event(&mut None),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn recv_skill_event_receives_from_channel() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(SkillEvent::Changed).await.unwrap();
+
+        let result = recv_skill_event(&mut Some(rx)).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn agent_with_skill_reload_sets_paths() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (_tx, rx) = mpsc::channel(1);
+
+        let paths = vec![std::path::PathBuf::from("/test/path")];
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_skill_reload(paths.clone(), rx);
+
+        assert_eq!(agent.skill_paths, paths);
+    }
+
+    #[tokio::test]
+    async fn agent_handles_tool_execution_error() {
+        let provider = MockProvider::new(vec!["response".to_string()]);
+        let _channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::Timeout { timeout_secs: 30 })]);
+
+        let agent_channel = MockChannel::new(vec!["test".to_string()]);
+        let sent = agent_channel.sent.clone();
+
+        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent_msgs = sent.lock().unwrap();
+        assert!(
+            sent_msgs
+                .iter()
+                .any(|m| m.contains("Tool execution failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_processes_multi_turn_tool_execution() {
+        let provider = MockProvider::new(vec![
+            "first response".to_string(),
+            "second response".to_string(),
+        ]);
+        let channel = MockChannel::new(vec!["start task".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![
+            Ok(Some(ToolOutput {
+                summary: "step 1 complete".to_string(),
+                blocks_executed: 1,
+            })),
+            Ok(None),
+        ]);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        assert!(agent.messages.len() > 3);
+    }
+
+    #[tokio::test]
+    async fn agent_respects_max_shell_iterations() {
+        let mut responses = vec![];
+        for _ in 0..10 {
+            responses.push("response".to_string());
+        }
+        let provider = MockProvider::new(responses);
+        let channel = MockChannel::new(vec!["test".to_string()]);
+        let registry = create_test_registry();
+
+        let mut outputs = vec![];
+        for _ in 0..10 {
+            outputs.push(Ok(Some(ToolOutput {
+                summary: "continuing".to_string(),
+                blocks_executed: 1,
+            })));
+        }
+        let executor = MockToolExecutor::new(outputs);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        let assistant_count = agent
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .count();
+        assert!(assistant_count <= MAX_SHELL_ITERATIONS);
+    }
+
+    #[test]
+    fn security_config_default() {
+        let config = SecurityConfig::default();
+        let _ = format!("{config:?}");
+    }
+
+    #[test]
+    fn timeout_config_default() {
+        let config = TimeoutConfig::default();
+        let _ = format!("{config:?}");
+    }
+}
