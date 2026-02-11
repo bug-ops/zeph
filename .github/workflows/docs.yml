@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths: [docs/**]
+  pull_request:
+    paths: [docs/**]
   workflow_dispatch:
 
 permissions:
@@ -12,8 +14,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -29,11 +31,14 @@ jobs:
       - name: Build
         run: mdbook build docs
       - uses: actions/configure-pages@v5
+        if: github.ref == 'refs/heads/main'
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
         with:
           path: docs/book
 
   deploy:
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
