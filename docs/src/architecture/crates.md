@@ -85,11 +85,14 @@ A2A protocol client and server (optional, feature-gated).
 
 ratatui-based TUI dashboard (optional, feature-gated).
 
-- `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc
-- `App` — TUI state machine with Normal/Insert modes, keybindings, scroll, live metrics polling via `watch::Receiver`
+- `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc, oneshot-based confirmation dialog
+- `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`
 - `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
 - Side panel widgets: `skills` (active/total), `memory` (SQLite, Qdrant, embeddings), `resources` (tokens, API calls, latency)
-- Chat widget with bottom-up message feed and streaming cursor
+- Chat widget with bottom-up message feed, newline-aware rendering, scroll indicators (▲/▼), and streaming cursor
+- Confirmation modal overlay widget with Y/N keybindings and focus capture
+- Responsive layout: side panels hidden on terminals < 80 cols
+- Multiline input via Shift+Enter
 - Status bar with mode, skill count, tokens, Qdrant status, uptime
 - Panic hook for terminal state restoration
 - Re-exports `MetricsSnapshot` / `MetricsCollector` from zeph-core

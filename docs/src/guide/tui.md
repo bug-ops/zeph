@@ -27,18 +27,14 @@ ZEPH_TUI=true zeph
 | Zeph v0.8.2 | Provider: orchestrator | Model: claude-son... |
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
-| [user] Hello, how are you?            | - setup-guide      |
+|                                        | - setup-guide      |
 |                                        | - git-workflow     |
-| [assistant] I'm doing well! I can     |                    |
-| help you with...                      +--------------------+
+|                                        |                    |
+| [user] Can you check my code?         +--------------------+
 |                                        | Memory             |
-| [user] Can you check my code?         | SQLite: 142 msgs   |
-|                                        | Qdrant: connected  |
-| [assistant] Sure, let me look at      +--------------------+
-| the code structure...                 | Resources          |
-|                                        | Tokens: 4.2k/8k    |
-|                                        | API calls: 12      |
-|                                        | Latency: 340ms     |
+| [zeph] Sure, let me look at           | SQLite: 142 msgs   |
+|        the code structure...           | Qdrant: connected  |
+|                                       ▲+--------------------+
 +----------------------------------------+--------------------+
 | You: write a rust function for fibon_                       |
 +-------------------------------------------------------------+
@@ -46,9 +42,9 @@ ZEPH_TUI=true zeph
 +-------------------------------------------------------------+
 ```
 
-- **Chat panel** (left 70%): messages flow bottom-to-top with streaming cursor
-- **Side panels** (right 30%): skills, memory, and resources metrics
-- **Input line**: always visible at the bottom
+- **Chat panel** (left 70%): bottom-up message feed with newline-aware rendering and scroll indicators (▲/▼)
+- **Side panels** (right 30%): skills, memory, and resources metrics — hidden on terminals < 80 cols
+- **Input line**: always visible, supports multiline input via Shift+Enter
 - **Status bar**: mode indicator, skill count, token usage, uptime
 
 ## Keybindings
@@ -71,9 +67,30 @@ ZEPH_TUI=true zeph
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit input to agent |
+| `Shift+Enter` | Insert newline (multiline input) |
 | `Escape` | Switch to Normal mode |
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
+
+### Confirmation Modal
+
+When a destructive command requires confirmation, a modal overlay appears:
+
+| Key | Action |
+|-----|--------|
+| `Y` / `Enter` | Confirm action |
+| `N` / `Escape` | Cancel action |
+
+All other keys are blocked while the modal is visible.
+
+## Responsive Layout
+
+The TUI adapts to terminal width:
+
+| Width | Layout |
+|-------|--------|
+| >= 80 cols | Full layout: chat (70%) + side panels (30%) |
+| < 80 cols | Side panels hidden, chat takes full width |
 
 ## Live Metrics
 
