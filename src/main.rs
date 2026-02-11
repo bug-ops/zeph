@@ -331,6 +331,7 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 openai_cfg.model.clone(),
                 openai_cfg.max_tokens,
                 openai_cfg.embedding_model.clone(),
+                openai_cfg.reasoning_effort.clone(),
             );
             Ok(AnyProvider::OpenAi(provider))
         }
@@ -611,6 +612,7 @@ fn build_orchestrator(
                     model.to_owned(),
                     openai_cfg.max_tokens,
                     openai_cfg.embedding_model.clone(),
+                    openai_cfg.reasoning_effort.clone(),
                 ))
             }
             #[cfg(feature = "candle")]
@@ -1519,6 +1521,7 @@ mod tests {
             model: "gpt-4o".into(),
             max_tokens: 4096,
             embedding_model: None,
+            reasoning_effort: None,
         });
         config.secrets.openai_api_key = None;
         let result = create_provider(&config);

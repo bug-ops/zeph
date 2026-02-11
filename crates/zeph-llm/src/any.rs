@@ -313,6 +313,7 @@ mod tests {
             "gpt-4o".into(),
             1024,
             None,
+            None,
         ));
         assert_eq!(provider.name(), "openai");
     }
@@ -325,6 +326,7 @@ mod tests {
             "https://api.openai.com/v1".into(),
             "gpt-4o".into(),
             1024,
+            None,
             None,
         ));
         assert!(provider.supports_streaming());
@@ -339,6 +341,7 @@ mod tests {
             "gpt-4o".into(),
             1024,
             Some("text-embedding-3-small".into()),
+            None,
         ));
         assert!(with_embed.supports_embeddings());
 
@@ -347,6 +350,7 @@ mod tests {
             "https://api.openai.com/v1".into(),
             "gpt-4o".into(),
             1024,
+            None,
             None,
         ));
         assert!(!without_embed.supports_embeddings());
@@ -360,6 +364,7 @@ mod tests {
             "https://api.openai.com/v1".into(),
             "gpt-4o".into(),
             1024,
+            None,
             None,
         ));
         let debug = format!("{provider:?}");

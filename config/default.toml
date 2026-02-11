@@ -24,6 +24,7 @@ max_tokens = 4096
 # model = "gpt-5.2"
 # max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
+# reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
 # Candle local inference (enabled by default, disable with --no-default-features)
 # [llm.candle]

@@ -15,6 +15,7 @@ pub struct OpenAiProvider {
     model: String,
     max_tokens: u32,
     embedding_model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -26,6 +27,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
             .field("embedding_model", &self.embedding_model)
+            .field("reasoning_effort", &self.reasoning_effort)
             .finish()
     }
 }
@@ -39,6 +41,7 @@ impl Clone for OpenAiProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             embedding_model: self.embedding_model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
         }
     }
 }
@@ -51,6 +54,7 @@ impl OpenAiProvider {
         model: String,
         max_tokens: u32,
         embedding_model: Option<String>,
+        reasoning_effort: Option<String>,
     ) -> Self {
         while base_url.ends_with('/') {
             base_url.pop();
@@ -62,17 +66,23 @@ impl OpenAiProvider {
             model,
             max_tokens,
             embedding_model,
+            reasoning_effort,
         }
     }
 
     async fn send_request(&self, messages: &[Message]) -> anyhow::Result<String> {
         let api_messages = convert_messages(messages);
+        let reasoning = self
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| Reasoning { effort });
 
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
             max_tokens: self.max_tokens,
             stream: false,
+            reasoning,
         };
 
         let response = self
@@ -111,12 +121,17 @@ impl OpenAiProvider {
 
     async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
         let api_messages = convert_messages(messages);
+        let reasoning = self
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| Reasoning { effort });
 
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
             max_tokens: self.max_tokens,
             stream: true,
+            reasoning,
         };
 
         let response = self
@@ -280,6 +295,13 @@ struct ChatRequest<'a> {
     max_tokens: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning<'a>>,
+}
+
+#[derive(Serialize)]
+struct Reasoning<'a> {
+    effort: &'a str,
 }
 
 #[derive(Serialize)]
@@ -346,6 +368,7 @@ mod tests {
             "gpt-5.2".into(),
             4096,
             Some("text-embedding-3-small".into()),
+            None,
         )
     }
 
@@ -355,6 +378,7 @@ mod tests {
             "https://api.openai.com/v1".into(),
             "gpt-5.2".into(),
             4096,
+            None,
             None,
         )
     }
@@ -367,6 +391,20 @@ mod tests {
         assert_eq!(p.model, "gpt-5.2");
         assert_eq!(p.max_tokens, 4096);
         assert_eq!(p.embedding_model.as_deref(), Some("text-embedding-3-small"));
+        assert!(p.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn new_with_reasoning_effort() {
+        let p = OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-5.2".into(),
+            4096,
+            None,
+            Some("high".into()),
+        );
+        assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -421,12 +459,14 @@ mod tests {
             messages: &msgs,
             max_tokens: 1024,
             stream: false,
+            reasoning: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"model\":\"gpt-5.2\""));
         assert!(json.contains("\"max_tokens\":1024"));
         assert!(json.contains("\"role\":\"user\""));
         assert!(!json.contains("\"stream\""));
+        assert!(!json.contains("\"reasoning\""));
     }
 
     #[test]
@@ -437,9 +477,24 @@ mod tests {
             messages: &msgs,
             max_tokens: 100,
             stream: true,
+            reasoning: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
+    }
+
+    #[test]
+    fn chat_request_with_reasoning_effort() {
+        let msgs = [];
+        let body = ChatRequest {
+            model: "gpt-5.2",
+            messages: &msgs,
+            max_tokens: 100,
+            stream: false,
+            reasoning: Some(Reasoning { effort: "medium" }),
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"reasoning\":{\"effort\":\"medium\"}"));
     }
 
     #[test]
@@ -535,6 +590,7 @@ mod tests {
             "model".into(),
             100,
             None,
+            None,
         );
         let messages = vec![Message {
             role: Role::User,
@@ -550,6 +606,7 @@ mod tests {
             "http://127.0.0.1:1".into(),
             "model".into(),
             100,
+            None,
             None,
         );
         let messages = vec![Message {
@@ -567,6 +624,7 @@ mod tests {
             "model".into(),
             100,
             Some("embed-model".into()),
+            None,
         );
         assert!(p.embed("test").await.is_err());
     }
@@ -591,6 +649,7 @@ mod tests {
             "https://api.openai.com/v1/".into(),
             "m".into(),
             100,
+            None,
             None,
         );
         assert_eq!(p.base_url, "https://api.openai.com/v1");
@@ -645,6 +704,7 @@ mod tests {
             "gpt-5.2".into(),
             256,
             None,
+            None,
         );
 
         let messages = vec![Message {
@@ -666,6 +726,7 @@ mod tests {
             "https://api.openai.com/v1".into(),
             "gpt-5.2".into(),
             256,
+            None,
             None,
         );
 
@@ -697,6 +758,7 @@ mod tests {
             "gpt-5.2".into(),
             256,
             Some("text-embedding-3-small".into()),
+            None,
         );
 
         let embedding = provider.embed("Hello world").await.unwrap();

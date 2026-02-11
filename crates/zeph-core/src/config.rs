@@ -65,6 +65,8 @@ pub struct OpenAiConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub embedding_model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2420,5 +2422,82 @@ history_limit = 50
             config.secrets.openai_api_key.as_ref().unwrap().expose(),
             "sk-openai-123"
         );
+    }
+
+    #[test]
+    fn parse_toml_openai_with_reasoning_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai_reasoning.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "openai"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.2"
+max_tokens = 4096
+reasoning_effort = "high"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        let openai = config.llm.openai.unwrap();
+        assert_eq!(openai.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn parse_toml_openai_without_reasoning_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai_no_reasoning.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "openai"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.2"
+max_tokens = 4096
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        let openai = config.llm.openai.unwrap();
+        assert!(openai.reasoning_effort.is_none());
     }
 }
