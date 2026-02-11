@@ -83,3 +83,101 @@ impl LlmProvider for AnyProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claude::ClaudeProvider;
+    use crate::ollama::OllamaProvider;
+
+    #[test]
+    fn any_ollama_name() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    fn any_claude_name() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        assert_eq!(provider.name(), "claude");
+    }
+
+    #[test]
+    fn any_ollama_supports_streaming() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert!(provider.supports_streaming());
+    }
+
+    #[test]
+    fn any_claude_supports_streaming() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        assert!(provider.supports_streaming());
+    }
+
+    #[test]
+    fn any_ollama_supports_embeddings() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert!(provider.supports_embeddings());
+    }
+
+    #[test]
+    fn any_claude_does_not_support_embeddings() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        assert!(!provider.supports_embeddings());
+    }
+
+    #[test]
+    fn any_ollama_debug() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("Ollama"));
+    }
+
+    #[test]
+    fn any_claude_debug() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("Claude"));
+    }
+
+    #[test]
+    fn any_ollama_clone() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        let cloned = provider.clone();
+        assert_eq!(cloned.name(), "ollama");
+    }
+
+    #[test]
+    fn any_claude_clone() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        let cloned = provider.clone();
+        assert_eq!(cloned.name(), "claude");
+    }
+
+    #[tokio::test]
+    async fn any_claude_embed_returns_error() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        let result = provider.embed("test").await;
+        assert!(result.is_err());
+    }
+}

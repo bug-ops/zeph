@@ -166,6 +166,93 @@ mod tests {
         assert!(provider.supports_embeddings());
     }
 
+    #[test]
+    fn name_returns_ollama() {
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
+        assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    fn new_stores_model_and_embedding_model() {
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            "mistral:7b".into(),
+            "nomic-embed".into(),
+        );
+        assert_eq!(provider.model, "mistral:7b");
+        assert_eq!(provider.embedding_model, "nomic-embed");
+    }
+
+    #[test]
+    fn clone_preserves_fields() {
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            "llama3".into(),
+            "embed-model".into(),
+        );
+        let cloned = provider.clone();
+        assert_eq!(cloned.model, provider.model);
+        assert_eq!(cloned.embedding_model, provider.embedding_model);
+    }
+
+    #[test]
+    fn debug_format() {
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("OllamaProvider"));
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn parse_host_port_custom_port() {
+        let (host, port) = parse_host_port("http://example.com:8080");
+        assert_eq!(host, "http://example.com");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn parse_host_port_trailing_slash() {
+        let (host, port) = parse_host_port("http://localhost:11434/");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_no_scheme() {
+        let (host, port) = parse_host_port("localhost:9999");
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 9999);
+    }
+
+    #[test]
+    fn parse_host_port_invalid_port_falls_back() {
+        let (host, port) = parse_host_port("http://localhost:notaport");
+        assert_eq!(host, "http://localhost:notaport");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn convert_message_system_role() {
+        let msg = Message {
+            role: Role::System,
+            content: "system instruction".into(),
+        };
+        let cm = convert_message(&msg);
+        assert_eq!(cm.content, "system instruction");
+    }
+
+    #[test]
+    fn convert_message_assistant_role() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: "reply text".into(),
+        };
+        let cm = convert_message(&msg);
+        assert_eq!(cm.content, "reply text");
+    }
+
     #[tokio::test]
     #[ignore = "requires running Ollama instance"]
     async fn integration_ollama_chat_stream() {

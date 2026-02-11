@@ -663,4 +663,161 @@ mod tests {
         assert_eq!(summaries.len(), 2);
         assert!(summaries[0].last_message_id < summaries[1].first_message_id);
     }
+
+    #[tokio::test]
+    async fn remember_multiple_messages_increments_ids() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        let id1 = memory.remember(cid, "user", "first").await.unwrap();
+        let id2 = memory.remember(cid, "assistant", "second").await.unwrap();
+        let id3 = memory.remember(cid, "user", "third").await.unwrap();
+
+        assert!(id1 < id2);
+        assert!(id2 < id3);
+    }
+
+    #[tokio::test]
+    async fn message_count_across_conversations() {
+        let memory = test_semantic_memory(false).await;
+        let cid1 = memory.sqlite().create_conversation().await.unwrap();
+        let cid2 = memory.sqlite().create_conversation().await.unwrap();
+
+        memory.remember(cid1, "user", "msg1").await.unwrap();
+        memory.remember(cid1, "user", "msg2").await.unwrap();
+        memory.remember(cid2, "user", "msg3").await.unwrap();
+
+        assert_eq!(memory.message_count(cid1).await.unwrap(), 2);
+        assert_eq!(memory.message_count(cid2).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn summarize_exact_threshold_returns_none() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..3 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        let result = memory.summarize(cid, 3).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn summarize_one_above_threshold_produces_summary() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..4 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        let result = memory.summarize(cid, 3).await.unwrap();
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn summary_fields_populated() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..5 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        memory.summarize(cid, 3).await.unwrap();
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        let s = &summaries[0];
+
+        assert_eq!(s.conversation_id, cid);
+        assert!(s.first_message_id > 0);
+        assert!(s.last_message_id >= s.first_message_id);
+        assert!(s.token_estimate >= 0);
+        assert!(!s.content.is_empty());
+    }
+
+    #[test]
+    fn build_summarization_prompt_format() {
+        let messages = vec![
+            (1, "user".into(), "Hello".into()),
+            (2, "assistant".into(), "Hi there".into()),
+        ];
+        let prompt = build_summarization_prompt(&messages);
+        assert!(prompt.contains("user: Hello"));
+        assert!(prompt.contains("assistant: Hi there"));
+        assert!(prompt.contains("Summary:"));
+    }
+
+    #[test]
+    fn build_summarization_prompt_empty() {
+        let messages: Vec<(i64, String, String)> = vec![];
+        let prompt = build_summarization_prompt(&messages);
+        assert!(prompt.contains("Summary:"));
+    }
+
+    #[test]
+    fn recalled_message_debug() {
+        let recalled = RecalledMessage {
+            message: Message {
+                role: Role::User,
+                content: "test".into(),
+            },
+            score: 0.95,
+        };
+        let dbg = format!("{recalled:?}");
+        assert!(dbg.contains("RecalledMessage"));
+        assert!(dbg.contains("0.95"));
+    }
+
+    #[test]
+    fn summary_clone() {
+        let summary = Summary {
+            id: 1,
+            conversation_id: 2,
+            content: "test summary".into(),
+            first_message_id: 1,
+            last_message_id: 5,
+            token_estimate: 10,
+        };
+        let cloned = summary.clone();
+        assert_eq!(summary.id, cloned.id);
+        assert_eq!(summary.content, cloned.content);
+    }
+
+    #[test]
+    fn estimate_tokens_short_text() {
+        assert_eq!(estimate_tokens("ab"), 0);
+    }
+
+    #[test]
+    fn estimate_tokens_longer_text() {
+        let text = "a".repeat(100);
+        assert_eq!(estimate_tokens(&text), 25);
+    }
+
+    #[tokio::test]
+    async fn remember_preserves_role_mapping() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory.remember(cid, "user", "u").await.unwrap();
+        memory.remember(cid, "assistant", "a").await.unwrap();
+        memory.remember(cid, "system", "s").await.unwrap();
+
+        let history = memory.sqlite.load_history(cid, 50).await.unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[1].role, Role::Assistant);
+        assert_eq!(history[2].role, Role::System);
+    }
 }

@@ -397,4 +397,114 @@ mod tests {
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.unchanged, 0);
     }
+
+    #[test]
+    fn sync_stats_debug() {
+        let stats = SyncStats {
+            added: 1,
+            updated: 2,
+            removed: 3,
+            unchanged: 4,
+        };
+        let dbg = format!("{stats:?}");
+        assert!(dbg.contains("added"));
+        assert!(dbg.contains("1"));
+    }
+
+    #[test]
+    fn registry_new_valid_url() {
+        let result = McpToolRegistry::new("http://localhost:6334");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn registry_debug() {
+        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let dbg = format!("{registry:?}");
+        assert!(dbg.contains("McpToolRegistry"));
+        assert!(dbg.contains("zeph_mcp_tools"));
+    }
+
+    #[test]
+    fn content_hash_different_server_same_name() {
+        let t1 = McpTool {
+            server_id: "server-a".into(),
+            name: "tool".into(),
+            description: "test".into(),
+            input_schema: serde_json::json!({}),
+        };
+        let t2 = McpTool {
+            server_id: "server-b".into(),
+            name: "tool".into(),
+            description: "test".into(),
+            input_schema: serde_json::json!({}),
+        };
+        assert_ne!(content_hash(&t1), content_hash(&t2));
+    }
+
+    #[test]
+    fn content_hash_different_schema() {
+        let t1 = make_tool("s", "t");
+        let mut t2 = make_tool("s", "t");
+        t2.input_schema = serde_json::json!({"type": "object"});
+        assert_ne!(content_hash(&t1), content_hash(&t2));
+    }
+
+    #[test]
+    fn tool_point_id_is_valid_uuid() {
+        let id = tool_point_id("test:tool");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn mcp_namespace_is_valid_uuid() {
+        assert!(!MCP_NAMESPACE.is_nil());
+    }
+
+    #[test]
+    fn extract_string_present() {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "key".into(),
+            qdrant_client::qdrant::Value {
+                kind: Some(Kind::StringValue("hello".into())),
+            },
+        );
+        assert_eq!(extract_string(&payload, "key"), Some("hello".into()));
+    }
+
+    #[test]
+    fn extract_string_missing_key() {
+        let payload: HashMap<String, qdrant_client::qdrant::Value> = HashMap::new();
+        assert_eq!(extract_string(&payload, "missing"), None);
+    }
+
+    #[test]
+    fn extract_string_non_string_value() {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "key".into(),
+            qdrant_client::qdrant::Value {
+                kind: Some(Kind::IntegerValue(42)),
+            },
+        );
+        assert_eq!(extract_string(&payload, "key"), None);
+    }
+
+    #[test]
+    fn extract_string_none_kind() {
+        let mut payload = HashMap::new();
+        payload.insert("key".into(), qdrant_client::qdrant::Value { kind: None });
+        assert_eq!(extract_string(&payload, "key"), None);
+    }
+
+    #[tokio::test]
+    async fn search_empty_registry_returns_empty() {
+        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
+            Box::pin(async { Err(anyhow::anyhow!("no qdrant")) })
+        };
+        let results = registry.search("test query", 5, embed_fn).await;
+        assert!(results.is_empty());
+    }
 }

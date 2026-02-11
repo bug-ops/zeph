@@ -386,4 +386,67 @@ mod tests {
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.unchanged, 0);
     }
+
+    #[test]
+    fn sync_stats_debug() {
+        let stats = SyncStats {
+            added: 5,
+            updated: 3,
+            removed: 1,
+            unchanged: 10,
+        };
+        let dbg = format!("{stats:?}");
+        assert!(dbg.contains("added"));
+        assert!(dbg.contains("5"));
+    }
+
+    #[test]
+    fn construction_valid_url() {
+        let result = QdrantSkillMatcher::new("http://localhost:6334");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn debug_format() {
+        let matcher = QdrantSkillMatcher::new("http://localhost:6334").unwrap();
+        let dbg = format!("{matcher:?}");
+        assert!(dbg.contains("QdrantSkillMatcher"));
+        assert!(dbg.contains("zeph_skills"));
+    }
+
+    #[test]
+    fn content_hash_different_descriptions() {
+        let m1 = make_meta("skill", "description A");
+        let m2 = make_meta("skill", "description B");
+        assert_ne!(content_hash(&m1), content_hash(&m2));
+    }
+
+    #[test]
+    fn content_hash_different_names() {
+        let m1 = make_meta("skill-a", "desc");
+        let m2 = make_meta("skill-b", "desc");
+        assert_ne!(content_hash(&m1), content_hash(&m2));
+    }
+
+    #[test]
+    fn skill_point_id_is_valid_uuid() {
+        let id = skill_point_id("test-skill");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn skill_namespace_is_valid() {
+        assert!(!SKILL_NAMESPACE.is_nil());
+    }
+
+    #[tokio::test]
+    async fn match_skills_embed_fail_returns_empty() {
+        let matcher = QdrantSkillMatcher::new("http://localhost:6334").unwrap();
+        let metas = vec![make_meta("s", "desc")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let embed_fn =
+            |_: &str| -> EmbedFuture { Box::pin(async { Err(anyhow::anyhow!("embed failed")) }) };
+        let results = matcher.match_skills(&refs, "query", 5, embed_fn).await;
+        assert!(results.is_empty());
+    }
 }

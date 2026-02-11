@@ -29,6 +29,7 @@ zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 

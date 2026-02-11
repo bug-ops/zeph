@@ -752,7 +752,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 16] = [
+    const ENV_KEYS: [&str; 36] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -762,11 +762,31 @@ mod tests {
         "ZEPH_QDRANT_URL",
         "ZEPH_MEMORY_SUMMARIZATION_THRESHOLD",
         "ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS",
+        "ZEPH_MEMORY_SEMANTIC_ENABLED",
+        "ZEPH_MEMORY_RECALL_LIMIT",
         "ZEPH_SKILLS_MAX_ACTIVE",
         "ZEPH_TELEGRAM_TOKEN",
         "ZEPH_A2A_AUTH_TOKEN",
+        "ZEPH_A2A_ENABLED",
+        "ZEPH_A2A_HOST",
+        "ZEPH_A2A_PORT",
+        "ZEPH_A2A_PUBLIC_URL",
+        "ZEPH_A2A_RATE_LIMIT",
+        "ZEPH_A2A_REQUIRE_TLS",
+        "ZEPH_A2A_SSRF_PROTECTION",
+        "ZEPH_A2A_MAX_BODY_SIZE",
+        "ZEPH_SECURITY_REDACT_SECRETS",
+        "ZEPH_TIMEOUT_LLM",
+        "ZEPH_TIMEOUT_EMBEDDING",
+        "ZEPH_TIMEOUT_A2A",
         "ZEPH_TOOLS_TIMEOUT",
         "ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS",
+        "ZEPH_TOOLS_SHELL_ALLOWED_PATHS",
+        "ZEPH_TOOLS_SHELL_ALLOW_NETWORK",
+        "ZEPH_TOOLS_SCRAPE_TIMEOUT",
+        "ZEPH_TOOLS_SCRAPE_MAX_BODY",
+        "ZEPH_TOOLS_AUDIT_ENABLED",
+        "ZEPH_TOOLS_AUDIT_DESTINATION",
         "ZEPH_SKILLS_LEARNING_ENABLED",
         "ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE",
     ];
@@ -1498,5 +1518,792 @@ history_limit = 50
     fn vault_config_default_backend() {
         let config = Config::default();
         assert_eq!(config.vault.backend, "env");
+    }
+
+    #[test]
+    fn mcp_config_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-defaults.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Test"
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "m"
+[skills]
+paths = ["./skills"]
+[memory]
+sqlite_path = ":memory:"
+history_limit = 50
+qdrant_url = "http://localhost:6334"
+[mcp]
+"#
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.mcp.servers.is_empty());
+        assert!(config.mcp.allowed_commands.is_empty());
+        assert_eq!(config.mcp.max_dynamic_servers, 10);
+    }
+
+    #[test]
+    fn parse_toml_with_mcp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[mcp]
+allowed_commands = ["npx"]
+max_dynamic_servers = 5
+
+[[mcp.servers]]
+id = "github"
+command = "npx"
+args = ["-y", "mcp-github"]
+timeout = 60
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.mcp.allowed_commands, vec!["npx"]);
+        assert_eq!(config.mcp.max_dynamic_servers, 5);
+        assert_eq!(config.mcp.servers.len(), 1);
+        assert_eq!(config.mcp.servers[0].id, "github");
+        assert_eq!(config.mcp.servers[0].command.as_deref(), Some("npx"));
+        assert_eq!(config.mcp.servers[0].timeout, 60);
+    }
+
+    #[test]
+    fn parse_toml_mcp_http_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp_http.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[[mcp.servers]]
+id = "remote"
+url = "http://remote-mcp:8080"
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.mcp.servers.len(), 1);
+        assert_eq!(config.mcp.servers[0].id, "remote");
+        assert_eq!(
+            config.mcp.servers[0].url.as_deref(),
+            Some("http://remote-mcp:8080")
+        );
+        assert!(config.mcp.servers[0].command.is_none());
+        assert_eq!(config.mcp.servers[0].timeout, 30);
+    }
+
+    #[test]
+    fn a2a_config_defaults() {
+        let config = Config::default();
+        assert!(!config.a2a.enabled);
+        assert_eq!(config.a2a.host, "0.0.0.0");
+        assert_eq!(config.a2a.port, 8080);
+        assert!(config.a2a.public_url.is_empty());
+        assert!(config.a2a.auth_token.is_none());
+        assert_eq!(config.a2a.rate_limit, 60);
+        assert!(config.a2a.require_tls);
+        assert!(config.a2a.ssrf_protection);
+        assert_eq!(config.a2a.max_body_size, 1_048_576);
+    }
+
+    #[test]
+    fn parse_toml_with_a2a() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[a2a]
+enabled = true
+host = "127.0.0.1"
+port = 9090
+public_url = "https://agent.example.com"
+auth_token = "secret"
+rate_limit = 120
+require_tls = false
+ssrf_protection = false
+max_body_size = 2097152
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.a2a.enabled);
+        assert_eq!(config.a2a.host, "127.0.0.1");
+        assert_eq!(config.a2a.port, 9090);
+        assert_eq!(config.a2a.public_url, "https://agent.example.com");
+        assert_eq!(config.a2a.auth_token.as_deref(), Some("secret"));
+        assert_eq!(config.a2a.rate_limit, 120);
+        assert!(!config.a2a.require_tls);
+        assert!(!config.a2a.ssrf_protection);
+        assert_eq!(config.a2a.max_body_size, 2_097_152);
+    }
+
+    #[test]
+    fn security_config_defaults() {
+        let config = Config::default();
+        assert!(config.security.redact_secrets);
+    }
+
+    #[test]
+    fn parse_toml_with_security() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sec.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[security]
+redact_secrets = false
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(!config.security.redact_secrets);
+    }
+
+    #[test]
+    fn timeout_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.timeouts.llm_seconds, 120);
+        assert_eq!(config.timeouts.embedding_seconds, 30);
+        assert_eq!(config.timeouts.a2a_seconds, 30);
+    }
+
+    #[test]
+    fn parse_toml_with_timeouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timeouts.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[timeouts]
+llm_seconds = 60
+embedding_seconds = 15
+a2a_seconds = 10
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.timeouts.llm_seconds, 60);
+        assert_eq!(config.timeouts.embedding_seconds, 15);
+        assert_eq!(config.timeouts.a2a_seconds, 10);
+    }
+
+    #[test]
+    fn parse_toml_with_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[vault]
+backend = "age"
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.vault.backend, "age");
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_enabled() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.a2a.enabled);
+
+        unsafe { std::env::set_var("ZEPH_A2A_ENABLED", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_ENABLED") };
+
+        assert!(config.a2a.enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_host_port() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_A2A_HOST", "127.0.0.1") };
+        unsafe { std::env::set_var("ZEPH_A2A_PORT", "3000") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_HOST") };
+        unsafe { std::env::remove_var("ZEPH_A2A_PORT") };
+
+        assert_eq!(config.a2a.host, "127.0.0.1");
+        assert_eq!(config.a2a.port, 3000);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_rate_limit() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_A2A_RATE_LIMIT", "200") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_RATE_LIMIT") };
+
+        assert_eq!(config.a2a.rate_limit, 200);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_security_redact() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.security.redact_secrets);
+
+        unsafe { std::env::set_var("ZEPH_SECURITY_REDACT_SECRETS", "false") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_SECURITY_REDACT_SECRETS") };
+
+        assert!(!config.security.redact_secrets);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_timeout_llm() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TIMEOUT_LLM", "300") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TIMEOUT_LLM") };
+
+        assert_eq!(config.timeouts.llm_seconds, 300);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_timeout_embedding() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TIMEOUT_EMBEDDING", "45") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TIMEOUT_EMBEDDING") };
+
+        assert_eq!(config.timeouts.embedding_seconds, 45);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_timeout_a2a() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TIMEOUT_A2A", "90") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TIMEOUT_A2A") };
+
+        assert_eq!(config.timeouts.a2a_seconds, 90);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_require_tls() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.a2a.require_tls);
+
+        unsafe { std::env::set_var("ZEPH_A2A_REQUIRE_TLS", "false") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_REQUIRE_TLS") };
+
+        assert!(!config.a2a.require_tls);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_ssrf_protection() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.a2a.ssrf_protection);
+
+        unsafe { std::env::set_var("ZEPH_A2A_SSRF_PROTECTION", "false") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_SSRF_PROTECTION") };
+
+        assert!(!config.a2a.ssrf_protection);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_max_body_size() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_A2A_MAX_BODY_SIZE", "524288") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_MAX_BODY_SIZE") };
+
+        assert_eq!(config.a2a.max_body_size, 524_288);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_scrape_timeout() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SCRAPE_TIMEOUT", "60") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SCRAPE_TIMEOUT") };
+
+        assert_eq!(config.tools.scrape.timeout, 60);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_scrape_max_body() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SCRAPE_MAX_BODY", "2097152") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SCRAPE_MAX_BODY") };
+
+        assert_eq!(config.tools.scrape.max_body_bytes, 2_097_152);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_shell_allowed_paths() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.tools.shell.allowed_paths.is_empty());
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SHELL_ALLOWED_PATHS", "/tmp, /home") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SHELL_ALLOWED_PATHS") };
+
+        assert_eq!(config.tools.shell.allowed_paths, vec!["/tmp", "/home"]);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_shell_allow_network() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.tools.shell.allow_network);
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SHELL_ALLOW_NETWORK", "false") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SHELL_ALLOW_NETWORK") };
+
+        assert!(!config.tools.shell.allow_network);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_audit_enabled() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.tools.audit.enabled);
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_AUDIT_ENABLED", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_AUDIT_ENABLED") };
+
+        assert!(config.tools.audit.enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_audit_destination() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_AUDIT_DESTINATION", "/var/log/audit.log") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_AUDIT_DESTINATION") };
+
+        assert_eq!(config.tools.audit.destination, "/var/log/audit.log");
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_semantic_enabled() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.memory.semantic.enabled);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_SEMANTIC_ENABLED", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_SEMANTIC_ENABLED") };
+
+        assert!(config.memory.semantic.enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_recall_limit() {
+        clear_env();
+        let mut config = Config::default();
+        assert_eq!(config.memory.semantic.recall_limit, 5);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_RECALL_LIMIT", "20") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_RECALL_LIMIT") };
+
+        assert_eq!(config.memory.semantic.recall_limit, 20);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_skills_max_active() {
+        clear_env();
+        let mut config = Config::default();
+        assert_eq!(config.skills.max_active_skills, 5);
+
+        unsafe { std::env::set_var("ZEPH_SKILLS_MAX_ACTIVE", "10") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_SKILLS_MAX_ACTIVE") };
+
+        assert_eq!(config.skills.max_active_skills, 10);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_a2a_public_url() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.a2a.public_url.is_empty());
+
+        unsafe { std::env::set_var("ZEPH_A2A_PUBLIC_URL", "https://my-agent.dev") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_A2A_PUBLIC_URL") };
+
+        assert_eq!(config.a2a.public_url, "https://my-agent.dev");
+    }
+
+    #[test]
+    fn mcp_server_config_debug_redacts_env() {
+        let mcp = McpServerConfig {
+            id: "test".into(),
+            command: Some("npx".into()),
+            args: vec![],
+            env: HashMap::from([("SECRET".into(), "super-secret".into())]),
+            url: None,
+            timeout: 30,
+        };
+        let debug = format!("{mcp:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn mcp_server_config_default_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp_default_timeout.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[[mcp.servers]]
+id = "test"
+command = "cmd"
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.mcp.servers[0].timeout, 30);
+    }
+
+    #[test]
+    fn config_load_nonexistent_file_uses_defaults() {
+        let path = std::path::Path::new("/nonexistent/config.toml");
+        let config = Config::load(path).unwrap();
+        assert_eq!(config.agent.name, "Zeph");
+        assert_eq!(config.llm.provider, "ollama");
+    }
+
+    #[test]
+    fn generation_params_defaults() {
+        let params = GenerationParams::default();
+        assert!((params.temperature - 0.7).abs() < f64::EPSILON);
+        assert!(params.top_p.is_none());
+        assert!(params.top_k.is_none());
+        assert_eq!(params.max_tokens, 2048);
+        assert_eq!(params.seed, 42);
+        assert!((params.repeat_penalty - 1.1).abs() < f32::EPSILON);
+        assert_eq!(params.repeat_last_n, 64);
+    }
+
+    #[test]
+    fn generation_params_capped_max_tokens() {
+        let mut params = GenerationParams::default();
+        params.max_tokens = 100_000;
+        assert_eq!(params.capped_max_tokens(), 32_768);
+    }
+
+    #[test]
+    fn generation_params_capped_below_cap() {
+        let params = GenerationParams::default();
+        assert_eq!(params.capped_max_tokens(), 2048);
+    }
+
+    #[test]
+    fn semantic_config_defaults() {
+        let config = SemanticConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.recall_limit, 5);
+    }
+
+    #[test]
+    fn resolved_secrets_default() {
+        let secrets = ResolvedSecrets::default();
+        assert!(secrets.claude_api_key.is_none());
+    }
+
+    #[test]
+    fn parse_toml_with_all_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("full.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "FullBot"
+
+[llm]
+provider = "claude"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+embedding_model = "nomic"
+
+[llm.cloud]
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 8192
+
+[skills]
+paths = ["./skills", "./extra-skills"]
+max_active_skills = 3
+
+[skills.learning]
+enabled = true
+min_failures = 5
+
+[memory]
+sqlite_path = "./data/test.db"
+history_limit = 100
+qdrant_url = "http://qdrant:6334"
+summarization_threshold = 50
+context_budget_tokens = 4096
+
+[memory.semantic]
+enabled = true
+recall_limit = 10
+
+[telegram]
+token = "123:TOKEN"
+allowed_users = ["admin"]
+
+[tools]
+enabled = true
+
+[tools.shell]
+timeout = 90
+blocked_commands = ["rm"]
+allowed_commands = ["curl"]
+allowed_paths = ["/tmp"]
+allow_network = false
+
+[tools.scrape]
+timeout = 30
+max_body_bytes = 2097152
+
+[tools.audit]
+enabled = true
+destination = "/var/log/zeph.log"
+
+[a2a]
+enabled = true
+host = "127.0.0.1"
+port = 9090
+rate_limit = 100
+
+[mcp]
+max_dynamic_servers = 3
+
+[vault]
+backend = "age"
+
+[security]
+redact_secrets = false
+
+[timeouts]
+llm_seconds = 60
+embedding_seconds = 10
+a2a_seconds = 15
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.agent.name, "FullBot");
+        assert_eq!(config.llm.provider, "claude");
+        assert_eq!(config.llm.embedding_model, "nomic");
+        assert!(config.llm.cloud.is_some());
+        assert_eq!(config.skills.paths.len(), 2);
+        assert_eq!(config.skills.max_active_skills, 3);
+        assert!(config.skills.learning.enabled);
+        assert_eq!(config.memory.history_limit, 100);
+        assert!(config.memory.semantic.enabled);
+        assert_eq!(config.memory.semantic.recall_limit, 10);
+        assert!(config.telegram.is_some());
+        assert!(!config.tools.shell.allow_network);
+        assert!(config.tools.audit.enabled);
+        assert!(config.a2a.enabled);
+        assert_eq!(config.mcp.max_dynamic_servers, 3);
+        assert_eq!(config.vault.backend, "age");
+        assert!(!config.security.redact_secrets);
+        assert_eq!(config.timeouts.llm_seconds, 60);
     }
 }

@@ -324,4 +324,108 @@ mod tests {
         assert!(msg.contains("my-server"));
         assert!(msg.contains("connection failed"));
     }
+
+    #[test]
+    fn transport_stdio_clone() {
+        let transport = McpTransport::Stdio {
+            command: "node".into(),
+            args: vec!["server.js".into()],
+            env: HashMap::from([("KEY".into(), "VAL".into())]),
+        };
+        let cloned = transport.clone();
+        if let McpTransport::Stdio {
+            command, args, env, ..
+        } = &cloned
+        {
+            assert_eq!(command, "node");
+            assert_eq!(args, &["server.js"]);
+            assert_eq!(env.get("KEY").unwrap(), "VAL");
+        } else {
+            panic!("expected Stdio variant");
+        }
+    }
+
+    #[test]
+    fn transport_http_clone() {
+        let transport = McpTransport::Http {
+            url: "http://localhost:3000".into(),
+        };
+        let cloned = transport.clone();
+        if let McpTransport::Http { url } = &cloned {
+            assert_eq!(url, "http://localhost:3000");
+        } else {
+            panic!("expected Http variant");
+        }
+    }
+
+    #[test]
+    fn transport_stdio_debug() {
+        let transport = McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+        let dbg = format!("{transport:?}");
+        assert!(dbg.contains("Stdio"));
+        assert!(dbg.contains("npx"));
+    }
+
+    #[test]
+    fn transport_http_debug() {
+        let transport = McpTransport::Http {
+            url: "http://example.com".into(),
+        };
+        let dbg = format!("{transport:?}");
+        assert!(dbg.contains("Http"));
+        assert!(dbg.contains("http://example.com"));
+    }
+
+    fn make_http_entry(id: &str) -> ServerEntry {
+        ServerEntry {
+            id: id.into(),
+            transport: McpTransport::Http {
+                url: "http://127.0.0.1:1/nonexistent".into(),
+            },
+            timeout: Duration::from_secs(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_server_http_nonexistent_returns_connection_error() {
+        let mgr = McpManager::new(vec![]);
+        let entry = make_http_entry("http-test");
+        let err = mgr.add_server(&entry).await.unwrap_err();
+        assert!(matches!(err, McpError::Connection { .. }));
+    }
+
+    #[test]
+    fn manager_new_stores_configs() {
+        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b"), make_entry("c")]);
+        let dbg = format!("{mgr:?}");
+        assert!(dbg.contains("3"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_different_missing_servers() {
+        let mgr = McpManager::new(vec![]);
+        for id in &["server-a", "server-b", "server-c"] {
+            let err = mgr
+                .call_tool(id, "tool", serde_json::json!({}))
+                .await
+                .unwrap_err();
+            if let McpError::ServerNotFound { server_id } = &err {
+                assert_eq!(server_id, id);
+            } else {
+                panic!("expected ServerNotFound");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_all_with_http_entries_skips_failing() {
+        let mgr = McpManager::new(vec![make_http_entry("x"), make_http_entry("y")]);
+        let tools = mgr.connect_all().await;
+        assert!(tools.is_empty());
+        assert!(mgr.list_servers().await.is_empty());
+    }
 }

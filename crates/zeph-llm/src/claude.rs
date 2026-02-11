@@ -451,6 +451,170 @@ mod tests {
         );
     }
 
+    #[test]
+    fn name_returns_claude() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert_eq!(provider.name(), "claude");
+    }
+
+    #[test]
+    fn clone_preserves_fields() {
+        let provider = ClaudeProvider::new(
+            "test-api-key".into(),
+            "claude-sonnet-4-5-20250929".into(),
+            2048,
+        );
+        let cloned = provider.clone();
+        assert_eq!(cloned.model, provider.model);
+        assert_eq!(cloned.api_key, provider.api_key);
+        assert_eq!(cloned.max_tokens, provider.max_tokens);
+    }
+
+    #[test]
+    fn new_stores_fields_correctly() {
+        let provider = ClaudeProvider::new("my-key".into(), "claude-haiku-35".into(), 4096);
+        assert_eq!(provider.api_key, "my-key");
+        assert_eq!(provider.model, "claude-haiku-35");
+        assert_eq!(provider.max_tokens, 4096);
+    }
+
+    #[test]
+    fn debug_includes_model_and_max_tokens() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 512);
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("ClaudeProvider"));
+        assert!(debug.contains("512"));
+        assert!(debug.contains("<reqwest::Client>"));
+    }
+
+    #[test]
+    fn request_body_serializes_without_system() {
+        let body = RequestBody {
+            model: "claude-sonnet-4-5-20250929",
+            max_tokens: 1024,
+            system: None,
+            messages: &[ApiMessage {
+                role: "user",
+                content: "hello",
+            }],
+            stream: false,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("system"));
+        assert!(!json.contains("stream"));
+        assert!(json.contains("\"model\":\"claude-sonnet-4-5-20250929\""));
+        assert!(json.contains("\"max_tokens\":1024"));
+    }
+
+    #[test]
+    fn request_body_serializes_with_system() {
+        let body = RequestBody {
+            model: "claude-sonnet-4-5-20250929",
+            max_tokens: 1024,
+            system: Some("You are helpful."),
+            messages: &[],
+            stream: false,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"system\":\"You are helpful.\""));
+    }
+
+    #[test]
+    fn request_body_serializes_stream_true() {
+        let body = RequestBody {
+            model: "test",
+            max_tokens: 100,
+            system: None,
+            messages: &[],
+            stream: true,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"stream\":true"));
+    }
+
+    #[test]
+    fn split_messages_all_roles() {
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "system prompt".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "user msg".into(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "assistant reply".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "followup".into(),
+            },
+        ];
+        let (system, chat) = split_messages(&messages);
+        assert_eq!(system.unwrap(), "system prompt");
+        assert_eq!(chat.len(), 3);
+        assert_eq!(chat[0].role, "user");
+        assert_eq!(chat[0].content, "user msg");
+        assert_eq!(chat[1].role, "assistant");
+        assert_eq!(chat[1].content, "assistant reply");
+        assert_eq!(chat[2].role, "user");
+        assert_eq!(chat[2].content, "followup");
+    }
+
+    #[test]
+    fn split_messages_empty() {
+        let (system, chat) = split_messages(&[]);
+        assert!(system.is_none());
+        assert!(chat.is_empty());
+    }
+
+    #[test]
+    fn parse_sse_error_without_structured_error() {
+        let data = r#"not valid json at all"#;
+        let result = parse_sse_event(data, "error");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Claude stream error"));
+    }
+
+    #[test]
+    fn parse_sse_error_with_empty_error_field() {
+        let data = r#"{"type":"error"}"#;
+        let result = parse_sse_event(data, "error");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Claude stream error"));
+    }
+
+    #[test]
+    fn parse_sse_content_block_delta_non_text_type() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#;
+        let result = parse_sse_event(data, "content_block_delta");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_content_block_delta_no_delta() {
+        let data = r#"{"type":"content_block_delta","index":0}"#;
+        let result = parse_sse_event(data, "content_block_delta");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn api_response_deserializes() {
+        let json = r#"{"content":[{"text":"Hello world"}]}"#;
+        let resp: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content.len(), 1);
+        assert_eq!(resp.content[0].text, "Hello world");
+    }
+
+    #[test]
+    fn api_response_empty_content() {
+        let json = r#"{"content":[]}"#;
+        let resp: ApiResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.content.is_empty());
+    }
+
     #[tokio::test]
     #[ignore = "requires ZEPH_CLAUDE_API_KEY env var"]
     async fn integration_claude_chat() {

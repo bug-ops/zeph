@@ -146,4 +146,88 @@ mod tests {
         let blocks = extract_fenced_blocks(text, "mcp");
         assert_eq!(blocks.len(), 2);
     }
+
+    #[test]
+    fn parse_instruction_invalid_json() {
+        let json = r#"{not valid json}"#;
+        assert!(serde_json::from_str::<McpInstruction>(json).is_err());
+    }
+
+    #[test]
+    fn parse_instruction_extra_fields_ignored() {
+        let json = r#"{"server":"s","tool":"t","args":{},"extra":"ignored"}"#;
+        let instr: McpInstruction = serde_json::from_str(json).unwrap();
+        assert_eq!(instr.server, "s");
+        assert_eq!(instr.tool, "t");
+    }
+
+    #[test]
+    fn parse_instruction_args_array() {
+        let json = r#"{"server":"s","tool":"t","args":["a","b"]}"#;
+        let instr: McpInstruction = serde_json::from_str(json).unwrap();
+        assert!(instr.args.is_array());
+    }
+
+    #[test]
+    fn parse_instruction_args_nested() {
+        let json = r#"{"server":"s","tool":"t","args":{"nested":{"key":"val"}}}"#;
+        let instr: McpInstruction = serde_json::from_str(json).unwrap();
+        assert_eq!(instr.args["nested"]["key"], "val");
+    }
+
+    #[test]
+    fn default_args_is_empty_object() {
+        let val = default_args();
+        assert!(val.is_object());
+        assert!(val.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn extract_mcp_blocks_empty_input() {
+        let blocks = extract_fenced_blocks("", "mcp");
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn extract_mcp_blocks_other_lang_ignored() {
+        let text =
+            "```json\n{\"key\":\"val\"}\n```\n```mcp\n{\"server\":\"a\",\"tool\":\"b\"}\n```";
+        let blocks = extract_fenced_blocks(text, "mcp");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].contains("\"server\""));
+    }
+
+    #[test]
+    fn executor_construction() {
+        let mgr = Arc::new(McpManager::new(vec![]));
+        let executor = McpToolExecutor::new(mgr);
+        let dbg = format!("{executor:?}");
+        assert!(dbg.contains("McpToolExecutor"));
+    }
+
+    #[tokio::test]
+    async fn execute_no_blocks_returns_none() {
+        let mgr = Arc::new(McpManager::new(vec![]));
+        let executor = McpToolExecutor::new(mgr);
+        let result = executor.execute("no mcp blocks here").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_invalid_json_block_returns_error() {
+        let mgr = Arc::new(McpManager::new(vec![]));
+        let executor = McpToolExecutor::new(mgr);
+        let text = "```mcp\nnot json\n```";
+        let result = executor.execute(text).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_valid_block_server_not_connected() {
+        let mgr = Arc::new(McpManager::new(vec![]));
+        let executor = McpToolExecutor::new(mgr);
+        let text = "```mcp\n{\"server\":\"missing\",\"tool\":\"t\"}\n```";
+        let result = executor.execute(text).await;
+        assert!(result.is_err());
+    }
 }

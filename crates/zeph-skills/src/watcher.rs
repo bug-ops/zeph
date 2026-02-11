@@ -63,3 +63,72 @@ impl SkillWatcher {
         Ok(Self { _handle: handle })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn start_with_valid_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        let watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx);
+        assert!(watcher.is_ok());
+    }
+
+    #[tokio::test]
+    async fn start_with_multiple_directories() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        let watcher =
+            SkillWatcher::start(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()], tx);
+        assert!(watcher.is_ok());
+    }
+
+    #[tokio::test]
+    async fn start_with_nonexistent_directory_fails() {
+        let (tx, _rx) = mpsc::channel(16);
+        let result = SkillWatcher::start(&[PathBuf::from("/nonexistent/path/xyz")], tx);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn start_with_empty_paths() {
+        let (tx, _rx) = mpsc::channel(16);
+        let watcher = SkillWatcher::start(&[], tx);
+        assert!(watcher.is_ok());
+    }
+
+    #[tokio::test]
+    async fn detects_skill_file_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+
+        let skill_path = dir.path().join("SKILL.md");
+        std::fs::write(&skill_path, "initial").unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::write(&skill_path, "updated content").unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
+        assert!(
+            result.is_ok(),
+            "expected SkillEvent::Changed within timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn ignores_non_skill_file_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+
+        let other_path = dir.path().join("README.md");
+        std::fs::write(&other_path, "content").unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(1500), rx.recv()).await;
+        assert!(result.is_err(), "should not receive event for non-SKILL.md");
+    }
+}

@@ -319,4 +319,112 @@ mod tests {
 
         assert!(matched.is_empty());
     }
+
+    #[test]
+    fn cosine_similarity_different_lengths() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![1.0, 2.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_empty_vectors() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_both_zero() {
+        let a = vec![0.0, 0.0];
+        let b = vec![0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_parallel() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![2.0, 4.0, 6.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((sim - 1.0).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn match_skills_limit_zero() {
+        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let matched = matcher
+            .match_skills(refs.len(), "query", 0, embed_fn_constant)
+            .await;
+
+        assert!(matched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn match_skills_preserves_ranking() {
+        let metas = vec![
+            make_meta("far", "gamma"),
+            make_meta("close", "alpha"),
+            make_meta("mid", "beta"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let matched = matcher
+            .match_skills(refs.len(), "query", 3, embed_fn_mapping)
+            .await;
+
+        assert_eq!(matched.len(), 3);
+        assert_eq!(matched[0], 1); // "close" / "alpha" is closest to "query"
+    }
+
+    #[test]
+    fn matcher_backend_in_memory_is_not_qdrant() {
+        let matcher = SkillMatcher {
+            embeddings: vec![(0, vec![1.0, 0.0])],
+        };
+        let backend = SkillMatcherBackend::InMemory(matcher);
+        assert!(!backend.is_qdrant());
+    }
+
+    #[tokio::test]
+    async fn backend_in_memory_sync_is_noop() {
+        let matcher = SkillMatcher { embeddings: vec![] };
+        let mut backend = SkillMatcherBackend::InMemory(matcher);
+        let metas: Vec<&SkillMeta> = vec![];
+        let result = backend.sync(&metas, "model", embed_fn_constant).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn backend_in_memory_match_skills() {
+        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let inner = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let backend = SkillMatcherBackend::InMemory(inner);
+        let matched = backend
+            .match_skills(&refs, "query", 5, embed_fn_constant)
+            .await;
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[test]
+    fn matcher_debug() {
+        let matcher = SkillMatcher {
+            embeddings: vec![(0, vec![1.0])],
+        };
+        let dbg = format!("{matcher:?}");
+        assert!(dbg.contains("SkillMatcher"));
+    }
+
+    #[test]
+    fn backend_debug() {
+        let matcher = SkillMatcher { embeddings: vec![] };
+        let backend = SkillMatcherBackend::InMemory(matcher);
+        let dbg = format!("{backend:?}");
+        assert!(dbg.contains("InMemory"));
+    }
 }
