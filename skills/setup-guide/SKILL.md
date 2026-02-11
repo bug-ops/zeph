@@ -23,6 +23,26 @@ Cloud model settings in `config/default.toml`:
 - `llm.cloud.model` (default: `claude-sonnet-4-5-20250929`)
 - `llm.cloud.max_tokens` (default: 4096)
 
+OpenAI (or any OpenAI-compatible API):
+```bash
+export ZEPH_LLM_PROVIDER=openai
+export ZEPH_OPENAI_API_KEY=sk-...
+```
+
+Config in `config/default.toml`:
+```toml
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+max_tokens = 4096
+embedding_model = "text-embedding-3-small"
+```
+
+- `llm.openai.base_url`: API endpoint (change for Together, Groq, Fireworks, etc.)
+- `llm.openai.model`: chat model name
+- `llm.openai.max_tokens`: max response tokens (default: 4096)
+- `llm.openai.embedding_model`: optional, enables embeddings support
+
 ## Embeddings
 
 ```bash

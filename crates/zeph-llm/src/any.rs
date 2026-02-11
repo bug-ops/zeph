@@ -2,6 +2,8 @@
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
+#[cfg(feature = "openai")]
+use crate::openai::OpenAiProvider;
 #[cfg(feature = "orchestrator")]
 use crate::orchestrator::ModelOrchestrator;
 use crate::provider::{ChatStream, LlmProvider, Message};
@@ -10,6 +12,8 @@ use crate::provider::{ChatStream, LlmProvider, Message};
 pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
+    #[cfg(feature = "openai")]
+    OpenAi(OpenAiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
     #[cfg(feature = "orchestrator")]
@@ -21,6 +25,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.chat(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat(messages).await,
             #[cfg(feature = "orchestrator")]
@@ -32,6 +38,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.chat_stream(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_stream(messages).await,
             #[cfg(feature = "orchestrator")]
@@ -43,6 +51,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.supports_streaming(),
             Self::Claude(p) => p.supports_streaming(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.supports_streaming(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_streaming(),
             #[cfg(feature = "orchestrator")]
@@ -54,6 +64,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.embed(text).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.embed(text).await,
             #[cfg(feature = "orchestrator")]
@@ -65,6 +77,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.supports_embeddings(),
             Self::Claude(p) => p.supports_embeddings(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.supports_embeddings(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_embeddings(),
             #[cfg(feature = "orchestrator")]
@@ -76,6 +90,8 @@ impl LlmProvider for AnyProvider {
         match self {
             Self::Ollama(p) => p.name(),
             Self::Claude(p) => p.name(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.name(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.name(),
             #[cfg(feature = "orchestrator")]
@@ -286,5 +302,67 @@ mod tests {
         let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
         assert!(format!("{ollama:?}").contains("Ollama"));
         assert!(format!("{claude:?}").contains("Claude"));
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn any_openai_name() {
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+        ));
+        assert_eq!(provider.name(), "openai");
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn any_openai_supports_streaming() {
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+        ));
+        assert!(provider.supports_streaming());
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn any_openai_supports_embeddings() {
+        let with_embed = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            Some("text-embedding-3-small".into()),
+        ));
+        assert!(with_embed.supports_embeddings());
+
+        let without_embed = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+        ));
+        assert!(!without_embed.supports_embeddings());
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn any_openai_debug() {
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+        ));
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("OpenAi"));
     }
 }

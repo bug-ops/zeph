@@ -73,12 +73,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["a2a", "candle", "mcp", "orchestrator", "self-learning", "vault-age"]
+default = ["a2a", "candle", "mcp", "openai", "orchestrator", "self-learning", "vault-age"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 mcp = ["dep:zeph-mcp", "zeph-mcp?/qdrant", "zeph-core/mcp"]
 candle = ["zeph-llm/candle"]
 metal = ["zeph-llm/metal"]
 cuda = ["zeph-llm/cuda"]
+openai = ["zeph-llm/openai"]
 orchestrator = ["zeph-llm/orchestrator"]
 self-learning = ["zeph-core/self-learning"]
 vault-age = ["zeph-core/vault-age"]

@@ -43,6 +43,7 @@ pub struct LlmConfig {
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
     pub cloud: Option<CloudLlmConfig>,
+    pub openai: Option<OpenAiConfig>,
     pub candle: Option<CandleConfig>,
     pub orchestrator: Option<OrchestratorConfig>,
 }
@@ -55,6 +56,15 @@ fn default_embedding_model() -> String {
 pub struct CloudLlmConfig {
     pub model: String,
     pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiConfig {
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +509,7 @@ fn default_vault_backend() -> String {
 #[derive(Debug, Default)]
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
+    pub openai_api_key: Option<Secret>,
 }
 
 impl Config {
@@ -692,6 +703,9 @@ impl Config {
         if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {
             self.secrets.claude_api_key = Some(Secret::new(val));
         }
+        if let Some(val) = vault.get_secret("ZEPH_OPENAI_API_KEY").await? {
+            self.secrets.openai_api_key = Some(Secret::new(val));
+        }
         if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await? {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,
@@ -716,6 +730,7 @@ impl Config {
                 model: "mistral:7b".into(),
                 embedding_model: default_embedding_model(),
                 cloud: None,
+                openai: None,
                 candle: None,
                 orchestrator: None,
             },
@@ -752,12 +767,13 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 36] = [
+    const ENV_KEYS: [&str; 37] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
         "ZEPH_LLM_EMBEDDING_MODEL",
         "ZEPH_CLAUDE_API_KEY",
+        "ZEPH_OPENAI_API_KEY",
         "ZEPH_SQLITE_PATH",
         "ZEPH_QDRANT_URL",
         "ZEPH_MEMORY_SUMMARIZATION_THRESHOLD",
@@ -808,6 +824,7 @@ mod tests {
         assert_eq!(config.memory.history_limit, 50);
         assert_eq!(config.memory.qdrant_url, "http://localhost:6334");
         assert!(config.llm.cloud.is_none());
+        assert!(config.llm.openai.is_none());
         assert!(config.telegram.is_none());
         assert!(config.tools.enabled);
         assert_eq!(config.tools.shell.timeout, 30);
@@ -1474,6 +1491,7 @@ history_limit = 50
         let mut config = Config::default();
         config.resolve_secrets(&vault).await.unwrap();
         assert!(config.secrets.claude_api_key.is_none());
+        assert!(config.secrets.openai_api_key.is_none());
         assert!(config.telegram.is_none());
         assert!(config.a2a.auth_token.is_none());
     }
@@ -2197,6 +2215,7 @@ command = "cmd"
     fn resolved_secrets_default() {
         let secrets = ResolvedSecrets::default();
         assert!(secrets.claude_api_key.is_none());
+        assert!(secrets.openai_api_key.is_none());
     }
 
     #[test]
@@ -2305,5 +2324,101 @@ a2a_seconds = 15
         assert_eq!(config.vault.backend, "age");
         assert!(!config.security.redact_secrets);
         assert_eq!(config.timeouts.llm_seconds, 60);
+    }
+
+    #[test]
+    fn parse_toml_with_openai() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "openai"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+max_tokens = 4096
+embedding_model = "text-embedding-3-small"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.llm.provider, "openai");
+        let openai = config.llm.openai.unwrap();
+        assert_eq!(openai.base_url, "https://api.openai.com/v1");
+        assert_eq!(openai.model, "gpt-4o");
+        assert_eq!(openai.max_tokens, 4096);
+        assert_eq!(
+            openai.embedding_model.as_deref(),
+            Some("text-embedding-3-small")
+        );
+    }
+
+    #[test]
+    fn parse_toml_openai_without_embedding_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai_no_embed.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "openai"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+max_tokens = 4096
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        let openai = config.llm.openai.unwrap();
+        assert!(openai.embedding_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_populates_openai_api_key() {
+        use crate::vault::MockVaultProvider;
+        let vault = MockVaultProvider::new().with_secret("ZEPH_OPENAI_API_KEY", "sk-openai-123");
+        let mut config = Config::default();
+        config.resolve_secrets(&vault).await.unwrap();
+        assert_eq!(
+            config.secrets.openai_api_key.as_ref().unwrap().expose(),
+            "sk-openai-123"
+        );
     }
 }

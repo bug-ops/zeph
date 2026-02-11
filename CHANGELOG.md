@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- OpenAI-compatible LLM provider with chat, streaming, and embeddings support
+- Feature-gated `openai` feature (enabled by default)
+- Support for OpenAI, Together AI, Groq, Fireworks, and any OpenAI-compatible API via configurable `base_url`
 - `/mcp add <id> <command> [args...]` for dynamic stdio MCP server connection at runtime
 - `/mcp add <id> <url>` for HTTP transport (remote MCP servers in Docker/cloud)
 - `/mcp list` command to show connected servers and tool counts

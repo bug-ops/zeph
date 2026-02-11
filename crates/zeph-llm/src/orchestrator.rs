@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
+#[cfg(feature = "openai")]
+use crate::openai::OpenAiProvider;
 use crate::provider::{ChatStream, LlmProvider, Message, Role};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,6 +157,8 @@ fn contains_analysis_indicators(text: &str) -> bool {
 pub enum SubProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
+    #[cfg(feature = "openai")]
+    OpenAi(OpenAiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
 }
@@ -164,6 +168,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.chat(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat(messages).await,
         }
@@ -173,6 +179,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.chat_stream(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_stream(messages).await,
         }
@@ -182,6 +190,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.supports_streaming(),
             Self::Claude(p) => p.supports_streaming(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.supports_streaming(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_streaming(),
         }
@@ -191,6 +201,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.embed(text).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.embed(text).await,
         }
@@ -200,6 +212,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.supports_embeddings(),
             Self::Claude(p) => p.supports_embeddings(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.supports_embeddings(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_embeddings(),
         }
@@ -209,6 +223,8 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.name(),
             Self::Claude(p) => p.name(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.name(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.name(),
         }

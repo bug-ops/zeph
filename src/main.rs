@@ -12,6 +12,8 @@ use zeph_core::vault::{EnvVaultProvider, VaultProvider};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
+#[cfg(feature = "openai")]
+use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
@@ -307,6 +309,31 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens);
             Ok(AnyProvider::Claude(provider))
         }
+        #[cfg(feature = "openai")]
+        "openai" => {
+            let openai_cfg = config
+                .llm
+                .openai
+                .as_ref()
+                .context("llm.openai config section required for OpenAI provider")?;
+
+            let api_key = config
+                .secrets
+                .openai_api_key
+                .as_ref()
+                .context("ZEPH_OPENAI_API_KEY not found in vault")?
+                .expose()
+                .to_owned();
+
+            let provider = OpenAiProvider::new(
+                api_key,
+                openai_cfg.base_url.clone(),
+                openai_cfg.model.clone(),
+                openai_cfg.max_tokens,
+                openai_cfg.embedding_model.clone(),
+            );
+            Ok(AnyProvider::OpenAi(provider))
+        }
         #[cfg(feature = "candle")]
         "candle" => {
             let candle_cfg = config
@@ -519,6 +546,7 @@ fn select_device(preference: &str) -> anyhow::Result<zeph_llm::candle_provider::
 }
 
 #[cfg(feature = "orchestrator")]
+#[allow(clippy::too_many_lines)]
 fn build_orchestrator(
     config: &Config,
 ) -> anyhow::Result<zeph_llm::orchestrator::ModelOrchestrator> {
@@ -560,6 +588,29 @@ fn build_orchestrator(
                     api_key,
                     model.to_owned(),
                     cloud.max_tokens,
+                ))
+            }
+            #[cfg(feature = "openai")]
+            "openai" => {
+                let openai_cfg = config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .context("llm.openai config required for openai sub-provider")?;
+                let api_key = config
+                    .secrets
+                    .openai_api_key
+                    .as_ref()
+                    .context("ZEPH_OPENAI_API_KEY required for openai sub-provider")?
+                    .expose()
+                    .to_owned();
+                let model = pcfg.model.as_deref().unwrap_or(&openai_cfg.model);
+                SubProvider::OpenAi(OpenAiProvider::new(
+                    api_key,
+                    openai_cfg.base_url.clone(),
+                    model.to_owned(),
+                    openai_cfg.max_tokens,
+                    openai_cfg.embedding_model.clone(),
                 ))
             }
             #[cfg(feature = "candle")]
@@ -1440,5 +1491,43 @@ mod tests {
 
         let result = build_orchestrator(&config);
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn create_provider_openai_missing_config_errors() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = "openai".into();
+        config.llm.openai = None;
+        let result = create_provider(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("llm.openai config section required")
+        );
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn create_provider_openai_missing_api_key_errors() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = "openai".into();
+        config.llm.openai = Some(zeph_core::config::OpenAiConfig {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+        });
+        config.secrets.openai_api_key = None;
+        let result = create_provider(&config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ZEPH_OPENAI_API_KEY not found")
+        );
     }
 }
