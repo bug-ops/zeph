@@ -62,6 +62,7 @@ ZEPH_TUI=true zeph
 | `Page Up/Down` | Scroll chat one page |
 | `Home` / `End` | Scroll to top / bottom |
 | `Mouse wheel` | Scroll chat up/down (3 lines per tick) |
+| `d` | Toggle side panels on/off |
 | `Tab` | Cycle side panel focus |
 
 ### Insert Mode

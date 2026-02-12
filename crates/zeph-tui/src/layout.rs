@@ -13,7 +13,7 @@ pub struct AppLayout {
 
 impl AppLayout {
     #[must_use]
-    pub fn compute(area: Rect) -> Self {
+    pub fn compute(area: Rect, show_side_panels: bool) -> Self {
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -24,7 +24,7 @@ impl AppLayout {
             ])
             .split(area);
 
-        if area.width < 80 {
+        if !show_side_panels || area.width < 80 {
             return Self {
                 header: outer[0],
                 chat: outer[1],
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn layout_for_standard_terminal() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert_eq!(layout.header.height, 1);
         assert_eq!(layout.input.height, 3);
         assert_eq!(layout.status.height, 1);
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn layout_for_small_terminal() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert_eq!(layout.header.height, 1);
         assert_eq!(layout.status.height, 1);
         assert!(layout.chat.height >= 10);
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn layout_side_panels_stack_vertically() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert!(layout.skills.y < layout.memory.y);
         assert!(layout.memory.y < layout.resources.y);
     }
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn layout_input_below_chat() {
         let area = Rect::new(0, 0, 100, 30);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert!(layout.input.y > layout.chat.y);
         assert!(layout.status.y > layout.input.y);
     }
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn layout_narrow_hides_side_panels() {
         let area = Rect::new(0, 0, 60, 24);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert_eq!(layout.side_panel, Rect::default());
         assert_eq!(layout.skills, Rect::default());
         assert_eq!(layout.memory, Rect::default());
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn layout_very_narrow_hides_side_panels() {
         let area = Rect::new(0, 0, 30, 24);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert_eq!(layout.side_panel, Rect::default());
         assert_eq!(layout.skills, Rect::default());
     }
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn layout_boundary_at_80_shows_side_panels() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert!(layout.side_panel.width > 0);
         assert!(layout.skills.width > 0);
     }
@@ -133,7 +133,26 @@ mod tests {
     #[test]
     fn layout_boundary_at_79_hides_side_panels() {
         let area = Rect::new(0, 0, 79, 24);
-        let layout = AppLayout::compute(area);
+        let layout = AppLayout::compute(area, true);
         assert_eq!(layout.side_panel, Rect::default());
+    }
+
+    #[test]
+    fn layout_toggle_off_hides_side_panels() {
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = AppLayout::compute(area, false);
+        assert_eq!(layout.side_panel, Rect::default());
+        assert_eq!(layout.skills, Rect::default());
+        assert_eq!(layout.memory, Rect::default());
+        assert_eq!(layout.resources, Rect::default());
+        assert_eq!(layout.chat.width, area.width);
+    }
+
+    #[test]
+    fn layout_toggle_on_shows_side_panels() {
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = AppLayout::compute(area, true);
+        assert!(layout.side_panel.width > 0);
+        assert!(layout.skills.width > 0);
     }
 }

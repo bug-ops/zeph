@@ -46,6 +46,7 @@ pub struct App {
     input_mode: InputMode,
     messages: Vec<ChatMessage>,
     show_splash: bool,
+    show_side_panels: bool,
     scroll_offset: usize,
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
@@ -68,6 +69,7 @@ impl App {
             input_mode: InputMode::Insert,
             messages: Vec::new(),
             show_splash: true,
+            show_side_panels: true,
             scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
@@ -82,6 +84,11 @@ impl App {
     #[must_use]
     pub fn show_splash(&self) -> bool {
         self.show_splash
+    }
+
+    #[must_use]
+    pub fn show_side_panels(&self) -> bool {
+        self.show_side_panels
     }
 
     pub fn load_history(&mut self, messages: &[(&str, &str)]) {
@@ -217,7 +224,7 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let layout = AppLayout::compute(frame.area());
+        let layout = AppLayout::compute(frame.area(), self.show_side_panels);
 
         self.draw_header(frame, layout.header);
         if self.show_splash {
@@ -320,6 +327,9 @@ impl App {
             }
             KeyCode::End => {
                 self.scroll_offset = 0;
+            }
+            KeyCode::Char('d') => {
+                self.show_side_panels = !self.show_side_panels;
             }
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {
@@ -773,6 +783,20 @@ mod tests {
         app.handle_event(AppEvent::Key(key)).unwrap();
         assert_eq!(app.input(), "a\nb");
         assert_eq!(app.cursor_position(), 2);
+    }
+
+    #[test]
+    fn d_toggles_side_panels() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Normal;
+        assert!(app.show_side_panels());
+
+        let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(!app.show_side_panels());
+
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.show_side_panels());
     }
 
     #[test]

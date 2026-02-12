@@ -19,8 +19,10 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 
     let uptime = format_uptime(metrics.uptime_seconds);
 
+    let panel = if app.show_side_panels() { "ON" } else { "OFF" };
+
     let text = format!(
-        " [{mode}] | Skills: {active}/{total} | Tokens: {tok} | Qdrant: {qdrant} | API: {api} | {uptime}",
+        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok} | Qdrant: {qdrant} | API: {api} | {uptime}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),
