@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-02-12
+
+### Added
+- Mouse scroll support for TUI chat widget (scroll up/down via mouse wheel)
+- Splash screen with colored block-letter "ZEPH" banner on TUI startup
+- Conversation history loading into chat on TUI startup
+- Model thinking block rendering (`<think>` tags from Ollama DeepSeek/Qwen models) in distinct darker style
+- Markdown rendering for all chat messages via `pulldown-cmark`: bold, italic, strikethrough, headings, code blocks, inline code, lists, blockquotes, horizontal rules
+- Scrollbar track with proportional thumb indicator in chat widget
+
+### Fixed
+- Chat messages no longer overflow below the viewport when lines wrap
+- Scroll no longer sticks at top after over-scrolling past content boundary
+
 ## [0.9.0] - 2026-02-12
 
 ### Added

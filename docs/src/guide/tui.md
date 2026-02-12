@@ -24,7 +24,7 @@ ZEPH_TUI=true zeph
 
 ```
 +-------------------------------------------------------------+
-| Zeph v0.9.0 | Provider: orchestrator | Model: claude-son... |
+| Zeph v0.9.1 | Provider: orchestrator | Model: claude-son... |
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |
@@ -42,10 +42,11 @@ ZEPH_TUI=true zeph
 +-------------------------------------------------------------+
 ```
 
-- **Chat panel** (left 70%): bottom-up message feed with newline-aware rendering and scroll indicators (▲/▼)
+- **Chat panel** (left 70%): bottom-up message feed with full markdown rendering (bold, italic, code blocks, lists, headings), scrollbar with proportional thumb, and scroll indicators (▲/▼). Mouse wheel scrolling supported
 - **Side panels** (right 30%): skills, memory, and resources metrics — hidden on terminals < 80 cols
 - **Input line**: always visible, supports multiline input via Shift+Enter
 - **Status bar**: mode indicator, skill count, token usage, uptime
+- **Splash screen**: colored block-letter "ZEPH" banner on startup
 
 ## Keybindings
 
@@ -60,6 +61,7 @@ ZEPH_TUI=true zeph
 | `Down` / `j` | Scroll chat down |
 | `Page Up/Down` | Scroll chat one page |
 | `Home` / `End` | Scroll to top / bottom |
+| `Mouse wheel` | Scroll chat up/down (3 lines per tick) |
 | `Tab` | Cycle side panel focus |
 
 ### Insert Mode
@@ -82,6 +84,30 @@ When a destructive command requires confirmation, a modal overlay appears:
 | `N` / `Escape` | Cancel action |
 
 All other keys are blocked while the modal is visible.
+
+## Markdown Rendering
+
+Chat messages are rendered with full markdown support via `pulldown-cmark`:
+
+| Element | Rendering |
+|---------|-----------|
+| `**bold**` | Bold modifier |
+| `*italic*` | Italic modifier |
+| `` `inline code` `` | Yellow text |
+| Code blocks | Green text with dimmed language tag |
+| `# Heading` | Bold + underlined |
+| `- list item` | Green bullet (•) prefix |
+| `> blockquote` | Dimmed vertical bar (│) prefix |
+| `~~strikethrough~~` | Crossed-out modifier |
+| `---` | Horizontal rule (─) |
+
+## Thinking Blocks
+
+When using Ollama models that emit reasoning traces (DeepSeek, Qwen), the `<think>...</think>` segments are rendered in a darker color (DarkGray) to visually separate model reasoning from the final response. Incomplete thinking blocks during streaming are also shown in the darker style.
+
+## Conversation History
+
+On startup, the TUI loads the latest conversation from SQLite and displays it in the chat panel. This provides continuity across sessions.
 
 ## Responsive Layout
 

@@ -89,7 +89,9 @@ ratatui-based TUI dashboard (optional, feature-gated).
 - `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`
 - `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
 - Side panel widgets: `skills` (active/total), `memory` (SQLite, Qdrant, embeddings), `resources` (tokens, API calls, latency)
-- Chat widget with bottom-up message feed, newline-aware rendering, scroll indicators (▲/▼), and streaming cursor
+- Chat widget with bottom-up message feed, pulldown-cmark markdown rendering, scrollbar with proportional thumb, mouse scroll, thinking block segmentation, and streaming cursor
+- Splash screen widget with colored block-letter banner
+- Conversation history loading from SQLite on startup
 - Confirmation modal overlay widget with Y/N keybindings and focus capture
 - Responsive layout: side panels hidden on terminals < 80 cols
 - Multiline input via Shift+Enter
