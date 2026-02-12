@@ -45,6 +45,7 @@ pub struct App {
     cursor_position: usize,
     input_mode: InputMode,
     messages: Vec<ChatMessage>,
+    show_splash: bool,
     scroll_offset: usize,
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
@@ -61,17 +62,12 @@ impl App {
         user_input_tx: mpsc::Sender<String>,
         agent_event_rx: mpsc::Receiver<AgentEvent>,
     ) -> Self {
-        let splash = ChatMessage {
-            role: MessageRole::System,
-            content: Self::splash_text(),
-            streaming: false,
-        };
-
         Self {
             input: String::new(),
             cursor_position: 0,
             input_mode: InputMode::Insert,
-            messages: vec![splash],
+            messages: Vec::new(),
+            show_splash: true,
             scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
@@ -83,28 +79,9 @@ impl App {
         }
     }
 
-    fn splash_text() -> String {
-        format!(
-            concat!(
-                "      ___         ___  \n",
-                "     /  /\\       /  /\\ \n",
-                "    /  /::|     /  /:/ \n",
-                "   /  /:/:|    /  /:/  \n",
-                "  /  /:/|:|__ /  /:/   \n",
-                " /__/:/ |:| /\\  /::\\   \n",
-                " \\__\\/  |:|/:/\\  \\:\\  \n",
-                "     |  |:/:/  \\  \\:\\ \n",
-                "     |__|::/    \\  \\:\\\n",
-                "      \\__\\/      \\  \\\\\n",
-                "                  \\__\\\\\n",
-                "\n",
-                "  Z E P H  v{}\n",
-                "\n",
-                "  Type a message to start. Press Esc for Normal mode.\n",
-                "  Scroll: mouse wheel or k/j keys.",
-            ),
-            env!("CARGO_PKG_VERSION")
-        )
+    #[must_use]
+    pub fn show_splash(&self) -> bool {
+        self.show_splash
     }
 
     #[must_use]
@@ -225,7 +202,11 @@ impl App {
         let layout = AppLayout::compute(frame.area());
 
         self.draw_header(frame, layout.header);
-        widgets::chat::render(self, frame, layout.chat);
+        if self.show_splash {
+            widgets::splash::render(frame, layout.chat);
+        } else {
+            widgets::chat::render(self, frame, layout.chat);
+        }
         self.draw_side_panel(frame, &layout);
         widgets::input::render(self, frame, layout.input);
         widgets::status::render(self, &self.metrics, frame, layout.status);
@@ -395,6 +376,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.show_splash = false;
         self.messages.push(ChatMessage {
             role: MessageRole::User,
             content: text.clone(),
@@ -423,15 +405,12 @@ mod tests {
 
     #[test]
     fn initial_state() {
-        let (user_tx, user_rx) = mpsc::channel(16);
-        let (_, agent_rx) = mpsc::channel(16);
-        let app = App::new(user_tx, agent_rx);
+        let (app, _rx, _tx) = make_app();
         assert!(app.input().is_empty());
         assert_eq!(app.input_mode(), InputMode::Insert);
-        assert_eq!(app.messages().len(), 1);
-        assert_eq!(app.messages()[0].role, MessageRole::System);
+        assert!(app.messages().is_empty());
+        assert!(app.show_splash());
         assert!(!app.should_quit);
-        drop(user_rx);
     }
 
     #[test]
