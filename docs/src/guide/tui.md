@@ -24,7 +24,7 @@ ZEPH_TUI=true zeph
 
 ```
 +-------------------------------------------------------------+
-| Zeph v0.8.2 | Provider: orchestrator | Model: claude-son... |
+| Zeph v0.9.0 | Provider: orchestrator | Model: claude-son... |
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |
