@@ -216,14 +216,15 @@ impl App {
         self.confirm_state.as_ref()
     }
 
-    pub fn draw(&self, frame: &mut ratatui::Frame) {
+    pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let layout = AppLayout::compute(frame.area());
 
         self.draw_header(frame, layout.header);
         if self.show_splash {
             widgets::splash::render(frame, layout.chat);
         } else {
-            widgets::chat::render(self, frame, layout.chat);
+            let max_scroll = widgets::chat::render(self, frame, layout.chat);
+            self.scroll_offset = self.scroll_offset.min(max_scroll);
         }
         self.draw_side_panel(frame, &layout);
         widgets::input::render(self, frame, layout.input);
