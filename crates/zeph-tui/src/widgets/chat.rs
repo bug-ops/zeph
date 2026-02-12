@@ -96,48 +96,69 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
     frame.render_widget(paragraph, area);
 
     if total > inner_height {
-        let indicator_x = area.x + area.width.saturating_sub(2);
-        if scroll > 0 {
-            let y = area.y + 1;
-            frame
-                .buffer_mut()
-                .set_string(indicator_x, y, "\u{25b2}", Style::default());
-        }
-        if effective_offset > 0 {
-            let y = area.y + area.height.saturating_sub(2);
-            frame
-                .buffer_mut()
-                .set_string(indicator_x, y, "\u{25bc}", Style::default());
-        }
-
-        let track_height = inner_height.saturating_sub(2);
-        if track_height > 0 {
-            let thumb_size = (inner_height * track_height)
-                .checked_div(total)
-                .unwrap_or(track_height)
-                .clamp(1, track_height);
-            let thumb_pos = ((track_height - thumb_size) * scroll)
-                .checked_div(max_scroll)
-                .unwrap_or(0);
-            let track_top = area.y + 2;
-            let bar_x = area.x + area.width.saturating_sub(1);
-            for row in 0..track_height {
-                let ch = if row >= thumb_pos && row < thumb_pos + thumb_size {
-                    "\u{2588}"
-                } else {
-                    "\u{2591}"
-                };
-                frame.buffer_mut().set_string(
-                    bar_x,
-                    track_top + row as u16,
-                    ch,
-                    Style::default().fg(ratatui::style::Color::DarkGray),
-                );
-            }
-        }
+        render_scrollbar(
+            frame,
+            area,
+            inner_height,
+            total,
+            scroll,
+            effective_offset,
+            max_scroll,
+        );
     }
 
     max_scroll
+}
+
+fn render_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    inner_height: usize,
+    total: usize,
+    scroll: usize,
+    effective_offset: usize,
+    max_scroll: usize,
+) {
+    let indicator_x = area.x + area.width.saturating_sub(2);
+    if scroll > 0 {
+        let y = area.y + 1;
+        frame
+            .buffer_mut()
+            .set_string(indicator_x, y, "\u{25b2}", Style::default());
+    }
+    if effective_offset > 0 {
+        let y = area.y + area.height.saturating_sub(2);
+        frame
+            .buffer_mut()
+            .set_string(indicator_x, y, "\u{25bc}", Style::default());
+    }
+
+    let track_height = inner_height.saturating_sub(2);
+    if track_height > 0 {
+        let thumb_size = (inner_height * track_height)
+            .checked_div(total)
+            .unwrap_or(track_height)
+            .clamp(1, track_height);
+        let thumb_pos = ((track_height - thumb_size) * scroll)
+            .checked_div(max_scroll)
+            .unwrap_or(0);
+        let track_top = area.y + 2;
+        let bar_x = area.x + area.width.saturating_sub(1);
+        for row in 0..track_height {
+            let ch = if row >= thumb_pos && row < thumb_pos + thumb_size {
+                "\u{2588}"
+            } else {
+                "\u{2591}"
+            };
+            let row_y = u16::try_from(row).unwrap_or(u16::MAX);
+            frame.buffer_mut().set_string(
+                bar_x,
+                track_top + row_y,
+                ch,
+                Style::default().fg(ratatui::style::Color::DarkGray),
+            );
+        }
+    }
 }
 
 fn render_with_thinking(
@@ -227,22 +248,16 @@ impl<'t> MdRenderer<'t> {
                 let s = self.current_style().add_modifier(Modifier::BOLD);
                 self.push_style(s);
             }
-            Event::End(TagEnd::Strong) => {
+            Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough) => {
                 self.pop_style();
             }
             Event::Start(Tag::Emphasis) => {
                 let s = self.current_style().add_modifier(Modifier::ITALIC);
                 self.push_style(s);
             }
-            Event::End(TagEnd::Emphasis) => {
-                self.pop_style();
-            }
             Event::Start(Tag::Strikethrough) => {
                 let s = self.current_style().add_modifier(Modifier::CROSSED_OUT);
                 self.push_style(s);
-            }
-            Event::End(TagEnd::Strikethrough) => {
-                self.pop_style();
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 self.in_code_block = true;
@@ -286,10 +301,7 @@ impl<'t> MdRenderer<'t> {
                 self.current
                     .push(Span::styled("\u{2022} ".to_string(), self.theme.highlight));
             }
-            Event::End(TagEnd::Item | TagEnd::Paragraph) => {
-                self.newline();
-            }
-            Event::SoftBreak | Event::HardBreak => {
+            Event::End(TagEnd::Item | TagEnd::Paragraph) | Event::SoftBreak | Event::HardBreak => {
                 self.newline();
             }
             Event::Rule => {
