@@ -32,14 +32,18 @@ When `context_budget_tokens > 0`, the context window is structured as:
 ├─────────────────────────────────────────────────┤
 │ <project_context> ZEPH.md contents              │  0-500 tokens
 ├─────────────────────────────────────────────────┤
+│ <repo_map> structural overview (if index on)    │  0-1024 tokens
+├─────────────────────────────────────────────────┤
 │ <available_skills> matched skills (full body)   │  200-2000 tokens
 │ <other_skills> remaining (description-only)     │  50-200 tokens
 ├─────────────────────────────────────────────────┤
-│ [semantic recall] relevant past messages        │  25% of available
+│ <code_context> RAG chunks (if index on)         │  30% of available
+├─────────────────────────────────────────────────┤
+│ [semantic recall] relevant past messages        │  10-25% of available
 ├─────────────────────────────────────────────────┤
 │ [compaction summary] if compacted               │  200-500 tokens
 ├─────────────────────────────────────────────────┤
-│ Recent message history                          │  60% of available
+│ Recent message history                          │  50-60% of available
 ├─────────────────────────────────────────────────┤
 │ [reserved for response generation]              │  20% of total
 └─────────────────────────────────────────────────┘
@@ -47,13 +51,14 @@ When `context_budget_tokens > 0`, the context window is structured as:
 
 ## Proportional Budget Allocation
 
-Available tokens (after reserving 20% for response) are split:
+Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history:
 
-| Allocation | Share | Purpose |
-|-----------|-------|---------|
-| Summaries | 15% | Conversation summaries from SQLite |
-| Semantic recall | 25% | Relevant messages from past conversations via Qdrant |
-| Recent history | 60% | Most recent messages in current conversation |
+| Allocation | Without code index | With code index | Purpose |
+|-----------|-------------------|-----------------|---------|
+| Summaries | 15% | 10% | Conversation summaries from SQLite |
+| Semantic recall | 25% | 10% | Relevant messages from past conversations via Qdrant |
+| Code context | -- | 30% | Retrieved code chunks from project index |
+| Recent history | 60% | 50% | Most recent messages in current conversation |
 
 ## Semantic Recall Injection
 

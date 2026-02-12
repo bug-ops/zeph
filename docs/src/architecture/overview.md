@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Cargo workspace (Edition 2024, resolver 3) with 8 crates + binary root.
+Cargo workspace (Edition 2024, resolver 3) with 9 crates + binary root.
 
 Requires Rust 1.88+. Native async traits are used throughout — no `async-trait` crate.
 
@@ -14,6 +14,7 @@ zeph (binary) — thin bootstrap glue
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 ├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
+├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (optional)
 ├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
 ├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
 └── zeph-tui        ratatui TUI dashboard with real-time metrics (optional)
@@ -29,6 +30,7 @@ zeph (binary)
         ├── zeph-memory (leaf)
         ├── zeph-channels (leaf)
         ├── zeph-tools (leaf)
+        ├── zeph-index (optional, leaf)
         ├── zeph-mcp (optional, leaf)
         ├── zeph-a2a (optional, leaf)
         └── zeph-tui (optional, leaf)
@@ -43,5 +45,5 @@ zeph (binary)
 - **Errors:** `thiserror` for library crates, `anyhow` for application code (`zeph-core`, `main.rs`)
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
-- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
+- **Feature gates:** optional crates (`zeph-index`, `zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
 - **Context engineering:** proportional budget allocation, semantic recall injection, message trimming, runtime compaction, environment context injection, progressive skill loading, ZEPH.md project config discovery

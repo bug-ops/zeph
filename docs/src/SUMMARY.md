@@ -24,6 +24,7 @@
 - [Secrets Management](guide/vault.md)
 - [Channels (CLI, Telegram, TUI)](guide/channels.md)
 - [TUI Dashboard](guide/tui.md)
+- [Code Indexing](guide/code-indexing.md)
 
 # Architecture
 

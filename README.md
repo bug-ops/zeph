@@ -90,6 +90,7 @@ cargo build --release --features tui
 |---------|-------------|------|
 | **Hybrid Inference** | Ollama, Claude, OpenAI, Candle (GGUF) — local, cloud, or both | [OpenAI](https://bug-ops.github.io/zeph/guide/openai.html) · [Candle](https://bug-ops.github.io/zeph/guide/candle.html) |
 | **Skills-First Architecture** | Embedding-based top-K matching, progressive loading, hot-reload | [Skills](https://bug-ops.github.io/zeph/guide/skills.html) |
+| **Code Indexing** | AST-based chunking (tree-sitter), semantic retrieval, repo map generation, incremental indexing | [Code Indexing](https://bug-ops.github.io/zeph/guide/code-indexing.html) |
 | **Context Engineering** | Runtime compaction, semantic recall injection, proportional budget allocation, smart tool output summarization | [Context](https://bug-ops.github.io/zeph/guide/context.html) |
 | **Semantic Memory** | SQLite + Qdrant vector search for contextual recall | [Memory](https://bug-ops.github.io/zeph/guide/semantic-memory.html) |
 | **MCP Client** | Connect external tool servers (stdio + HTTP), unified matching | [MCP](https://bug-ops.github.io/zeph/guide/mcp.html) |
@@ -108,6 +109,7 @@ zeph (binary)
 ├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, orchestrator
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization
+├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming
 ├── zeph-tools      — shell executor, web scraper, composite tool dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
@@ -131,6 +133,7 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 | `orchestrator` | On | Multi-model routing with fallback |
 | `self-learning` | On | Skill evolution system |
 | `vault-age` | On | Age-encrypted secret storage |
+| `index` | Off | AST-based code indexing and semantic retrieval |
 | `metal` | Off | Metal GPU acceleration (macOS) |
 | `tui` | Off | ratatui TUI dashboard with real-time metrics |
 | `cuda` | Off | CUDA GPU acceleration (Linux) |
@@ -139,6 +142,7 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 cargo build --release                        # all defaults
 cargo build --release --features metal       # macOS Metal GPU
 cargo build --release --no-default-features  # minimal binary
+cargo build --release --features index       # with code indexing
 cargo build --release --features tui         # with TUI dashboard
 ```
 

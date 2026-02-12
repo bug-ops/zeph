@@ -15,6 +15,7 @@ Only relevant skills and MCP tools are injected into each prompt via vector simi
 - **A2A protocol** — agent-to-agent communication via JSON-RPC 2.0 with SSE streaming
 - **Model orchestrator** — route tasks to different providers with automatic fallback chains
 - **Self-learning** — skills evolve through failure detection, self-reflection, and LLM-generated improvements
+- **Code indexing** — AST-based code RAG with tree-sitter, hybrid retrieval (semantic + grep routing), repo map
 - **Context engineering** — proportional budget allocation, semantic recall injection, runtime compaction, smart tool output summarization, ZEPH.md project config
 - **Multi-channel I/O** — CLI, Telegram, and TUI with streaming support
 - **Token-efficient** — prompt size is O(K) not O(N), where K is max active skills and N is total installed

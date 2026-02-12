@@ -66,6 +66,18 @@ Tool execution abstraction and shell backend.
 - `AuditLogger` — structured JSON audit trail for all executions
 - `truncate_tool_output()` — head+tail split at 30K chars with UTF-8 safe boundaries
 
+## zeph-index
+
+AST-based code indexing, semantic retrieval, and repo map generation (optional, feature-gated).
+
+- `Lang` enum — supported languages with tree-sitter grammar registry, feature-gated per language group
+- `chunk_file()` — AST-based chunking with greedy sibling merge, scope chains, import extraction
+- `contextualize_for_embedding()` — prepends file path, scope, language, imports to code for better embedding quality
+- `CodeStore` — dual-write storage: Qdrant vectors (`zeph_code_chunks` collection) + SQLite metadata with BLAKE3 content-hash change detection
+- `CodeIndexer<P>` — project indexer orchestrator: walk, chunk, embed, store with incremental skip of unchanged chunks
+- `CodeRetriever<P>` — hybrid retrieval with query classification (Semantic / Grep / Hybrid), budget-aware chunk packing
+- `generate_repo_map()` — compact structural view via tree-sitter signature extraction, budget-constrained
+
 ## zeph-mcp
 
 MCP client for external tool servers (optional, feature-gated).
