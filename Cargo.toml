@@ -51,7 +51,7 @@ toml = "0.9"
 tower = "0.5"
 tower-http = "0.6"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2.5"

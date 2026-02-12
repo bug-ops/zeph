@@ -100,11 +100,16 @@ async fn main() -> anyhow::Result<()> {
     let tui_active = is_tui_requested();
     #[cfg(feature = "tui")]
     if tui_active {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         let file = std::fs::File::create("zeph.log").ok();
         if let Some(file) = file {
-            tracing_subscriber::fmt().with_writer(file).init();
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(file)
+                .init();
         } else {
-            tracing_subscriber::fmt::init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     } else {
         tracing_subscriber::fmt::init();
