@@ -61,11 +61,17 @@ impl App {
         user_input_tx: mpsc::Sender<String>,
         agent_event_rx: mpsc::Receiver<AgentEvent>,
     ) -> Self {
+        let splash = ChatMessage {
+            role: MessageRole::System,
+            content: Self::splash_text(),
+            streaming: false,
+        };
+
         Self {
             input: String::new(),
             cursor_position: 0,
             input_mode: InputMode::Insert,
-            messages: Vec::new(),
+            messages: vec![splash],
             scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
@@ -75,6 +81,30 @@ impl App {
             user_input_tx,
             agent_event_rx,
         }
+    }
+
+    fn splash_text() -> String {
+        format!(
+            concat!(
+                "      ___         ___  \n",
+                "     /  /\\       /  /\\ \n",
+                "    /  /::|     /  /:/ \n",
+                "   /  /:/:|    /  /:/  \n",
+                "  /  /:/|:|__ /  /:/   \n",
+                " /__/:/ |:| /\\  /::\\   \n",
+                " \\__\\/  |:|/:/\\  \\:\\  \n",
+                "     |  |:/:/  \\  \\:\\ \n",
+                "     |__|::/    \\  \\:\\\n",
+                "      \\__\\/      \\  \\\\\n",
+                "                  \\__\\\\\n",
+                "\n",
+                "  Z E P H  v{}\n",
+                "\n",
+                "  Type a message to start. Press Esc for Normal mode.\n",
+                "  Scroll: mouse wheel or k/j keys.",
+            ),
+            env!("CARGO_PKG_VERSION")
+        )
     }
 
     #[must_use]
@@ -386,17 +416,22 @@ mod tests {
     fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
         let (user_tx, user_rx) = mpsc::channel(16);
         let (agent_tx, agent_rx) = mpsc::channel(16);
-        let app = App::new(user_tx, agent_rx);
+        let mut app = App::new(user_tx, agent_rx);
+        app.messages.clear();
         (app, user_rx, agent_tx)
     }
 
     #[test]
     fn initial_state() {
-        let (app, _rx, _tx) = make_app();
+        let (user_tx, user_rx) = mpsc::channel(16);
+        let (_, agent_rx) = mpsc::channel(16);
+        let app = App::new(user_tx, agent_rx);
         assert!(app.input().is_empty());
         assert_eq!(app.input_mode(), InputMode::Insert);
-        assert!(app.messages().is_empty());
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages()[0].role, MessageRole::System);
         assert!(!app.should_quit);
+        drop(user_rx);
     }
 
     #[test]
