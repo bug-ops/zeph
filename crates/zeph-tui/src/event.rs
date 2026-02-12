@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEventKind};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
@@ -8,6 +8,7 @@ pub enum AppEvent {
     Key(KeyEvent),
     Tick,
     Resize(u16, u16),
+    MouseScroll(i8),
     Agent(AgentEvent),
 }
 
@@ -41,6 +42,11 @@ impl EventReader {
                 let evt = match event::read() {
                     Ok(CrosstermEvent::Key(key)) => AppEvent::Key(key),
                     Ok(CrosstermEvent::Resize(w, h)) => AppEvent::Resize(w, h),
+                    Ok(CrosstermEvent::Mouse(mouse)) => match mouse.kind {
+                        MouseEventKind::ScrollUp => AppEvent::MouseScroll(1),
+                        MouseEventKind::ScrollDown => AppEvent::MouseScroll(-1),
+                        _ => continue,
+                    },
                     _ => continue,
                 };
                 if self.tx.blocking_send(evt).is_err() {
@@ -90,5 +96,14 @@ mod tests {
         let s = format!("{e:?}");
         assert!(s.contains("ConfirmRequest"));
         assert!(s.contains("delete?"));
+    }
+
+    #[test]
+    fn app_event_mouse_scroll_variant() {
+        let scroll_up = AppEvent::MouseScroll(1);
+        assert!(matches!(scroll_up, AppEvent::MouseScroll(1)));
+
+        let scroll_down = AppEvent::MouseScroll(-1);
+        assert!(matches!(scroll_down, AppEvent::MouseScroll(-1)));
     }
 }

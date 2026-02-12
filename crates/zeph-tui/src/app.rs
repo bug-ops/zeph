@@ -123,6 +123,15 @@ impl App {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick | AppEvent::Resize(_, _) => {}
+            AppEvent::MouseScroll(delta) => {
+                if self.confirm_state.is_none() {
+                    if delta > 0 {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    } else {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    }
+                }
+            }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
         }
         Ok(())
@@ -731,5 +740,50 @@ mod tests {
         app.handle_event(AppEvent::Key(key)).unwrap();
         assert_eq!(app.input(), "a\nb");
         assert_eq!(app.cursor_position(), 2);
+    }
+
+    #[test]
+    fn mouse_scroll_up() {
+        let (mut app, _rx, _tx) = make_app();
+        assert_eq!(app.scroll_offset(), 0);
+        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        assert_eq!(app.scroll_offset(), 1);
+        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        assert_eq!(app.scroll_offset(), 2);
+    }
+
+    #[test]
+    fn mouse_scroll_down() {
+        let (mut app, _rx, _tx) = make_app();
+        app.scroll_offset = 5;
+        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        assert_eq!(app.scroll_offset(), 4);
+        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        assert_eq!(app.scroll_offset(), 3);
+    }
+
+    #[test]
+    fn mouse_scroll_down_saturates_at_zero() {
+        let (mut app, _rx, _tx) = make_app();
+        app.scroll_offset = 1;
+        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        assert_eq!(app.scroll_offset(), 0);
+        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        assert_eq!(app.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn mouse_scroll_during_confirm_blocked() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "test?".into(),
+            response_tx: Some(tx),
+        });
+        app.scroll_offset = 5;
+        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        assert_eq!(app.scroll_offset(), 5);
+        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        assert_eq!(app.scroll_offset(), 5);
     }
 }
