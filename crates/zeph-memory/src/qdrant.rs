@@ -116,7 +116,9 @@ impl QdrantStore {
 
         sqlx::query(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(message_id, model) DO UPDATE SET \
+             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions",
         )
         .bind(message_id)
         .bind(&point_id)
