@@ -53,10 +53,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
 
             let is_last_line = i == styled_lines.len() - 1;
             if msg.streaming && is_last_line {
-                line_spans.push(Span::styled(
-                    "\u{258c}".to_string(),
-                    theme.streaming_cursor,
-                ));
+                line_spans.push(Span::styled("\u{258c}".to_string(), theme.streaming_cursor));
             }
 
             lines.extend(wrap_spans(line_spans, wrap_width));
@@ -65,10 +62,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
         if styled_lines.is_empty() {
             let mut pfx_spans = vec![Span::styled(prefix.to_string(), base_style)];
             if msg.streaming {
-                pfx_spans.push(Span::styled(
-                    "\u{258c}".to_string(),
-                    theme.streaming_cursor,
-                ));
+                pfx_spans.push(Span::styled("\u{258c}".to_string(), theme.streaming_cursor));
             }
             lines.extend(wrap_spans(pfx_spans, wrap_width));
         }
@@ -220,7 +214,10 @@ impl<'t> MdRenderer<'t> {
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {
-                self.push_style(self.base_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
+                self.push_style(
+                    self.base_style
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                );
             }
             Event::End(TagEnd::Heading { .. }) => {
                 self.pop_style();
@@ -265,10 +262,8 @@ impl<'t> MdRenderer<'t> {
                 self.newline();
             }
             Event::Code(text) => {
-                self.current.push(Span::styled(
-                    text.to_string(),
-                    self.theme.code_inline,
-                ));
+                self.current
+                    .push(Span::styled(text.to_string(), self.theme.code_inline));
             }
             Event::Text(text) => {
                 let style = if self.in_code_block {
@@ -282,18 +277,14 @@ impl<'t> MdRenderer<'t> {
                         self.newline();
                     }
                     if !segment.is_empty() || !prefix.is_empty() {
-                        self.current.push(Span::styled(
-                            format!("{prefix}{segment}"),
-                            style,
-                        ));
+                        self.current
+                            .push(Span::styled(format!("{prefix}{segment}"), style));
                     }
                 }
             }
             Event::Start(Tag::Item) => {
-                self.current.push(Span::styled(
-                    "\u{2022} ".to_string(),
-                    self.theme.highlight,
-                ));
+                self.current
+                    .push(Span::styled("\u{2022} ".to_string(), self.theme.highlight));
             }
             Event::End(TagEnd::Item | TagEnd::Paragraph) => {
                 self.newline();
