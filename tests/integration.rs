@@ -3210,8 +3210,10 @@ mod self_learning {
         .with_memory(memory, cid, 50, 5, 100);
         agent.run().await.unwrap();
 
-        let collected = outputs.lock().unwrap();
-        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+        {
+            let collected = outputs.lock().unwrap();
+            assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+        }
 
         let store = SqliteStore::new(db_str).await.unwrap();
         let stats = store.load_skill_outcome_stats().await.unwrap();
@@ -3658,8 +3660,10 @@ mod self_learning {
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
 
-        let collected = outputs.lock().unwrap();
-        assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+        {
+            let collected = outputs.lock().unwrap();
+            assert!(collected.iter().any(|o| o.contains("Feedback recorded")));
+        }
 
         let store = SqliteStore::new(db_str).await.unwrap();
         let versions = store.load_skill_versions("test-skill").await.unwrap();

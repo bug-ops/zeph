@@ -1316,7 +1316,8 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[test]
     fn echo_task_processor_construction() {
-        let _processor = EchoTaskProcessor;
+        let processor = EchoTaskProcessor;
+        assert!(std::mem::size_of_val(&processor) == 0);
     }
 
     #[cfg(feature = "a2a")]
