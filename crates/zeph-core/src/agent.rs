@@ -18,8 +18,9 @@ use crate::channel::Channel;
 #[cfg(feature = "self-learning")]
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
-use crate::context::build_system_prompt;
+use crate::context::{ContextBudget, build_system_prompt};
 use crate::redact::redact_secrets;
+use zeph_memory::semantic::estimate_tokens;
 
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
@@ -45,6 +46,9 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     security: SecurityConfig,
     timeouts: TimeoutConfig,
+    context_budget: Option<ContextBudget>,
+    compaction_threshold: f32,
+    compaction_preserve_tail: usize,
     #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
     #[cfg(feature = "self-learning")]
@@ -104,6 +108,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             metrics_tx: None,
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
+            context_budget: None,
+            compaction_threshold: 0.75,
+            compaction_preserve_tail: 4,
             #[cfg(feature = "self-learning")]
             learning_config: None,
             #[cfg(feature = "self-learning")]
@@ -199,6 +206,22 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[must_use]
+    pub fn with_context_budget(
+        mut self,
+        budget_tokens: usize,
+        reserve_ratio: f32,
+        compaction_threshold: f32,
+        compaction_preserve_tail: usize,
+    ) -> Self {
+        if budget_tokens > 0 {
+            self.context_budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
+        }
+        self.compaction_threshold = compaction_threshold;
+        self.compaction_preserve_tail = compaction_preserve_tail;
+        self
+    }
+
+    #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
         let total_skills = self.registry.all_meta().len();
@@ -221,6 +244,92 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if let Some(ref tx) = self.metrics_tx {
             tx.send_modify(f);
         }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn should_compact(&self) -> bool {
+        let Some(ref budget) = self.context_budget else {
+            return false;
+        };
+        let total_tokens: usize = self
+            .messages
+            .iter()
+            .map(|m| estimate_tokens(&m.content))
+            .sum();
+        total_tokens as f32 > budget.max_tokens() as f32 * self.compaction_threshold
+    }
+
+    async fn compact_context(&mut self) -> anyhow::Result<()> {
+        let preserve_tail = self.compaction_preserve_tail;
+
+        if self.messages.len() <= preserve_tail + 1 {
+            return Ok(());
+        }
+
+        let compact_end = self.messages.len() - preserve_tail;
+        let to_compact = &self.messages[1..compact_end];
+        if to_compact.is_empty() {
+            return Ok(());
+        }
+
+        let history_text: String = to_compact
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => "system",
+                };
+                format!("[{role}]: {}", m.content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let compaction_prompt = format!(
+            "Summarize this conversation excerpt into a structured continuation note. \
+             Include:\n\
+             1. Task overview\n\
+             2. Current state\n\
+             3. Key discoveries (file paths, errors, decisions)\n\
+             4. Next steps\n\
+             5. Critical context (variable names, config values)\n\
+             \n\
+             Keep it concise but preserve all actionable details.\n\
+             \n\
+             Conversation:\n{history_text}"
+        );
+
+        let summary = self
+            .provider
+            .chat(&[Message {
+                role: Role::User,
+                content: compaction_prompt,
+            }])
+            .await?;
+
+        let compacted_count = to_compact.len();
+        self.messages.drain(1..compact_end);
+        self.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: format!(
+                    "[conversation summary — {compacted_count} messages compacted]\n{summary}"
+                ),
+            },
+        );
+
+        tracing::info!(
+            compacted_count,
+            summary_tokens = estimate_tokens(&summary),
+            "compacted context"
+        );
+
+        self.update_metrics(|m| {
+            m.context_compactions += 1;
+        });
+
+        Ok(())
     }
 
     #[must_use]
@@ -320,6 +429,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             }
 
             self.rebuild_system_prompt(&incoming.text).await;
+
+            if self.should_compact()
+                && let Err(e) = self.compact_context().await
+            {
+                tracing::warn!("context compaction failed: {e:#}");
+            }
 
             #[cfg(feature = "self-learning")]
             {
@@ -2491,5 +2606,165 @@ mod agent_tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
         agent.update_metrics(|m| m.api_calls = 999);
+    }
+
+    #[test]
+    fn should_compact_disabled_without_budget() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        for i in 0..20 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} with some content to add tokens"),
+            });
+        }
+        assert!(!agent.should_compact());
+    }
+
+    #[test]
+    fn should_compact_below_threshold() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4);
+        assert!(!agent.should_compact());
+    }
+
+    #[test]
+    fn should_compact_above_threshold() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 4);
+
+        for i in 0..20 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message number {i} with enough content to push over budget"),
+            });
+        }
+        assert!(agent.should_compact());
+    }
+
+    #[tokio::test]
+    async fn compact_context_preserves_system_and_tail() {
+        let provider = MockProvider::new(vec!["compacted summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2);
+
+        let system_content = agent.messages[0].content.clone();
+
+        for i in 0..8 {
+            agent.messages.push(Message {
+                role: if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: format!("message {i}"),
+            });
+        }
+
+        agent.compact_context().await.unwrap();
+
+        assert_eq!(agent.messages[0].role, Role::System);
+        assert_eq!(agent.messages[0].content, system_content);
+
+        assert_eq!(agent.messages[1].role, Role::System);
+        assert!(agent.messages[1].content.contains("[conversation summary"));
+
+        let tail = &agent.messages[2..];
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].content, "message 6");
+        assert_eq!(tail[1].content, "message 7");
+    }
+
+    #[tokio::test]
+    async fn compact_context_too_few_messages() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 4);
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "msg1".to_string(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "msg2".to_string(),
+        });
+
+        let len_before = agent.messages.len();
+        agent.compact_context().await.unwrap();
+        assert_eq!(agent.messages.len(), len_before);
+    }
+
+    #[test]
+    fn with_context_budget_zero_disables() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(0, 0.20, 0.75, 4);
+        assert!(agent.context_budget.is_none());
+    }
+
+    #[test]
+    fn with_context_budget_nonzero_enables() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(4096, 0.20, 0.80, 6);
+
+        assert!(agent.context_budget.is_some());
+        assert_eq!(agent.context_budget.as_ref().unwrap().max_tokens(), 4096);
+        assert!((agent.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(agent.compaction_preserve_tail, 6);
+    }
+
+    #[tokio::test]
+    async fn compact_context_increments_metric() {
+        let provider = MockProvider::new(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2)
+            .with_metrics(tx);
+
+        for i in 0..8 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+            });
+        }
+
+        agent.compact_context().await.unwrap();
+        assert_eq!(rx.borrow().context_compactions, 1);
     }
 }

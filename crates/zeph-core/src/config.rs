@@ -261,6 +261,10 @@ pub struct MemoryConfig {
     pub summarization_threshold: usize,
     #[serde(default = "default_context_budget_tokens")]
     pub context_budget_tokens: usize,
+    #[serde(default = "default_compaction_threshold")]
+    pub compaction_threshold: f32,
+    #[serde(default = "default_compaction_preserve_tail")]
+    pub compaction_preserve_tail: usize,
 }
 
 fn default_qdrant_url() -> String {
@@ -273,6 +277,14 @@ fn default_summarization_threshold() -> usize {
 
 fn default_context_budget_tokens() -> usize {
     0
+}
+
+fn default_compaction_threshold() -> f32 {
+    0.75
+}
+
+fn default_compaction_preserve_tail() -> usize {
+    4
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +551,7 @@ impl Config {
         self.apply_env_overrides_security();
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply_env_overrides_core(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             self.llm.provider = v;
@@ -577,6 +590,16 @@ impl Config {
             && let Ok(tokens) = v.parse::<usize>()
         {
             self.memory.context_budget_tokens = tokens;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_THRESHOLD")
+            && let Ok(threshold) = v.parse::<f32>()
+        {
+            self.memory.compaction_threshold = threshold;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL")
+            && let Ok(tail) = v.parse::<usize>()
+        {
+            self.memory.compaction_preserve_tail = tail;
         }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
@@ -748,6 +771,8 @@ impl Config {
                 semantic: SemanticConfig::default(),
                 summarization_threshold: default_summarization_threshold(),
                 context_budget_tokens: default_context_budget_tokens(),
+                compaction_threshold: default_compaction_threshold(),
+                compaction_preserve_tail: default_compaction_preserve_tail(),
             },
             telegram: None,
             tools: ToolsConfig::default(),
@@ -769,7 +794,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 37] = [
+    const ENV_KEYS: [&str; 39] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -780,6 +805,8 @@ mod tests {
         "ZEPH_QDRANT_URL",
         "ZEPH_MEMORY_SUMMARIZATION_THRESHOLD",
         "ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS",
+        "ZEPH_MEMORY_COMPACTION_THRESHOLD",
+        "ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL",
         "ZEPH_MEMORY_SEMANTIC_ENABLED",
         "ZEPH_MEMORY_RECALL_LIMIT",
         "ZEPH_SKILLS_MAX_ACTIVE",
@@ -2499,5 +2526,65 @@ history_limit = 50
         let config = Config::load(&path).unwrap();
         let openai = config.llm.openai.unwrap();
         assert!(openai.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn compaction_config_defaults() {
+        let config = Config::default();
+        assert!((config.memory.compaction_threshold - 0.75).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 4);
+    }
+
+    #[test]
+    fn compaction_config_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compact.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+compaction_threshold = 0.90
+compaction_preserve_tail = 6
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!((config.memory.compaction_threshold - 0.90).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 6);
+    }
+
+    #[test]
+    #[serial]
+    fn compaction_env_overrides() {
+        clear_env();
+        let mut config = Config::default();
+        assert!((config.memory.compaction_threshold - 0.75).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 4);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_THRESHOLD", "0.50") };
+        unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL", "8") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_COMPACTION_THRESHOLD") };
+        unsafe { std::env::remove_var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL") };
+
+        assert!((config.memory.compaction_threshold - 0.50).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 8);
     }
 }

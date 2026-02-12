@@ -19,6 +19,7 @@ pub struct MetricsSnapshot {
     pub provider_name: String,
     pub model_name: String,
     pub summaries_count: u64,
+    pub context_compactions: u64,
 }
 
 pub struct MetricsCollector {

@@ -249,6 +249,12 @@ async fn main() -> anyhow::Result<()> {
         config.memory.semantic.recall_limit,
         config.memory.summarization_threshold,
     )
+    .with_context_budget(
+        config.memory.context_budget_tokens,
+        0.20,
+        config.memory.compaction_threshold,
+        config.memory.compaction_preserve_tail,
+    )
     .with_shutdown(shutdown_rx)
     .with_security(config.security, config.timeouts);
 

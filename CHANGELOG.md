@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Runtime context compaction for long sessions: automatic LLM-based summarization of middle messages when context usage exceeds configurable threshold (default 75%)
+- `with_context_budget()` builder method on Agent for wiring context budget and compaction settings
+- Config fields: `compaction_threshold` (f32), `compaction_preserve_tail` (usize) with env var overrides
+- `context_compactions` counter in MetricsSnapshot for observability
+
 ## [0.9.1] - 2026-02-12
 
 ### Added

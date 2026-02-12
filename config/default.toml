@@ -92,6 +92,10 @@ qdrant_url = "http://localhost:6334"
 summarization_threshold = 100
 # Total token budget for context window (0 = unlimited)
 context_budget_tokens = 0
+# Context compaction threshold (0.0-1.0): compact when usage exceeds this fraction
+compaction_threshold = 0.75
+# Number of recent messages to preserve during compaction
+compaction_preserve_tail = 4
 
 [memory.semantic]
 # Enable semantic memory with vector search

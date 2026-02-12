@@ -38,6 +38,11 @@ impl ContextBudget {
     }
 
     #[must_use]
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    #[must_use]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -101,6 +106,12 @@ mod tests {
         assert_eq!(estimate_tokens("Hello world"), 2);
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("test"), 1);
+    }
+
+    #[test]
+    fn context_budget_max_tokens_accessor() {
+        let budget = ContextBudget::new(1000, 0.2);
+        assert_eq!(budget.max_tokens(), 1000);
     }
 
     #[test]
