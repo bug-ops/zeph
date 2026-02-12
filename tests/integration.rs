@@ -1160,8 +1160,8 @@ async fn agent_provider_error_handling() {
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
-    let has_error = collected.iter().any(|o| o.contains("error occurred"));
-    assert!(has_error);
+    let has_error = collected.iter().any(|o| o.contains("Error:"));
+    assert!(has_error, "expected error message, got: {collected:?}");
 }
 
 // -- streaming response accumulates chunks --
