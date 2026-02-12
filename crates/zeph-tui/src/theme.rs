@@ -11,6 +11,7 @@ pub struct Theme {
     pub panel_title: Style,
     pub highlight: Style,
     pub error: Style,
+    pub thinking_message: Style,
     pub streaming_cursor: Style,
 }
 
@@ -31,6 +32,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             highlight: Style::default().fg(Color::Green),
             error: Style::default().fg(Color::Red),
+            thinking_message: Style::default().fg(Color::DarkGray),
             streaming_cursor: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::SLOW_BLINK),

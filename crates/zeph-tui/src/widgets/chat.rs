@@ -17,7 +17,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     for msg in app.messages() {
-        let (prefix, style) = match msg.role {
+        let (prefix, base_style) = match msg.role {
             MessageRole::User => ("[user] ", theme.user_message),
             MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
             MessageRole::System => ("[system] ", theme.system_message),
@@ -25,18 +25,40 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
         let indent = " ".repeat(prefix.len());
         let content_lines: Vec<&str> = msg.content.split('\n').collect();
+        let is_assistant = msg.role == MessageRole::Assistant;
+        let mut in_thinking = false;
 
-        for (i, line) in content_lines.iter().enumerate() {
+        for (i, raw_line) in content_lines.iter().enumerate() {
+            let (display, style) = if is_assistant {
+                let mut display = (*raw_line).to_string();
+                if display.contains("<think>") {
+                    in_thinking = true;
+                    display = display.replace("<think>", "");
+                }
+                if display.contains("</think>") {
+                    display = display.replace("</think>", "");
+                    in_thinking = false;
+                }
+                let style = if in_thinking {
+                    theme.thinking_message
+                } else {
+                    base_style
+                };
+                (display, style)
+            } else {
+                ((*raw_line).to_string(), base_style)
+            };
+
             let text = if i == 0 {
                 if msg.streaming && content_lines.len() == 1 {
-                    format!("{prefix}{line}\u{258c}")
+                    format!("{prefix}{display}\u{258c}")
                 } else {
-                    format!("{prefix}{line}")
+                    format!("{prefix}{display}")
                 }
             } else if msg.streaming && i == content_lines.len() - 1 {
-                format!("{indent}{line}\u{258c}")
+                format!("{indent}{display}\u{258c}")
             } else {
-                format!("{indent}{line}")
+                format!("{indent}{display}")
             };
             lines.push(Line::from(Span::styled(text, style)));
         }
