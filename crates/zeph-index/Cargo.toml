@@ -1,0 +1,47 @@
+[package]
+name = "zeph-index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["lang-rust", "lang-python", "lang-js", "lang-go", "lang-config"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-python = ["dep:tree-sitter-python"]
+lang-js = ["dep:tree-sitter-javascript", "dep:tree-sitter-typescript"]
+lang-go = ["dep:tree-sitter-go"]
+lang-config = ["dep:tree-sitter-bash", "dep:tree-sitter-toml-ng", "dep:tree-sitter-json", "dep:tree-sitter-md"]
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+ignore.workspace = true
+qdrant-client = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+tokio = { workspace = true, features = ["fs", "rt"] }
+tracing.workspace = true
+tree-sitter.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zeph-llm.workspace = true
+zeph-memory.workspace = true
+
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

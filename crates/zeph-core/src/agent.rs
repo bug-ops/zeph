@@ -25,6 +25,7 @@ use zeph_memory::semantic::estimate_tokens;
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
 const RECALL_PREFIX: &str = "[semantic recall]\n";
+const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 
 pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
     provider: P,
@@ -404,6 +405,28 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         Ok(())
+    }
+
+    /// Inject pre-formatted code context into the message list.
+    /// The caller is responsible for retrieving and formatting the text.
+    pub fn inject_code_context(&mut self, text: &str) {
+        self.remove_code_context_messages();
+        if text.is_empty() || self.messages.len() <= 1 {
+            return;
+        }
+        let content = format!("{CODE_CONTEXT_PREFIX}{text}");
+        self.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content,
+            },
+        );
+    }
+
+    fn remove_code_context_messages(&mut self) {
+        self.messages
+            .retain(|m| !(m.role == Role::System && m.content.starts_with(CODE_CONTEXT_PREFIX)));
     }
 
     fn trim_messages_to_budget(&mut self, token_budget: usize) {

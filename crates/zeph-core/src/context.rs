@@ -92,6 +92,7 @@ pub struct BudgetAllocation {
     pub skills: usize,
     pub summaries: usize,
     pub semantic_recall: usize,
+    pub code_context: usize,
     pub recent_history: usize,
     pub response_reserve: usize,
 }
@@ -129,6 +130,7 @@ impl ContextBudget {
                 skills: 0,
                 summaries: 0,
                 semantic_recall: 0,
+                code_context: 0,
                 recent_history: 0,
                 response_reserve: 0,
             };
@@ -142,15 +144,17 @@ impl ContextBudget {
 
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
-        let summaries = (available as f32 * 0.15) as usize;
-        let semantic_recall = (available as f32 * 0.25) as usize;
-        let recent_history = (available as f32 * 0.60) as usize;
+        let summaries = (available as f32 * 0.10) as usize;
+        let semantic_recall = (available as f32 * 0.10) as usize;
+        let code_context = (available as f32 * 0.30) as usize;
+        let recent_history = (available as f32 * 0.50) as usize;
 
         BudgetAllocation {
             system_prompt: system_prompt_tokens,
             skills: skills_tokens,
             summaries,
             semantic_recall,
+            code_context,
             recent_history,
             response_reserve,
         }
@@ -221,6 +225,7 @@ mod tests {
         assert_eq!(alloc.skills, 0);
         assert_eq!(alloc.summaries, 0);
         assert_eq!(alloc.semantic_recall, 0);
+        assert_eq!(alloc.code_context, 0);
         assert_eq!(alloc.recent_history, 0);
         assert_eq!(alloc.response_reserve, 0);
     }
