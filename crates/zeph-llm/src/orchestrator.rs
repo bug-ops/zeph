@@ -330,11 +330,13 @@ impl ModelOrchestrator {
             .or_else(|| self.routes.get(&TaskType::General))
             .context("no route configured")?;
 
+        let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
         for name in chain {
             let Some(provider) = self.providers.get(name) else {
                 continue;
             };
+            tried.insert(name);
             match provider.chat(messages).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
@@ -342,6 +344,20 @@ impl ModelOrchestrator {
                     tracing::warn!("provider {name} failed: {e:#}, trying next");
                     last_error = Some(e);
                 }
+            }
+        }
+
+        if !tried.contains(self.default_provider.as_str())
+            && let Some(provider) = self.providers.get(&self.default_provider)
+        {
+            self.emit_status(format!(
+                "Falling back to default provider {}",
+                self.default_provider
+            ));
+            tracing::info!("falling back to default provider {}", self.default_provider);
+            match provider.chat(messages).await {
+                Ok(response) => return Ok(response),
+                Err(e) => last_error = Some(e),
             }
         }
 
@@ -356,11 +372,13 @@ impl ModelOrchestrator {
             .or_else(|| self.routes.get(&TaskType::General))
             .context("no route configured")?;
 
+        let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
         for name in chain {
             let Some(provider) = self.providers.get(name) else {
                 continue;
             };
+            tried.insert(name);
             match provider.chat_stream(messages).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
@@ -368,6 +386,23 @@ impl ModelOrchestrator {
                     tracing::warn!("provider {name} stream failed: {e:#}, trying next");
                     last_error = Some(e);
                 }
+            }
+        }
+
+        if !tried.contains(self.default_provider.as_str())
+            && let Some(provider) = self.providers.get(&self.default_provider)
+        {
+            self.emit_status(format!(
+                "Falling back to default provider {}",
+                self.default_provider
+            ));
+            tracing::info!(
+                "falling back to default provider {} for stream",
+                self.default_provider
+            );
+            match provider.chat_stream(messages).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => last_error = Some(e),
             }
         }
 
