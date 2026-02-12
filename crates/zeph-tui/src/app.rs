@@ -206,6 +206,14 @@ impl App {
                 }
             }
             AgentEvent::Typing => {}
+            AgentEvent::Status(text) => {
+                self.messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: text,
+                    streaming: false,
+                });
+                self.scroll_offset = 0;
+            }
             AgentEvent::ConfirmRequest {
                 prompt,
                 response_tx,

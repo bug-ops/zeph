@@ -18,6 +18,7 @@ pub enum AgentEvent {
     FullMessage(String),
     Flush,
     Typing,
+    Status(String),
     ConfirmRequest {
         prompt: String,
         response_tx: oneshot::Sender<bool>,

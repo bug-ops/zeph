@@ -43,6 +43,15 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send a status event (retry, fallback, etc.) to the user. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_status(&mut self, _text: &str) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
     /// Request user confirmation for a destructive action. Returns `true` if confirmed.
     /// Default: auto-confirm (for headless/test scenarios).
     ///
@@ -127,6 +136,11 @@ impl Channel for CliChannel {
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
         println!();
+        Ok(())
+    }
+
+    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
+        eprintln!("[status] {text}");
         Ok(())
     }
 

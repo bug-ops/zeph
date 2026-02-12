@@ -6,7 +6,7 @@ use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 #[cfg(feature = "orchestrator")]
 use crate::orchestrator::ModelOrchestrator;
-use crate::provider::{ChatStream, LlmProvider, Message};
+use crate::provider::{ChatStream, LlmProvider, Message, StatusTx};
 
 #[derive(Debug, Clone)]
 pub enum AnyProvider {
@@ -18,6 +18,27 @@ pub enum AnyProvider {
     Candle(CandleProvider),
     #[cfg(feature = "orchestrator")]
     Orchestrator(Box<ModelOrchestrator>),
+}
+
+impl AnyProvider {
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        match self {
+            Self::Claude(p) => {
+                p.status_tx = Some(tx);
+            }
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => {
+                p.status_tx = Some(tx);
+            }
+            #[cfg(feature = "orchestrator")]
+            Self::Orchestrator(p) => {
+                p.set_status_tx(tx);
+            }
+            Self::Ollama(_) => {}
+            #[cfg(feature = "candle")]
+            Self::Candle(_) => {}
+        }
+    }
 }
 
 impl LlmProvider for AnyProvider {

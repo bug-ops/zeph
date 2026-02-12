@@ -63,6 +63,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     #[cfg(feature = "mcp")]
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    status_rx: Option<mpsc::UnboundedReceiver<String>>,
     summarize_tool_output_enabled: bool,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
@@ -128,6 +129,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_registry: None,
             #[cfg(feature = "mcp")]
             mcp_manager: None,
+            status_rx: None,
             summarize_tool_output_enabled: false,
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
@@ -242,6 +244,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[must_use]
+    pub fn with_status_rx(mut self, rx: mpsc::UnboundedReceiver<String>) -> Self {
+        self.status_rx = Some(rx);
+        self
+    }
+
+    #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
         let total_skills = self.registry.all_meta().len();
@@ -263,6 +271,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics_tx {
             tx.send_modify(f);
+        }
+    }
+
+    async fn drain_status_events(&mut self) {
+        let Some(ref mut rx) = self.status_rx else {
+            return;
+        };
+        while let Ok(msg) = rx.try_recv() {
+            if let Err(e) = self.channel.send_status(&msg).await {
+                tracing::warn!("failed to send status event: {e:#}");
+            }
         }
     }
 
@@ -604,9 +623,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
             if let Err(e) = self.process_response().await {
                 tracing::error!("Response processing failed: {e:#}");
-                self.channel
-                    .send("An error occurred while processing your request. Please try again.")
-                    .await?;
+                self.drain_status_events().await;
+                let user_msg = format!("Error: {e:#}");
+                self.channel.send(&user_msg).await?;
                 self.messages.pop();
             }
         }
@@ -1257,8 +1276,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send_typing().await?;
 
             let Some(response) = self.call_llm_with_timeout().await? else {
+                self.drain_status_events().await;
                 return Ok(());
             };
+            self.drain_status_events().await;
 
             if response.trim().is_empty() {
                 tracing::warn!("received empty response from LLM, skipping");

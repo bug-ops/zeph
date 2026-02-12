@@ -6,7 +6,7 @@ use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, Role, StatusTx};
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -16,6 +16,7 @@ pub struct OpenAiProvider {
     max_tokens: u32,
     embedding_model: Option<String>,
     reasoning_effort: Option<String>,
+    pub(crate) status_tx: Option<StatusTx>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -28,6 +29,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("max_tokens", &self.max_tokens)
             .field("embedding_model", &self.embedding_model)
             .field("reasoning_effort", &self.reasoning_effort)
+            .field("status_tx", &self.status_tx.is_some())
             .finish()
     }
 }
@@ -42,6 +44,7 @@ impl Clone for OpenAiProvider {
             max_tokens: self.max_tokens,
             embedding_model: self.embedding_model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
+            status_tx: self.status_tx.clone(),
         }
     }
 }
@@ -67,6 +70,19 @@ impl OpenAiProvider {
             max_tokens,
             embedding_model,
             reasoning_effort,
+            status_tx: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+        self.status_tx = Some(tx);
+        self
+    }
+
+    fn emit_status(&self, msg: impl Into<String>) {
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send(msg.into());
         }
     }
 
@@ -168,6 +184,7 @@ impl LlmProvider for OpenAiProvider {
         match self.send_request(messages).await {
             Ok(text) => Ok(text),
             Err(e) if e.to_string().contains("rate_limited") => {
+                self.emit_status("OpenAI rate limited, retrying in 1s");
                 tracing::warn!("OpenAI rate limited, retrying in 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 self.send_request(messages).await
@@ -180,6 +197,7 @@ impl LlmProvider for OpenAiProvider {
         let response = match self.send_stream_request(messages).await {
             Ok(resp) => resp,
             Err(e) if e.to_string().contains("rate_limited") => {
+                self.emit_status("OpenAI rate limited, retrying in 1s");
                 tracing::warn!("OpenAI rate limited, retrying in 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 self.send_stream_request(messages).await?

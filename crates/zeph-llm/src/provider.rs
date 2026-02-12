@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Boxed stream of string chunks from an LLM provider.
 pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>;
 
+/// Sender for emitting status events (retries, fallbacks) to the UI.
+pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

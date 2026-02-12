@@ -82,6 +82,15 @@ impl Channel for AnyChannel {
         }
     }
 
+    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Cli(c) => c.send_status(text).await,
+            Self::Telegram(c) => c.send_status(text).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send_status(text).await,
+        }
+    }
+
     async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
         match self {
             Self::Cli(c) => c.confirm(prompt).await,
@@ -137,8 +146,11 @@ async fn main() -> anyhow::Result<()> {
     let mut config = Config::load(&config_path)?;
     config.resolve_secrets(vault.as_ref()).await?;
 
-    let provider = create_provider(&config)?;
+    let mut provider = create_provider(&config)?;
     let embed_model = effective_embedding_model(&config);
+
+    let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    provider.set_status_tx(status_tx);
 
     health_check(&provider).await;
 
@@ -263,7 +275,8 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_shutdown(shutdown_rx)
     .with_security(config.security, config.timeouts)
-    .with_tool_summarization(config.tools.summarize_output);
+    .with_tool_summarization(config.tools.summarize_output)
+    .with_status_rx(status_rx);
 
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);

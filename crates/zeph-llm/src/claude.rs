@@ -6,16 +6,19 @@ use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, Role, StatusTx};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const MAX_RETRIES: u32 = 3;
+const BASE_BACKOFF_SECS: u64 = 1;
 
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
     max_tokens: u32,
+    pub(crate) status_tx: Option<StatusTx>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -25,6 +28,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("status_tx", &self.status_tx.is_some())
             .finish()
     }
 }
@@ -36,6 +40,7 @@ impl Clone for ClaudeProvider {
             api_key: self.api_key.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            status_tx: self.status_tx.clone(),
         }
     }
 }
@@ -48,119 +53,149 @@ impl ClaudeProvider {
             api_key,
             model,
             max_tokens,
+            status_tx: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+        self.status_tx = Some(tx);
+        self
+    }
+
+    fn emit_status(&self, msg: impl Into<String>) {
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send(msg.into());
+        }
+    }
+
+    fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
+        let (system, chat_messages) = split_messages(messages);
+
+        let body = RequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system.as_deref(),
+            messages: &chat_messages,
+            stream,
+        };
+
+        self.client
+            .post(API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&body)
     }
 
     async fn send_request(&self, messages: &[Message]) -> anyhow::Result<String> {
-        let (system, chat_messages) = split_messages(messages);
+        for attempt in 0..=MAX_RETRIES {
+            let response = self
+                .build_request(messages, false)
+                .send()
+                .await
+                .context("failed to send request to Claude API")?;
 
-        let body = RequestBody {
-            model: &self.model,
-            max_tokens: self.max_tokens,
-            system: system.as_deref(),
-            messages: &chat_messages,
-            stream: false,
-        };
+            let status = response.status();
 
-        let response = self
-            .client
-            .post(API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send request to Claude API")?;
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                if attempt == MAX_RETRIES {
+                    bail!("rate_limited");
+                }
+                let delay = retry_delay(&response, attempt);
+                self.emit_status(format!(
+                    "Claude rate limited, retrying in {}s ({}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
+                tracing::warn!(
+                    "Claude rate limited, retrying in {}s (attempt {}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
 
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read response body")?;
-
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(anyhow::anyhow!("rate_limited"));
-        }
-
-        if !status.is_success() {
-            tracing::error!("Claude API error {status}: {text}");
-            bail!("Claude API request failed (status {status})");
-        }
-
-        let resp: ApiResponse =
-            serde_json::from_str(&text).context("failed to parse Claude API response")?;
-
-        resp.content
-            .first()
-            .map(|c| c.text.clone())
-            .context("empty response from Claude API")
-    }
-
-    async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
-        let (system, chat_messages) = split_messages(messages);
-
-        let body = RequestBody {
-            model: &self.model,
-            max_tokens: self.max_tokens,
-            system: system.as_deref(),
-            messages: &chat_messages,
-            stream: true,
-        };
-
-        let response = self
-            .client
-            .post(API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send streaming request to Claude API")?;
-
-        let status = response.status();
-
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            bail!("rate_limited");
-        }
-
-        if !status.is_success() {
             let text = response
                 .text()
                 .await
-                .context("failed to read error response body")?;
-            tracing::error!("Claude API streaming request error {status}: {text}");
-            bail!("Claude API streaming request failed (status {status})");
+                .context("failed to read response body")?;
+
+            if !status.is_success() {
+                tracing::error!("Claude API error {status}: {text}");
+                bail!("Claude API request failed (status {status})");
+            }
+
+            let resp: ApiResponse =
+                serde_json::from_str(&text).context("failed to parse Claude API response")?;
+
+            return resp
+                .content
+                .first()
+                .map(|c| c.text.clone())
+                .context("empty response from Claude API");
         }
 
-        Ok(response)
+        bail!("rate_limited")
+    }
+
+    async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
+        for attempt in 0..=MAX_RETRIES {
+            let response = self
+                .build_request(messages, true)
+                .send()
+                .await
+                .context("failed to send streaming request to Claude API")?;
+
+            let status = response.status();
+
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                if attempt == MAX_RETRIES {
+                    bail!("rate_limited");
+                }
+                let delay = retry_delay(&response, attempt);
+                self.emit_status(format!(
+                    "Claude rate limited, retrying in {}s ({}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
+                tracing::warn!(
+                    "Claude rate limited, retrying in {}s (attempt {}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            if !status.is_success() {
+                let text = response
+                    .text()
+                    .await
+                    .context("failed to read error response body")?;
+                tracing::error!("Claude API streaming request error {status}: {text}");
+                bail!("Claude API streaming request failed (status {status})");
+            }
+
+            return Ok(response);
+        }
+
+        bail!("rate_limited")
     }
 }
 
 impl LlmProvider for ClaudeProvider {
     async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
-        match self.send_request(messages).await {
-            Ok(text) => Ok(text),
-            Err(e) if e.to_string().contains("rate_limited") => {
-                tracing::warn!("Claude rate limited, retrying in 1s");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                self.send_request(messages).await
-            }
-            Err(e) => Err(e),
-        }
+        self.send_request(messages).await
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
-        let response = match self.send_stream_request(messages).await {
-            Ok(resp) => resp,
-            Err(e) if e.to_string().contains("rate_limited") => {
-                tracing::warn!("Claude rate limited, retrying in 1s");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                self.send_stream_request(messages).await?
-            }
-            Err(e) => return Err(e),
-        };
+        let response = self.send_stream_request(messages).await?;
 
         let event_stream = response.bytes_stream().eventsource();
 
@@ -189,6 +224,16 @@ impl LlmProvider for ClaudeProvider {
     fn name(&self) -> &'static str {
         "claude"
     }
+}
+
+fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
+    if let Some(val) = response.headers().get("retry-after")
+        && let Ok(s) = val.to_str()
+        && let Ok(secs) = s.parse::<u64>()
+    {
+        return Duration::from_secs(secs);
+    }
+    Duration::from_secs(BASE_BACKOFF_SECS << attempt)
 }
 
 fn parse_sse_event(data: &str, event_type: &str) -> Option<anyhow::Result<String>> {
@@ -850,5 +895,24 @@ mod tests {
 
         assert!(chat_response.contains('4'));
         assert!(stream_response.contains('4'));
+    }
+
+    #[test]
+    fn backoff_constants() {
+        assert_eq!(MAX_RETRIES, 3);
+        assert_eq!(BASE_BACKOFF_SECS, 1);
+        // exponential: 1s, 2s, 4s
+        assert_eq!(
+            Duration::from_secs(BASE_BACKOFF_SECS << 0),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            Duration::from_secs(BASE_BACKOFF_SECS << 1),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            Duration::from_secs(BASE_BACKOFF_SECS << 2),
+            Duration::from_secs(4)
+        );
     }
 }

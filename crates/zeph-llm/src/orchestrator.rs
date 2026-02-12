@@ -8,7 +8,7 @@ use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
-use crate::provider::{ChatStream, LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, Role, StatusTx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskType {
@@ -163,6 +163,23 @@ pub enum SubProvider {
     Candle(CandleProvider),
 }
 
+impl SubProvider {
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        match self {
+            Self::Claude(p) => {
+                p.status_tx = Some(tx);
+            }
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => {
+                p.status_tx = Some(tx);
+            }
+            Self::Ollama(_) => {}
+            #[cfg(feature = "candle")]
+            Self::Candle(_) => {}
+        }
+    }
+}
+
 impl LlmProvider for SubProvider {
     async fn chat(&self, messages: &[Message]) -> Result<String> {
         match self {
@@ -237,6 +254,7 @@ pub struct ModelOrchestrator {
     providers: HashMap<String, SubProvider>,
     default_provider: String,
     embed_provider: String,
+    status_tx: Option<StatusTx>,
 }
 
 impl ModelOrchestrator {
@@ -264,7 +282,21 @@ impl ModelOrchestrator {
             providers,
             default_provider,
             embed_provider,
+            status_tx: None,
         })
+    }
+
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        for provider in self.providers.values_mut() {
+            provider.set_status_tx(tx.clone());
+        }
+        self.status_tx = Some(tx);
+    }
+
+    fn emit_status(&self, msg: impl Into<String>) {
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send(msg.into());
+        }
     }
 
     #[must_use]
@@ -306,6 +338,7 @@ impl ModelOrchestrator {
             match provider.chat(messages).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
+                    self.emit_status(format!("Provider {name} failed, trying next..."));
                     tracing::warn!("provider {name} failed: {e:#}, trying next");
                     last_error = Some(e);
                 }
@@ -331,6 +364,7 @@ impl ModelOrchestrator {
             match provider.chat_stream(messages).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
+                    self.emit_status(format!("Provider {name} failed, trying next..."));
                     tracing::warn!("provider {name} stream failed: {e:#}, trying next");
                     last_error = Some(e);
                 }

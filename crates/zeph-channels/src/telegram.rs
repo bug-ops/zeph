@@ -312,6 +312,13 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
+        if self.chat_id.is_some() {
+            self.send(&format!("[status] {text}")).await?;
+        }
+        Ok(())
+    }
+
     async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
         self.send(&format!("{prompt}\nReply 'yes' to confirm."))
             .await?;
