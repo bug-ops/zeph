@@ -121,13 +121,17 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
 }
 
 fn render_thinking(app: &mut App, frame: &mut Frame, area: Rect, theme: &Theme) {
-    if !app.thinking() || area.height <= 3 {
+    let Some(label) = app.status_label() else {
+        return;
+    };
+    if area.height <= 3 {
         return;
     }
+    let label = format!(" {label}");
     let y = area.y + area.height.saturating_sub(2);
     let throbber_area = Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1);
     let throbber = Throbber::default()
-        .label(" thinking...")
+        .label(label)
         .style(theme.assistant_message)
         .throbber_style(theme.highlight)
         .throbber_set(BRAILLE_SIX)

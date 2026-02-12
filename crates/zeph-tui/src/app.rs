@@ -55,7 +55,7 @@ pub struct App {
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     tool_expanded: bool,
-    thinking: bool,
+    status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
     pub should_quit: bool,
@@ -81,7 +81,7 @@ impl App {
             metrics_rx: None,
             active_panel: Panel::Chat,
             tool_expanded: false,
-            thinking: false,
+            status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
             should_quit: false,
@@ -164,8 +164,8 @@ impl App {
     }
 
     #[must_use]
-    pub fn thinking(&self) -> bool {
-        self.thinking
+    pub fn status_label(&self) -> Option<&str> {
+        self.status_label.as_deref()
     }
 
     #[must_use]
@@ -215,7 +215,7 @@ impl App {
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
-                self.thinking = false;
+                self.status_label = None;
                 if let Some(last) = self.messages.last_mut()
                     && last.role == MessageRole::Assistant
                     && last.streaming
@@ -232,7 +232,7 @@ impl App {
                 self.scroll_offset = 0;
             }
             AgentEvent::FullMessage(text) => {
-                self.thinking = false;
+                self.status_label = None;
                 if !text.starts_with("[tool output]") {
                     self.messages.push(ChatMessage {
                         role: MessageRole::Assistant,
@@ -251,19 +251,14 @@ impl App {
                 }
             }
             AgentEvent::Typing => {
-                self.thinking = true;
+                self.status_label = Some("thinking...".to_owned());
             }
             AgentEvent::Status(text) => {
-                self.messages.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: text,
-                    streaming: false,
-                    tool_name: None,
-                });
+                self.status_label = Some(text);
                 self.scroll_offset = 0;
             }
             AgentEvent::ToolStart { tool_name, command } => {
-                self.thinking = false;
+                self.status_label = None;
                 self.messages.push(ChatMessage {
                     role: MessageRole::Tool,
                     content: format!("$ {command}\n"),
