@@ -7,15 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Real-time status events for provider retries and orchestrator fallbacks surfaced as `[system]` messages in all channels (CLI, TUI, Telegram)
+- Real-time status events for provider retries and orchestrator fallbacks surfaced as `[system]` messages across all channels (CLI stderr, TUI chat panel, Telegram)
 - `StatusTx` type alias in `zeph-llm` for emitting status events from providers
-- `send_status()` method on `Channel` trait with default no-op implementation
-- `with_status_rx()` builder on Agent to wire status event receiver
 - `Status` variant in TUI `AgentEvent` rendered as System-role messages (DarkGray)
 - `set_status_tx()` on `AnyProvider`, `SubProvider`, and `ModelOrchestrator` for propagating status sender through the provider hierarchy
+- Background forwarding tasks for immediate status delivery (bypasses agent loop for zero-latency display)
 
 ### Changed
-- Agent error handler now drains pending status events before displaying error, and shows specific error message instead of generic one
+- Agent error handler shows specific error context instead of generic message
 
 ## [0.9.3] - 2026-02-12
 

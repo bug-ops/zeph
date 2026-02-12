@@ -64,13 +64,6 @@ impl Channel for TuiChannel {
             .map_err(|_| anyhow::anyhow!("TUI channel closed"))
     }
 
-    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
-        self.agent_event_tx
-            .send(AgentEvent::Status(text.to_owned()))
-            .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
-    }
-
     async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx
