@@ -616,6 +616,11 @@ impl Config {
         {
             self.skills.learning.auto_activate = auto_activate;
         }
+        if let Ok(v) = std::env::var("ZEPH_TOOLS_SUMMARIZE_OUTPUT")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.tools.summarize_output = enabled;
+        }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SHELL_ALLOWED_COMMANDS") {
             self.tools.shell.allowed_commands = v
                 .split(',')
@@ -794,7 +799,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 39] = [
+    const ENV_KEYS: [&str; 40] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -834,6 +839,7 @@ mod tests {
         "ZEPH_TOOLS_AUDIT_DESTINATION",
         "ZEPH_SKILLS_LEARNING_ENABLED",
         "ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE",
+        "ZEPH_TOOLS_SUMMARIZE_OUTPUT",
     ];
 
     fn clear_env() {
@@ -2586,5 +2592,25 @@ compaction_preserve_tail = 6
 
         assert!((config.memory.compaction_threshold - 0.50).abs() < f32::EPSILON);
         assert_eq!(config.memory.compaction_preserve_tail, 8);
+    }
+
+    #[test]
+    fn tools_summarize_output_default_false() {
+        let config = Config::default();
+        assert!(!config.tools.summarize_output);
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_tools_summarize_output() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.tools.summarize_output);
+
+        unsafe { std::env::set_var("ZEPH_TOOLS_SUMMARIZE_OUTPUT", "true") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_TOOLS_SUMMARIZE_OUTPUT") };
+
+        assert!(config.tools.summarize_output);
     }
 }

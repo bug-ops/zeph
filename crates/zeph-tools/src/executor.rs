@@ -13,7 +13,7 @@ impl fmt::Display for ToolOutput {
     }
 }
 
-const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
+pub const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 
 /// Truncate tool output that exceeds `MAX_TOOL_OUTPUT_CHARS` using head+tail split.
 #[must_use]

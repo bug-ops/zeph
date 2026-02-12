@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Environment context injection: working directory, OS, git branch, and model name in system prompt via `<environment>` block
 - Extended BASE_PROMPT with structured Tool Use, Guidelines, and Security sections
 - Tool output truncation: head+tail split at 30K chars with UTF-8 safe boundaries
+- Smart tool output summarization: optional LLM-based summarization for outputs exceeding 30K chars, with fallback to truncation on failure (disabled by default via `summarize_output` config)
 - Progressive skill loading: matched skills get full body, remaining shown as description-only catalog via `<other_skills>`
 - ZEPH.md project config discovery: walk up directory tree, inject into system prompt as `<project_context>`
 

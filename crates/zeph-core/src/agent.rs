@@ -62,6 +62,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     #[cfg(feature = "mcp")]
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    summarize_tool_output_enabled: bool,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
     #[cfg(feature = "mcp")]
@@ -126,6 +127,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_registry: None,
             #[cfg(feature = "mcp")]
             mcp_manager: None,
+            summarize_tool_output_enabled: false,
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
             #[cfg(feature = "mcp")]
@@ -207,6 +209,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.security = security;
         self.timeouts = timeouts;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
+        self.summarize_tool_output_enabled = enabled;
         self
     }
 
@@ -1317,6 +1325,52 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
+    fn last_user_query(&self) -> &str {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User && !m.content.starts_with("[tool output]"))
+            .map_or("", |m| m.content.as_str())
+    }
+
+    async fn summarize_tool_output(&self, output: &str) -> String {
+        let truncated = zeph_tools::truncate_tool_output(output);
+        let query = self.last_user_query();
+        let prompt = format!(
+            "The user asked: {query}\n\n\
+             A tool produced output ({len} chars, truncated to fit).\n\
+             Summarize the key information relevant to the user's question.\n\
+             Preserve exact: file paths, error messages, numeric values, exit codes.\n\n\
+             {truncated}",
+            len = output.len(),
+        );
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: prompt,
+        }];
+
+        match self.provider.chat(&messages).await {
+            Ok(summary) => format!("[tool output summary]\n```\n{summary}\n```"),
+            Err(e) => {
+                tracing::warn!(
+                    "tool output summarization failed, falling back to truncation: {e:#}"
+                );
+                truncated
+            }
+        }
+    }
+
+    async fn maybe_summarize_tool_output(&self, output: &str) -> String {
+        if output.len() <= zeph_tools::MAX_TOOL_OUTPUT_CHARS {
+            return output.to_string();
+        }
+        if self.summarize_tool_output_enabled {
+            return self.summarize_tool_output(output).await;
+        }
+        zeph_tools::truncate_tool_output(output)
+    }
+
     /// Returns `true` if the tool loop should continue.
     async fn handle_tool_result(
         &mut self,
@@ -1347,8 +1401,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     self.record_skill_outcomes("success", None).await;
                 }
 
-                let truncated = zeph_tools::truncate_tool_output(&output.summary);
-                let formatted_output = format!("[tool output]\n```\n{truncated}\n```");
+                let processed = self.maybe_summarize_tool_output(&output.summary).await;
+                let formatted_output = format!("[tool output]\n```\n{processed}\n```");
                 let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
@@ -1374,8 +1428,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let prompt = format!("Allow command: {command}?");
                 if self.channel.confirm(&prompt).await? {
                     if let Ok(Some(out)) = self.tool_executor.execute_confirmed(response).await {
-                        let truncated = zeph_tools::truncate_tool_output(&out.summary);
-                        let formatted = format!("[tool output]\n```\n{truncated}\n```");
+                        let processed = self.maybe_summarize_tool_output(&out.summary).await;
+                        let formatted = format!("[tool output]\n```\n{processed}\n```");
                         let display = self.maybe_redact(&formatted);
                         self.channel.send(&display).await?;
                         self.messages.push(Message {
@@ -2005,6 +2059,7 @@ mod agent_tests {
         responses: Arc<Mutex<Vec<String>>>,
         streaming: bool,
         embeddings: bool,
+        fail_chat: bool,
     }
 
     impl MockProvider {
@@ -2013,6 +2068,7 @@ mod agent_tests {
                 responses: Arc::new(Mutex::new(responses)),
                 streaming: false,
                 embeddings: false,
+                fail_chat: false,
             }
         }
 
@@ -2020,10 +2076,22 @@ mod agent_tests {
             self.streaming = true;
             self
         }
+
+        fn failing() -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(Vec::new())),
+                streaming: false,
+                embeddings: false,
+                fail_chat: true,
+            }
+        }
     }
 
     impl LlmProvider for MockProvider {
         async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            if self.fail_chat {
+                anyhow::bail!("mock LLM error");
+            }
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
                 Ok("default response".to_string())
@@ -3037,5 +3105,123 @@ mod agent_tests {
 
         agent.trim_messages_to_budget(0);
         assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[test]
+    fn test_last_user_query_finds_original() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "hello".to_string(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "cmd".to_string(),
+        });
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "[tool output]\nsome output".to_string(),
+        });
+
+        assert_eq!(agent.last_user_query(), "hello");
+    }
+
+    #[test]
+    fn test_last_user_query_empty_messages() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        assert_eq!(agent.last_user_query(), "");
+    }
+
+    #[tokio::test]
+    async fn test_maybe_summarize_short_output_passthrough() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(true);
+
+        let short = "short output";
+        let result = agent.maybe_summarize_tool_output(short).await;
+        assert_eq!(result, short);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_summarize_long_output_disabled_truncates() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(false);
+
+        let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
+        let result = agent.maybe_summarize_tool_output(&long).await;
+        assert!(result.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn test_maybe_summarize_long_output_enabled_calls_llm() {
+        let provider = MockProvider::new(vec!["summary text".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(true);
+
+        let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
+        let result = agent.maybe_summarize_tool_output(&long).await;
+        assert!(result.contains("summary text"));
+        assert!(result.contains("[tool output summary]"));
+        assert!(!result.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tool_output_llm_failure_fallback() {
+        let provider = MockProvider::failing();
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(true);
+
+        let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
+        let result = agent.maybe_summarize_tool_output(&long).await;
+        assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn with_tool_summarization_sets_flag() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(true);
+        assert!(agent.summarize_tool_output_enabled);
+
+        let provider2 = MockProvider::new(vec![]);
+        let channel2 = MockChannel::new(vec![]);
+        let registry2 = create_test_registry();
+        let executor2 = MockToolExecutor::no_tools();
+
+        let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
+            .with_tool_summarization(false);
+        assert!(!agent2.summarize_tool_output_enabled);
     }
 }

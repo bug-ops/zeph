@@ -257,7 +257,8 @@ async fn main() -> anyhow::Result<()> {
         config.memory.compaction_preserve_tail,
     )
     .with_shutdown(shutdown_rx)
-    .with_security(config.security, config.timeouts);
+    .with_security(config.security, config.timeouts)
+    .with_tool_summarization(config.tools.summarize_output);
 
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);

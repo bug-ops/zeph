@@ -29,6 +29,8 @@ pub struct ToolsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub summarize_output: bool,
+    #[serde(default)]
     pub shell: ShellConfig,
     #[serde(default)]
     pub scrape: ScrapeConfig,
@@ -66,6 +68,7 @@ impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            summarize_output: false,
             shell: ShellConfig::default(),
             scrape: ScrapeConfig::default(),
             audit: AuditConfig::default(),
@@ -160,9 +163,25 @@ mod tests {
     fn default_tools_config() {
         let config = ToolsConfig::default();
         assert!(config.enabled);
+        assert!(!config.summarize_output);
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
         assert!(!config.audit.enabled);
+    }
+
+    #[test]
+    fn tools_summarize_output_default_false() {
+        let config = ToolsConfig::default();
+        assert!(!config.summarize_output);
+    }
+
+    #[test]
+    fn tools_summarize_output_parsing() {
+        let toml_str = r#"
+            summarize_output = true
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.summarize_output);
     }
 
     #[test]

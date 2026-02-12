@@ -147,6 +147,8 @@ max_body_size = 1048576
 [tools]
 # Enable tool execution (bash commands)
 enabled = true
+# Summarize long tool output via LLM instead of head+tail truncation
+summarize_output = false
 
 [tools.shell]
 # Command timeout in seconds
