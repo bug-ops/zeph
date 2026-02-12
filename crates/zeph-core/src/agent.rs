@@ -223,6 +223,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
+    #[must_use]
+    pub fn context_messages(&self) -> &[Message] {
+        &self.messages
+    }
+
     /// Load conversation history from memory and inject into messages.
     ///
     /// # Errors

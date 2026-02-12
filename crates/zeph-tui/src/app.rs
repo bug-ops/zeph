@@ -84,6 +84,24 @@ impl App {
         self.show_splash
     }
 
+    pub fn load_history(&mut self, messages: &[(&str, &str)]) {
+        for &(role_str, content) in messages {
+            let role = match role_str {
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                _ => continue,
+            };
+            self.messages.push(ChatMessage {
+                role,
+                content: content.to_owned(),
+                streaming: false,
+            });
+        }
+        if !self.messages.is_empty() {
+            self.show_splash = false;
+        }
+    }
+
     #[must_use]
     pub fn with_metrics_rx(mut self, rx: watch::Receiver<MetricsSnapshot>) -> Self {
         self.metrics_rx = Some(rx);

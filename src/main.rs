@@ -285,6 +285,21 @@ async fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || reader.run());
 
         let mut app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+
+        let history: Vec<(&str, &str)> = agent
+            .context_messages()
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    zeph_llm::provider::Role::User => "user",
+                    zeph_llm::provider::Role::Assistant => "assistant",
+                    zeph_llm::provider::Role::System => "system",
+                };
+                (role, m.content.as_str())
+            })
+            .collect();
+        app.load_history(&history);
+
         if let Some(rx) = tui_metrics_rx {
             app = app.with_metrics_rx(rx);
         }
