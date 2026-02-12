@@ -1,6 +1,7 @@
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -27,46 +28,49 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
         };
 
         let indent = " ".repeat(prefix.len());
-        let content_lines: Vec<&str> = msg.content.split('\n').collect();
         let is_assistant = msg.role == MessageRole::Assistant;
-        let mut in_thinking = false;
 
-        for (i, raw_line) in content_lines.iter().enumerate() {
-            let (display, style) = if is_assistant {
-                let mut display = (*raw_line).to_string();
-                if display.contains("<think>") {
-                    in_thinking = true;
-                    display = display.replace("<think>", "");
-                }
-                if display.contains("</think>") {
-                    display = display.replace("</think>", "");
-                    in_thinking = false;
-                }
-                let style = if in_thinking {
-                    theme.thinking_message
-                } else {
-                    base_style
-                };
-                (display, style)
+        let styled_lines = if is_assistant {
+            render_with_thinking(&msg.content, base_style, &theme)
+        } else {
+            render_md(&msg.content, base_style, &theme)
+        };
+
+        for (i, spans) in styled_lines.iter().enumerate() {
+            let mut line_spans = Vec::with_capacity(spans.len() + 1);
+            let pfx = if i == 0 {
+                prefix.to_string()
             } else {
-                ((*raw_line).to_string(), base_style)
+                indent.clone()
             };
-
-            let text = if i == 0 {
-                if msg.streaming && content_lines.len() == 1 {
-                    format!("{prefix}{display}\u{258c}")
-                } else {
-                    format!("{prefix}{display}")
-                }
-            } else if msg.streaming && i == content_lines.len() - 1 {
-                format!("{indent}{display}\u{258c}")
+            let pfx_style = if is_assistant && !spans.is_empty() {
+                spans[0].style
             } else {
-                format!("{indent}{display}")
+                base_style
             };
+            line_spans.push(Span::styled(pfx, pfx_style));
+            line_spans.extend(spans.iter().cloned());
 
-            // Pre-wrap long lines so lines.len() equals visual line count
-            let wrapped = wrap_line(text, style, wrap_width);
-            lines.extend(wrapped);
+            let is_last_line = i == styled_lines.len() - 1;
+            if msg.streaming && is_last_line {
+                line_spans.push(Span::styled(
+                    "\u{258c}".to_string(),
+                    theme.streaming_cursor,
+                ));
+            }
+
+            lines.extend(wrap_spans(line_spans, wrap_width));
+        }
+
+        if styled_lines.is_empty() {
+            let mut pfx_spans = vec![Span::styled(prefix.to_string(), base_style)];
+            if msg.streaming {
+                pfx_spans.push(Span::styled(
+                    "\u{258c}".to_string(),
+                    theme.streaming_cursor,
+                ));
+            }
+            lines.extend(wrap_spans(pfx_spans, wrap_width));
         }
 
         lines.push(Line::default());
@@ -74,7 +78,6 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
 
     let total = lines.len();
 
-    // Push messages to the bottom when content doesn't fill viewport
     if total < inner_height {
         let padding = inner_height - total;
         let mut padded = vec![Line::default(); padding];
@@ -126,9 +129,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
             let bar_x = area.x + area.width.saturating_sub(1);
             for row in 0..track_height {
                 let ch = if row >= thumb_pos && row < thumb_pos + thumb_size {
-                    "\u{2588}" // thumb
+                    "\u{2588}"
                 } else {
-                    "\u{2591}" // track
+                    "\u{2591}"
                 };
                 frame.buffer_mut().set_string(
                     bar_x,
@@ -143,19 +146,362 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
     max_scroll
 }
 
-fn wrap_line(text: String, style: Style, max_width: usize) -> Vec<Line<'static>> {
+fn render_with_thinking(
+    content: &str,
+    base_style: Style,
+    theme: &Theme,
+) -> Vec<Vec<Span<'static>>> {
+    let mut all_lines = Vec::new();
+    let mut remaining = content;
+    let mut in_thinking = false;
+
+    while !remaining.is_empty() {
+        if in_thinking {
+            if let Some(end) = remaining.find("</think>") {
+                let segment = &remaining[..end];
+                if !segment.trim().is_empty() {
+                    all_lines.extend(render_md(segment, theme.thinking_message, theme));
+                }
+                remaining = &remaining[end + "</think>".len()..];
+                in_thinking = false;
+            } else {
+                if !remaining.trim().is_empty() {
+                    all_lines.extend(render_md(remaining, theme.thinking_message, theme));
+                }
+                break;
+            }
+        } else if let Some(start) = remaining.find("<think>") {
+            let segment = &remaining[..start];
+            if !segment.trim().is_empty() {
+                all_lines.extend(render_md(segment, base_style, theme));
+            }
+            remaining = &remaining[start + "<think>".len()..];
+            in_thinking = true;
+        } else {
+            all_lines.extend(render_md(remaining, base_style, theme));
+            break;
+        }
+    }
+
+    all_lines
+}
+
+fn render_md(content: &str, base_style: Style, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let options = Options::ENABLE_STRIKETHROUGH;
+    let parser = Parser::new_ext(content, options);
+    let mut renderer = MdRenderer::new(base_style, theme);
+    for event in parser {
+        renderer.push_event(event);
+    }
+    renderer.finish()
+}
+
+struct MdRenderer<'t> {
+    lines: Vec<Vec<Span<'static>>>,
+    current: Vec<Span<'static>>,
+    style_stack: Vec<Style>,
+    base_style: Style,
+    theme: &'t Theme,
+    in_code_block: bool,
+}
+
+impl<'t> MdRenderer<'t> {
+    fn new(base_style: Style, theme: &'t Theme) -> Self {
+        Self {
+            lines: Vec::new(),
+            current: Vec::new(),
+            style_stack: vec![base_style],
+            base_style,
+            theme,
+            in_code_block: false,
+        }
+    }
+
+    fn push_event(&mut self, event: Event<'_>) {
+        match event {
+            Event::Start(Tag::Heading { .. }) => {
+                self.push_style(self.base_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
+            }
+            Event::End(TagEnd::Heading { .. }) => {
+                self.pop_style();
+                self.newline();
+            }
+            Event::Start(Tag::Strong) => {
+                let s = self.current_style().add_modifier(Modifier::BOLD);
+                self.push_style(s);
+            }
+            Event::End(TagEnd::Strong) => {
+                self.pop_style();
+            }
+            Event::Start(Tag::Emphasis) => {
+                let s = self.current_style().add_modifier(Modifier::ITALIC);
+                self.push_style(s);
+            }
+            Event::End(TagEnd::Emphasis) => {
+                self.pop_style();
+            }
+            Event::Start(Tag::Strikethrough) => {
+                let s = self.current_style().add_modifier(Modifier::CROSSED_OUT);
+                self.push_style(s);
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                self.pop_style();
+            }
+            Event::Start(Tag::CodeBlock(kind)) => {
+                self.in_code_block = true;
+                if let CodeBlockKind::Fenced(lang) = kind {
+                    let lang = lang.trim();
+                    if !lang.is_empty() {
+                        self.current.push(Span::styled(
+                            format!(" {lang} "),
+                            self.base_style.add_modifier(Modifier::DIM),
+                        ));
+                        self.newline();
+                    }
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                self.in_code_block = false;
+                self.newline();
+            }
+            Event::Code(text) => {
+                self.current.push(Span::styled(
+                    text.to_string(),
+                    self.theme.code_inline,
+                ));
+            }
+            Event::Text(text) => {
+                let style = if self.in_code_block {
+                    self.theme.code_block
+                } else {
+                    self.current_style()
+                };
+                let prefix = if self.in_code_block { "  " } else { "" };
+                for (i, segment) in text.split('\n').enumerate() {
+                    if i > 0 {
+                        self.newline();
+                    }
+                    if !segment.is_empty() || !prefix.is_empty() {
+                        self.current.push(Span::styled(
+                            format!("{prefix}{segment}"),
+                            style,
+                        ));
+                    }
+                }
+            }
+            Event::Start(Tag::Item) => {
+                self.current.push(Span::styled(
+                    "\u{2022} ".to_string(),
+                    self.theme.highlight,
+                ));
+            }
+            Event::End(TagEnd::Item | TagEnd::Paragraph) => {
+                self.newline();
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                self.newline();
+            }
+            Event::Rule => {
+                self.current.push(Span::styled(
+                    "\u{2500}".repeat(20),
+                    self.base_style.add_modifier(Modifier::DIM),
+                ));
+                self.newline();
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                self.current.push(Span::styled(
+                    "\u{2502} ".to_string(),
+                    self.base_style.add_modifier(Modifier::DIM),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn current_style(&self) -> Style {
+        self.style_stack.last().copied().unwrap_or(self.base_style)
+    }
+
+    fn push_style(&mut self, style: Style) {
+        self.style_stack.push(style);
+    }
+
+    fn pop_style(&mut self) {
+        if self.style_stack.len() > 1 {
+            self.style_stack.pop();
+        }
+    }
+
+    fn newline(&mut self) {
+        let line = std::mem::take(&mut self.current);
+        self.lines.push(line);
+    }
+
+    fn finish(mut self) -> Vec<Vec<Span<'static>>> {
+        if !self.current.is_empty() {
+            self.newline();
+        }
+        // Remove trailing empty lines
+        while self.lines.last().is_some_and(Vec::is_empty) {
+            self.lines.pop();
+        }
+        self.lines
+    }
+}
+
+fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>> {
     if max_width == 0 {
-        return vec![Line::from(Span::styled(text, style))];
+        return vec![Line::from(spans)];
     }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_width {
-        return vec![Line::from(Span::styled(text, style))];
+
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= max_width {
+        return vec![Line::from(spans)];
     }
-    chars
-        .chunks(max_width)
-        .map(|chunk| {
-            let s: String = chunk.iter().collect();
-            Line::from(Span::styled(s, style))
-        })
-        .collect()
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut width = 0;
+
+    for span in spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut pos = 0;
+
+        while pos < chars.len() {
+            let space = max_width.saturating_sub(width);
+            if space == 0 {
+                result.push(Line::from(std::mem::take(&mut current)));
+                width = 0;
+                continue;
+            }
+            let take = space.min(chars.len() - pos);
+            let chunk: String = chars[pos..pos + take].iter().collect();
+            current.push(Span::styled(chunk, span.style));
+            width += take;
+            pos += take;
+
+            if width >= max_width && pos < chars.len() {
+                result.push(Line::from(std::mem::take(&mut current)));
+                width = 0;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        result.push(Line::from(current));
+    }
+
+    if result.is_empty() {
+        result.push(Line::default());
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_md_plain() {
+        let theme = Theme::default();
+        let lines = render_md("hello world", theme.assistant_message, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].content, "hello world");
+    }
+
+    #[test]
+    fn render_md_bold() {
+        let theme = Theme::default();
+        let base = theme.assistant_message;
+        let lines = render_md("say **hello** now", base, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), 3);
+        assert_eq!(lines[0][0].content, "say ");
+        assert_eq!(lines[0][1].content, "hello");
+        assert_eq!(lines[0][1].style, base.add_modifier(Modifier::BOLD));
+        assert_eq!(lines[0][2].content, " now");
+    }
+
+    #[test]
+    fn render_md_inline_code() {
+        let theme = Theme::default();
+        let lines = render_md("use `foo` here", theme.assistant_message, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][1].content, "foo");
+        assert_eq!(lines[0][1].style, theme.code_inline);
+    }
+
+    #[test]
+    fn render_md_code_block() {
+        let theme = Theme::default();
+        let lines = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
+        assert!(lines.len() >= 2);
+        // Language tag line
+        assert!(lines[0][0].content.contains("rust"));
+        // Code content
+        let code_line = &lines[1];
+        assert!(code_line.iter().any(|s| s.content.contains("let x = 1")));
+        assert!(code_line.iter().any(|s| s.style == theme.code_block));
+    }
+
+    #[test]
+    fn render_md_list() {
+        let theme = Theme::default();
+        let lines = render_md("- first\n- second", theme.assistant_message, &theme);
+        assert!(lines.len() >= 2);
+        assert!(lines[0].iter().any(|s| s.content.contains('\u{2022}')));
+    }
+
+    #[test]
+    fn render_md_heading() {
+        let theme = Theme::default();
+        let base = theme.assistant_message;
+        let lines = render_md("# Title", base, &theme);
+        assert!(!lines.is_empty());
+        let heading_span = &lines[0][0];
+        assert_eq!(heading_span.content, "Title");
+        assert_eq!(
+            heading_span.style,
+            base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        );
+    }
+
+    #[test]
+    fn render_with_thinking_segments() {
+        let theme = Theme::default();
+        let content = "<think>reasoning</think>result";
+        let lines = render_with_thinking(content, theme.assistant_message, &theme);
+        assert!(lines.len() >= 2);
+        // Thinking segment uses thinking style
+        assert_eq!(lines[0][0].style, theme.thinking_message);
+        // Result uses normal style
+        let last = lines.last().unwrap();
+        assert_eq!(last[0].style, theme.assistant_message);
+    }
+
+    #[test]
+    fn render_with_thinking_streaming() {
+        let theme = Theme::default();
+        let content = "<think>still thinking";
+        let lines = render_with_thinking(content, theme.assistant_message, &theme);
+        assert!(!lines.is_empty());
+        assert_eq!(lines[0][0].style, theme.thinking_message);
+    }
+
+    #[test]
+    fn wrap_spans_no_wrap() {
+        let spans = vec![Span::raw("short")];
+        let result = wrap_spans(spans, 80);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn wrap_spans_splits() {
+        let spans = vec![Span::raw("abcdef".to_string())];
+        let result = wrap_spans(spans, 3);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].spans[0].content, "abc");
+        assert_eq!(result[1].spans[0].content, "def");
+    }
 }

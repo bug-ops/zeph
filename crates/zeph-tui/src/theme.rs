@@ -12,6 +12,8 @@ pub struct Theme {
     pub highlight: Style,
     pub error: Style,
     pub thinking_message: Style,
+    pub code_inline: Style,
+    pub code_block: Style,
     pub streaming_cursor: Style,
 }
 
@@ -33,6 +35,8 @@ impl Default for Theme {
             highlight: Style::default().fg(Color::Green),
             error: Style::default().fg(Color::Red),
             thinking_message: Style::default().fg(Color::DarkGray),
+            code_inline: Style::default().fg(Color::Yellow),
+            code_block: Style::default().fg(Color::Green),
             streaming_cursor: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::SLOW_BLINK),
