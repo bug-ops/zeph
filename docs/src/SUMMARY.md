@@ -12,6 +12,7 @@
 
 - [Skills](guide/skills.md)
 - [Semantic Memory](guide/semantic-memory.md)
+- [Context Engineering](guide/context.md)
 - [Conversation Summarization](guide/summarization.md)
 - [Docker Deployment](guide/docker.md)
 - [MCP Integration](guide/mcp.md)

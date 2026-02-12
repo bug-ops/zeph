@@ -4,6 +4,8 @@ Automatically compress long conversation histories using LLM-based summarization
 
 Requires an LLM provider (Ollama or Claude). Set `context_budget_tokens = 0` to disable proportional allocation and use unlimited context.
 
+> For the full context management pipeline (semantic recall, message trimming, compaction, tool output management), see [Context Engineering](context.md).
+
 ## Configuration
 
 ```toml

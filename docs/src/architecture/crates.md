@@ -7,7 +7,10 @@ Agent loop, configuration loading, and context builder.
 - `Agent<P, C, T>` — main agent loop with streaming support
 - `Config` — TOML config loading with env var overrides
 - `Channel` trait — abstraction for I/O (CLI, Telegram)
-- Context builder — assembles system prompt from skills, memory, and summaries
+- Context builder — assembles system prompt from skills, memory, summaries, environment, and project config
+- Context engineering — proportional budget allocation, semantic recall injection, message trimming, runtime compaction
+- `EnvironmentContext` — runtime gathering of cwd, git branch, OS, model name
+- `project.rs` — ZEPH.md config discovery (walk up directory tree)
 - `VaultProvider` trait — pluggable secret resolution
 - `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
 
@@ -32,6 +35,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 - `SkillMatcher` — in-memory cosine similarity matching
 - `QdrantSkillMatcher` — persistent embeddings with BLAKE3 delta sync
 - `format_skills_prompt()` — assembles prompt with OS-filtered resources
+- `format_skills_catalog()` — description-only entries for non-matched skills
 - `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection
 - Filesystem watcher for hot-reload (500ms debounce)
 
@@ -60,6 +64,7 @@ Tool execution abstraction and shell backend.
 - `WebScrapeExecutor` — HTML scraping with CSS selectors, SSRF protection
 - `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch
 - `AuditLogger` — structured JSON audit trail for all executions
+- `truncate_tool_output()` — head+tail split at 30K chars with UTF-8 safe boundaries
 
 ## zeph-mcp
 

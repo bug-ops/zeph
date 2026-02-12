@@ -49,6 +49,8 @@ sqlite_path = "./data/zeph.db"
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
+compaction_threshold = 0.75    # Compact when context usage exceeds this fraction
+compaction_preserve_tail = 4   # Keep last N messages during compaction
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -56,6 +58,7 @@ recall_limit = 5              # Number of semantically relevant messages to inje
 
 [tools]
 enabled = true
+summarize_output = false      # LLM-based summarization for long tool outputs
 
 [tools.shell]
 timeout = 30
@@ -110,7 +113,12 @@ rate_limit = 60
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
 | `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
+| `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold as fraction of context budget (default: 0.75) |
+| `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
+| `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory with Qdrant (default: false) |
+| `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
+| `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization (default: false) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
 | `ZEPH_TOOLS_SCRAPE_TIMEOUT` | Web scrape request timeout in seconds (default: 15) |
 | `ZEPH_TOOLS_SCRAPE_MAX_BODY` | Max response body size in bytes (default: 1048576) |

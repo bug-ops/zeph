@@ -32,6 +32,10 @@ Even selected skills don't load everything at once:
 
 Metadata is always in memory for matching. Bodies are loaded lazily via `OnceLock` and cached after first access. Resources are loaded on demand with OS filtering (e.g., `linux.md` only loads on Linux).
 
+### Two-Tier Skill Catalog
+
+Non-matched skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all available capabilities without injecting their full bodies. This means the model can request a specific skill if needed, while consuming only ~20 tokens per unmatched skill instead of thousands.
+
 ### MCP Tool Matching
 
 MCP tools follow the same pipeline:
