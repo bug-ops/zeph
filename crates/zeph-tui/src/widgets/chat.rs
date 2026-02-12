@@ -4,12 +4,13 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
 
 use crate::app::{App, MessageRole};
 use crate::theme::Theme;
 
 /// Returns the maximum scroll offset for the rendered content.
-pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
+pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
     if area.width == 0 || area.height == 0 {
         return 0;
     }
@@ -114,7 +115,24 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
         );
     }
 
+    render_thinking(app, frame, area, &theme);
+
     max_scroll
+}
+
+fn render_thinking(app: &mut App, frame: &mut Frame, area: Rect, theme: &Theme) {
+    if !app.thinking() || area.height <= 3 {
+        return;
+    }
+    let y = area.y + area.height.saturating_sub(2);
+    let throbber_area = Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1);
+    let throbber = Throbber::default()
+        .label(" thinking...")
+        .style(theme.assistant_message)
+        .throbber_style(theme.highlight)
+        .throbber_set(BRAILLE_SIX)
+        .use_type(WhichUse::Spin);
+    frame.render_stateful_widget(throbber, throbber_area, app.throbber_state_mut());
 }
 
 fn render_scrollbar(
@@ -177,27 +195,36 @@ fn render_tool_message(
     wrap_width: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let prefix = "[tool] ";
+    let name = msg.tool_name.as_deref().unwrap_or("tool");
+    let prefix = format!("[{name}] ");
     let content_lines: Vec<&str> = msg.content.lines().collect();
 
     // First line is always the command ($ ...)
     let cmd_line = content_lines.first().copied().unwrap_or("");
-    let mut cmd_spans: Vec<Span<'static>> = vec![
-        Span::styled(prefix.to_string(), theme.highlight),
+    let status_span = if msg.streaming {
+        let len = BRAILLE_SIX.symbols.len();
+        let idx = usize::try_from(
+            app.throbber_state()
+                .index()
+                .rem_euclid(i8::try_from(len).unwrap_or(i8::MAX)),
+        )
+        .unwrap_or(0);
+        let symbol = BRAILLE_SIX.symbols[idx];
+        Span::styled(format!("{symbol} "), theme.streaming_cursor)
+    } else {
+        Span::styled("\u{2714} ".to_string(), theme.highlight)
+    };
+    let indent = " ".repeat(prefix.len());
+    let cmd_spans: Vec<Span<'static>> = vec![
+        Span::styled(prefix, theme.highlight),
+        status_span,
         Span::styled(cmd_line.to_string(), theme.tool_command),
     ];
-    if msg.streaming {
-        cmd_spans.push(Span::styled(
-            " \u{25cf}".to_string(),
-            theme.streaming_cursor,
-        ));
-    }
     lines.extend(wrap_spans(cmd_spans, wrap_width));
 
     // Output lines (everything after the command)
     if content_lines.len() > 1 {
         let output_lines = &content_lines[1..];
-        let indent = " ".repeat(prefix.len());
         let total = output_lines.len();
         let show_all = app.tool_expanded() || total <= TOOL_OUTPUT_COLLAPSED_LINES;
         let visible = if show_all {

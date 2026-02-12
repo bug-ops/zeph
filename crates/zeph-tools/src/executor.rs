@@ -38,13 +38,16 @@ pub fn truncate_tool_output(output: &str) -> String {
 #[derive(Debug, Clone)]
 pub enum ToolEvent {
     Started {
+        tool_name: String,
         command: String,
     },
     OutputChunk {
+        tool_name: String,
         command: String,
         chunk: String,
     },
     Completed {
+        tool_name: String,
         command: String,
         output: String,
         success: bool,

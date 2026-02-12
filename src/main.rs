@@ -378,15 +378,25 @@ async fn forward_tool_events_to_tui(
 ) {
     while let Some(event) = rx.recv().await {
         let agent_event = match event {
-            zeph_tools::ToolEvent::Started { command } => zeph_tui::AgentEvent::ToolStart(command),
-            zeph_tools::ToolEvent::OutputChunk { command, chunk } => {
-                zeph_tui::AgentEvent::ToolOutputChunk { command, chunk }
+            zeph_tools::ToolEvent::Started { tool_name, command } => {
+                zeph_tui::AgentEvent::ToolStart { tool_name, command }
             }
+            zeph_tools::ToolEvent::OutputChunk {
+                tool_name,
+                command,
+                chunk,
+            } => zeph_tui::AgentEvent::ToolOutputChunk {
+                tool_name,
+                command,
+                chunk,
+            },
             zeph_tools::ToolEvent::Completed {
+                tool_name,
                 command,
                 output,
                 success,
             } => zeph_tui::AgentEvent::ToolOutput {
+                tool_name,
                 command,
                 output,
                 success,

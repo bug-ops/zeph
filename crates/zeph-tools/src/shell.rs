@@ -129,6 +129,7 @@ impl ShellExecutor {
 
             if let Some(ref tx) = self.tool_event_tx {
                 let _ = tx.send(ToolEvent::Started {
+                    tool_name: "bash".to_owned(),
                     command: (*block).to_owned(),
                 });
             }
@@ -151,6 +152,7 @@ impl ShellExecutor {
 
             if let Some(ref tx) = self.tool_event_tx {
                 let _ = tx.send(ToolEvent::Completed {
+                    tool_name: "bash".to_owned(),
                     command: (*block).to_owned(),
                     output: out.clone(),
                     success: !out.contains("[error]"),
@@ -296,6 +298,7 @@ async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEvent
                     Some(chunk) => {
                         if let Some(tx) = event_tx {
                             let _ = tx.send(ToolEvent::OutputChunk {
+                                tool_name: "bash".to_owned(),
                                 command: code.to_owned(),
                                 chunk: chunk.clone(),
                             });

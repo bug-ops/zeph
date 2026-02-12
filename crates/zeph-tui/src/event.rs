@@ -19,12 +19,17 @@ pub enum AgentEvent {
     Flush,
     Typing,
     Status(String),
-    ToolStart(String),
+    ToolStart {
+        tool_name: String,
+        command: String,
+    },
     ToolOutputChunk {
+        tool_name: String,
         command: String,
         chunk: String,
     },
     ToolOutput {
+        tool_name: String,
         command: String,
         output: String,
         success: bool,

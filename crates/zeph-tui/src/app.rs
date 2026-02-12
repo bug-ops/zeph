@@ -26,6 +26,7 @@ pub struct ChatMessage {
     pub role: MessageRole,
     pub content: String,
     pub streaming: bool,
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,8 @@ pub struct App {
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     tool_expanded: bool,
+    thinking: bool,
+    throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
@@ -78,6 +81,8 @@ impl App {
             metrics_rx: None,
             active_panel: Panel::Chat,
             tool_expanded: false,
+            thinking: false,
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
             should_quit: false,
             user_input_tx,
@@ -106,6 +111,7 @@ impl App {
                 role,
                 content: content.to_owned(),
                 streaming: false,
+                tool_name: None,
             });
         }
         if !self.messages.is_empty() {
@@ -157,13 +163,37 @@ impl App {
         self.tool_expanded
     }
 
+    #[must_use]
+    pub fn thinking(&self) -> bool {
+        self.thinking
+    }
+
+    #[must_use]
+    pub fn has_running_tool(&self) -> bool {
+        self.messages
+            .last()
+            .is_some_and(|m| m.role == MessageRole::Tool && m.streaming)
+    }
+
+    #[must_use]
+    pub fn throbber_state(&self) -> &throbber_widgets_tui::ThrobberState {
+        &self.throbber_state
+    }
+
+    pub fn throbber_state_mut(&mut self) -> &mut throbber_widgets_tui::ThrobberState {
+        &mut self.throbber_state
+    }
+
     /// # Errors
     ///
     /// Returns an error if event handling fails.
     pub fn handle_event(&mut self, event: AppEvent) -> anyhow::Result<()> {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
-            AppEvent::Tick | AppEvent::Resize(_, _) => {}
+            AppEvent::Tick => {
+                self.throbber_state.calc_next();
+            }
+            AppEvent::Resize(_, _) => {}
             AppEvent::MouseScroll(delta) => {
                 if self.confirm_state.is_none() {
                     if delta > 0 {
@@ -185,6 +215,7 @@ impl App {
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
+                self.thinking = false;
                 if let Some(last) = self.messages.last_mut()
                     && last.role == MessageRole::Assistant
                     && last.streaming
@@ -195,16 +226,19 @@ impl App {
                         role: MessageRole::Assistant,
                         content: text,
                         streaming: true,
+                        tool_name: None,
                     });
                 }
                 self.scroll_offset = 0;
             }
             AgentEvent::FullMessage(text) => {
+                self.thinking = false;
                 if !text.starts_with("[tool output]") {
                     self.messages.push(ChatMessage {
                         role: MessageRole::Assistant,
                         content: text,
                         streaming: false,
+                        tool_name: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -216,20 +250,25 @@ impl App {
                     last.streaming = false;
                 }
             }
-            AgentEvent::Typing => {}
+            AgentEvent::Typing => {
+                self.thinking = true;
+            }
             AgentEvent::Status(text) => {
                 self.messages.push(ChatMessage {
                     role: MessageRole::System,
                     content: text,
                     streaming: false,
+                    tool_name: None,
                 });
                 self.scroll_offset = 0;
             }
-            AgentEvent::ToolStart(cmd) => {
+            AgentEvent::ToolStart { tool_name, command } => {
+                self.thinking = false;
                 self.messages.push(ChatMessage {
                     role: MessageRole::Tool,
-                    content: format!("$ {cmd}\n"),
+                    content: format!("$ {command}\n"),
                     streaming: true,
+                    tool_name: Some(tool_name),
                 });
                 self.scroll_offset = 0;
             }
@@ -462,6 +501,7 @@ impl App {
             role: MessageRole::User,
             content: text.clone(),
             streaming: false,
+            tool_name: None,
         });
         self.input.clear();
         self.cursor_position = 0;
