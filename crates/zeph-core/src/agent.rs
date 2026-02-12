@@ -87,6 +87,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
         let system_prompt = build_system_prompt(&skills_prompt, None);
+        tracing::debug!(len = system_prompt.len(), "initial system prompt built");
+        tracing::trace!(prompt = %system_prompt, "full system prompt");
 
         let (_tx, rx) = watch::channel(false);
         Self {
@@ -1208,6 +1210,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&project_context);
         }
+
+        tracing::debug!(
+            len = system_prompt.len(),
+            skills = ?self.active_skill_names,
+            "system prompt rebuilt"
+        );
+        tracing::trace!(prompt = %system_prompt, "full system prompt");
 
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
