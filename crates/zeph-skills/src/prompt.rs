@@ -54,6 +54,25 @@ pub fn format_skills_prompt(skills: &[Skill], os_family: &str) -> String {
     out
 }
 
+#[must_use]
+pub fn format_skills_catalog(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("<other_skills>\n");
+    for skill in skills {
+        let _ = writeln!(
+            out,
+            "  <skill name=\"{}\" description=\"{}\" />",
+            skill.name(),
+            skill.description(),
+        );
+    }
+    out.push_str("</other_skills>");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +197,22 @@ mod tests {
         let output = format_skills_prompt(&skills, "macos");
         assert!(output.contains("skill body"));
         assert!(!output.contains("<reference"));
+    }
+
+    #[test]
+    fn format_skills_catalog_empty() {
+        let empty: &[Skill] = &[];
+        assert_eq!(format_skills_catalog(empty), "");
+    }
+
+    #[test]
+    fn format_skills_catalog_produces_other_skills_tag() {
+        let skills = vec![make_skill("test", "A test skill.", "body")];
+        let output = format_skills_catalog(&skills);
+        assert!(output.starts_with("<other_skills>"));
+        assert!(output.ends_with("</other_skills>"));
+        assert!(output.contains("name=\"test\""));
+        assert!(output.contains("description=\"A test skill.\""));
+        assert!(!output.contains("body"));
     }
 }

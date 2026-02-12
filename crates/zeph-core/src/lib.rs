@@ -5,5 +5,6 @@ pub mod channel;
 pub mod config;
 pub mod context;
 pub mod metrics;
+pub mod project;
 pub mod redact;
 pub mod vault;

@@ -1,15 +1,89 @@
 use zeph_memory::semantic::estimate_tokens;
 
-const BASE_PROMPT: &str = "You are Zeph, a helpful assistant. \
-When you need to perform actions, write bash commands in fenced code blocks with the `bash` language tag. \
-The commands will be executed automatically and the output will be provided back to you.";
+const BASE_PROMPT: &str = "\
+You are Zeph, an AI coding assistant running in the user's terminal.\n\
+\n\
+## Tool Use\n\
+When you need to perform actions, write bash commands in fenced code blocks \
+with the `bash` language tag. Commands execute automatically and output returns to you.\n\
+\n\
+## Guidelines\n\
+- Be concise. Avoid unnecessary preamble.\n\
+- Before editing files, read them first to understand current state.\n\
+- When exploring a codebase, start with directory listing, then targeted grep/find.\n\
+- For destructive commands (rm, git push --force), warn the user first.\n\
+- Do not hallucinate file contents or command outputs.\n\
+- If a command fails, analyze the error before retrying.\n\
+\n\
+## Security\n\
+- Never include secrets, API keys, or tokens in command output.\n\
+- Do not force-push to main/master branches.\n\
+- Do not execute commands that could cause data loss without confirmation.";
 
 #[must_use]
-pub fn build_system_prompt(skills_prompt: &str) -> String {
-    if skills_prompt.is_empty() {
-        return BASE_PROMPT.to_string();
+pub fn build_system_prompt(skills_prompt: &str, env: Option<&EnvironmentContext>) -> String {
+    let mut prompt = BASE_PROMPT.to_string();
+
+    if let Some(env) = env {
+        prompt.push_str("\n\n");
+        prompt.push_str(&env.format());
     }
-    format!("{BASE_PROMPT}\n\n{skills_prompt}")
+
+    if !skills_prompt.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(skills_prompt);
+    }
+
+    prompt
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvironmentContext {
+    pub working_dir: String,
+    pub git_branch: Option<String>,
+    pub os: String,
+    pub model_name: String,
+}
+
+impl EnvironmentContext {
+    #[must_use]
+    pub fn gather(model_name: &str) -> Self {
+        let working_dir =
+            std::env::current_dir().map_or_else(|_| "unknown".into(), |p| p.display().to_string());
+
+        let git_branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+
+        Self {
+            working_dir,
+            git_branch,
+            os: std::env::consts::OS.into(),
+            model_name: model_name.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn format(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("<environment>\n");
+        let _ = writeln!(out, "  working_directory: {}", self.working_dir);
+        let _ = writeln!(out, "  os: {}", self.os);
+        let _ = writeln!(out, "  model: {}", self.model_name);
+        if let Some(ref branch) = self.git_branch {
+            let _ = writeln!(out, "  git_branch: {branch}");
+        }
+        out.push_str("</environment>");
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,14 +163,14 @@ mod tests {
 
     #[test]
     fn without_skills() {
-        let prompt = build_system_prompt("");
+        let prompt = build_system_prompt("", None);
         assert!(prompt.starts_with("You are Zeph"));
         assert!(!prompt.contains("available_skills"));
     }
 
     #[test]
     fn with_skills() {
-        let prompt = build_system_prompt("<available_skills>test</available_skills>");
+        let prompt = build_system_prompt("<available_skills>test</available_skills>", None);
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<available_skills>"));
     }
@@ -160,5 +234,72 @@ mod tests {
         let alloc = budget.allocate(system, skills);
 
         assert!(alloc.response_reserve > 0);
+    }
+
+    #[test]
+    fn environment_context_gather() {
+        let env = EnvironmentContext::gather("test-model");
+        assert!(!env.working_dir.is_empty());
+        assert_eq!(env.os, std::env::consts::OS);
+        assert_eq!(env.model_name, "test-model");
+    }
+
+    #[test]
+    fn environment_context_format() {
+        let env = EnvironmentContext {
+            working_dir: "/tmp/test".into(),
+            git_branch: Some("main".into()),
+            os: "macos".into(),
+            model_name: "mistral:7b".into(),
+        };
+        let formatted = env.format();
+        assert!(formatted.starts_with("<environment>"));
+        assert!(formatted.ends_with("</environment>"));
+        assert!(formatted.contains("working_directory: /tmp/test"));
+        assert!(formatted.contains("os: macos"));
+        assert!(formatted.contains("model: mistral:7b"));
+        assert!(formatted.contains("git_branch: main"));
+    }
+
+    #[test]
+    fn environment_context_format_no_git() {
+        let env = EnvironmentContext {
+            working_dir: "/tmp".into(),
+            git_branch: None,
+            os: "linux".into(),
+            model_name: "test".into(),
+        };
+        let formatted = env.format();
+        assert!(!formatted.contains("git_branch"));
+    }
+
+    #[test]
+    fn build_system_prompt_with_env() {
+        let env = EnvironmentContext {
+            working_dir: "/tmp".into(),
+            git_branch: None,
+            os: "linux".into(),
+            model_name: "test".into(),
+        };
+        let prompt = build_system_prompt("skills here", Some(&env));
+        assert!(prompt.contains("You are Zeph"));
+        assert!(prompt.contains("<environment>"));
+        assert!(prompt.contains("skills here"));
+    }
+
+    #[test]
+    fn build_system_prompt_without_env() {
+        let prompt = build_system_prompt("skills here", None);
+        assert!(prompt.contains("You are Zeph"));
+        assert!(!prompt.contains("<environment>"));
+        assert!(prompt.contains("skills here"));
+    }
+
+    #[test]
+    fn base_prompt_contains_guidelines() {
+        let prompt = build_system_prompt("", None);
+        assert!(prompt.contains("## Tool Use"));
+        assert!(prompt.contains("## Guidelines"));
+        assert!(prompt.contains("## Security"));
     }
 }

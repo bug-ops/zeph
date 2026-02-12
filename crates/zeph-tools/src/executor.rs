@@ -13,6 +13,27 @@ impl fmt::Display for ToolOutput {
     }
 }
 
+const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
+
+/// Truncate tool output that exceeds `MAX_TOOL_OUTPUT_CHARS` using head+tail split.
+#[must_use]
+pub fn truncate_tool_output(output: &str) -> String {
+    if output.len() <= MAX_TOOL_OUTPUT_CHARS {
+        return output.to_string();
+    }
+
+    let half = MAX_TOOL_OUTPUT_CHARS / 2;
+    let head_end = output.floor_char_boundary(half);
+    let tail_start = output.ceil_char_boundary(output.len() - half);
+    let head = &output[..head_end];
+    let tail = &output[tail_start..];
+    let truncated = output.len() - head_end - (output.len() - tail_start);
+
+    format!(
+        "{head}\n\n... [truncated {truncated} chars, showing first and last ~{half} chars] ...\n\n{tail}"
+    )
+}
+
 /// Errors that can occur during tool execution.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -127,5 +148,33 @@ mod tests {
         let err = ToolError::Execution(io_err);
         assert!(err.to_string().starts_with("execution failed:"));
         assert!(err.to_string().contains("bash not found"));
+    }
+
+    #[test]
+    fn truncate_tool_output_short_passthrough() {
+        let short = "hello world";
+        assert_eq!(truncate_tool_output(short), short);
+    }
+
+    #[test]
+    fn truncate_tool_output_exact_limit() {
+        let exact = "a".repeat(MAX_TOOL_OUTPUT_CHARS);
+        assert_eq!(truncate_tool_output(&exact), exact);
+    }
+
+    #[test]
+    fn truncate_tool_output_long_split() {
+        let long = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 1000);
+        let result = truncate_tool_output(&long);
+        assert!(result.contains("truncated"));
+        assert!(result.len() < long.len());
+    }
+
+    #[test]
+    fn truncate_tool_output_notice_contains_count() {
+        let long = "y".repeat(MAX_TOOL_OUTPUT_CHARS + 2000);
+        let result = truncate_tool_output(&long);
+        assert!(result.contains("truncated"));
+        assert!(result.contains("chars"));
     }
 }

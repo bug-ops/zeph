@@ -240,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
         config.skills.max_active_skills,
         tool_executor,
     )
+    .with_model_name(config.llm.model.clone())
     .with_embedding_model(embed_model.clone())
     .with_skill_reload(skill_paths, reload_rx)
     .with_memory(

@@ -10,6 +10,6 @@ pub mod shell;
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
 pub use config::{AuditConfig, ScrapeConfig, ShellConfig, ToolsConfig};
-pub use executor::{ToolError, ToolExecutor, ToolOutput};
+pub use executor::{ToolError, ToolExecutor, ToolOutput, truncate_tool_output};
 pub use scrape::WebScrapeExecutor;
 pub use shell::ShellExecutor;

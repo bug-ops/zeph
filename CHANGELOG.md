@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `with_context_budget()` builder method on Agent for wiring context budget and compaction settings
 - Config fields: `compaction_threshold` (f32), `compaction_preserve_tail` (usize) with env var overrides
 - `context_compactions` counter in MetricsSnapshot for observability
+- Context budget integration: `ContextBudget::allocate()` wired into agent loop via `prepare_context()` orchestrator
+- Semantic recall injection: `SemanticMemory::recall()` results injected as transient system messages with token budget control
+- Message history trimming: oldest non-system messages evicted when history exceeds budget allocation
+- Environment context injection: working directory, OS, git branch, and model name in system prompt via `<environment>` block
+- Extended BASE_PROMPT with structured Tool Use, Guidelines, and Security sections
+- Tool output truncation: head+tail split at 30K chars with UTF-8 safe boundaries
+- Progressive skill loading: matched skills get full body, remaining shown as description-only catalog via `<other_skills>`
+- ZEPH.md project config discovery: walk up directory tree, inject into system prompt as `<project_context>`
 
 ## [0.9.1] - 2026-02-12
 

@@ -9,7 +9,7 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::role_str;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
-use zeph_skills::prompt::format_skills_prompt;
+use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt};
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
@@ -18,12 +18,13 @@ use crate::channel::Channel;
 #[cfg(feature = "self-learning")]
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
-use crate::context::{ContextBudget, build_system_prompt};
+use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::redact::redact_secrets;
 use zeph_memory::semantic::estimate_tokens;
 
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
+const RECALL_PREFIX: &str = "[semantic recall]\n";
 
 pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
     provider: P,
@@ -49,6 +50,8 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     context_budget: Option<ContextBudget>,
     compaction_threshold: f32,
     compaction_preserve_tail: usize,
+    last_skills_prompt: String,
+    model_name: String,
     #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
     #[cfg(feature = "self-learning")]
@@ -81,7 +84,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
-        let system_prompt = build_system_prompt(&skills_prompt);
+        let system_prompt = build_system_prompt(&skills_prompt, None);
 
         let (_tx, rx) = watch::channel(false);
         Self {
@@ -111,6 +114,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             context_budget: None,
             compaction_threshold: 0.75,
             compaction_preserve_tail: 4,
+            last_skills_prompt: skills_prompt,
+            model_name: String::new(),
             #[cfg(feature = "self-learning")]
             learning_config: None,
             #[cfg(feature = "self-learning")]
@@ -218,6 +223,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         self.compaction_threshold = compaction_threshold;
         self.compaction_preserve_tail = compaction_preserve_tail;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
+        self.model_name = name.into();
         self
     }
 
@@ -332,6 +343,115 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
+    fn remove_recall_messages(&mut self) {
+        self.messages
+            .retain(|m| !(m.role == Role::System && m.content.starts_with(RECALL_PREFIX)));
+    }
+
+    async fn inject_semantic_recall(
+        &mut self,
+        query: &str,
+        token_budget: usize,
+    ) -> anyhow::Result<()> {
+        self.remove_recall_messages();
+
+        let Some(memory) = &self.memory else {
+            return Ok(());
+        };
+        if self.recall_limit == 0 || token_budget == 0 {
+            return Ok(());
+        }
+
+        let recalled = memory.recall(query, self.recall_limit, None).await?;
+        if recalled.is_empty() {
+            return Ok(());
+        }
+
+        let mut recall_text = String::from(RECALL_PREFIX);
+        let mut tokens_used = estimate_tokens(&recall_text);
+
+        for item in &recalled {
+            let role_label = match item.message.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let entry = format!("- [{}] {}\n", role_label, item.message.content);
+            let entry_tokens = estimate_tokens(&entry);
+            if tokens_used + entry_tokens > token_budget {
+                break;
+            }
+            recall_text.push_str(&entry);
+            tokens_used += entry_tokens;
+        }
+
+        if tokens_used > estimate_tokens(RECALL_PREFIX) && self.messages.len() > 1 {
+            self.messages.insert(
+                1,
+                Message {
+                    role: Role::System,
+                    content: recall_text,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn trim_messages_to_budget(&mut self, token_budget: usize) {
+        if token_budget == 0 {
+            return;
+        }
+
+        let history_start = self
+            .messages
+            .iter()
+            .position(|m| m.role != Role::System)
+            .unwrap_or(self.messages.len());
+
+        if history_start >= self.messages.len() {
+            return;
+        }
+
+        let mut total = 0usize;
+        let mut keep_from = self.messages.len();
+
+        for i in (history_start..self.messages.len()).rev() {
+            let msg_tokens = estimate_tokens(&self.messages[i].content);
+            if total + msg_tokens > token_budget {
+                break;
+            }
+            total += msg_tokens;
+            keep_from = i;
+        }
+
+        if keep_from > history_start {
+            let removed = keep_from - history_start;
+            self.messages.drain(history_start..keep_from);
+            tracing::info!(
+                removed,
+                token_budget,
+                "trimmed messages to fit context budget"
+            );
+        }
+    }
+
+    async fn prepare_context(&mut self, query: &str) -> anyhow::Result<()> {
+        let Some(ref budget) = self.context_budget else {
+            return Ok(());
+        };
+
+        let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
+        let alloc = budget.allocate(system_prompt, &self.last_skills_prompt);
+
+        self.inject_semantic_recall(query, alloc.semantic_recall)
+            .await?;
+
+        self.trim_messages_to_budget(alloc.recent_history);
+
+        Ok(())
+    }
+
     #[must_use]
     pub fn context_messages(&self) -> &[Message] {
         &self.messages
@@ -434,6 +554,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 && let Err(e) = self.compact_context().await
             {
                 tracing::warn!("context compaction failed: {e:#}");
+            }
+
+            if let Err(e) = self.prepare_context(trimmed).await {
+                tracing::warn!("context preparation failed: {e:#}");
             }
 
             #[cfg(feature = "self-learning")]
@@ -955,7 +1079,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|m| self.registry.get_skill(&m.name).ok())
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
-        let system_prompt = build_system_prompt(&skills_prompt);
+        self.last_skills_prompt.clone_from(&skills_prompt);
+        let system_prompt = build_system_prompt(&skills_prompt, None);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
@@ -999,15 +1124,34 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             }
         }
 
+        let all_skills: Vec<Skill> = self
+            .registry
+            .all_meta()
+            .iter()
+            .filter_map(|m| self.registry.get_skill(&m.name).ok())
+            .collect();
         let active_skills: Vec<Skill> = self
             .active_skill_names
             .iter()
             .filter_map(|name| self.registry.get_skill(name).ok())
             .collect();
+        let remaining_skills: Vec<Skill> = all_skills
+            .iter()
+            .filter(|s| !self.active_skill_names.contains(&s.name().to_string()))
+            .cloned()
+            .collect();
 
         let skills_prompt = format_skills_prompt(&active_skills, std::env::consts::OS);
+        let catalog_prompt = format_skills_catalog(&remaining_skills);
+        self.last_skills_prompt.clone_from(&skills_prompt);
+        let env = EnvironmentContext::gather(&self.model_name);
         #[allow(unused_mut)]
-        let mut system_prompt = build_system_prompt(&skills_prompt);
+        let mut system_prompt = build_system_prompt(&skills_prompt, Some(&env));
+
+        if !catalog_prompt.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&catalog_prompt);
+        }
 
         #[cfg(feature = "mcp")]
         {
@@ -1025,6 +1169,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     system_prompt.push_str(&tools_prompt);
                 }
             }
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let project_configs = crate::project::discover_project_configs(&cwd);
+        let project_context = crate::project::load_project_context(&project_configs);
+        if !project_context.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&project_context);
         }
 
         if let Some(msg) = self.messages.first_mut() {
@@ -1195,7 +1347,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     self.record_skill_outcomes("success", None).await;
                 }
 
-                let formatted_output = format!("[tool output]\n```\n{output}\n```");
+                let truncated = zeph_tools::truncate_tool_output(&output.summary);
+                let formatted_output = format!("[tool output]\n```\n{truncated}\n```");
                 let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
@@ -1221,7 +1374,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let prompt = format!("Allow command: {command}?");
                 if self.channel.confirm(&prompt).await? {
                     if let Ok(Some(out)) = self.tool_executor.execute_confirmed(response).await {
-                        let formatted = format!("[tool output]\n```\n{out}\n```");
+                        let truncated = zeph_tools::truncate_tool_output(&out.summary);
+                        let formatted = format!("[tool output]\n```\n{truncated}\n```");
                         let display = self.maybe_redact(&formatted);
                         self.channel.send(&display).await?;
                         self.messages.push(Message {
@@ -2766,5 +2920,122 @@ mod agent_tests {
 
         agent.compact_context().await.unwrap();
         assert_eq!(rx.borrow().context_compactions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_context_no_budget_is_noop() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let msg_count = agent.messages.len();
+
+        agent.prepare_context("test query").await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_recall_injection_removed_between_turns() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: format!("{RECALL_PREFIX}old recall data"),
+            },
+        );
+        assert_eq!(agent.messages.len(), 2);
+
+        agent.remove_recall_messages();
+        assert_eq!(agent.messages.len(), 1);
+        assert!(!agent.messages[0].content.starts_with(RECALL_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn test_recall_without_qdrant_returns_empty() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let msg_count = agent.messages.len();
+
+        agent.inject_semantic_recall("test", 1000).await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_trim_messages_preserves_system() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+            });
+        }
+        assert_eq!(agent.messages.len(), 11);
+
+        agent.trim_messages_to_budget(5);
+
+        assert_eq!(agent.messages[0].role, Role::System);
+        assert!(agent.messages.len() < 11);
+    }
+
+    #[tokio::test]
+    async fn test_trim_messages_keeps_recent() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("msg {i}"),
+            });
+        }
+
+        agent.trim_messages_to_budget(5);
+
+        let last = agent.messages.last().unwrap();
+        assert_eq!(last.content, "msg 9");
+    }
+
+    #[tokio::test]
+    async fn test_trim_zero_budget_is_noop() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        for i in 0..5 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+            });
+        }
+        let msg_count = agent.messages.len();
+
+        agent.trim_messages_to_budget(0);
+        assert_eq!(agent.messages.len(), msg_count);
     }
 }
