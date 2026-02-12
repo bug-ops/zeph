@@ -19,6 +19,16 @@ pub enum AgentEvent {
     Flush,
     Typing,
     Status(String),
+    ToolStart(String),
+    ToolOutputChunk {
+        command: String,
+        chunk: String,
+    },
+    ToolOutput {
+        command: String,
+        output: String,
+        success: bool,
+    },
     ConfirmRequest {
         prompt: String,
         response_tx: oneshot::Sender<bool>,

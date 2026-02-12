@@ -21,10 +21,17 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) -> usize {
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     for msg in app.messages() {
+        if msg.role == MessageRole::Tool {
+            render_tool_message(msg, app, &theme, wrap_width, &mut lines);
+            lines.push(Line::default());
+            continue;
+        }
+
         let (prefix, base_style) = match msg.role {
             MessageRole::User => ("[user] ", theme.user_message),
             MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
             MessageRole::System => ("[system] ", theme.system_message),
+            MessageRole::Tool => unreachable!(),
         };
 
         let indent = " ".repeat(prefix.len());
@@ -157,6 +164,63 @@ fn render_scrollbar(
                 ch,
                 Style::default().fg(ratatui::style::Color::DarkGray),
             );
+        }
+    }
+}
+
+const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
+
+fn render_tool_message(
+    msg: &crate::app::ChatMessage,
+    app: &App,
+    theme: &Theme,
+    wrap_width: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let prefix = "[tool] ";
+    let content_lines: Vec<&str> = msg.content.lines().collect();
+
+    // First line is always the command ($ ...)
+    let cmd_line = content_lines.first().copied().unwrap_or("");
+    let mut cmd_spans: Vec<Span<'static>> = vec![
+        Span::styled(prefix.to_string(), theme.highlight),
+        Span::styled(cmd_line.to_string(), theme.tool_command),
+    ];
+    if msg.streaming {
+        cmd_spans.push(Span::styled(
+            " \u{25cf}".to_string(),
+            theme.streaming_cursor,
+        ));
+    }
+    lines.extend(wrap_spans(cmd_spans, wrap_width));
+
+    // Output lines (everything after the command)
+    if content_lines.len() > 1 {
+        let output_lines = &content_lines[1..];
+        let indent = " ".repeat(prefix.len());
+        let total = output_lines.len();
+        let show_all = app.tool_expanded() || total <= TOOL_OUTPUT_COLLAPSED_LINES;
+        let visible = if show_all {
+            output_lines
+        } else {
+            &output_lines[..TOOL_OUTPUT_COLLAPSED_LINES]
+        };
+
+        for line in visible {
+            let spans = vec![
+                Span::styled(indent.clone(), Style::default()),
+                Span::styled((*line).to_string(), theme.code_block),
+            ];
+            lines.extend(wrap_spans(spans, wrap_width));
+        }
+
+        if !show_all {
+            let remaining = total - TOOL_OUTPUT_COLLAPSED_LINES;
+            let hint = format!("{indent}... ({remaining} more lines, press 'e' to expand)");
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::default().add_modifier(Modifier::DIM),
+            )));
         }
     }
 }

@@ -5,7 +5,7 @@ use tokio::process::Command;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
-use crate::executor::{ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
 
 const DEFAULT_BLOCKED: &[&str] = &[
     "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
@@ -22,6 +22,7 @@ pub struct ShellExecutor {
     allowed_paths: Vec<PathBuf>,
     confirm_patterns: Vec<String>,
     audit_logger: Option<AuditLogger>,
+    tool_event_tx: Option<ToolEventTx>,
 }
 
 impl ShellExecutor {
@@ -64,12 +65,19 @@ impl ShellExecutor {
             allowed_paths,
             confirm_patterns: config.confirm_patterns.clone(),
             audit_logger: None,
+            tool_event_tx: None,
         }
     }
 
     #[must_use]
     pub fn with_audit(mut self, logger: AuditLogger) -> Self {
         self.audit_logger = Some(logger);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_event_tx(mut self, tx: ToolEventTx) -> Self {
+        self.tool_event_tx = Some(tx);
         self
     }
 
@@ -119,8 +127,14 @@ impl ShellExecutor {
                 });
             }
 
+            if let Some(ref tx) = self.tool_event_tx {
+                let _ = tx.send(ToolEvent::Started {
+                    command: (*block).to_owned(),
+                });
+            }
+
             let start = Instant::now();
-            let out = execute_bash(block, self.timeout).await;
+            let out = execute_bash(block, self.timeout, self.tool_event_tx.as_ref()).await;
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -134,6 +148,14 @@ impl ShellExecutor {
                 AuditResult::Success
             };
             self.log_audit(block, result, duration_ms).await;
+
+            if let Some(ref tx) = self.tool_event_tx {
+                let _ = tx.send(ToolEvent::Completed {
+                    command: (*block).to_owned(),
+                    output: out.clone(),
+                    success: !out.contains("[error]"),
+                });
+            }
 
             outputs.push(format!("$ {block}\n{out}"));
         }
@@ -222,33 +244,80 @@ fn chrono_now() -> String {
     format!("{secs}")
 }
 
-async fn execute_bash(code: &str, timeout: Duration) -> String {
-    let timeout_secs = timeout.as_secs();
-    let result =
-        tokio::time::timeout(timeout, Command::new("bash").arg("-c").arg(code).output()).await;
+async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEventTx>) -> String {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    match result {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let mut combined = String::new();
-            if !stdout.is_empty() {
-                combined.push_str(&stdout);
-            }
-            if !stderr.is_empty() {
-                if !combined.is_empty() {
-                    combined.push('\n');
-                }
-                combined.push_str("[stderr] ");
-                combined.push_str(&stderr);
-            }
-            if combined.is_empty() {
-                combined.push_str("(no output)");
-            }
-            combined
+    let timeout_secs = timeout.as_secs();
+
+    let child_result = Command::new("bash")
+        .arg("-c")
+        .arg(code)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match child_result {
+        Ok(c) => c,
+        Err(e) => return format!("[error] {e}"),
+    };
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(64);
+
+    let stdout_tx = line_tx.clone();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout);
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+            let _ = stdout_tx.send(buf.clone()).await;
+            buf.clear();
         }
-        Ok(Err(e)) => format!("[error] {e}"),
-        Err(_) => format!("[error] command timed out after {timeout_secs}s"),
+    });
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+            let _ = line_tx.send(format!("[stderr] {buf}")).await;
+            buf.clear();
+        }
+    });
+
+    let mut combined = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        tokio::select! {
+            line = line_rx.recv() => {
+                match line {
+                    Some(chunk) => {
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(ToolEvent::OutputChunk {
+                                command: code.to_owned(),
+                                chunk: chunk.clone(),
+                            });
+                        }
+                        combined.push_str(&chunk);
+                    }
+                    None => break,
+                }
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                let _ = child.kill().await;
+                return format!("[error] command timed out after {timeout_secs}s");
+            }
+        }
+    }
+
+    let _ = child.wait().await;
+
+    if combined.is_empty() {
+        "(no output)".to_string()
+    } else {
+        combined
     }
 }
 
@@ -312,14 +381,14 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_simple_command() {
-        let result = execute_bash("echo hello", Duration::from_secs(30)).await;
+        let result = execute_bash("echo hello", Duration::from_secs(30), None).await;
         assert!(result.contains("hello"));
     }
 
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stderr_output() {
-        let result = execute_bash("echo err >&2", Duration::from_secs(30)).await;
+        let result = execute_bash("echo err >&2", Duration::from_secs(30), None).await;
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
     }
@@ -327,7 +396,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stdout_and_stderr_combined() {
-        let result = execute_bash("echo out && echo err >&2", Duration::from_secs(30)).await;
+        let result = execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
         assert!(result.contains("out"));
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
@@ -337,7 +406,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_empty_output() {
-        let result = execute_bash("true", Duration::from_secs(30)).await;
+        let result = execute_bash("true", Duration::from_secs(30), None).await;
         assert_eq!(result, "(no output)");
     }
 
@@ -860,14 +929,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_error_handling() {
-        let result = execute_bash("false", Duration::from_secs(5)).await;
+        let result = execute_bash("false", Duration::from_secs(5), None).await;
         assert_eq!(result, "(no output)");
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_command_not_found() {
-        let result = execute_bash("nonexistent-command-xyz", Duration::from_secs(5)).await;
+        let result = execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
         assert!(result.contains("[stderr]") || result.contains("[error]"));
     }
 

@@ -202,6 +202,15 @@ async fn main() -> anyhow::Result<()> {
     {
         shell_executor = shell_executor.with_audit(logger);
     }
+
+    #[cfg(feature = "tui")]
+    let tool_event_rx = if tui_handle.is_some() {
+        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
+        shell_executor = shell_executor.with_tool_event_tx(tool_tx);
+        Some(tool_rx)
+    } else {
+        None
+    };
     let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
 
     #[cfg(feature = "mcp")]
@@ -320,8 +329,12 @@ async fn main() -> anyhow::Result<()> {
             app = app.with_metrics_rx(rx);
         }
 
-        let status_agent_tx = tui_handle.agent_tx;
-        tokio::spawn(forward_status_to_tui(status_rx, status_agent_tx));
+        let agent_tx = tui_handle.agent_tx;
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx.clone()));
+
+        if let Some(tool_rx) = tool_event_rx {
+            tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx));
+        }
 
         let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
         let agent_task = tokio::spawn(async move { agent.run().await });
@@ -353,6 +366,33 @@ async fn forward_status_to_tui(
 ) {
     while let Some(msg) = rx.recv().await {
         if tx.send(zeph_tui::AgentEvent::Status(msg)).await.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "tui")]
+async fn forward_tool_events_to_tui(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        let agent_event = match event {
+            zeph_tools::ToolEvent::Started { command } => zeph_tui::AgentEvent::ToolStart(command),
+            zeph_tools::ToolEvent::OutputChunk { command, chunk } => {
+                zeph_tui::AgentEvent::ToolOutputChunk { command, chunk }
+            }
+            zeph_tools::ToolEvent::Completed {
+                command,
+                output,
+                success,
+            } => zeph_tui::AgentEvent::ToolOutput {
+                command,
+                output,
+                success,
+            },
+        };
+        if tx.send(agent_event).await.is_err() {
             break;
         }
     }

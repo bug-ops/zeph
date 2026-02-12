@@ -18,6 +18,7 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+    Tool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +41,7 @@ pub struct ConfirmState {
     pub response_tx: Option<oneshot::Sender<bool>>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     input: String,
     cursor_position: usize,
@@ -51,6 +53,7 @@ pub struct App {
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
+    tool_expanded: bool,
     confirm_state: Option<ConfirmState>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
@@ -74,6 +77,7 @@ impl App {
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
             active_panel: Panel::Chat,
+            tool_expanded: false,
             confirm_state: None,
             should_quit: false,
             user_input_tx,
@@ -148,6 +152,11 @@ impl App {
         self.scroll_offset
     }
 
+    #[must_use]
+    pub fn tool_expanded(&self) -> bool {
+        self.tool_expanded
+    }
+
     /// # Errors
     ///
     /// Returns an error if event handling fails.
@@ -191,11 +200,13 @@ impl App {
                 self.scroll_offset = 0;
             }
             AgentEvent::FullMessage(text) => {
-                self.messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: text,
-                    streaming: false,
-                });
+                if !text.starts_with("[tool output]") {
+                    self.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: text,
+                        streaming: false,
+                    });
+                }
                 self.scroll_offset = 0;
             }
             AgentEvent::Flush => {
@@ -212,6 +223,36 @@ impl App {
                     content: text,
                     streaming: false,
                 });
+                self.scroll_offset = 0;
+            }
+            AgentEvent::ToolStart(cmd) => {
+                self.messages.push(ChatMessage {
+                    role: MessageRole::Tool,
+                    content: format!("$ {cmd}\n"),
+                    streaming: true,
+                });
+                self.scroll_offset = 0;
+            }
+            AgentEvent::ToolOutputChunk { chunk, .. } => {
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Tool && m.streaming)
+                {
+                    msg.content.push_str(&chunk);
+                }
+                self.scroll_offset = 0;
+            }
+            AgentEvent::ToolOutput { .. } => {
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Tool && m.streaming)
+                {
+                    msg.streaming = false;
+                }
                 self.scroll_offset = 0;
             }
             AgentEvent::ConfirmRequest {
@@ -338,6 +379,9 @@ impl App {
             }
             KeyCode::Char('d') => {
                 self.show_side_panels = !self.show_side_panels;
+            }
+            KeyCode::Char('e') => {
+                self.tool_expanded = !self.tool_expanded;
             }
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {

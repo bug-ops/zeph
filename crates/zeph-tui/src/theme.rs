@@ -15,6 +15,7 @@ pub struct Theme {
     pub code_inline: Style,
     pub code_block: Style,
     pub streaming_cursor: Style,
+    pub tool_command: Style,
 }
 
 impl Default for Theme {
@@ -40,6 +41,9 @@ impl Default for Theme {
             streaming_cursor: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::SLOW_BLINK),
+            tool_command: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
