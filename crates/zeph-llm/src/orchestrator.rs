@@ -459,6 +459,7 @@ mod tests {
         vec![Message {
             role: Role::User,
             content: content.into(),
+            parts: vec![],
         }]
     }
 
@@ -697,14 +698,17 @@ mod tests {
             Message {
                 role: Role::User,
                 content: "write a function".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::Assistant,
                 content: "here it is".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "translate to spanish".into(),
+                parts: vec![],
             },
         ];
         assert_eq!(TaskType::classify(&messages), TaskType::Translation);
@@ -716,10 +720,12 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "you write code".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "hello there".into(),
+                parts: vec![],
             },
         ];
         assert_eq!(TaskType::classify(&messages), TaskType::General);

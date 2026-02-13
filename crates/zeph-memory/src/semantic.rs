@@ -351,6 +351,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
             .chat(&[Message {
                 role: Role::User,
                 content: prompt,
+                parts: vec![],
             }])
             .await?;
 
@@ -806,6 +807,7 @@ mod tests {
             message: Message {
                 role: Role::User,
                 content: "test".into(),
+                parts: vec![],
             },
             score: 0.95,
         };

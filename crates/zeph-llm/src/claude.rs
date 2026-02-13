@@ -285,14 +285,14 @@ fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>)
 
     for msg in messages {
         match msg.role {
-            Role::System => system_parts.push(msg.content.as_str()),
+            Role::System => system_parts.push(msg.to_llm_content()),
             Role::User => chat.push(ApiMessage {
                 role: "user",
-                content: &msg.content,
+                content: msg.to_llm_content(),
             }),
             Role::Assistant => chat.push(ApiMessage {
                 role: "assistant",
-                content: &msg.content,
+                content: msg.to_llm_content(),
             }),
         }
     }
@@ -384,10 +384,12 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "You are helpful.".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
+                parts: vec![],
             },
         ];
 
@@ -402,6 +404,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Hi".into(),
+            parts: vec![],
         }];
 
         let (system, chat) = split_messages(&messages);
@@ -415,14 +418,17 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "Part 1".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::System,
                 content: "Part 2".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
+                parts: vec![],
             },
         ];
 
@@ -612,18 +618,22 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "system prompt".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "user msg".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::Assistant,
                 content: "assistant reply".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "followup".into(),
+                parts: vec![],
             },
         ];
         let (system, chat) = split_messages(&messages);
@@ -769,6 +779,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -780,6 +791,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -790,6 +802,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::System,
             content: "instruction".into(),
+            parts: vec![],
         }];
         let (system, chat) = split_messages(&messages);
         assert_eq!(system.unwrap(), "instruction");
@@ -801,6 +814,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::Assistant,
             content: "reply".into(),
+            parts: vec![],
         }];
         let (system, chat) = split_messages(&messages);
         assert!(system.is_none());
@@ -814,14 +828,17 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "first".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "question".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::System,
                 content: "second".into(),
+                parts: vec![],
             },
         ];
         let (system, chat) = split_messages(&messages);
@@ -867,6 +884,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
+            parts: vec![],
         }];
 
         let response = provider.chat(&messages).await.unwrap();
@@ -883,6 +901,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
+            parts: vec![],
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -911,6 +930,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "What is 2+2? Reply with just the number.".into(),
+            parts: vec![],
         }];
 
         let chat_response = provider.chat(&messages).await.unwrap();

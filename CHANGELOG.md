@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `inject_summaries()` in Agent: injects SQLite conversation summaries into context (newest-first, budget-aware, with deduplication)
 - Wire `zeph-index` Code RAG pipeline into agent loop (feature-gated `index`): `CodeRetriever` integration, `inject_code_rag()` in `prepare_context()`, repo map in system prompt, background project indexing on startup
 - `IndexConfig` with `[index]` TOML section and `ZEPH_INDEX_*` env overrides (enabled, max_chunks, score_threshold, budget_ratio, repo_map_tokens)
+- `MessagePart` enum (Text, ToolOutput, Recall, CodeContext, Summary) for typed message content with independent lifecycle
+- `Message::from_parts()` constructor with `to_llm_content()` flattening for LLM provider consumption
+- `Message::from_legacy()` backward-compatible constructor for simple text messages
+- SQLite migration 006: `parts` column for structured message storage (JSON-serialized)
+- `save_message_with_parts()` in SqliteStore for persisting typed message parts
+- inject_semantic_recall, inject_code_context, inject_summaries now create typed MessagePart variants
 
 ### Changed
 - Agent error handler shows specific error context instead of generic message

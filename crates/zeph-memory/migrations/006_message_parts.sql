@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN parts TEXT NOT NULL DEFAULT '[]';

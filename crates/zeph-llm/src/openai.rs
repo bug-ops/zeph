@@ -312,7 +312,7 @@ fn convert_messages(messages: &[Message]) -> Vec<ApiMessage<'_>> {
             };
             ApiMessage {
                 role,
-                content: &msg.content,
+                content: msg.to_llm_content(),
             }
         })
         .collect()
@@ -625,14 +625,17 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "system prompt".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "user msg".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::Assistant,
                 content: "assistant reply".into(),
+                parts: vec![],
             },
         ];
         let api_msgs = convert_messages(&messages);
@@ -656,6 +659,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
         assert!(p.chat(&messages).await.is_err());
     }
@@ -673,6 +677,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
         assert!(p.chat_stream(&messages).await.is_err());
     }
@@ -771,6 +776,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
+            parts: vec![],
         }];
 
         let response = provider.chat(&messages).await.unwrap();
@@ -794,6 +800,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
+            parts: vec![],
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();

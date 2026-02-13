@@ -18,9 +18,64 @@ pub enum Role {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessagePart {
+    Text { text: String },
+    ToolOutput { tool_name: String, body: String },
+    Recall { text: String },
+    CodeContext { text: String },
+    Summary { text: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    #[serde(default)]
+    pub parts: Vec<MessagePart>,
+}
+
+impl Message {
+    #[must_use]
+    pub fn from_legacy(role: Role, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            parts: vec![],
+        }
+    }
+
+    #[must_use]
+    pub fn from_parts(role: Role, parts: Vec<MessagePart>) -> Self {
+        let content = Self::flatten_parts(&parts);
+        Self {
+            role,
+            content,
+            parts,
+        }
+    }
+
+    #[must_use]
+    pub fn to_llm_content(&self) -> &str {
+        &self.content
+    }
+
+    fn flatten_parts(parts: &[MessagePart]) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        for part in parts {
+            match part {
+                MessagePart::Text { text }
+                | MessagePart::Recall { text }
+                | MessagePart::CodeContext { text }
+                | MessagePart::Summary { text } => out.push_str(text),
+                MessagePart::ToolOutput { tool_name, body } => {
+                    let _ = write!(out, "[tool output: {tool_name}]\n```\n{body}\n```");
+                }
+            }
+        }
+        out
+    }
 }
 
 pub trait LlmProvider: Send + Sync {
@@ -126,6 +181,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -169,6 +225,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         }];
 
         let result = provider.chat_stream(&messages).await;
@@ -256,6 +313,7 @@ mod tests {
         let msg = Message {
             role: Role::User,
             content: "test".into(),
+            parts: vec![],
         };
         let cloned = msg.clone();
         assert_eq!(cloned.role, msg.role);
@@ -267,6 +325,7 @@ mod tests {
         let msg = Message {
             role: Role::Assistant,
             content: "response".into(),
+            parts: vec![],
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("Assistant"));
@@ -278,9 +337,65 @@ mod tests {
         let msg = Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
         assert!(json.contains("\"content\":\"hello\""));
+    }
+
+    #[test]
+    fn message_part_serde_round_trip() {
+        let parts = vec![
+            MessagePart::Text { text: "hello".into() },
+            MessagePart::ToolOutput { tool_name: "bash".into(), body: "output".into() },
+            MessagePart::Recall { text: "recall".into() },
+            MessagePart::CodeContext { text: "code".into() },
+            MessagePart::Summary { text: "summary".into() },
+        ];
+        let json = serde_json::to_string(&parts).unwrap();
+        let deserialized: Vec<MessagePart> = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.len(), 5);
+    }
+
+    #[test]
+    fn from_legacy_creates_empty_parts() {
+        let msg = Message::from_legacy(Role::User, "hello");
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content, "hello");
+        assert!(msg.parts.is_empty());
+        assert_eq!(msg.to_llm_content(), "hello");
+    }
+
+    #[test]
+    fn from_parts_flattens_content() {
+        let msg = Message::from_parts(
+            Role::System,
+            vec![MessagePart::Recall { text: "recalled data".into() }],
+        );
+        assert_eq!(msg.content, "recalled data");
+        assert_eq!(msg.to_llm_content(), "recalled data");
+        assert_eq!(msg.parts.len(), 1);
+    }
+
+    #[test]
+    fn from_parts_tool_output_format() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: "hello world".into(),
+            }],
+        );
+        assert!(msg.content.contains("[tool output: bash]"));
+        assert!(msg.content.contains("hello world"));
+    }
+
+    #[test]
+    fn message_deserializes_without_parts() {
+        let json = r#"{"role":"user","content":"hello"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content, "hello");
+        assert!(msg.parts.is_empty());
     }
 }

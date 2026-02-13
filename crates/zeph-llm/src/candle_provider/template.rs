@@ -47,7 +47,7 @@ fn format_llama3(messages: &[Message]) -> String {
         out.push_str("<|start_header_id|>");
         out.push_str(role_tag(msg.role));
         out.push_str("<|end_header_id|>\n\n");
-        out.push_str(&msg.content);
+        out.push_str(msg.to_llm_content());
         out.push_str("<|eot_id|>");
     }
     out.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
@@ -60,7 +60,7 @@ fn format_chatml(messages: &[Message]) -> String {
         out.push_str("<|im_start|>");
         out.push_str(role_tag(msg.role));
         out.push('\n');
-        out.push_str(&msg.content);
+        out.push_str(msg.to_llm_content());
         out.push_str("<|im_end|>\n");
     }
     out.push_str("<|im_start|>assistant\n");
@@ -77,7 +77,7 @@ fn format_mistral(messages: &[Message]) -> String {
                 if !system_text.is_empty() {
                     system_text.push('\n');
                 }
-                system_text.push_str(&msg.content);
+                system_text.push_str(msg.to_llm_content());
             }
             Role::User => {
                 out.push_str("[INST] ");
@@ -86,11 +86,11 @@ fn format_mistral(messages: &[Message]) -> String {
                     out.push_str("\n\n");
                     system_text.clear();
                 }
-                out.push_str(&msg.content);
+                out.push_str(msg.to_llm_content());
                 out.push_str(" [/INST]");
             }
             Role::Assistant => {
-                out.push_str(&msg.content);
+                out.push_str(msg.to_llm_content());
                 out.push_str("</s>");
             }
         }
@@ -104,7 +104,7 @@ fn format_phi3(messages: &[Message]) -> String {
         out.push_str("<|");
         out.push_str(role_tag(msg.role));
         out.push_str("|>\n");
-        out.push_str(&msg.content);
+        out.push_str(msg.to_llm_content());
         out.push_str("<|end|>\n");
     }
     out.push_str("<|assistant|>\n");
@@ -117,7 +117,7 @@ fn format_raw(messages: &[Message]) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&msg.content);
+        out.push_str(msg.to_llm_content());
     }
     out
 }
@@ -131,10 +131,12 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "You are helpful.".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
+                parts: vec![],
             },
         ]
     }
@@ -208,18 +210,22 @@ mod tests {
             Message {
                 role: Role::System,
                 content: "System prompt.".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "Hello".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::Assistant,
                 content: "Hi there".into(),
+                parts: vec![],
             },
             Message {
                 role: Role::User,
                 content: "How are you?".into(),
+                parts: vec![],
             },
         ];
         let out = ChatTemplate::Mistral.format(&messages);

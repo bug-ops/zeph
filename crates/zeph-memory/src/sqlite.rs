@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::Context;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{Message, MessagePart, Role};
 
 #[derive(Debug)]
 pub struct SqliteStore {
@@ -74,12 +74,29 @@ impl SqliteStore {
         role: &str,
         content: &str,
     ) -> anyhow::Result<i64> {
+        self.save_message_with_parts(conversation_id, role, content, "[]")
+            .await
+    }
+
+    /// Save a message with structured parts JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub async fn save_message_with_parts(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+    ) -> anyhow::Result<i64> {
         let row: (i64,) = sqlx::query_as(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?) RETURNING id",
+            "INSERT INTO messages (conversation_id, role, content, parts) VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(conversation_id)
         .bind(role)
         .bind(content)
+        .bind(parts_json)
         .fetch_one(&self.pool)
         .await
         .context("failed to save message")?;
@@ -96,9 +113,9 @@ impl SqliteStore {
         conversation_id: i64,
         limit: u32,
     ) -> anyhow::Result<Vec<Message>> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT role, content FROM (\
-                SELECT role, content, id FROM messages \
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT role, content, parts FROM (\
+                SELECT role, content, parts, id FROM messages \
                 WHERE conversation_id = ? \
                 ORDER BY id DESC \
                 LIMIT ?\
@@ -112,9 +129,14 @@ impl SqliteStore {
 
         let messages = rows
             .into_iter()
-            .map(|(role_str, content)| Message {
-                role: parse_role(&role_str),
-                content,
+            .map(|(role_str, content, parts_json)| {
+                let parts: Vec<MessagePart> =
+                    serde_json::from_str(&parts_json).unwrap_or_default();
+                Message {
+                    role: parse_role(&role_str),
+                    content,
+                    parts,
+                }
             })
             .collect();
         Ok(messages)
@@ -140,16 +162,20 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn message_by_id(&self, message_id: i64) -> anyhow::Result<Option<Message>> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT role, content FROM messages WHERE id = ?")
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT role, content, parts FROM messages WHERE id = ?")
                 .bind(message_id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to fetch message by id")?;
 
-        Ok(row.map(|(role_str, content)| Message {
-            role: parse_role(&role_str),
-            content,
+        Ok(row.map(|(role_str, content, parts_json)| {
+            let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
+            Message {
+                role: parse_role(&role_str),
+                content,
+                parts,
+            }
         }))
     }
 

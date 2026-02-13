@@ -261,6 +261,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -272,6 +273,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -287,6 +289,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -298,6 +301,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());

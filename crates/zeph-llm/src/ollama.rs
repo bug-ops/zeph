@@ -167,9 +167,9 @@ impl LlmProvider for OllamaProvider {
 
 fn convert_message(msg: &Message) -> ChatMessage {
     match msg.role {
-        Role::System => ChatMessage::system(msg.content.clone()),
-        Role::User => ChatMessage::user(msg.content.clone()),
-        Role::Assistant => ChatMessage::assistant(msg.content.clone()),
+        Role::System => ChatMessage::system(msg.to_llm_content().to_string()),
+        Role::User => ChatMessage::user(msg.to_llm_content().to_string()),
+        Role::Assistant => ChatMessage::assistant(msg.to_llm_content().to_string()),
     }
 }
 
@@ -246,6 +246,7 @@ mod tests {
         let msg = Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "hello");
@@ -337,6 +338,7 @@ mod tests {
         let msg = Message {
             role: Role::System,
             content: "system instruction".into(),
+            parts: vec![],
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "system instruction");
@@ -347,6 +349,7 @@ mod tests {
         let msg = Message {
             role: Role::Assistant,
             content: "reply text".into(),
+            parts: vec![],
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "reply text");
@@ -406,6 +409,7 @@ mod tests {
         let msg = Message {
             role: Role::User,
             content: "multi\nline\ncontent".into(),
+            parts: vec![],
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "multi\nline\ncontent");
@@ -416,6 +420,7 @@ mod tests {
         let msg = Message {
             role: Role::User,
             content: String::new(),
+            parts: vec![],
         };
         let cm = convert_message(&msg);
         assert!(cm.content.is_empty());
@@ -428,6 +433,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -448,6 +454,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "hello".into(),
+            parts: vec![],
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -493,6 +500,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
+            parts: vec![],
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -523,6 +531,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: "What is 2+2? Reply with just the number.".into(),
+            parts: vec![],
         }];
 
         let chat_response = provider.chat(&messages).await.unwrap();
