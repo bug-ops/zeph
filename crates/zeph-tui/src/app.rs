@@ -274,7 +274,7 @@ impl App {
                 self.status_label = Some("thinking...".to_owned());
             }
             AgentEvent::Status(text) => {
-                self.status_label = Some(text);
+                self.status_label = if text.is_empty() { None } else { Some(text) };
                 self.scroll_offset = 0;
             }
             AgentEvent::ToolStart { tool_name, command } => {

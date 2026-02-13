@@ -5,6 +5,7 @@ pub struct MetricsSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub context_tokens: u64,
     pub api_calls: u64,
     pub active_skills: Vec<String>,
     pub total_skills: usize,

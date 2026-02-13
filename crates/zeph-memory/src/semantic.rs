@@ -264,6 +264,22 @@ impl<P: LlmProvider> SemanticMemory<P> {
         self.sqlite.count_messages(conversation_id).await
     }
 
+    /// Count messages not yet covered by any summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn unsummarized_message_count(&self, conversation_id: i64) -> anyhow::Result<i64> {
+        let after_id = self
+            .sqlite
+            .latest_summary_last_message_id(conversation_id)
+            .await?
+            .unwrap_or(0);
+        self.sqlite
+            .count_messages_after(conversation_id, after_id)
+            .await
+    }
+
     /// Load all summaries for a conversation.
     ///
     /// # Errors
@@ -570,6 +586,25 @@ mod tests {
 
         let count = memory.message_count(cid).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn unsummarized_count_decreases_after_summary() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..10 {
+            memory
+                .remember(cid, "user", &format!("msg{i}"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(memory.unsummarized_message_count(cid).await.unwrap(), 10);
+
+        memory.summarize(cid, 5).await.unwrap();
+
+        assert!(memory.unsummarized_message_count(cid).await.unwrap() < 10);
+        assert_eq!(memory.message_count(cid).await.unwrap(), 10);
     }
 
     #[tokio::test]

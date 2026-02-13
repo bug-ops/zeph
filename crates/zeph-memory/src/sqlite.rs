@@ -194,6 +194,26 @@ impl SqliteStore {
         Ok(row.0)
     }
 
+    /// Count messages in a conversation with id greater than `after_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn count_messages_after(
+        &self,
+        conversation_id: i64,
+        after_id: i64,
+    ) -> anyhow::Result<i64> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ?")
+                .bind(conversation_id)
+                .bind(after_id)
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to count messages after id")?;
+        Ok(row.0)
+    }
+
     /// Load a range of messages after a given message ID.
     ///
     /// # Errors
@@ -1029,6 +1049,20 @@ mod tests {
         store.save_message(cid, "assistant", "msg2").await.unwrap();
 
         assert_eq!(store.count_messages(cid).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn count_messages_after_filters_correctly() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+        let _id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
+        let _id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+
+        assert_eq!(store.count_messages_after(cid, 0).await.unwrap(), 3);
+        assert_eq!(store.count_messages_after(cid, id1).await.unwrap(), 2);
+        assert_eq!(store.count_messages_after(cid, _id3).await.unwrap(), 0);
     }
 
     #[tokio::test]

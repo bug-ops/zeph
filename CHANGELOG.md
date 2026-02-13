@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `context_tokens` metric in TUI Resources panel showing current prompt estimate (vs cumulative session totals)
+- `unsummarized_message_count` in `SemanticMemory` for precise summarization trigger
+- `count_messages_after` in `SqliteStore` for counting messages beyond a given ID
+- TUI status indicators for context compaction ("compacting context...") and summarization ("summarizing...")
+- Debug tracing in `should_compact()` for context budget diagnostics (token estimate, threshold, decision)
 - Config hot-reload: watch config file for changes via `notify_debouncer_mini` and apply runtime-safe fields (security, timeouts, memory limits, context budget, compaction, max_active_skills) without restart
 - `ConfigWatcher` in zeph-core with 500ms debounced filesystem monitoring
 - `with_config_reload()` builder method on Agent for wiring config file watcher
@@ -27,6 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI inline code rendered as blue with dark background glow instead of bright yellow
 - TUI header uses deep blue background (`Rgb(20, 40, 80)`) for improved contrast
 - System prompt includes explicit `bash` block example and bans invented formats (`tool_code`, `tool_call`) for small model compatibility
+
+### Changed
+- TUI Resources panel: replaced separate Prompt/Completion/Total with Context (current) and Session (cumulative) metrics
+- Summarization trigger uses unsummarized message count instead of total, avoiding repeated no-op checks
+- Empty `AgentEvent::Status` clears TUI spinner instead of showing blank throbber
+- Status label cleared after summarization and compaction complete
 
 ### Fixed
 - TUI chat line wrapping no longer eats 2 characters on word wrap (accent prefix width accounted for)

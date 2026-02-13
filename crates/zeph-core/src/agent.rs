@@ -290,6 +290,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             m.total_skills = total_skills;
             m.qdrant_available = qdrant_available;
             m.sqlite_conversation_id = conversation_id;
+            m.context_tokens = prompt_estimate;
             m.prompt_tokens = prompt_estimate;
             m.total_tokens = prompt_estimate;
             #[cfg(feature = "mcp")]
@@ -308,7 +309,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn should_compact(&self) -> bool {
         let Some(ref budget) = self.context_budget else {
             return false;
@@ -318,7 +323,16 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .map(|m| estimate_tokens(&m.content))
             .sum();
-        total_tokens as f32 > budget.max_tokens() as f32 * self.compaction_threshold
+        let threshold = (budget.max_tokens() as f32 * self.compaction_threshold) as usize;
+        let should = total_tokens > threshold;
+        tracing::debug!(
+            total_tokens,
+            threshold,
+            message_count = self.messages.len(),
+            should_compact = should,
+            "context budget check"
+        );
+        should
     }
 
     async fn compact_context(&mut self) -> anyhow::Result<()> {
@@ -627,10 +641,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
             self.rebuild_system_prompt(&incoming.text).await;
 
-            if self.should_compact()
-                && let Err(e) = self.compact_context().await
-            {
-                tracing::warn!("context compaction failed: {e:#}");
+            if self.should_compact() {
+                let _ = self.channel.send_status("compacting context...").await;
+                if let Err(e) = self.compact_context().await {
+                    tracing::warn!("context compaction failed: {e:#}");
+                }
+                let _ = self.channel.send_status("").await;
             }
 
             if let Err(e) = self.prepare_context(trimmed).await {
@@ -1439,6 +1455,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 self.update_metrics(|m| {
                     m.api_calls += 1;
                     m.last_llm_latency_ms = latency;
+                    m.context_tokens = prompt_estimate;
                     m.prompt_tokens += prompt_estimate;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
@@ -1457,6 +1474,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     self.update_metrics(|m| {
                         m.api_calls += 1;
                         m.last_llm_latency_ms = latency;
+                        m.context_tokens = prompt_estimate;
                         m.prompt_tokens += prompt_estimate;
                         m.completion_tokens += completion_estimate;
                         m.total_tokens = m.prompt_tokens + m.completion_tokens;
@@ -1671,10 +1689,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return;
         };
 
-        let count = match memory.message_count(cid).await {
+        let count = match memory.unsummarized_message_count(cid).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("failed to get message count: {e:#}");
+                tracing::error!("failed to get unsummarized message count: {e:#}");
                 return;
             }
         };
@@ -1704,6 +1722,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     tracing::error!("summarization failed: {e:#}");
                 }
             }
+            let _ = self.channel.send_status("").await;
         }
     }
 
