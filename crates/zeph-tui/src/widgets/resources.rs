@@ -10,6 +10,8 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
 
     let res_lines = vec![
+        Line::from(format!("  Provider: {}", metrics.provider_name)),
+        Line::from(format!("  Model: {}", metrics.model_name)),
         Line::from(format!("  Prompt: {}", metrics.prompt_tokens)),
         Line::from(format!("  Completion: {}", metrics.completion_tokens)),
         Line::from(format!("  Total: {}", metrics.total_tokens)),

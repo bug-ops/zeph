@@ -264,12 +264,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
+        let model_name = self.model_name.clone();
         let total_skills = self.registry.all_meta().len();
         let qdrant_available = self
             .memory
             .as_ref()
             .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
         let conversation_id = self.conversation_id;
+        let prompt_estimate = self
+            .messages
+            .first()
+            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
         #[cfg(feature = "mcp")]
         let mcp_tool_count = self.mcp_tools.len();
         #[cfg(feature = "mcp")]
@@ -281,9 +286,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .len();
         tx.send_modify(|m| {
             m.provider_name = provider_name;
+            m.model_name = model_name;
             m.total_skills = total_skills;
             m.qdrant_available = qdrant_available;
             m.sqlite_conversation_id = conversation_id;
+            m.prompt_tokens = prompt_estimate;
+            m.total_tokens = prompt_estimate;
             #[cfg(feature = "mcp")]
             {
                 m.mcp_tool_count = mcp_tool_count;
@@ -2900,11 +2908,19 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
 
-        let _agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        let _agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_model_name("test-model")
+            .with_metrics(tx);
 
         let snapshot = rx.borrow().clone();
         assert_eq!(snapshot.provider_name, "mock");
+        assert_eq!(snapshot.model_name, "test-model");
         assert_eq!(snapshot.total_skills, 1);
+        assert!(
+            snapshot.prompt_tokens > 0,
+            "initial prompt estimate should be non-zero"
+        );
+        assert_eq!(snapshot.total_tokens, snapshot.prompt_tokens);
     }
 
     #[tokio::test]
