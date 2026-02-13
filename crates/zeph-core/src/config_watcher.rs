@@ -122,6 +122,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let _watcher = ConfigWatcher::start(&config_path, tx).unwrap();
 
+        // Drain any late FSEvents from the initial config write before creating other file
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        while rx.try_recv().is_ok() {}
+
         let other_path = dir.path().join("other.txt");
         std::fs::write(&other_path, "content").unwrap();
 
