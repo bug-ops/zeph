@@ -2,7 +2,7 @@
 
 ## Project Context
 
-Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 9 crates. Review all changes against these standards.
+Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 10 crates. Review all changes against these standards.
 
 ## Architecture Rules
 
