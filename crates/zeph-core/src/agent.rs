@@ -82,6 +82,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     code_retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
     #[cfg(feature = "index")]
     repo_map_tokens: usize,
+    warmup_ready: Option<watch::Receiver<bool>>,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -155,6 +156,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             code_retriever: None,
             #[cfg(feature = "index")]
             repo_map_tokens: 0,
+            warmup_ready: None,
         }
     }
 
@@ -267,6 +269,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
         self.model_name = name.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
+        self.warmup_ready = Some(rx);
         self
     }
 
@@ -695,6 +703,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ///
     /// Returns an error if channel I/O or LLM communication fails.
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        if let Some(mut rx) = self.warmup_ready.take()
+            && !*rx.borrow()
+        {
+            let _ = rx.changed().await;
+            if !*rx.borrow() {
+                tracing::warn!("model warmup did not complete successfully");
+            }
+        }
+
         loop {
             let incoming = tokio::select! {
                 result = self.channel.recv() => result?,

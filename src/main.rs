@@ -292,6 +292,7 @@ async fn main() -> anyhow::Result<()> {
     let index_pool = memory.sqlite().pool().clone();
     #[cfg(feature = "index")]
     let index_provider = provider.clone();
+    let warmup_provider_clone = provider.clone();
 
     let agent = Agent::new(
         provider,
@@ -422,8 +423,23 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx.clone()));
 
         if let Some(tool_rx) = tool_event_rx {
-            tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx));
+            tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
         }
+
+        let (warmup_tx, warmup_rx) = watch::channel(false);
+        let warmup_agent_tx = agent_tx.clone();
+        tokio::spawn(async move {
+            let _ = warmup_agent_tx
+                .send(zeph_tui::AgentEvent::Status("warming up model...".into()))
+                .await;
+            warmup_provider(&warmup_provider_clone).await;
+            let _ = warmup_agent_tx
+                .send(zeph_tui::AgentEvent::Status("model ready".into()))
+                .await;
+            let _ = warmup_tx.send(true);
+        });
+
+        let mut agent = agent.with_warmup_ready(warmup_rx);
 
         let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
         let agent_task = tokio::spawn(async move { agent.run().await });
@@ -438,6 +454,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    warmup_provider(&warmup_provider_clone).await;
     tokio::spawn(forward_status_to_stderr(status_rx));
     agent.run().await
 }
@@ -500,19 +517,7 @@ async fn forward_tool_events_to_tui(
 async fn health_check(provider: &AnyProvider) {
     match provider {
         AnyProvider::Ollama(ollama) => match ollama.health_check().await {
-            Ok(()) => {
-                tracing::info!("ollama health check passed, warming up model...");
-                let start = std::time::Instant::now();
-                match ollama.warmup().await {
-                    Ok(()) => {
-                        tracing::info!(
-                            "ollama model ready ({:.1}s)",
-                            start.elapsed().as_secs_f64()
-                        );
-                    }
-                    Err(e) => tracing::warn!("ollama warmup failed: {e:#}"),
-                }
-            }
+            Ok(()) => tracing::info!("ollama health check passed"),
             Err(e) => tracing::warn!("ollama health check failed: {e:#}"),
         },
         #[cfg(feature = "candle")]
@@ -526,6 +531,26 @@ async fn health_check(provider: &AnyProvider) {
                     "orchestrator sub-provider '{name}': {}",
                     zeph_llm::provider::LlmProvider::name(p)
                 );
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn warmup_provider(provider: &AnyProvider) {
+    match provider {
+        AnyProvider::Ollama(ollama) => {
+            let start = std::time::Instant::now();
+            match ollama.warmup().await {
+                Ok(()) => {
+                    tracing::info!("ollama model ready ({:.1}s)", start.elapsed().as_secs_f64());
+                }
+                Err(e) => tracing::warn!("ollama warmup failed: {e:#}"),
+            }
+        }
+        #[cfg(feature = "orchestrator")]
+        AnyProvider::Orchestrator(orch) => {
+            for (name, p) in orch.providers() {
                 if let zeph_llm::orchestrator::SubProvider::Ollama(ollama) = p {
                     let start = std::time::Instant::now();
                     match ollama.warmup().await {
