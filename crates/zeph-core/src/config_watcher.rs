@@ -107,7 +107,10 @@ mod tests {
         std::fs::write(&config_path, "updated = true").unwrap();
 
         let result = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
-        assert!(result.is_ok(), "expected ConfigEvent::Changed within timeout");
+        assert!(
+            result.is_ok(),
+            "expected ConfigEvent::Changed within timeout"
+        );
     }
 
     #[tokio::test]

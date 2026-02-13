@@ -2046,9 +2046,7 @@ async fn recv_skill_event(rx: &mut Option<mpsc::Receiver<SkillEvent>>) -> Option
     }
 }
 
-async fn recv_config_event(
-    rx: &mut Option<mpsc::Receiver<ConfigEvent>>,
-) -> Option<ConfigEvent> {
+async fn recv_config_event(rx: &mut Option<mpsc::Receiver<ConfigEvent>>) -> Option<ConfigEvent> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -3324,5 +3322,4 @@ mod agent_tests {
             .with_tool_summarization(false);
         assert!(!agent2.summarize_tool_output_enabled);
     }
-
 }

@@ -579,7 +579,11 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
     // Legacy format: [tool output] — infer tool name from body
     if let Some(rest) = content.strip_prefix("[tool output]\n```\n") {
         let body = rest.strip_suffix(suffix).unwrap_or(rest);
-        let name = if body.starts_with("$ ") { "bash" } else { "tool" };
+        let name = if body.starts_with("$ ") {
+            "bash"
+        } else {
+            "tool"
+        };
         return Some((name.to_owned(), body.to_owned()));
     }
     None
@@ -1039,9 +1043,7 @@ mod tests {
     #[test]
     fn load_history_recognizes_legacy_tool_output() {
         let (mut app, _rx, _tx) = make_app();
-        app.load_history(&[
-            ("user", "[tool output]\n```\n$ ls\nfile.txt\n```"),
-        ]);
+        app.load_history(&[("user", "[tool output]\n```\n$ ls\nfile.txt\n```")]);
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
@@ -1051,9 +1053,10 @@ mod tests {
     #[test]
     fn load_history_legacy_non_bash_tool() {
         let (mut app, _rx, _tx) = make_app();
-        app.load_history(&[
-            ("user", "[tool output]\n```\n[mcp:github:list]\nresults\n```"),
-        ]);
+        app.load_history(&[(
+            "user",
+            "[tool output]\n```\n[mcp:github:list]\nresults\n```",
+        )]);
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(app.messages()[0].tool_name.as_deref(), Some("tool"));
