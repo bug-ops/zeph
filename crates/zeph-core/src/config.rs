@@ -955,6 +955,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn parse_valid_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.toml");
@@ -990,6 +991,7 @@ history_limit = 10
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_cloud() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cloud.toml");
@@ -1043,6 +1045,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn telegram_config_from_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tg.toml");
@@ -1091,6 +1094,7 @@ allowed_users = ["alice", "bob"]
     }
 
     #[test]
+    #[serial]
     fn config_with_tools_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tools.toml");
@@ -1132,6 +1136,7 @@ blocked_commands = ["custom-danger"]
     }
 
     #[test]
+    #[serial]
     fn config_without_tools_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("no_tools.toml");
@@ -1214,6 +1219,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn config_parse_embedding_model() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("embed.toml");
@@ -1260,6 +1266,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn config_missing_embedding_model_uses_default() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("no_embed.toml");
@@ -1298,6 +1305,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn config_parse_qdrant_url() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("qdrant.toml");
@@ -1350,6 +1358,7 @@ qdrant_url = "http://qdrant:6334"
     }
 
     #[test]
+    #[serial]
     fn config_parse_summarization_threshold() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sum.toml");
@@ -1512,6 +1521,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn parse_toml_without_learning_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("no_learn.toml");
@@ -1692,6 +1702,7 @@ qdrant_url = "http://localhost:6334"
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_mcp() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.toml");
@@ -1739,6 +1750,7 @@ timeout = 60
     }
 
     #[test]
+    #[serial]
     fn parse_toml_mcp_http_server() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp_http.toml");
@@ -1796,6 +1808,7 @@ url = "http://remote-mcp:8080"
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_a2a() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a2a.toml");
@@ -1853,6 +1866,7 @@ max_body_size = 2097152
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_security() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sec.toml");
@@ -1896,6 +1910,7 @@ redact_secrets = false
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_timeouts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("timeouts.toml");
@@ -1935,6 +1950,7 @@ a2a_seconds = 10
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_vault() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.toml");
@@ -2259,6 +2275,7 @@ backend = "age"
     }
 
     #[test]
+    #[serial]
     fn mcp_server_config_default_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp_default_timeout.toml");
@@ -2342,6 +2359,7 @@ command = "cmd"
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_all_sections() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("full.toml");
@@ -2450,6 +2468,7 @@ a2a_seconds = 15
     }
 
     #[test]
+    #[serial]
     fn parse_toml_with_openai() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("openai.toml");
@@ -2496,6 +2515,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn parse_toml_openai_without_embedding_model() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("openai_no_embed.toml");
@@ -2546,6 +2566,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn parse_toml_openai_with_reasoning_effort() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("openai_reasoning.toml");
@@ -2585,6 +2606,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn parse_toml_openai_without_reasoning_effort() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("openai_no_reasoning.toml");
@@ -2630,6 +2652,7 @@ history_limit = 50
     }
 
     #[test]
+    #[serial]
     fn compaction_config_parsing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("compact.toml");
@@ -2735,6 +2758,7 @@ compaction_preserve_tail = 6
     }
 
     #[test]
+    #[serial]
     fn index_config_from_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("index.toml");
@@ -2778,6 +2802,7 @@ repo_map_tokens = 1000
     }
 
     #[test]
+    #[serial]
     fn index_config_missing_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("no_index.toml");
