@@ -146,6 +146,26 @@ async fn main() -> anyhow::Result<()> {
 
     health_check(&provider).await;
 
+    // Auto-detect context window for Ollama models
+    if let AnyProvider::Ollama(ref mut ollama) = provider
+        && let Ok(info) = ollama.fetch_model_info().await
+        && let Some(ctx) = info.context_length
+    {
+        ollama.set_context_window(ctx);
+        tracing::info!(context_window = ctx, "detected Ollama model context window");
+    }
+
+    let budget_tokens = if config.memory.auto_budget && config.memory.context_budget_tokens == 0 {
+        if let Some(ctx_size) = provider.context_window() {
+            tracing::info!(model_context = ctx_size, "auto-configured context budget");
+            ctx_size
+        } else {
+            0
+        }
+    } else {
+        config.memory.context_budget_tokens
+    };
+
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
 
@@ -281,7 +301,7 @@ async fn main() -> anyhow::Result<()> {
         config.memory.summarization_threshold,
     )
     .with_context_budget(
-        config.memory.context_budget_tokens,
+        budget_tokens,
         0.20,
         config.memory.compaction_threshold,
         config.memory.compaction_preserve_tail,

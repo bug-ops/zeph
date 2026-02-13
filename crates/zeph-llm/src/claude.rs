@@ -190,6 +190,17 @@ impl ClaudeProvider {
 }
 
 impl LlmProvider for ClaudeProvider {
+    fn context_window(&self) -> Option<usize> {
+        if self.model.contains("opus")
+            || self.model.contains("sonnet")
+            || self.model.contains("haiku")
+        {
+            Some(200_000)
+        } else {
+            None
+        }
+    }
+
     async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
         self.send_request(messages).await
     }
@@ -348,6 +359,24 @@ struct StreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_window_known_models() {
+        let sonnet = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert_eq!(sonnet.context_window(), Some(200_000));
+
+        let opus = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 1024);
+        assert_eq!(opus.context_window(), Some(200_000));
+
+        let haiku = ClaudeProvider::new("k".into(), "claude-haiku-4-5".into(), 1024);
+        assert_eq!(haiku.context_window(), Some(200_000));
+    }
+
+    #[test]
+    fn context_window_unknown_model() {
+        let provider = ClaudeProvider::new("k".into(), "unknown-model".into(), 1024);
+        assert!(provider.context_window().is_none());
+    }
 
     #[test]
     fn split_messages_extracts_system() {

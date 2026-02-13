@@ -26,24 +26,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI: message separators and accent bars for visual structure
 - TUI: tool output restored as expandable messages from conversation history
 - TUI: collapsed tool output preview (3 lines) when restoring history
+- `LlmProvider::context_window()` trait method for model context window size detection
+- Ollama context window auto-detection via `/api/show` model info endpoint
+- Context window sizes for Claude (200K) and OpenAI (128K/16K/1M) provider models
+- `auto_budget` config field with `ZEPH_MEMORY_AUTO_BUDGET` env override for automatic context budget from model metadata
+- `inject_summaries()` in Agent: injects SQLite conversation summaries into context (newest-first, budget-aware, with deduplication)
 
 ### Changed
 - Agent error handler shows specific error context instead of generic message
 - TUI inline code rendered as blue with dark background glow instead of bright yellow
 - TUI header uses deep blue background (`Rgb(20, 40, 80)`) for improved contrast
 - System prompt includes explicit `bash` block example and bans invented formats (`tool_code`, `tool_call`) for small model compatibility
-
-### Changed
 - TUI Resources panel: replaced separate Prompt/Completion/Total with Context (current) and Session (cumulative) metrics
 - Summarization trigger uses unsummarized message count instead of total, avoiding repeated no-op checks
 - Empty `AgentEvent::Status` clears TUI spinner instead of showing blank throbber
 - Status label cleared after summarization and compaction complete
+- Default `summarization_threshold`: 100 → 50 messages
+- Default `compaction_threshold`: 0.75 → 0.80
+- Default `compaction_preserve_tail`: 4 → 6 messages
+- Default `semantic.enabled`: false → true
+- Default `summarize_output`: false → true
+- Default `context_budget_tokens`: 0 (auto-detect from model)
 
 ### Fixed
 - TUI chat line wrapping no longer eats 2 characters on word wrap (accent prefix width accounted for)
 - TUI activity indicator moved to dedicated layout row (no longer overlaps content)
 - Memory history loading now retrieves most recent messages instead of oldest
 - Persisted tool output format includes tool name (`[tool output: bash]`) for proper display on restore
+- `summarize_output` serde deserialization used `#[serde(default)]` yielding `false` instead of config default `true`
 
 ## [0.9.3] - 2026-02-12
 

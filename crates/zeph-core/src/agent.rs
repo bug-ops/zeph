@@ -28,6 +28,7 @@ use zeph_memory::semantic::estimate_tokens;
 const MAX_SHELL_ITERATIONS: usize = 3;
 const RECALL_PREFIX: &str = "[semantic recall]\n";
 const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
+const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
@@ -120,15 +121,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             conversation_id: None,
             history_limit: 50,
             recall_limit: 5,
-            summarization_threshold: 100,
+            summarization_threshold: 50,
             shutdown: rx,
             active_skill_names: Vec::new(),
             metrics_tx: None,
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
             context_budget: None,
-            compaction_threshold: 0.75,
-            compaction_preserve_tail: 4,
+            compaction_threshold: 0.80,
+            compaction_preserve_tail: 6,
             last_skills_prompt: skills_prompt,
             model_name: String::new(),
             #[cfg(feature = "self-learning")]
@@ -485,6 +486,56 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .retain(|m| !(m.role == Role::System && m.content.starts_with(CODE_CONTEXT_PREFIX)));
     }
 
+    fn remove_summary_messages(&mut self) {
+        self.messages
+            .retain(|m| !(m.role == Role::System && m.content.starts_with(SUMMARY_PREFIX)));
+    }
+
+    async fn inject_summaries(&mut self, token_budget: usize) -> anyhow::Result<()> {
+        self.remove_summary_messages();
+
+        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
+            return Ok(());
+        };
+        if token_budget == 0 {
+            return Ok(());
+        }
+
+        let summaries = memory.load_summaries(cid).await?;
+        if summaries.is_empty() {
+            return Ok(());
+        }
+
+        let mut summary_text = String::from(SUMMARY_PREFIX);
+        let mut tokens_used = estimate_tokens(&summary_text);
+
+        for summary in summaries.iter().rev() {
+            let entry = format!(
+                "- Messages {}-{}: {}\n",
+                summary.first_message_id, summary.last_message_id, summary.content
+            );
+            let cost = estimate_tokens(&entry);
+            if tokens_used + cost > token_budget {
+                break;
+            }
+            summary_text.push_str(&entry);
+            tokens_used += cost;
+        }
+
+        if tokens_used > estimate_tokens(SUMMARY_PREFIX) && self.messages.len() > 1 {
+            self.messages.insert(
+                1,
+                Message {
+                    role: Role::System,
+                    content: summary_text,
+                },
+            );
+            tracing::debug!(tokens_used, "injected summaries into context");
+        }
+
+        Ok(())
+    }
+
     fn trim_messages_to_budget(&mut self, token_budget: usize) {
         if token_budget == 0 {
             return;
@@ -530,6 +581,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
         let alloc = budget.allocate(system_prompt, &self.last_skills_prompt);
+
+        self.inject_summaries(alloc.summaries).await?;
 
         self.inject_semantic_recall(query, alloc.semantic_recall)
             .await?;
@@ -3414,5 +3467,221 @@ mod agent_tests {
         let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
             .with_tool_summarization(false);
         assert!(!agent2.summarize_tool_output_enabled);
+    }
+
+    async fn create_memory_with_summaries(
+        provider: MockProvider,
+        summaries: &[&str],
+    ) -> (SemanticMemory<MockProvider>, i64) {
+        let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test")
+            .await
+            .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        for content in summaries {
+            let m1 = memory
+                .sqlite()
+                .save_message(cid, "user", "q")
+                .await
+                .unwrap();
+            let m2 = memory
+                .sqlite()
+                .save_message(cid, "assistant", "a")
+                .await
+                .unwrap();
+            memory
+                .sqlite()
+                .save_summary(cid, content, m1, m2, estimate_tokens(content) as i64)
+                .await
+                .unwrap();
+        }
+        (memory, cid)
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_no_memory_noop() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let msg_count = agent.messages.len();
+
+        agent.inject_summaries(1000).await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_zero_budget_noop() {
+        let provider = MockProvider::new(vec![]);
+        let (memory, cid) = create_memory_with_summaries(provider.clone(), &["summary text"]).await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+        let msg_count = agent.messages.len();
+
+        agent.inject_summaries(0).await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_empty_summaries_noop() {
+        let provider = MockProvider::new(vec![]);
+        let (memory, cid) = create_memory_with_summaries(provider.clone(), &[]).await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+        let msg_count = agent.messages.len();
+
+        agent.inject_summaries(1000).await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_inserts_at_position_1() {
+        let provider = MockProvider::new(vec![]);
+        let (memory, cid) =
+            create_memory_with_summaries(provider.clone(), &["User asked about Rust ownership"])
+                .await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "hello".into(),
+        });
+
+        agent.inject_summaries(1000).await.unwrap();
+
+        assert_eq!(agent.messages[0].role, Role::System);
+        assert!(agent.messages[1].content.starts_with(SUMMARY_PREFIX));
+        assert_eq!(agent.messages[1].role, Role::System);
+        assert!(
+            agent.messages[1]
+                .content
+                .contains("User asked about Rust ownership")
+        );
+        assert_eq!(agent.messages[2].content, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_removes_old_before_inject() {
+        let provider = MockProvider::new(vec![]);
+        let (memory, cid) =
+            create_memory_with_summaries(provider.clone(), &["new summary data"]).await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+
+        agent.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: format!("{SUMMARY_PREFIX}old summary data"),
+            },
+        );
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "hello".into(),
+        });
+        assert_eq!(agent.messages.len(), 3);
+
+        agent.inject_summaries(1000).await.unwrap();
+
+        let summary_msgs: Vec<_> = agent
+            .messages
+            .iter()
+            .filter(|m| m.content.starts_with(SUMMARY_PREFIX))
+            .collect();
+        assert_eq!(summary_msgs.len(), 1);
+        assert!(summary_msgs[0].content.contains("new summary data"));
+        assert!(!summary_msgs[0].content.contains("old summary data"));
+    }
+
+    #[tokio::test]
+    async fn test_inject_summaries_respects_token_budget() {
+        let provider = MockProvider::new(vec![]);
+        // Each summary entry is "- Messages X-Y: <content>\n" (~prefix overhead + content)
+        let (memory, cid) = create_memory_with_summaries(
+            provider.clone(),
+            &[
+                "short",
+                "this is a much longer summary that should consume more tokens",
+            ],
+        )
+        .await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "hello".into(),
+        });
+
+        // Use a very small budget: only the prefix + maybe one short entry
+        let prefix_cost = estimate_tokens(SUMMARY_PREFIX);
+        agent.inject_summaries(prefix_cost + 10).await.unwrap();
+
+        let summary_msg = agent
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with(SUMMARY_PREFIX));
+
+        if let Some(msg) = summary_msg {
+            let token_count = estimate_tokens(&msg.content);
+            assert!(token_count <= prefix_cost + 10);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remove_summary_messages_preserves_other_system() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: format!("{SUMMARY_PREFIX}old summary"),
+            },
+        );
+        agent.messages.insert(
+            2,
+            Message {
+                role: Role::System,
+                content: format!("{RECALL_PREFIX}recall data"),
+            },
+        );
+        assert_eq!(agent.messages.len(), 3);
+
+        agent.remove_summary_messages();
+        assert_eq!(agent.messages.len(), 2);
+        assert!(agent.messages[1].content.starts_with(RECALL_PREFIX));
     }
 }

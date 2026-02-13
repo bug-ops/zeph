@@ -42,6 +42,19 @@ impl AnyProvider {
 }
 
 impl LlmProvider for AnyProvider {
+    fn context_window(&self) -> Option<usize> {
+        match self {
+            Self::Ollama(p) => p.context_window(),
+            Self::Claude(p) => p.context_window(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.context_window(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.context_window(),
+            #[cfg(feature = "orchestrator")]
+            Self::Orchestrator(p) => p.context_window(),
+        }
+    }
+
     async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
@@ -127,6 +140,25 @@ mod tests {
     use crate::claude::ClaudeProvider;
     use crate::ollama::OllamaProvider;
     use crate::provider::Role;
+
+    #[test]
+    fn any_ollama_context_window_delegates() {
+        let mut ollama =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        ollama.set_context_window(8192);
+        let provider = AnyProvider::Ollama(ollama);
+        assert_eq!(provider.context_window(), Some(8192));
+    }
+
+    #[test]
+    fn any_claude_context_window_delegates() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-5".into(),
+            1024,
+        ));
+        assert_eq!(provider.context_window(), Some(200_000));
+    }
 
     #[test]
     fn any_ollama_name() {

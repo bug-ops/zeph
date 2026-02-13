@@ -265,6 +265,8 @@ pub struct MemoryConfig {
     pub compaction_threshold: f32,
     #[serde(default = "default_compaction_preserve_tail")]
     pub compaction_preserve_tail: usize,
+    #[serde(default = "default_auto_budget")]
+    pub auto_budget: bool,
 }
 
 fn default_qdrant_url() -> String {
@@ -272,7 +274,7 @@ fn default_qdrant_url() -> String {
 }
 
 fn default_summarization_threshold() -> usize {
-    100
+    50
 }
 
 fn default_context_budget_tokens() -> usize {
@@ -280,11 +282,15 @@ fn default_context_budget_tokens() -> usize {
 }
 
 fn default_compaction_threshold() -> f32 {
-    0.75
+    0.80
 }
 
 fn default_compaction_preserve_tail() -> usize {
-    4
+    6
+}
+
+fn default_auto_budget() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,7 +311,7 @@ impl Default for SemanticConfig {
 }
 
 fn default_semantic_enabled() -> bool {
-    false
+    true
 }
 
 fn default_recall_limit() -> usize {
@@ -601,6 +607,11 @@ impl Config {
         {
             self.memory.compaction_preserve_tail = tail;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTO_BUDGET")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.auto_budget = enabled;
+        }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
         {
@@ -778,6 +789,7 @@ impl Config {
                 context_budget_tokens: default_context_budget_tokens(),
                 compaction_threshold: default_compaction_threshold(),
                 compaction_preserve_tail: default_compaction_preserve_tail(),
+                auto_budget: default_auto_budget(),
             },
             telegram: None,
             tools: ToolsConfig::default(),
@@ -799,7 +811,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 40] = [
+    const ENV_KEYS: [&str; 41] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -840,6 +852,7 @@ mod tests {
         "ZEPH_SKILLS_LEARNING_ENABLED",
         "ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE",
         "ZEPH_TOOLS_SUMMARIZE_OUTPUT",
+        "ZEPH_MEMORY_AUTO_BUDGET",
     ];
 
     fn clear_env() {
@@ -1258,7 +1271,7 @@ qdrant_url = "http://qdrant:6334"
     #[test]
     fn config_default_summarization_threshold() {
         let config = Config::default();
-        assert_eq!(config.memory.summarization_threshold, 100);
+        assert_eq!(config.memory.summarization_threshold, 50);
     }
 
     #[test]
@@ -1298,7 +1311,7 @@ summarization_threshold = 200
     #[serial]
     fn config_env_override_summarization_threshold() {
         let mut config = Config::default();
-        assert_eq!(config.memory.summarization_threshold, 100);
+        assert_eq!(config.memory.summarization_threshold, 50);
 
         unsafe { std::env::set_var("ZEPH_MEMORY_SUMMARIZATION_THRESHOLD", "150") };
         config.apply_env_overrides();
@@ -2104,13 +2117,13 @@ backend = "age"
     fn env_override_semantic_enabled() {
         clear_env();
         let mut config = Config::default();
-        assert!(!config.memory.semantic.enabled);
+        assert!(config.memory.semantic.enabled);
 
-        unsafe { std::env::set_var("ZEPH_MEMORY_SEMANTIC_ENABLED", "true") };
+        unsafe { std::env::set_var("ZEPH_MEMORY_SEMANTIC_ENABLED", "false") };
         config.apply_env_overrides();
         unsafe { std::env::remove_var("ZEPH_MEMORY_SEMANTIC_ENABLED") };
 
-        assert!(config.memory.semantic.enabled);
+        assert!(!config.memory.semantic.enabled);
     }
 
     #[test]
@@ -2242,7 +2255,7 @@ command = "cmd"
     #[test]
     fn semantic_config_defaults() {
         let config = SemanticConfig::default();
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.recall_limit, 5);
     }
 
@@ -2537,8 +2550,8 @@ history_limit = 50
     #[test]
     fn compaction_config_defaults() {
         let config = Config::default();
-        assert!((config.memory.compaction_threshold - 0.75).abs() < f32::EPSILON);
-        assert_eq!(config.memory.compaction_preserve_tail, 4);
+        assert!((config.memory.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 6);
     }
 
     #[test]
@@ -2581,8 +2594,8 @@ compaction_preserve_tail = 6
     fn compaction_env_overrides() {
         clear_env();
         let mut config = Config::default();
-        assert!((config.memory.compaction_threshold - 0.75).abs() < f32::EPSILON);
-        assert_eq!(config.memory.compaction_preserve_tail, 4);
+        assert!((config.memory.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(config.memory.compaction_preserve_tail, 6);
 
         unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_THRESHOLD", "0.50") };
         unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL", "8") };
@@ -2595,9 +2608,9 @@ compaction_preserve_tail = 6
     }
 
     #[test]
-    fn tools_summarize_output_default_false() {
+    fn tools_summarize_output_default_true() {
         let config = Config::default();
-        assert!(!config.tools.summarize_output);
+        assert!(config.tools.summarize_output);
     }
 
     #[test]
@@ -2605,12 +2618,32 @@ compaction_preserve_tail = 6
     fn env_override_tools_summarize_output() {
         clear_env();
         let mut config = Config::default();
-        assert!(!config.tools.summarize_output);
+        assert!(config.tools.summarize_output);
 
-        unsafe { std::env::set_var("ZEPH_TOOLS_SUMMARIZE_OUTPUT", "true") };
+        unsafe { std::env::set_var("ZEPH_TOOLS_SUMMARIZE_OUTPUT", "false") };
         config.apply_env_overrides();
         unsafe { std::env::remove_var("ZEPH_TOOLS_SUMMARIZE_OUTPUT") };
 
-        assert!(config.tools.summarize_output);
+        assert!(!config.tools.summarize_output);
+    }
+
+    #[test]
+    fn auto_budget_default_true() {
+        clear_env();
+        let config = Config::default();
+        assert!(config.memory.auto_budget);
+    }
+
+    #[test]
+    fn env_override_auto_budget() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(config.memory.auto_budget);
+
+        unsafe { std::env::set_var("ZEPH_MEMORY_AUTO_BUDGET", "false") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_MEMORY_AUTO_BUDGET") };
+
+        assert!(!config.memory.auto_budget);
     }
 }

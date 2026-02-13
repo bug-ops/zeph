@@ -411,6 +411,12 @@ impl ModelOrchestrator {
 }
 
 impl LlmProvider for ModelOrchestrator {
+    fn context_window(&self) -> Option<usize> {
+        self.providers
+            .get(&self.default_provider)
+            .and_then(LlmProvider::context_window)
+    }
+
     async fn chat(&self, messages: &[Message]) -> Result<String> {
         self.chat_with_fallback(messages).await
     }
@@ -1134,5 +1140,29 @@ mod tests {
 
         let provider = orch.select_provider(&user_msg("hello there"));
         assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    fn orchestrator_context_window_delegates_to_default() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "ollama".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://localhost:11434",
+                "test".into(),
+                "embed".into(),
+            )),
+        );
+
+        let orch =
+            ModelOrchestrator::new(HashMap::new(), providers, "ollama".into(), "ollama".into())
+                .unwrap();
+
+        let window = orch.context_window();
+        assert_eq!(
+            window,
+            OllamaProvider::new("http://localhost:11434", "test".into(), "e".into())
+                .context_window()
+        );
     }
 }

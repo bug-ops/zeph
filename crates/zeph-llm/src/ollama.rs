@@ -7,11 +7,17 @@ use tokio_stream::StreamExt;
 
 use crate::provider::{ChatStream, LlmProvider, Message, Role};
 
+#[derive(Debug)]
+pub struct ModelInfo {
+    pub context_length: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Ollama,
     model: String,
     embedding_model: String,
+    context_window_size: Option<usize>,
 }
 
 impl OllamaProvider {
@@ -22,7 +28,43 @@ impl OllamaProvider {
             client: Ollama::new(host, port),
             model,
             embedding_model,
+            context_window_size: None,
         }
+    }
+
+    /// Set context window size (typically from /api/show response).
+    pub fn set_context_window(&mut self, size: usize) {
+        self.context_window_size = Some(size);
+    }
+
+    /// Query Ollama /api/show for model metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn fetch_model_info(&self) -> anyhow::Result<ModelInfo> {
+        let info = self
+            .client
+            .show_model_info(self.model.clone())
+            .await
+            .context("failed to fetch model info from Ollama")?;
+
+        // Try model_info map first (newer ollama versions)
+        let ctx = info
+            .model_info
+            .iter()
+            .find_map(|(k, v)| {
+                if k.ends_with(".context_length") {
+                    v.as_u64().and_then(|n| usize::try_from(n).ok())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| parse_num_ctx(&info.parameters));
+
+        Ok(ModelInfo {
+            context_length: ctx,
+        })
     }
 
     /// Check if Ollama is reachable.
@@ -55,6 +97,10 @@ impl OllamaProvider {
 }
 
 impl LlmProvider for OllamaProvider {
+    fn context_window(&self) -> Option<usize> {
+        self.context_window_size
+    }
+
     async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
 
@@ -127,6 +173,18 @@ fn convert_message(msg: &Message) -> ChatMessage {
     }
 }
 
+fn parse_num_ctx(parameters: &str) -> Option<usize> {
+    for line in parameters.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("num_ctx")
+            && let Ok(val) = rest.trim().parse::<usize>()
+        {
+            return Some(val);
+        }
+    }
+    None
+}
+
 fn parse_host_port(url: &str) -> (String, u16) {
     let url = url.trim_end_matches('/');
     if let Some(colon_pos) = url.rfind(':') {
@@ -142,6 +200,32 @@ fn parse_host_port(url: &str) -> (String, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_window_none_by_default() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        assert!(provider.context_window().is_none());
+    }
+
+    #[test]
+    fn context_window_after_set() {
+        let mut provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        provider.set_context_window(32768);
+        assert_eq!(provider.context_window(), Some(32768));
+    }
+
+    #[test]
+    fn parse_num_ctx_from_parameters() {
+        assert_eq!(parse_num_ctx("num_ctx 4096"), Some(4096));
+        assert_eq!(
+            parse_num_ctx("num_ctx                    32768"),
+            Some(32768)
+        );
+        assert_eq!(parse_num_ctx("other_param 123\nnum_ctx 8192"), Some(8192));
+        assert!(parse_num_ctx("no match here").is_none());
+        assert!(parse_num_ctx("").is_none());
+    }
 
     #[test]
     fn parse_host_port_with_port() {

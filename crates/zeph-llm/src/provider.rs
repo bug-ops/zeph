@@ -24,6 +24,13 @@ pub struct Message {
 }
 
 pub trait LlmProvider: Send + Sync {
+    /// Report the model's context window size in tokens.
+    ///
+    /// Returns `None` if unknown. Used for auto-budget calculation.
+    fn context_window(&self) -> Option<usize> {
+        None
+    }
+
     /// Send messages to the LLM and return the assistant response.
     ///
     /// # Errors
@@ -93,6 +100,14 @@ mod tests {
         fn name(&self) -> &'static str {
             "stub"
         }
+    }
+
+    #[test]
+    fn context_window_default_returns_none() {
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(provider.context_window().is_none());
     }
 
     #[test]

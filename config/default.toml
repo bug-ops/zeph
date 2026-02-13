@@ -89,17 +89,19 @@ history_limit = 50
 # Qdrant vector database URL for semantic memory
 qdrant_url = "http://localhost:6334"
 # Number of messages before triggering summarization (0 = disabled)
-summarization_threshold = 100
-# Total token budget for context window (0 = unlimited)
+summarization_threshold = 50
+# Total token budget for context window (0 = auto-detect from model)
 context_budget_tokens = 0
+# Auto-detect context budget from model's context window size
+auto_budget = true
 # Context compaction threshold (0.0-1.0): compact when usage exceeds this fraction
-compaction_threshold = 0.75
+compaction_threshold = 0.80
 # Number of recent messages to preserve during compaction
-compaction_preserve_tail = 4
+compaction_preserve_tail = 6
 
 [memory.semantic]
 # Enable semantic memory with vector search
-enabled = false
+enabled = true
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
@@ -148,7 +150,7 @@ max_body_size = 1048576
 # Enable tool execution (bash commands)
 enabled = true
 # Summarize long tool output via LLM instead of head+tail truncation
-summarize_output = false
+summarize_output = true
 
 [tools.shell]
 # Command timeout in seconds

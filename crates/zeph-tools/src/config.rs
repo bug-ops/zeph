@@ -28,7 +28,7 @@ fn default_audit_destination() -> String {
 pub struct ToolsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub summarize_output: bool,
     #[serde(default)]
     pub shell: ShellConfig,
@@ -68,7 +68,7 @@ impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            summarize_output: false,
+            summarize_output: true,
             shell: ShellConfig::default(),
             scrape: ScrapeConfig::default(),
             audit: AuditConfig::default(),
@@ -163,16 +163,16 @@ mod tests {
     fn default_tools_config() {
         let config = ToolsConfig::default();
         assert!(config.enabled);
-        assert!(!config.summarize_output);
+        assert!(config.summarize_output);
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
         assert!(!config.audit.enabled);
     }
 
     #[test]
-    fn tools_summarize_output_default_false() {
+    fn tools_summarize_output_default_true() {
         let config = ToolsConfig::default();
-        assert!(!config.summarize_output);
+        assert!(config.summarize_output);
     }
 
     #[test]
@@ -207,6 +207,7 @@ mod tests {
         assert_eq!(config.scrape.max_body_bytes, 1_048_576);
         assert!(!config.audit.enabled);
         assert_eq!(config.audit.destination, "stdout");
+        assert!(config.summarize_output);
     }
 
     #[test]

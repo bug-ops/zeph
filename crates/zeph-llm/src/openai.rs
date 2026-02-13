@@ -180,6 +180,18 @@ impl OpenAiProvider {
 }
 
 impl LlmProvider for OpenAiProvider {
+    fn context_window(&self) -> Option<usize> {
+        if self.model.starts_with("gpt-4o") || self.model.starts_with("gpt-4") {
+            Some(128_000)
+        } else if self.model.starts_with("gpt-3.5") {
+            Some(16_385)
+        } else if self.model.starts_with("gpt-5") {
+            Some(1_000_000)
+        } else {
+            None
+        }
+    }
+
     async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
         match self.send_request(messages).await {
             Ok(text) => Ok(text),
@@ -388,6 +400,37 @@ mod tests {
             Some("text-embedding-3-small".into()),
             None,
         )
+    }
+
+    #[test]
+    fn context_window_gpt4o() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.context_window(), Some(128_000));
+    }
+
+    #[test]
+    fn context_window_gpt5() {
+        assert_eq!(test_provider().context_window(), Some(1_000_000));
+    }
+
+    #[test]
+    fn context_window_unknown() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://api.openai.com/v1".into(),
+            "custom-model".into(),
+            1024,
+            None,
+            None,
+        );
+        assert!(p.context_window().is_none());
     }
 
     fn test_provider_no_embed() -> OpenAiProvider {
@@ -763,6 +806,32 @@ mod tests {
         let full_response: String = chunks.concat();
         assert!(!full_response.is_empty());
         assert!(full_response.to_lowercase().contains("pong"));
+    }
+
+    #[test]
+    fn context_window_gpt35() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-3.5-turbo".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.context_window(), Some(16_385));
+    }
+
+    #[test]
+    fn context_window_gpt4_turbo() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4-turbo".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.context_window(), Some(128_000));
     }
 
     #[tokio::test]
