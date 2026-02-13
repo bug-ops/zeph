@@ -2628,6 +2628,7 @@ compaction_preserve_tail = 6
     }
 
     #[test]
+    #[serial]
     fn auto_budget_default_true() {
         clear_env();
         let config = Config::default();
@@ -2635,6 +2636,7 @@ compaction_preserve_tail = 6
     }
 
     #[test]
+    #[serial]
     fn env_override_auto_budget() {
         clear_env();
         let mut config = Config::default();
