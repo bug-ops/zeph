@@ -270,11 +270,25 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .as_ref()
             .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
         let conversation_id = self.conversation_id;
+        #[cfg(feature = "mcp")]
+        let mcp_tool_count = self.mcp_tools.len();
+        #[cfg(feature = "mcp")]
+        let mcp_server_count = self
+            .mcp_tools
+            .iter()
+            .map(|t| &t.server_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         tx.send_modify(|m| {
             m.provider_name = provider_name;
             m.total_skills = total_skills;
             m.qdrant_available = qdrant_available;
             m.sqlite_conversation_id = conversation_id;
+            #[cfg(feature = "mcp")]
+            {
+                m.mcp_tool_count = mcp_tool_count;
+                m.mcp_server_count = mcp_server_count;
+            }
         });
         self.metrics_tx = Some(tx);
         self
@@ -990,6 +1004,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let count = tools.len();
                 self.mcp_tools.extend(tools);
                 self.sync_mcp_registry().await;
+                let mcp_total = self.mcp_tools.len();
+                let mcp_servers = self
+                    .mcp_tools
+                    .iter()
+                    .map(|t| &t.server_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                self.update_metrics(|m| {
+                    m.mcp_tool_count = mcp_total;
+                    m.mcp_server_count = mcp_servers;
+                });
                 self.channel
                     .send(&format!(
                         "Connected MCP server '{}' ({count} tool(s))",
@@ -1079,6 +1104,19 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 self.mcp_tools.retain(|t| t.server_id != server_id);
                 let removed = before - self.mcp_tools.len();
                 self.sync_mcp_registry().await;
+                let mcp_total = self.mcp_tools.len();
+                let mcp_servers = self
+                    .mcp_tools
+                    .iter()
+                    .map(|t| &t.server_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                self.update_metrics(|m| {
+                    m.mcp_tool_count = mcp_total;
+                    m.mcp_server_count = mcp_servers;
+                    m.active_mcp_tools
+                        .retain(|name| !name.starts_with(&format!("{server_id}:")));
+                });
                 self.channel
                     .send(&format!(
                         "Disconnected MCP server '{server_id}' (removed {removed} tools)"
@@ -1241,22 +1279,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         #[cfg(feature = "mcp")]
-        {
-            let matched_tools = self.match_mcp_tools(query).await;
-            if !matched_tools.is_empty() {
-                let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
-                tracing::debug!(
-                    skills = ?self.active_skill_names,
-                    mcp_tools = ?tool_names,
-                    "matched items"
-                );
-                let tools_prompt = zeph_mcp::format_mcp_tools_prompt(&matched_tools);
-                if !tools_prompt.is_empty() {
-                    system_prompt.push_str("\n\n");
-                    system_prompt.push_str(&tools_prompt);
-                }
-            }
-        }
+        self.append_mcp_prompt(query, &mut system_prompt).await;
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let project_configs = crate::project::discover_project_configs(&cwd);
@@ -1275,6 +1298,40 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    async fn append_mcp_prompt(&mut self, query: &str, system_prompt: &mut String) {
+        let matched_tools = self.match_mcp_tools(query).await;
+        let active_mcp: Vec<String> = matched_tools
+            .iter()
+            .map(zeph_mcp::McpTool::qualified_name)
+            .collect();
+        let mcp_total = self.mcp_tools.len();
+        let mcp_servers = self
+            .mcp_tools
+            .iter()
+            .map(|t| &t.server_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        self.update_metrics(|m| {
+            m.active_mcp_tools = active_mcp;
+            m.mcp_tool_count = mcp_total;
+            m.mcp_server_count = mcp_servers;
+        });
+        if !matched_tools.is_empty() {
+            let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
+            tracing::debug!(
+                skills = ?self.active_skill_names,
+                mcp_tools = ?tool_names,
+                "matched items"
+            );
+            let tools_prompt = zeph_mcp::format_mcp_tools_prompt(&matched_tools);
+            if !tools_prompt.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&tools_prompt);
+            }
         }
     }
 

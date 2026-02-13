@@ -10,6 +10,7 @@ pub struct MetricsSnapshot {
     pub total_skills: usize,
     pub mcp_server_count: usize,
     pub mcp_tool_count: usize,
+    pub active_mcp_tools: Vec<String>,
     pub sqlite_message_count: u64,
     pub sqlite_conversation_id: Option<i64>,
     pub qdrant_available: bool,
@@ -48,6 +49,9 @@ mod tests {
         assert_eq!(m.total_tokens, 0);
         assert_eq!(m.api_calls, 0);
         assert!(m.active_skills.is_empty());
+        assert!(m.active_mcp_tools.is_empty());
+        assert_eq!(m.mcp_tool_count, 0);
+        assert_eq!(m.mcp_server_count, 0);
         assert!(m.provider_name.is_empty());
         assert_eq!(m.summaries_count, 0);
     }
