@@ -425,7 +425,19 @@ async fn forward_tool_events_to_tui(
 async fn health_check(provider: &AnyProvider) {
     match provider {
         AnyProvider::Ollama(ollama) => match ollama.health_check().await {
-            Ok(()) => tracing::info!("ollama health check passed"),
+            Ok(()) => {
+                tracing::info!("ollama health check passed, warming up model...");
+                let start = std::time::Instant::now();
+                match ollama.warmup().await {
+                    Ok(()) => {
+                        tracing::info!(
+                            "ollama model ready ({:.1}s)",
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    Err(e) => tracing::warn!("ollama warmup failed: {e:#}"),
+                }
+            }
             Err(e) => tracing::warn!("ollama health check failed: {e:#}"),
         },
         #[cfg(feature = "candle")]
@@ -439,6 +451,16 @@ async fn health_check(provider: &AnyProvider) {
                     "orchestrator sub-provider '{name}': {}",
                     zeph_llm::provider::LlmProvider::name(p)
                 );
+                if let zeph_llm::orchestrator::SubProvider::Ollama(ollama) = p {
+                    let start = std::time::Instant::now();
+                    match ollama.warmup().await {
+                        Ok(()) => tracing::info!(
+                            "ollama '{name}' ready ({:.1}s)",
+                            start.elapsed().as_secs_f64()
+                        ),
+                        Err(e) => tracing::warn!("ollama '{name}' warmup failed: {e:#}"),
+                    }
+                }
             }
         }
         _ => {}

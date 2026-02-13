@@ -37,6 +37,21 @@ impl OllamaProvider {
             .context("failed to connect to Ollama — is it running?")?;
         Ok(())
     }
+
+    /// Send a minimal chat request to force Ollama to load the model into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the warmup request fails.
+    pub async fn warmup(&self) -> anyhow::Result<()> {
+        let request =
+            ChatMessageRequest::new(self.model.clone(), vec![ChatMessage::user("hi".to_owned())]);
+        self.client
+            .send_chat_messages(request)
+            .await
+            .context("Ollama warmup failed")?;
+        Ok(())
+    }
 }
 
 impl LlmProvider for OllamaProvider {
@@ -352,6 +367,15 @@ mod tests {
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn warmup_with_unreachable_endpoint_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let result = provider.warmup().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("warmup failed"));
     }
 
     #[tokio::test]
