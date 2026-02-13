@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::System;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::event::{AgentEvent, AppEvent};
@@ -38,7 +38,6 @@ const BYTES_PER_MB: u64 = 1024 * 1024;
 
 pub struct SystemMetrics {
     sys: System,
-    pid: sysinfo::Pid,
     cpu_history: VecDeque<u64>,
     mem_history: VecDeque<u64>,
     mem_total_mb: u64,
@@ -51,18 +50,10 @@ impl SystemMetrics {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
 
-        let pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            false,
-            ProcessRefreshKind::nothing().with_memory(),
-        );
-
         let mem_total_mb = sys.total_memory() / BYTES_PER_MB;
 
         Self {
             sys,
-            pid,
             cpu_history: VecDeque::with_capacity(HISTORY_CAPACITY),
             mem_history: VecDeque::with_capacity(HISTORY_CAPACITY),
             mem_total_mb,
@@ -78,11 +69,7 @@ impl SystemMetrics {
         self.sample_counter = 0;
 
         self.sys.refresh_cpu_usage();
-        self.sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[self.pid]),
-            false,
-            ProcessRefreshKind::nothing().with_memory(),
-        );
+        self.sys.refresh_memory();
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let cpu = self.sys.global_cpu_usage() as u64;
@@ -91,14 +78,11 @@ impl SystemMetrics {
         }
         self.cpu_history.push_back(cpu);
 
-        let mem_mb = self
-            .sys
-            .process(self.pid)
-            .map_or(0, |p| p.memory() / BYTES_PER_MB);
+        let mem_used_mb = (self.sys.total_memory() - self.sys.available_memory()) / BYTES_PER_MB;
         if self.mem_history.len() >= HISTORY_CAPACITY {
             self.mem_history.pop_front();
         }
-        self.mem_history.push_back(mem_mb);
+        self.mem_history.push_back(mem_used_mb);
     }
 
     #[must_use]

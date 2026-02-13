@@ -27,15 +27,21 @@ pub fn render(metrics: &SystemMetrics, frame: &mut Frame, area: Rect) {
     frame.render_widget(cpu_sparkline, chunks[0]);
 
     let mem_data: Vec<u64> = metrics.mem_history().iter().copied().collect();
-    let (used_mb, total_mb) = metrics.current_mem();
+    let (mem_used, mem_total) = metrics.current_mem();
+    #[allow(clippy::cast_precision_loss)]
+    let title = format!(
+        " Mem {:.1}G/{:.0}G ",
+        mem_used as f64 / 1024.0,
+        mem_total as f64 / 1024.0,
+    );
     let mem_sparkline = Sparkline::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme.panel_border)
-                .title(format!(" Mem {used_mb}M/{total_mb}M ")),
+                .title(title),
         )
         .data(&mem_data)
-        .max(total_mb);
+        .max(mem_total);
     frame.render_widget(mem_sparkline, chunks[1]);
 }
