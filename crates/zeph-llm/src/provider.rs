@@ -347,11 +347,22 @@ mod tests {
     #[test]
     fn message_part_serde_round_trip() {
         let parts = vec![
-            MessagePart::Text { text: "hello".into() },
-            MessagePart::ToolOutput { tool_name: "bash".into(), body: "output".into() },
-            MessagePart::Recall { text: "recall".into() },
-            MessagePart::CodeContext { text: "code".into() },
-            MessagePart::Summary { text: "summary".into() },
+            MessagePart::Text {
+                text: "hello".into(),
+            },
+            MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: "output".into(),
+            },
+            MessagePart::Recall {
+                text: "recall".into(),
+            },
+            MessagePart::CodeContext {
+                text: "code".into(),
+            },
+            MessagePart::Summary {
+                text: "summary".into(),
+            },
         ];
         let json = serde_json::to_string(&parts).unwrap();
         let deserialized: Vec<MessagePart> = serde_json::from_str(&json).unwrap();
@@ -371,7 +382,9 @@ mod tests {
     fn from_parts_flattens_content() {
         let msg = Message::from_parts(
             Role::System,
-            vec![MessagePart::Recall { text: "recalled data".into() }],
+            vec![MessagePart::Recall {
+                text: "recalled data".into(),
+            }],
         );
         assert_eq!(msg.content, "recalled data");
         assert_eq!(msg.to_llm_content(), "recalled data");

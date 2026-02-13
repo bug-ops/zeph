@@ -130,8 +130,7 @@ impl SqliteStore {
         let messages = rows
             .into_iter()
             .map(|(role_str, content, parts_json)| {
-                let parts: Vec<MessagePart> =
-                    serde_json::from_str(&parts_json).unwrap_or_default();
+                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
                 Message {
                     role: parse_role(&role_str),
                     content,

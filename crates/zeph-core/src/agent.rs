@@ -445,7 +445,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if m.role != Role::System {
                 return true;
             }
-            if m.parts.first().is_some_and(|p| matches!(p, MessagePart::Recall { .. })) {
+            if m.parts
+                .first()
+                .is_some_and(|p| matches!(p, MessagePart::Recall { .. }))
+            {
                 return false;
             }
             !m.content.starts_with(RECALL_PREFIX)
@@ -549,7 +552,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if m.role != Role::System {
                 return true;
             }
-            if m.parts.first().is_some_and(|p| matches!(p, MessagePart::CodeContext { .. })) {
+            if m.parts
+                .first()
+                .is_some_and(|p| matches!(p, MessagePart::CodeContext { .. }))
+            {
                 return false;
             }
             !m.content.starts_with(CODE_CONTEXT_PREFIX)
@@ -561,7 +567,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if m.role != Role::System {
                 return true;
             }
-            if m.parts.first().is_some_and(|p| matches!(p, MessagePart::Summary { .. })) {
+            if m.parts
+                .first()
+                .is_some_and(|p| matches!(p, MessagePart::Summary { .. }))
+            {
                 return false;
             }
             !m.content.starts_with(SUMMARY_PREFIX)
