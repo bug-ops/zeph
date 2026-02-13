@@ -8,7 +8,7 @@ Requires Rust 1.88+. Native async traits are used throughout — no `async-trait
 
 ```text
 zeph (binary) — thin bootstrap glue
-├── zeph-core       Agent loop, config, channel trait, context builder
+├── zeph-core       Agent loop, config, config hot-reload, channel trait, context builder
 ├── zeph-llm        LlmProvider trait, Ollama + Claude + OpenAI + Candle backends, orchestrator, embeddings
 ├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization

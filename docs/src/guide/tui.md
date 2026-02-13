@@ -94,7 +94,7 @@ Chat messages are rendered with full markdown support via `pulldown-cmark`:
 |---------|-----------|
 | `**bold**` | Bold modifier |
 | `*italic*` | Italic modifier |
-| `` `inline code` `` | Yellow text |
+| `` `inline code` `` | Blue text with dark background glow |
 | Code blocks | Green text with dimmed language tag |
 | `# Heading` | Bold + underlined |
 | `- list item` | Green bullet (•) prefix |

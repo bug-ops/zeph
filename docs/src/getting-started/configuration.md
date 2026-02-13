@@ -17,6 +17,24 @@ ZEPH_CONFIG=/path/to/custom.toml zeph
 
 Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 
+## Hot-Reload
+
+Zeph watches the config file for changes and applies runtime-safe fields without restart. The file watcher uses 500ms debounce to avoid redundant reloads.
+
+**Reloadable fields** (applied immediately):
+
+| Section | Fields |
+|---------|--------|
+| `[security]` | `redact_secrets` |
+| `[timeouts]` | `llm_seconds`, `embedding_seconds`, `a2a_seconds` |
+| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail` |
+| `[memory.semantic]` | `recall_limit` |
+| `[skills]` | `max_active_skills` |
+
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, Telegram token, MCP servers, A2A config, skill paths.
+
+Check for `config reloaded` in the log to confirm a successful reload.
+
 ## Configuration File
 
 ```toml

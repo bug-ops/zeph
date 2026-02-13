@@ -7,14 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Config hot-reload: watch config file for changes via `notify_debouncer_mini` and apply runtime-safe fields (security, timeouts, memory limits, context budget, compaction, max_active_skills) without restart
+- `ConfigWatcher` in zeph-core with 500ms debounced filesystem monitoring
+- `with_config_reload()` builder method on Agent for wiring config file watcher
+- `tool_name` field in `ToolOutput` for identifying tool type (bash, mcp, web-scrape) in persisted messages and TUI display
 - Real-time status events for provider retries and orchestrator fallbacks surfaced as `[system]` messages across all channels (CLI stderr, TUI chat panel, Telegram)
 - `StatusTx` type alias in `zeph-llm` for emitting status events from providers
 - `Status` variant in TUI `AgentEvent` rendered as System-role messages (DarkGray)
 - `set_status_tx()` on `AnyProvider`, `SubProvider`, and `ModelOrchestrator` for propagating status sender through the provider hierarchy
 - Background forwarding tasks for immediate status delivery (bypasses agent loop for zero-latency display)
+- TUI: toggle side panels with `d` key in Normal mode
+- TUI: input history navigation (Up/Down in Insert mode)
+- TUI: message separators and accent bars for visual structure
+- TUI: tool output restored as expandable messages from conversation history
+- TUI: collapsed tool output preview (3 lines) when restoring history
 
 ### Changed
 - Agent error handler shows specific error context instead of generic message
+- TUI inline code rendered as blue with dark background glow instead of bright yellow
+- TUI header uses deep blue background (`Rgb(20, 40, 80)`) for improved contrast
+- System prompt includes explicit `bash` block example and bans invented formats (`tool_code`, `tool_call`) for small model compatibility
+
+### Fixed
+- TUI chat line wrapping no longer eats 2 characters on word wrap (accent prefix width accounted for)
+- TUI activity indicator moved to dedicated layout row (no longer overlaps content)
+- Memory history loading now retrieves most recent messages instead of oldest
+- Persisted tool output format includes tool name (`[tool output: bash]`) for proper display on restore
 
 ## [0.9.3] - 2026-02-12
 
