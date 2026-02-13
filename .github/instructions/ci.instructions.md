@@ -15,6 +15,6 @@ applyTo: ".github/workflows/**/*.yml"
 ## Security
 
 - Reject `pull_request_target` trigger without explicit justification
-- Pin action versions to full SHA — reject tag-only references
+- Prefer stable, reputable action versions (e.g., major tags like `v2`, `v6`); pin to full SHAs for security-sensitive workflows when feasible
 - Reject secrets in workflow logs or step outputs
 - Reject `--no-verify` or hook-skipping flags
