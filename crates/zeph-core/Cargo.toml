@@ -15,6 +15,8 @@ vault-age = ["dep:age", "dep:serde_json", "dep:thiserror"]
 [dependencies]
 age = { workspace = true, optional = true }
 anyhow.workspace = true
+notify.workspace = true
+notify-debouncer-mini.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }

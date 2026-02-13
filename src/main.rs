@@ -8,6 +8,7 @@ use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
 use zeph_core::config::Config;
+use zeph_core::config_watcher::ConfigWatcher;
 #[cfg(feature = "vault-age")]
 use zeph_core::vault::AgeVaultProvider;
 use zeph_core::vault::{EnvVaultProvider, VaultProvider};
@@ -241,6 +242,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let (config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(4);
+    let _config_watcher = match ConfigWatcher::start(&config_path, config_reload_tx) {
+        Ok(w) => {
+            tracing::info!("config watcher started");
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!("config watcher unavailable: {e:#}");
+            None
+        }
+    };
+
     #[cfg(feature = "a2a")]
     if config.a2a.enabled {
         spawn_a2a_server(&config, shutdown_rx.clone());
@@ -275,7 +288,8 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_shutdown(shutdown_rx)
     .with_security(config.security, config.timeouts)
-    .with_tool_summarization(config.tools.summarize_output);
+    .with_tool_summarization(config.tools.summarize_output)
+    .with_config_reload(config_path.clone(), config_reload_rx);
 
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);

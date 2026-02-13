@@ -15,9 +15,11 @@ use zeph_skills::watcher::SkillEvent;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::channel::Channel;
+use crate::config::Config;
 #[cfg(feature = "self-learning")]
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
+use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::redact::redact_secrets;
 use zeph_memory::semantic::estimate_tokens;
@@ -43,6 +45,8 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     max_active_skills: usize,
     embedding_model: String,
     skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
+    config_path: Option<PathBuf>,
+    config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     memory: Option<SemanticMemory<P>>,
     conversation_id: Option<i64>,
     history_limit: u32,
@@ -110,6 +114,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             max_active_skills,
             embedding_model: String::new(),
             skill_reload_rx: None,
+            config_path: None,
+            config_reload_rx: None,
             memory: None,
             conversation_id: None,
             history_limit: 50,
@@ -185,6 +191,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> Self {
         self.skill_paths = paths;
         self.skill_reload_rx = Some(rx);
+        self
+    }
+
+    #[must_use]
+    pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
+        self.config_path = Some(path);
+        self.config_reload_rx = Some(rx);
         self
     }
 
@@ -554,6 +567,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 }
                 Some(_) = recv_skill_event(&mut self.skill_reload_rx) => {
                     self.reload_skills().await;
+                    continue;
+                }
+                Some(_) = recv_config_event(&mut self.config_reload_rx) => {
+                    self.reload_config();
                     continue;
                 }
             };
@@ -1123,6 +1140,39 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         tracing::info!("reloaded {} skill(s)", self.registry.all_meta().len());
+    }
+
+    fn reload_config(&mut self) {
+        let Some(ref path) = self.config_path else {
+            return;
+        };
+        let config = match Config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("config reload failed: {e:#}");
+                return;
+            }
+        };
+
+        self.security = config.security;
+        self.timeouts = config.timeouts;
+        self.history_limit = config.memory.history_limit;
+        self.recall_limit = config.memory.semantic.recall_limit;
+        self.summarization_threshold = config.memory.summarization_threshold;
+        self.max_active_skills = config.skills.max_active_skills;
+
+        if config.memory.context_budget_tokens > 0 {
+            self.context_budget = Some(ContextBudget::new(
+                config.memory.context_budget_tokens,
+                0.20,
+            ));
+        } else {
+            self.context_budget = None;
+        }
+        self.compaction_threshold = config.memory.compaction_threshold;
+        self.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+
+        tracing::info!("config reloaded");
     }
 
     async fn rebuild_system_prompt(&mut self, query: &str) {
@@ -1990,6 +2040,15 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
 }
 
 async fn recv_skill_event(rx: &mut Option<mpsc::Receiver<SkillEvent>>) -> Option<SkillEvent> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn recv_config_event(
+    rx: &mut Option<mpsc::Receiver<ConfigEvent>>,
+) -> Option<ConfigEvent> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,

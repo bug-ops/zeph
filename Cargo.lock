@@ -8198,6 +8198,8 @@ version = "0.9.3"
 dependencies = [
  "age",
  "anyhow",
+ "notify",
+ "notify-debouncer-mini",
  "serde",
  "serde_json",
  "serial_test",
