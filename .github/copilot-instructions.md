@@ -16,7 +16,7 @@ Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 10 crates. Rev
 ## Rust Code Standards
 
 - Edition 2024 native async traits — reject `async-trait` crate usage
-- `unsafe` code is denied workspace-wide — reject any `unsafe` block
+- `unsafe` code is not allowed — if you see any `unsafe` block, treat it as a blocking issue and call it out explicitly
 - Reject `.unwrap()` and `.expect()` in non-test code — use `?` with error propagation
 - Library crates use `thiserror`; application code uses `anyhow` with `.context()`
 - Logging via `tracing` crate only — reject `log` crate or `println!` in library code
