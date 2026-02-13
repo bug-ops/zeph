@@ -23,7 +23,7 @@ Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 10 crates. Rev
 - Builder methods must return `self` and be annotated with `#[must_use]`
 - String parameters in constructors: accept `impl Into<String>`
 - Feature-gated modules: `#[cfg(feature = "name")]` on `pub mod` in `lib.rs`
-- Formatting: `max_width = 100`
+- Formatting: use rustfmt’s default settings (no project-specific rustfmt.toml)
 
 ## Security Review (Critical)
 
