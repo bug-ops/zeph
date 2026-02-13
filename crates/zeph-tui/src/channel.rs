@@ -35,6 +35,13 @@ impl Channel for TuiChannel {
         }
     }
 
+    fn try_recv(&mut self) -> Option<ChannelMessage> {
+        self.user_input_rx.try_recv().ok().map(|text| {
+            self.accumulated.clear();
+            ChannelMessage { text }
+        })
+    }
+
     async fn send(&mut self, text: &str) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::FullMessage(text.to_owned()))
@@ -67,6 +74,13 @@ impl Channel for TuiChannel {
     async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::Status(text.to_owned()))
+            .await
+            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+    }
+
+    async fn send_queue_count(&mut self, count: usize) -> anyhow::Result<()> {
+        self.agent_event_tx
+            .send(AgentEvent::QueueCount(count))
             .await
             .map_err(|_| anyhow::anyhow!("TUI channel closed"))
     }
@@ -215,6 +229,29 @@ mod tests {
         ch.send_status("summarizing...").await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
         assert!(matches!(evt, AgentEvent::Status(t) if t == "summarizing..."));
+    }
+
+    #[test]
+    fn try_recv_returns_none_when_empty() {
+        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[test]
+    fn try_recv_returns_message() {
+        let (mut ch, user_tx, _agent_rx) = make_channel();
+        user_tx.try_send("queued".into()).unwrap();
+        let msg = ch.try_recv().unwrap();
+        assert_eq!(msg.text, "queued");
+        assert!(ch.accumulated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_queue_count_forwards_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_queue_count(3).await.unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(matches!(evt, AgentEvent::QueueCount(3)));
     }
 
     #[test]

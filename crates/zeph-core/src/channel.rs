@@ -13,6 +13,11 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn recv(&mut self) -> impl Future<Output = anyhow::Result<Option<ChannelMessage>>> + Send;
 
+    /// Non-blocking receive. Returns `None` if no message is immediately available.
+    fn try_recv(&mut self) -> Option<ChannelMessage> {
+        None
+    }
+
     /// Send a text response.
     ///
     /// # Errors
@@ -49,6 +54,18 @@ pub trait Channel: Send {
     ///
     /// Returns an error if the underlying I/O fails.
     fn send_status(&mut self, _text: &str) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Notify channel of queued message count. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_queue_count(
+        &mut self,
+        _count: usize,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
@@ -262,6 +279,24 @@ mod tests {
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("debug"));
+    }
+
+    #[test]
+    fn stub_channel_try_recv_returns_none() {
+        let mut ch = StubChannel;
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[tokio::test]
+    async fn stub_channel_send_queue_count_noop() {
+        let mut ch = StubChannel;
+        ch.send_queue_count(5).await.unwrap();
+    }
+
+    #[test]
+    fn cli_channel_try_recv_returns_none() {
+        let mut ch = CliChannel::new();
+        assert!(ch.try_recv().is_none());
     }
 
     #[test]

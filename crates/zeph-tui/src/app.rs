@@ -64,6 +64,7 @@ pub struct App {
     input_history: Vec<String>,
     history_index: Option<usize>,
     draft_input: String,
+    queued_count: usize,
 }
 
 impl App {
@@ -93,6 +94,7 @@ impl App {
             input_history: Vec::new(),
             history_index: None,
             draft_input: String::new(),
+            queued_count: 0,
         }
     }
 
@@ -186,6 +188,11 @@ impl App {
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
         self.status_label.as_deref()
+    }
+
+    #[must_use]
+    pub fn queued_count(&self) -> usize {
+        self.queued_count
     }
 
     #[must_use]
@@ -317,6 +324,9 @@ impl App {
                     prompt,
                     response_tx: Some(response_tx),
                 });
+            }
+            AgentEvent::QueueCount(count) => {
+                self.queued_count = count;
             }
         }
     }
@@ -531,6 +541,9 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor_position = 0;
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
             }
             KeyCode::Char(c) => {
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);

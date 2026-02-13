@@ -1,4 +1,6 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt;
@@ -26,6 +28,8 @@ use zeph_memory::semantic::estimate_tokens;
 
 // TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
 const MAX_SHELL_ITERATIONS: usize = 3;
+const MAX_QUEUE_SIZE: usize = 10;
+const MESSAGE_MERGE_WINDOW: Duration = Duration::from_millis(500);
 const RECALL_PREFIX: &str = "[semantic recall]\n";
 const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
@@ -33,6 +37,11 @@ const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
     format!("[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}")
+}
+
+struct QueuedMessage {
+    text: String,
+    received_at: Instant,
 }
 
 pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
@@ -73,6 +82,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     #[cfg(feature = "mcp")]
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    message_queue: VecDeque<QueuedMessage>,
     summarize_tool_output_enabled: bool,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
@@ -148,6 +158,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_registry: None,
             #[cfg(feature = "mcp")]
             mcp_manager: None,
+            message_queue: VecDeque::new(),
             summarize_tool_output_enabled: false,
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
@@ -730,6 +741,45 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
+    fn drain_channel(&mut self) {
+        while self.message_queue.len() < MAX_QUEUE_SIZE {
+            let Some(msg) = self.channel.try_recv() else {
+                break;
+            };
+            self.enqueue_or_merge(msg.text);
+        }
+    }
+
+    fn enqueue_or_merge(&mut self, text: String) {
+        let now = Instant::now();
+        if let Some(last) = self.message_queue.back_mut()
+            && now.duration_since(last.received_at) < MESSAGE_MERGE_WINDOW
+        {
+            last.text.push('\n');
+            last.text.push_str(&text);
+            return;
+        }
+        if self.message_queue.len() < MAX_QUEUE_SIZE {
+            self.message_queue.push_back(QueuedMessage {
+                text,
+                received_at: now,
+            });
+        } else {
+            tracing::warn!("message queue full, dropping message");
+        }
+    }
+
+    async fn notify_queue_count(&mut self) {
+        let count = self.message_queue.len();
+        let _ = self.channel.send_queue_count(count).await;
+    }
+
+    fn clear_queue(&mut self) -> usize {
+        let count = self.message_queue.len();
+        self.message_queue.clear();
+        count
+    }
+
     /// Run the chat loop, receiving messages via the channel until EOF or shutdown.
     ///
     /// # Errors
@@ -746,82 +796,122 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         loop {
-            let incoming = tokio::select! {
-                result = self.channel.recv() => result?,
-                () = shutdown_signal(&mut self.shutdown) => {
-                    tracing::info!("shutting down");
-                    break;
-                }
-                Some(_) = recv_skill_event(&mut self.skill_reload_rx) => {
-                    self.reload_skills().await;
-                    continue;
-                }
-                Some(_) = recv_config_event(&mut self.config_reload_rx) => {
-                    self.reload_config();
-                    continue;
-                }
+            self.drain_channel();
+
+            let text = if let Some(queued) = self.message_queue.pop_front() {
+                self.notify_queue_count().await;
+                queued.text
+            } else {
+                let incoming = tokio::select! {
+                    result = self.channel.recv() => result?,
+                    () = shutdown_signal(&mut self.shutdown) => {
+                        tracing::info!("shutting down");
+                        break;
+                    }
+                    Some(_) = recv_skill_event(&mut self.skill_reload_rx) => {
+                        self.reload_skills().await;
+                        continue;
+                    }
+                    Some(_) = recv_config_event(&mut self.config_reload_rx) => {
+                        self.reload_config();
+                        continue;
+                    }
+                };
+                let Some(msg) = incoming else { break };
+                self.drain_channel();
+                msg.text
             };
 
-            let Some(incoming) = incoming else {
-                break;
-            };
+            let trimmed = text.trim();
 
-            let trimmed = incoming.text.trim();
-
-            if trimmed == "/skills" {
-                self.handle_skills_command().await?;
+            if trimmed == "/clear-queue" {
+                let n = self.clear_queue();
+                self.notify_queue_count().await;
+                self.channel
+                    .send(&format!("Cleared {n} queued messages."))
+                    .await?;
                 continue;
             }
 
-            if let Some(rest) = trimmed.strip_prefix("/skill ") {
-                self.handle_skill_command(rest).await?;
-                continue;
+            self.process_user_message(text).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn process_user_message(&mut self, text: String) -> anyhow::Result<()> {
+        let trimmed = text.trim();
+
+        if trimmed == "/skills" {
+            self.handle_skills_command().await?;
+            return Ok(());
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("/skill ") {
+            self.handle_skill_command(rest).await?;
+            return Ok(());
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("/feedback ") {
+            self.handle_feedback(rest).await?;
+            return Ok(());
+        }
+
+        #[cfg(feature = "mcp")]
+        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
+            self.handle_mcp_command(args).await?;
+            return Ok(());
+        }
+
+        self.rebuild_system_prompt(&text).await;
+
+        if self.should_compact() {
+            let _ = self.channel.send_status("compacting context...").await;
+            if let Err(e) = self.compact_context().await {
+                tracing::warn!("context compaction failed: {e:#}");
             }
+            let _ = self.channel.send_status("").await;
+        }
 
-            if let Some(rest) = trimmed.strip_prefix("/feedback ") {
-                self.handle_feedback(rest).await?;
-                continue;
+        if let Err(e) = self.prepare_context(trimmed).await {
+            tracing::warn!("context preparation failed: {e:#}");
+        }
+
+        #[cfg(feature = "self-learning")]
+        {
+            self.reflection_used = false;
+        }
+
+        self.messages.push(Message {
+            role: Role::User,
+            content: text.clone(),
+            parts: vec![],
+        });
+        self.persist_message(Role::User, &text).await;
+
+        if self.should_compact() {
+            let _ = self.channel.send_status("compacting context...").await;
+            if let Err(e) = self.compact_context().await {
+                tracing::warn!("context compaction failed: {e:#}");
             }
+            let _ = self.channel.send_status("").await;
+        }
 
-            #[cfg(feature = "mcp")]
-            if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-                let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
-                self.handle_mcp_command(args).await?;
-                continue;
-            }
+        if let Err(e) = self.prepare_context(&text).await {
+            tracing::warn!("context preparation failed: {e:#}");
+        }
 
-            self.rebuild_system_prompt(&incoming.text).await;
+        #[cfg(feature = "self-learning")]
+        {
+            self.reflection_used = false;
+        }
 
-            if self.should_compact() {
-                let _ = self.channel.send_status("compacting context...").await;
-                if let Err(e) = self.compact_context().await {
-                    tracing::warn!("context compaction failed: {e:#}");
-                }
-                let _ = self.channel.send_status("").await;
-            }
-
-            if let Err(e) = self.prepare_context(trimmed).await {
-                tracing::warn!("context preparation failed: {e:#}");
-            }
-
-            #[cfg(feature = "self-learning")]
-            {
-                self.reflection_used = false;
-            }
-
-            self.messages.push(Message {
-                role: Role::User,
-                content: incoming.text.clone(),
-                parts: vec![],
-            });
-            self.persist_message(Role::User, &incoming.text).await;
-
-            if let Err(e) = self.process_response().await {
-                tracing::error!("Response processing failed: {e:#}");
-                let user_msg = format!("Error: {e:#}");
-                self.channel.send(&user_msg).await?;
-                self.messages.pop();
-            }
+        if let Err(e) = self.process_response().await {
+            tracing::error!("Response processing failed: {e:#}");
+            let user_msg = format!("Error: {e:#}");
+            self.channel.send(&user_msg).await?;
+            self.messages.pop();
         }
 
         Ok(())
@@ -2511,6 +2601,17 @@ mod agent_tests {
             }
         }
 
+        fn try_recv(&mut self) -> Option<ChannelMessage> {
+            let mut msgs = self.messages.lock().unwrap();
+            if msgs.is_empty() {
+                None
+            } else {
+                Some(ChannelMessage {
+                    text: msgs.remove(0),
+                })
+            }
+        }
+
         async fn send(&mut self, text: &str) -> anyhow::Result<()> {
             self.sent.lock().unwrap().push(text.to_string());
             Ok(())
@@ -2903,6 +3004,8 @@ mod agent_tests {
             "first response".to_string(),
             "second response".to_string(),
         ]);
+        // Both messages arrive simultaneously via try_recv(), so they merge
+        // within the 500ms window into a single "first\nsecond" message.
         let channel = MockChannel::new(vec!["first".to_string(), "second".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(None), Ok(None)]);
@@ -2911,9 +3014,8 @@ mod agent_tests {
 
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert_eq!(agent.messages.len(), 5);
-        assert_eq!(agent.messages[1].content, "first");
-        assert_eq!(agent.messages[3].content, "second");
+        assert_eq!(agent.messages.len(), 3);
+        assert_eq!(agent.messages[1].content, "first\nsecond");
     }
 
     #[tokio::test]
@@ -3820,5 +3922,145 @@ mod agent_tests {
         agent.remove_summary_messages();
         assert_eq!(agent.messages.len(), 2);
         assert!(agent.messages[1].content.starts_with(RECALL_PREFIX));
+    }
+
+    #[test]
+    fn enqueue_or_merge_adds_new_message() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.enqueue_or_merge("hello".into());
+        assert_eq!(agent.message_queue.len(), 1);
+        assert_eq!(agent.message_queue[0].text, "hello");
+    }
+
+    #[test]
+    fn enqueue_or_merge_merges_within_window() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.enqueue_or_merge("first".into());
+        agent.enqueue_or_merge("second".into());
+        assert_eq!(agent.message_queue.len(), 1);
+        assert_eq!(agent.message_queue[0].text, "first\nsecond");
+    }
+
+    #[test]
+    fn enqueue_or_merge_no_merge_after_window() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.message_queue.push_back(QueuedMessage {
+            text: "old".into(),
+            received_at: Instant::now() - Duration::from_secs(2),
+        });
+        agent.enqueue_or_merge("new".into());
+        assert_eq!(agent.message_queue.len(), 2);
+        assert_eq!(agent.message_queue[0].text, "old");
+        assert_eq!(agent.message_queue[1].text, "new");
+    }
+
+    #[test]
+    fn enqueue_or_merge_respects_max_queue_size() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        for i in 0..MAX_QUEUE_SIZE {
+            agent.message_queue.push_back(QueuedMessage {
+                text: format!("msg{i}"),
+                received_at: Instant::now() - Duration::from_secs(2),
+            });
+        }
+        agent.enqueue_or_merge("overflow".into());
+        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
+    }
+
+    #[test]
+    fn clear_queue_returns_count_and_empties() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.enqueue_or_merge("a".into());
+        // Wait past merge window
+        agent.message_queue.back_mut().unwrap().received_at =
+            Instant::now() - Duration::from_secs(1);
+        agent.enqueue_or_merge("b".into());
+        assert_eq!(agent.message_queue.len(), 2);
+
+        let count = agent.clear_queue();
+        assert_eq!(count, 2);
+        assert!(agent.message_queue.is_empty());
+    }
+
+    #[test]
+    fn drain_channel_fills_queue() {
+        let messages: Vec<String> = (0..5).map(|i| format!("msg{i}")).collect();
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(messages);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.drain_channel();
+        // All 5 messages arrive within the merge window, so they merge into 1
+        assert_eq!(agent.message_queue.len(), 1);
+        assert!(agent.message_queue[0].text.contains("msg0"));
+        assert!(agent.message_queue[0].text.contains("msg4"));
+    }
+
+    #[test]
+    fn drain_channel_stops_at_max_queue_size() {
+        let messages: Vec<String> = (0..15).map(|i| format!("msg{i}")).collect();
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(messages);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Pre-fill queue to near capacity with old timestamps (outside merge window)
+        for i in 0..MAX_QUEUE_SIZE - 1 {
+            agent.message_queue.push_back(QueuedMessage {
+                text: format!("pre{i}"),
+                received_at: Instant::now() - Duration::from_secs(2),
+            });
+        }
+        agent.drain_channel();
+        // One more slot was available; all 15 messages merge into it
+        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
+    }
+
+    #[test]
+    fn queue_fifo_order() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        for i in 0..3 {
+            agent.message_queue.push_back(QueuedMessage {
+                text: format!("msg{i}"),
+                received_at: Instant::now() - Duration::from_secs(2),
+            });
+        }
+
+        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg0");
+        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg1");
+        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg2");
     }
 }

@@ -38,6 +38,7 @@ pub enum AgentEvent {
         prompt: String,
         response_tx: oneshot::Sender<bool>,
     },
+    QueueCount(usize),
 }
 
 pub struct EventReader {

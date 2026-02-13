@@ -196,6 +196,15 @@ impl TelegramChannel {
 }
 
 impl Channel for TelegramChannel {
+    fn try_recv(&mut self) -> Option<ChannelMessage> {
+        self.rx.try_recv().ok().map(|incoming| {
+            self.chat_id = Some(incoming.chat_id);
+            ChannelMessage {
+                text: incoming.text,
+            }
+        })
+    }
+
     async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
         loop {
             let Some(incoming) = self.rx.recv().await else {

@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
@@ -14,13 +15,18 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         InputMode::Insert => " Input (Esc to cancel) ",
     };
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.panel_border)
+        .title(title);
+
+    if app.queued_count() > 0 {
+        let badge = format!(" [+{} queued] ", app.queued_count());
+        block = block.title_bottom(Span::styled(badge, theme.highlight));
+    }
+
     let paragraph = Paragraph::new(app.input())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(title),
-        )
+        .block(block)
         .style(theme.input_cursor)
         .wrap(Wrap { trim: false });
 
