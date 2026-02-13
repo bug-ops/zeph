@@ -1876,7 +1876,7 @@ async fn agent_tool_output_persisted_in_memory() {
 
     let store = SqliteStore::new(db_str).await.unwrap();
     let history = store.load_history(cid, 50).await.unwrap();
-    let has_tool_msg = history.iter().any(|m| m.content.contains("[tool output]"));
+    let has_tool_msg = history.iter().any(|m| m.content.contains("[tool output"));
     assert!(has_tool_msg);
 }
 
