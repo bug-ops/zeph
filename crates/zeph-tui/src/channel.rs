@@ -64,6 +64,13 @@ impl Channel for TuiChannel {
             .map_err(|_| anyhow::anyhow!("TUI channel closed"))
     }
 
+    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
+        self.agent_event_tx
+            .send(AgentEvent::Status(text.to_owned()))
+            .await
+            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+    }
+
     async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx
@@ -200,6 +207,14 @@ mod tests {
         user_tx.send("new".into()).await.unwrap();
         ch.recv().await.unwrap();
         assert!(ch.accumulated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_status_sends_status_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_status("summarizing...").await.unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(matches!(evt, AgentEvent::Status(t) if t == "summarizing..."));
     }
 
     #[test]

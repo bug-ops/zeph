@@ -1650,7 +1650,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    async fn persist_message(&self, role: Role, content: &str) {
+    async fn persist_message(&mut self, role: Role, content: &str) {
         let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
             return;
         };
@@ -1666,7 +1666,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.check_summarization().await;
     }
 
-    async fn check_summarization(&self) {
+    async fn check_summarization(&mut self) {
         let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
             return;
         };
@@ -1688,6 +1688,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         };
 
         if count_usize > self.summarization_threshold {
+            let _ = self.channel.send_status("summarizing...").await;
             let batch_size = self.summarization_threshold / 2;
             match memory.summarize(cid, batch_size).await {
                 Ok(Some(summary_id)) => {

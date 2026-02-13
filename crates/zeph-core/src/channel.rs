@@ -43,6 +43,15 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send a status label (shown as spinner text in TUI). No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_status(&mut self, _text: &str) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
     /// Request user confirmation for a destructive action. Returns `true` if confirmed.
     /// Default: auto-confirm (for headless/test scenarios).
     ///
