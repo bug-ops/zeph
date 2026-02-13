@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Context window sizes for Claude (200K) and OpenAI (128K/16K/1M) provider models
 - `auto_budget` config field with `ZEPH_MEMORY_AUTO_BUDGET` env override for automatic context budget from model metadata
 - `inject_summaries()` in Agent: injects SQLite conversation summaries into context (newest-first, budget-aware, with deduplication)
+- Wire `zeph-index` Code RAG pipeline into agent loop (feature-gated `index`): `CodeRetriever` integration, `inject_code_rag()` in `prepare_context()`, repo map in system prompt, background project indexing on startup
+- `IndexConfig` with `[index]` TOML section and `ZEPH_INDEX_*` env overrides (enabled, max_chunks, score_threshold, budget_ratio, repo_map_tokens)
 
 ### Changed
 - Agent error handler shows specific error context instead of generic message

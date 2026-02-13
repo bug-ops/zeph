@@ -10,6 +10,7 @@ use qdrant_client::qdrant::{
 const CODE_COLLECTION: &str = "zeph_code_chunks";
 
 /// `Qdrant` + `SQLite` dual-write store for code chunks.
+#[derive(Clone)]
 pub struct CodeStore {
     qdrant: Qdrant,
     collection: String,

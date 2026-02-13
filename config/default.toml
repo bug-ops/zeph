@@ -105,6 +105,21 @@ enabled = true
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
 
+# Code RAG: AST-based code indexing and hybrid retrieval
+# Requires Qdrant and tree-sitter grammars (feature "index", not enabled by default)
+# Enable with: cargo build --features index
+[index]
+# Enable code indexing and retrieval (requires Qdrant)
+enabled = false
+# Maximum code chunks to retrieve per query
+max_chunks = 12
+# Minimum cosine similarity score to accept
+score_threshold = 0.25
+# Fraction of code_context budget used by retriever (0.0-1.0)
+budget_ratio = 0.40
+# Token budget for repo structural map in system prompt (0 = disabled)
+repo_map_tokens = 500
+
 [mcp]
 # Allowlist of permitted commands for /mcp add (empty = allow all)
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]

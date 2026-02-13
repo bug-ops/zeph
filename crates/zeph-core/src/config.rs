@@ -21,6 +21,8 @@ pub struct Config {
     #[serde(default)]
     pub mcp: McpConfig,
     #[serde(default)]
+    pub index: IndexConfig,
+    #[serde(default)]
     pub vault: VaultConfig,
     #[serde(default)]
     pub security: SecurityConfig,
@@ -271,6 +273,48 @@ pub struct MemoryConfig {
 
 fn default_qdrant_url() -> String {
     "http://localhost:6334".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IndexConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_index_max_chunks")]
+    pub max_chunks: usize,
+    #[serde(default = "default_index_score_threshold")]
+    pub score_threshold: f32,
+    #[serde(default = "default_index_budget_ratio")]
+    pub budget_ratio: f32,
+    #[serde(default = "default_index_repo_map_tokens")]
+    pub repo_map_tokens: usize,
+}
+
+fn default_index_max_chunks() -> usize {
+    12
+}
+
+fn default_index_score_threshold() -> f32 {
+    0.25
+}
+
+fn default_index_budget_ratio() -> f32 {
+    0.40
+}
+
+fn default_index_repo_map_tokens() -> usize {
+    500
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_chunks: default_index_max_chunks(),
+            score_threshold: default_index_score_threshold(),
+            budget_ratio: default_index_budget_ratio(),
+            repo_map_tokens: default_index_repo_map_tokens(),
+        }
+    }
 }
 
 fn default_summarization_threshold() -> usize {
@@ -654,6 +698,31 @@ impl Config {
         {
             self.tools.scrape.max_body_bytes = bytes;
         }
+        if let Ok(v) = std::env::var("ZEPH_INDEX_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.index.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_INDEX_MAX_CHUNKS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.index.max_chunks = n;
+        }
+        if let Ok(v) = std::env::var("ZEPH_INDEX_SCORE_THRESHOLD")
+            && let Ok(t) = v.parse::<f32>()
+        {
+            self.index.score_threshold = t.clamp(0.0, 1.0);
+        }
+        if let Ok(v) = std::env::var("ZEPH_INDEX_BUDGET_RATIO")
+            && let Ok(r) = v.parse::<f32>()
+        {
+            self.index.budget_ratio = r.clamp(0.0, 1.0);
+        }
+        if let Ok(v) = std::env::var("ZEPH_INDEX_REPO_MAP_TOKENS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.index.repo_map_tokens = n;
+        }
         if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {
@@ -795,6 +864,7 @@ impl Config {
             tools: ToolsConfig::default(),
             a2a: A2aServerConfig::default(),
             mcp: McpConfig::default(),
+            index: IndexConfig::default(),
             vault: VaultConfig::default(),
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
@@ -811,7 +881,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 41] = [
+    const ENV_KEYS: [&str; 46] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -853,6 +923,11 @@ mod tests {
         "ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE",
         "ZEPH_TOOLS_SUMMARIZE_OUTPUT",
         "ZEPH_MEMORY_AUTO_BUDGET",
+        "ZEPH_INDEX_ENABLED",
+        "ZEPH_INDEX_MAX_CHUNKS",
+        "ZEPH_INDEX_SCORE_THRESHOLD",
+        "ZEPH_INDEX_BUDGET_RATIO",
+        "ZEPH_INDEX_REPO_MAP_TOKENS",
     ];
 
     fn clear_env() {
@@ -2647,5 +2722,150 @@ compaction_preserve_tail = 6
         unsafe { std::env::remove_var("ZEPH_MEMORY_AUTO_BUDGET") };
 
         assert!(!config.memory.auto_budget);
+    }
+
+    #[test]
+    fn index_config_defaults() {
+        let config = Config::default();
+        assert!(!config.index.enabled);
+        assert_eq!(config.index.max_chunks, 12);
+        assert!((config.index.score_threshold - 0.25).abs() < f32::EPSILON);
+        assert!((config.index.budget_ratio - 0.40).abs() < f32::EPSILON);
+        assert_eq!(config.index.repo_map_tokens, 500);
+    }
+
+    #[test]
+    fn index_config_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[index]
+enabled = true
+max_chunks = 20
+score_threshold = 0.30
+budget_ratio = 0.50
+repo_map_tokens = 1000
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.index.enabled);
+        assert_eq!(config.index.max_chunks, 20);
+        assert!((config.index.score_threshold - 0.30).abs() < f32::EPSILON);
+        assert!((config.index.budget_ratio - 0.50).abs() < f32::EPSILON);
+        assert_eq!(config.index.repo_map_tokens, 1000);
+    }
+
+    #[test]
+    fn index_config_missing_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_index.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+"#
+        )
+        .unwrap();
+
+        clear_env();
+
+        let config = Config::load(&path).unwrap();
+        assert!(!config.index.enabled);
+        assert_eq!(config.index.max_chunks, 12);
+    }
+
+    #[test]
+    #[serial]
+    fn index_config_env_overrides() {
+        clear_env();
+        let mut config = Config::default();
+        assert!(!config.index.enabled);
+        assert_eq!(config.index.max_chunks, 12);
+
+        unsafe { std::env::set_var("ZEPH_INDEX_ENABLED", "true") };
+        unsafe { std::env::set_var("ZEPH_INDEX_MAX_CHUNKS", "24") };
+        unsafe { std::env::set_var("ZEPH_INDEX_SCORE_THRESHOLD", "0.35") };
+        unsafe { std::env::set_var("ZEPH_INDEX_BUDGET_RATIO", "0.60") };
+        unsafe { std::env::set_var("ZEPH_INDEX_REPO_MAP_TOKENS", "750") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_INDEX_ENABLED") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_MAX_CHUNKS") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_SCORE_THRESHOLD") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_BUDGET_RATIO") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_REPO_MAP_TOKENS") };
+
+        assert!(config.index.enabled);
+        assert_eq!(config.index.max_chunks, 24);
+        assert!((config.index.score_threshold - 0.35).abs() < f32::EPSILON);
+        assert!((config.index.budget_ratio - 0.60).abs() < f32::EPSILON);
+        assert_eq!(config.index.repo_map_tokens, 750);
+    }
+
+    #[test]
+    #[serial]
+    fn index_config_env_overrides_clamped() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_INDEX_SCORE_THRESHOLD", "-0.5") };
+        unsafe { std::env::set_var("ZEPH_INDEX_BUDGET_RATIO", "2.0") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_INDEX_SCORE_THRESHOLD") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_BUDGET_RATIO") };
+
+        assert!((config.index.score_threshold - 0.0).abs() < f32::EPSILON);
+        assert!((config.index.budget_ratio - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[serial]
+    fn index_config_env_override_invalid_ignored() {
+        clear_env();
+        let mut config = Config::default();
+
+        unsafe { std::env::set_var("ZEPH_INDEX_ENABLED", "not-a-bool") };
+        unsafe { std::env::set_var("ZEPH_INDEX_MAX_CHUNKS", "abc") };
+        config.apply_env_overrides();
+        unsafe { std::env::remove_var("ZEPH_INDEX_ENABLED") };
+        unsafe { std::env::remove_var("ZEPH_INDEX_MAX_CHUNKS") };
+
+        assert!(!config.index.enabled);
+        assert_eq!(config.index.max_chunks, 12);
     }
 }

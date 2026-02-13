@@ -12,6 +12,12 @@ use zeph_core::config_watcher::ConfigWatcher;
 #[cfg(feature = "vault-age")]
 use zeph_core::vault::AgeVaultProvider;
 use zeph_core::vault::{EnvVaultProvider, VaultProvider};
+#[cfg(feature = "index")]
+use zeph_index::{
+    indexer::{CodeIndexer, IndexerConfig},
+    retriever::{CodeRetriever, RetrievalConfig},
+    store::CodeStore,
+};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
@@ -282,6 +288,11 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp")]
     let mcp_registry = create_mcp_registry(&config, &provider, &mcp_tools, &embed_model).await;
 
+    #[cfg(feature = "index")]
+    let index_pool = memory.sqlite().pool().clone();
+    #[cfg(feature = "index")]
+    let index_provider = provider.clone();
+
     let agent = Agent::new(
         provider,
         channel,
@@ -310,6 +321,50 @@ async fn main() -> anyhow::Result<()> {
     .with_security(config.security, config.timeouts)
     .with_tool_summarization(config.tools.summarize_output)
     .with_config_reload(config_path.clone(), config_reload_rx);
+
+    #[cfg(feature = "index")]
+    let agent = if config.index.enabled {
+        let init = async {
+            let store = CodeStore::new(&config.memory.qdrant_url, index_pool)?;
+            store.migrate().await?;
+            let provider_arc = std::sync::Arc::new(index_provider);
+            let retrieval_config = RetrievalConfig {
+                max_chunks: config.index.max_chunks,
+                score_threshold: config.index.score_threshold,
+                budget_ratio: config.index.budget_ratio,
+            };
+            let retriever =
+                CodeRetriever::new(store.clone(), provider_arc.clone(), retrieval_config);
+            let indexer = CodeIndexer::new(store, provider_arc, IndexerConfig::default());
+            anyhow::Ok((retriever, indexer))
+        };
+        match init.await {
+            Ok((retriever, indexer)) => {
+                tokio::spawn(async move {
+                    let root = std::env::current_dir().unwrap_or_default();
+                    match indexer.index_project(&root).await {
+                        Ok(report) => tracing::info!(
+                            files = report.files_indexed,
+                            chunks = report.chunks_created,
+                            ms = report.duration_ms,
+                            "project indexed"
+                        ),
+                        Err(e) => tracing::warn!("background indexing failed: {e:#}"),
+                    }
+                });
+                agent.with_code_retriever(
+                    std::sync::Arc::new(retriever),
+                    config.index.repo_map_tokens,
+                )
+            }
+            Err(e) => {
+                tracing::warn!("code index initialization failed: {e:#}");
+                agent
+            }
+        }
+    } else {
+        agent
+    };
 
     #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);

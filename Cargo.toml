@@ -90,7 +90,7 @@ openai = ["zeph-llm/openai"]
 orchestrator = ["zeph-llm/orchestrator"]
 self-learning = ["zeph-core/self-learning"]
 tui = ["dep:zeph-tui"]
-index = ["dep:zeph-index"]
+index = ["dep:zeph-index", "zeph-core/index"]
 vault-age = ["zeph-core/vault-age"]
 
 [dependencies]

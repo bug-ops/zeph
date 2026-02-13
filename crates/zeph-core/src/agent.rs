@@ -78,6 +78,10 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_allowed_commands: Vec<String>,
     #[cfg(feature = "mcp")]
     mcp_max_dynamic: usize,
+    #[cfg(feature = "index")]
+    code_retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
+    #[cfg(feature = "index")]
+    repo_map_tokens: usize,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -147,6 +151,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_allowed_commands: Vec::new(),
             #[cfg(feature = "mcp")]
             mcp_max_dynamic: 10,
+            #[cfg(feature = "index")]
+            code_retriever: None,
+            #[cfg(feature = "index")]
+            repo_map_tokens: 0,
         }
     }
 
@@ -259,6 +267,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
         self.model_name = name.into();
+        self
+    }
+
+    #[cfg(feature = "index")]
+    #[must_use]
+    pub fn with_code_retriever(
+        mut self,
+        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>,
+        repo_map_tokens: usize,
+    ) -> Self {
+        self.code_retriever = Some(retriever);
+        self.repo_map_tokens = repo_map_tokens;
         self
     }
 
@@ -481,6 +501,31 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         );
     }
 
+    #[cfg(feature = "index")]
+    async fn inject_code_rag(&mut self, query: &str, token_budget: usize) -> anyhow::Result<()> {
+        let Some(retriever) = &self.code_retriever else {
+            return Ok(());
+        };
+        if token_budget == 0 {
+            return Ok(());
+        }
+
+        let result = retriever.retrieve(query, token_budget).await?;
+        let context_text = zeph_index::retriever::format_as_context(&result);
+
+        if !context_text.is_empty() {
+            self.inject_code_context(&context_text);
+            tracing::debug!(
+                strategy = ?result.strategy,
+                chunks = result.chunks.len(),
+                tokens = result.total_tokens,
+                "code context injected"
+            );
+        }
+
+        Ok(())
+    }
+
     fn remove_code_context_messages(&mut self) {
         self.messages
             .retain(|m| !(m.role == Role::System && m.content.starts_with(CODE_CONTEXT_PREFIX)));
@@ -586,6 +631,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         self.inject_semantic_recall(query, alloc.semantic_recall)
             .await?;
+
+        #[cfg(feature = "index")]
+        self.inject_code_rag(query, alloc.code_context).await?;
 
         self.trim_messages_to_budget(alloc.recent_history);
 
@@ -1364,6 +1412,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if !project_context.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&project_context);
+        }
+
+        #[cfg(feature = "index")]
+        if self.code_retriever.is_some() && self.repo_map_tokens > 0 {
+            match zeph_index::repo_map::generate_repo_map(&cwd, self.repo_map_tokens) {
+                Ok(map) if !map.is_empty() => {
+                    system_prompt.push_str("\n\n");
+                    system_prompt.push_str(&map);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("repo map generation failed: {e:#}"),
+            }
         }
 
         tracing::debug!(
