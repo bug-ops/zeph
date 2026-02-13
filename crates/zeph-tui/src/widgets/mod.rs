@@ -6,3 +6,4 @@ pub mod resources;
 pub mod skills;
 pub mod splash;
 pub mod status;
+pub mod system;

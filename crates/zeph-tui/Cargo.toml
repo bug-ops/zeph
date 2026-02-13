@@ -13,6 +13,7 @@ pulldown-cmark.workspace = true
 ratatui.workspace = true
 throbber-widgets-tui = "0.10"
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
+sysinfo = "0.38"
 tracing.workspace = true
 unicode-width.workspace = true
 zeph-core.workspace = true

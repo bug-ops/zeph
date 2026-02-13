@@ -1,4 +1,7 @@
+use std::collections::VecDeque;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::event::{AgentEvent, AppEvent};
@@ -29,12 +32,104 @@ pub struct ChatMessage {
     pub tool_name: Option<String>,
 }
 
+const HISTORY_CAPACITY: usize = 60;
+const SAMPLE_INTERVAL_TICKS: u8 = 10;
+const BYTES_PER_MB: u64 = 1024 * 1024;
+
+pub struct SystemMetrics {
+    sys: System,
+    pid: sysinfo::Pid,
+    cpu_history: VecDeque<u64>,
+    mem_history: VecDeque<u64>,
+    mem_total_mb: u64,
+    sample_counter: u8,
+}
+
+impl SystemMetrics {
+    fn new() -> Self {
+        let mut sys = System::new();
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+
+        let pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+
+        let mem_total_mb = sys.total_memory() / BYTES_PER_MB;
+
+        Self {
+            sys,
+            pid,
+            cpu_history: VecDeque::with_capacity(HISTORY_CAPACITY),
+            mem_history: VecDeque::with_capacity(HISTORY_CAPACITY),
+            mem_total_mb,
+            sample_counter: 0,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.sample_counter += 1;
+        if self.sample_counter < SAMPLE_INTERVAL_TICKS {
+            return;
+        }
+        self.sample_counter = 0;
+
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[self.pid]),
+            false,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let cpu = self.sys.global_cpu_usage() as u64;
+        if self.cpu_history.len() >= HISTORY_CAPACITY {
+            self.cpu_history.pop_front();
+        }
+        self.cpu_history.push_back(cpu);
+
+        let mem_mb = self
+            .sys
+            .process(self.pid)
+            .map_or(0, |p| p.memory() / BYTES_PER_MB);
+        if self.mem_history.len() >= HISTORY_CAPACITY {
+            self.mem_history.pop_front();
+        }
+        self.mem_history.push_back(mem_mb);
+    }
+
+    #[must_use]
+    pub fn cpu_history(&self) -> &VecDeque<u64> {
+        &self.cpu_history
+    }
+
+    #[must_use]
+    pub fn mem_history(&self) -> &VecDeque<u64> {
+        &self.mem_history
+    }
+
+    #[must_use]
+    pub fn current_cpu(&self) -> u64 {
+        self.cpu_history.back().copied().unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn current_mem(&self) -> (u64, u64) {
+        let used = self.mem_history.back().copied().unwrap_or(0);
+        (used, self.mem_total_mb)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Chat,
     Skills,
     Memory,
     Resources,
+    System,
 }
 
 pub struct ConfirmState {
@@ -58,6 +153,7 @@ pub struct App {
     status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
+    system_metrics: SystemMetrics,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -87,6 +183,7 @@ impl App {
             status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
+            system_metrics: SystemMetrics::new(),
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -212,6 +309,7 @@ impl App {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => {
                 self.throbber_state.calc_next();
+                self.system_metrics.tick();
             }
             AppEvent::Resize(_, _) => {}
             AppEvent::MouseScroll(delta) => {
@@ -377,6 +475,7 @@ impl App {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
         widgets::resources::render(&self.metrics, frame, layout.resources);
+        widgets::system::render(&self.system_metrics, frame, layout.system);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -443,7 +542,8 @@ impl App {
                     Panel::Chat => Panel::Skills,
                     Panel::Skills => Panel::Memory,
                     Panel::Memory => Panel::Resources,
-                    Panel::Resources => Panel::Chat,
+                    Panel::Resources => Panel::System,
+                    Panel::System => Panel::Chat,
                 };
             }
             _ => {}
@@ -762,6 +862,9 @@ mod tests {
 
         app.handle_event(AppEvent::Key(tab)).unwrap();
         assert_eq!(app.active_panel, Panel::Resources);
+
+        app.handle_event(AppEvent::Key(tab)).unwrap();
+        assert_eq!(app.active_panel, Panel::System);
 
         app.handle_event(AppEvent::Key(tab)).unwrap();
         assert_eq!(app.active_panel, Panel::Chat);

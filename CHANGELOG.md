@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- TUI System panel with CPU and memory usage sparkline graphs (sysinfo + ratatui Sparkline)
+- `SystemMetrics` collector in zeph-tui with 1s sampling interval and 60-sample ring buffer history
 - `context_tokens` metric in TUI Resources panel showing current prompt estimate (vs cumulative session totals)
 - `unsummarized_message_count` in `SemanticMemory` for precise summarization trigger
 - `count_messages_after` in `SqliteStore` for counting messages beyond a given ID
