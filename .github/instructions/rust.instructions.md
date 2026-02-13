@@ -6,9 +6,9 @@ applyTo: "**/*.rs"
 
 ## Lints
 
-- Workspace lints `clippy::all` + `clippy::pedantic` are enforced as warnings
-- `unsafe_code = "deny"` — reject any unsafe block
-- `unwrap_used` and `expect_used` are warned — flag in non-test code
+- Workspace Clippy lints `clippy::all` + `clippy::pedantic` are configured as warnings in `Cargo.toml`
+- Review policy: prefer `#![forbid(unsafe_code)]` in crates and reject new `unsafe` blocks unless strictly justified and well-documented
+- Review policy: avoid `unwrap()` and `expect()` in non-test code; require explicit error handling instead
 
 ## Async Patterns
 
