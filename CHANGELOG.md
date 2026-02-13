@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Deferred model warmup in TUI mode: interface renders immediately, Ollama warmup runs in background with status indicator ("warming up model..." → "model ready"), agent loop awaits completion via `watch::channel`
 - `context_tokens` metric in TUI Resources panel showing current prompt estimate (vs cumulative session totals)
 - `unsummarized_message_count` in `SemanticMemory` for precise summarization trigger
 - `count_messages_after` in `SqliteStore` for counting messages beyond a given ID

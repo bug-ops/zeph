@@ -138,6 +138,19 @@ Metrics are updated at key instrumentation points in the agent loop:
 
 Token counts use a `chars/4` estimation (sufficient for dashboard display).
 
+## Deferred Model Warmup
+
+When running with Ollama (or an orchestrator with Ollama sub-providers), model warmup is deferred until after the TUI interface renders. This means:
+
+1. The TUI appears immediately — no blank terminal while the model loads into GPU/CPU memory
+2. A status indicator ("warming up model...") appears in the chat panel
+3. Warmup runs in the background via a spawned tokio task
+4. Once complete, the status updates to "model ready" and the agent loop begins processing
+
+If you send a message before warmup finishes, it is queued and processed automatically once the model is ready.
+
+> **Note:** In non-TUI modes (CLI, Telegram), warmup still runs synchronously before the agent loop starts.
+
 ## Architecture
 
 The TUI runs as three concurrent loops:
