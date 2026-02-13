@@ -6,8 +6,9 @@ applyTo: ".github/workflows/**/*.yml"
 
 ## Pipeline Structure
 
-- Required stages: `lint-fmt` → `lint-clippy` → `test` → `integration` → `coverage`
-- Gate job `ci-status` must require all checks
+- Required structure: `lint-fmt` → `lint-clippy` → (`test`, `integration`, `coverage`) in parallel
+- `docker-build-and-scan` must be present and treated as a required job
+- Gate job `ci-status` must require all checks (including `docker-build-and-scan`)
 - Test matrix: ubuntu, macos, windows
 - Coverage via `cargo-llvm-cov` uploaded to codecov
 
