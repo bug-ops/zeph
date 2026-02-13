@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Bounded FIFO message queue (max 10) in agent loop: users can submit messages during inference, queued messages are delivered sequentially when response cycle completes
+- Channel trait extended with `try_recv()` (non-blocking poll) and `send_queue_count()` with default no-op impls
+- Consecutive user messages within 500ms merge window joined by newline
+- TUI queue badge `[+N queued]` in input area, `Ctrl+K` to clear queue, `/clear-queue` command
+- TelegramChannel `try_recv()` implementation via mpsc
 - Deferred model warmup in TUI mode: interface renders immediately, Ollama warmup runs in background with status indicator ("warming up model..." → "model ready"), agent loop awaits completion via `watch::channel`
 - `context_tokens` metric in TUI Resources panel showing current prompt estimate (vs cumulative session totals)
 - `unsummarized_message_count` in `SemanticMemory` for precise summarization trigger

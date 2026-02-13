@@ -6,9 +6,9 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 
 Agent loop, configuration loading, and context builder.
 
-- `Agent<P, C, T>` — main agent loop with streaming support
+- `Agent<P, C, T>` — main agent loop with streaming support and message queue drain
 - `Config` — TOML config loading with env var overrides
-- `Channel` trait — abstraction for I/O (CLI, Telegram)
+- `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management
 - Context builder — assembles system prompt from skills, memory, summaries, environment, and project config
 - Context engineering — proportional budget allocation, semantic recall injection, message trimming, runtime compaction
 - `EnvironmentContext` — runtime gathering of cwd, git branch, OS, model name
@@ -54,8 +54,8 @@ SQLite-backed conversation persistence with Qdrant vector search.
 
 Channel implementations for the Zeph agent.
 
-- `CliChannel` — stdin/stdout with immediate streaming output
-- `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards
+- `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
+- `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window
 
 ## zeph-tools
 
@@ -104,8 +104,8 @@ A2A protocol client and server (optional, feature-gated).
 
 ratatui-based TUI dashboard (optional, feature-gated).
 
-- `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc, oneshot-based confirmation dialog
-- `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`
+- `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc, oneshot-based confirmation dialog, bounded message queue (max 10) with 500ms merge window
+- `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`, queue badge indicator `[+N queued]`, Ctrl+K to clear queue
 - `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
 - Side panel widgets: `skills` (active/total), `memory` (SQLite, Qdrant, embeddings), `resources` (tokens, API calls, latency)
 - Chat widget with bottom-up message feed, pulldown-cmark markdown rendering, scrollbar with proportional thumb, mouse scroll, thinking block segmentation, and streaming cursor

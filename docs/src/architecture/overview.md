@@ -38,6 +38,18 @@ zeph (binary)
 
 `zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation.
 
+## Agent Loop
+
+The agent loop processes user input in a continuous cycle:
+
+1. Read initial user message via `channel.recv()`
+2. Build context from skills, memory, and environment
+3. Stream LLM response token-by-token
+4. Execute any tool calls in the response
+5. Drain queued messages (if any) via `channel.try_recv()` and repeat from step 2
+
+Queued messages are processed sequentially with full context rebuilding between each. Consecutive messages within 500ms are merged to reduce fragmentation. The queue holds a maximum of 10 messages; older messages are dropped when full.
+
 ## Key Design Decisions
 
 - **Generic Agent:** `Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor>` — fully generic over provider, channel, and tool executor

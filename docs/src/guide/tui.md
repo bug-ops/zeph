@@ -44,7 +44,7 @@ ZEPH_TUI=true zeph
 
 - **Chat panel** (left 70%): bottom-up message feed with full markdown rendering (bold, italic, code blocks, lists, headings), scrollbar with proportional thumb, and scroll indicators (▲/▼). Mouse wheel scrolling supported
 - **Side panels** (right 30%): skills, memory, and resources metrics — hidden on terminals < 80 cols
-- **Input line**: always visible, supports multiline input via Shift+Enter
+- **Input line**: always visible, supports multiline input via Shift+Enter. Shows `[+N queued]` badge when messages are pending
 - **Status bar**: mode indicator, skill count, token usage, uptime
 - **Splash screen**: colored block-letter "ZEPH" banner on startup
 
@@ -74,6 +74,7 @@ ZEPH_TUI=true zeph
 | `Escape` | Switch to Normal mode |
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
+| `Ctrl+K` | Clear message queue |
 
 ### Confirmation Modal
 
@@ -109,6 +110,34 @@ When using Ollama models that emit reasoning traces (DeepSeek, Qwen), the `<thin
 ## Conversation History
 
 On startup, the TUI loads the latest conversation from SQLite and displays it in the chat panel. This provides continuity across sessions.
+
+## Message Queueing
+
+The TUI input line remains interactive during model inference, allowing you to queue up to 10 messages for sequential processing. This is useful for providing follow-up instructions without waiting for the current response to complete.
+
+### Queue Indicator
+
+When messages are pending, a badge appears in the input area:
+
+```text
+You: next message here [+3 queued]_
+```
+
+The counter shows how many messages are waiting to be processed. Queued messages are drained automatically after each response completes.
+
+### Message Merging
+
+Consecutive messages submitted within 500ms are automatically merged with newline separators. This reduces context fragmentation when you send rapid-fire instructions.
+
+### Clearing the Queue
+
+Press `Ctrl+K` in Insert mode to discard all queued messages. This is useful if you change your mind about pending instructions.
+
+Alternatively, send the `/clear-queue` command to clear the queue programmatically.
+
+### Queue Limits
+
+The queue holds a maximum of 10 messages. When full, new input is silently dropped until the agent drains the queue by processing pending messages.
 
 ## Responsive Layout
 

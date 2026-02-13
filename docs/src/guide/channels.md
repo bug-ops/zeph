@@ -101,6 +101,30 @@ cargo build --release --features tui
 
 See [TUI Dashboard](tui.md) for full documentation including keybindings, layout, and architecture.
 
+## Message Queueing
+
+Zeph maintains a bounded FIFO message queue (maximum 10 messages) to handle user input received during model inference. Queue behavior varies by channel:
+
+### CLI Channel
+
+Blocking stdin read — the queue is always empty. CLI users cannot send messages while the agent is responding.
+
+### Telegram Channel
+
+New messages are queued via an internal mpsc channel. Consecutive messages arriving within 500ms are automatically merged with a newline separator to reduce context fragmentation.
+
+Use `/clear-queue` to discard queued messages.
+
+### TUI Channel
+
+The input line remains interactive during model inference. Messages are queued in-order and drained after each response completes.
+
+- **Queue badge:** `[+N queued]` appears in the input area when messages are pending
+- **Clear queue:** Press `Ctrl+K` to discard all queued messages
+- **Merging:** Consecutive messages within 500ms are merged by newline
+
+When the queue is full (10 messages), new input is silently dropped until space becomes available.
+
 ## Channel Selection Logic
 
 Zeph selects the channel at startup based on the following priority:
