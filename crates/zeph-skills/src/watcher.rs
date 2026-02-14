@@ -4,6 +4,8 @@ use std::time::Duration;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 
+use crate::error::SkillError;
+
 pub enum SkillEvent {
     Changed,
 }
@@ -20,7 +22,7 @@ impl SkillWatcher {
     /// # Errors
     ///
     /// Returns an error if the filesystem watcher cannot be initialized.
-    pub fn start(paths: &[PathBuf], tx: mpsc::Sender<SkillEvent>) -> anyhow::Result<Self> {
+    pub fn start(paths: &[PathBuf], tx: mpsc::Sender<SkillEvent>) -> Result<Self, SkillError> {
         let (notify_tx, mut notify_rx) = mpsc::channel(16);
 
         let mut debouncer = new_debouncer(

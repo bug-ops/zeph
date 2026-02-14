@@ -8,6 +8,7 @@ use std::path::Path;
 
 use tree_sitter::Parser;
 
+use crate::error::Result;
 use crate::languages::{Lang, detect_language};
 use zeph_memory::estimate_tokens;
 
@@ -19,7 +20,7 @@ use zeph_memory::estimate_tokens;
 /// # Errors
 ///
 /// Returns an error if the file walk fails.
-pub fn generate_repo_map(root: &Path, token_budget: usize) -> anyhow::Result<String> {
+pub fn generate_repo_map(root: &Path, token_budget: usize) -> Result<String> {
     let walker = ignore::WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)

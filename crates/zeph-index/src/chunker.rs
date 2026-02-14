@@ -2,6 +2,7 @@
 
 use tree_sitter::{Node, Parser};
 
+use crate::error::{IndexError, Result};
 use crate::languages::Lang;
 
 /// One chunk of source code with rich metadata.
@@ -58,19 +59,19 @@ pub fn chunk_file(
     file_path: &str,
     lang: Lang,
     config: &ChunkerConfig,
-) -> anyhow::Result<Vec<CodeChunk>> {
+) -> Result<Vec<CodeChunk>> {
     let grammar = lang
         .grammar()
-        .ok_or_else(|| anyhow::anyhow!("no grammar for {}", lang.id()))?;
+        .ok_or_else(|| IndexError::Parse(format!("no grammar for {}", lang.id())))?;
 
     let mut parser = Parser::new();
     parser
         .set_language(&grammar)
-        .map_err(|e| anyhow::anyhow!("set_language failed: {e}"))?;
+        .map_err(|e| IndexError::Parse(format!("set_language failed: {e}")))?;
 
     let tree = parser
         .parse(source, None)
-        .ok_or_else(|| anyhow::anyhow!("parse failed for {file_path}"))?;
+        .ok_or_else(|| IndexError::Parse(format!("parse failed for {file_path}")))?;
 
     let root = tree.root_node();
     let imports = extract_imports(source, &root, lang);

@@ -5,8 +5,9 @@ pub mod template;
 
 pub use candle_core::Device;
 
-use anyhow::{Context, Result, bail};
 use tokenizers::Tokenizer;
+
+use crate::error::LlmError;
 
 use self::embed::EmbedModel;
 use self::generate::{GenerationConfig, GenerationOutput, generate_tokens};
@@ -52,7 +53,7 @@ impl CandleProvider {
         generation_config: GenerationConfig,
         embedding_repo: Option<&str>,
         device: Device,
-    ) -> Result<Self> {
+    ) -> Result<Self, LlmError> {
         let LoadedModel {
             weights,
             tokenizer,
@@ -60,9 +61,7 @@ impl CandleProvider {
         } = load_chat_model(source, &device)?;
 
         let embed_model = if let Some(repo) = embedding_repo {
-            Some(std::sync::Arc::new(
-                EmbedModel::load(repo, &device).context("failed to load embedding model")?,
-            ))
+            Some(std::sync::Arc::new(EmbedModel::load(repo, &device)?))
         } else {
             None
         };
@@ -87,21 +86,21 @@ impl CandleProvider {
         }
     }
 
-    fn generate_sync(&self, messages: &[Message]) -> Result<String> {
+    fn generate_sync(&self, messages: &[Message]) -> Result<String, LlmError> {
         let prompt = self.template.format(messages);
         let encoding = self
             .tokenizer
             .encode(prompt.as_str(), false)
-            .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
+            .map_err(|e| LlmError::Inference(format!("tokenizer encode failed: {e}")))?;
         let input_tokens = encoding.get_ids();
 
         let weights = self.weights.clone();
         let mut forward_fn =
-            |input: &candle_core::Tensor, pos: usize| -> Result<candle_core::Tensor> {
+            |input: &candle_core::Tensor, pos: usize| -> Result<candle_core::Tensor, LlmError> {
                 let mut w = weights
                     .lock()
-                    .map_err(|e| anyhow::anyhow!("model lock poisoned: {e}"))?;
-                w.forward(input, pos).context("model forward pass failed")
+                    .map_err(|e| LlmError::Inference(format!("model lock poisoned: {e}")))?;
+                w.forward(input, pos).map_err(LlmError::Candle)
             };
 
         let GenerationOutput {
@@ -122,16 +121,16 @@ impl CandleProvider {
 }
 
 impl LlmProvider for CandleProvider {
-    async fn chat(&self, messages: &[Message]) -> Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         let provider = self.clone();
         let messages = messages.to_vec();
         tokio::task::spawn_blocking(move || provider.generate_sync(&messages))
             .await
-            .context("candle generation task failed")?
+            .map_err(|e| LlmError::Inference(format!("candle generation task failed: {e}")))?
     }
 
     // NOTE: MVP fake streaming — generates all tokens then chunks
-    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let provider = self.clone();
         let messages = messages.to_vec();
@@ -162,15 +161,15 @@ impl LlmProvider for CandleProvider {
         true
     }
 
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let Some(ref embed_model) = self.embed_model else {
-            bail!("CandleProvider: no embedding model configured");
+            return Err(LlmError::EmbedUnsupported { provider: "candle" });
         };
         let model = embed_model.clone();
         let text = text.to_owned();
         tokio::task::spawn_blocking(move || model.embed_sync(&text))
             .await
-            .context("candle embedding task failed")?
+            .map_err(|e| LlmError::Inference(format!("candle embedding task failed: {e}")))?
     }
 
     fn supports_embeddings(&self) -> bool {

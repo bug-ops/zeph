@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use qdrant_client::qdrant::{Condition, Filter};
 
+use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::estimate_tokens;
@@ -71,11 +72,7 @@ impl<P: LlmProvider + Clone + 'static> CodeRetriever<P> {
     /// # Errors
     ///
     /// Returns an error if embedding or `Qdrant` search fails.
-    pub async fn retrieve(
-        &self,
-        query: &str,
-        available_tokens: usize,
-    ) -> anyhow::Result<RetrievedCode> {
+    pub async fn retrieve(&self, query: &str, available_tokens: usize) -> Result<RetrievedCode> {
         let strategy = classify_query(query);
 
         let token_budget = budget_tokens(available_tokens, self.config.budget_ratio);
@@ -109,7 +106,7 @@ impl<P: LlmProvider + Clone + 'static> CodeRetriever<P> {
         query: &str,
         available_tokens: usize,
         language: &str,
-    ) -> anyhow::Result<RetrievedCode> {
+    ) -> Result<RetrievedCode> {
         let strategy = classify_query(query);
 
         let token_budget = budget_tokens(available_tokens, self.config.budget_ratio);
@@ -133,7 +130,7 @@ impl<P: LlmProvider + Clone + 'static> CodeRetriever<P> {
         query: &str,
         token_budget: usize,
         filter: Option<Filter>,
-    ) -> anyhow::Result<Vec<SearchHit>> {
+    ) -> Result<Vec<SearchHit>> {
         let query_vector = self.provider.embed(query).await?;
 
         let mut hits = self

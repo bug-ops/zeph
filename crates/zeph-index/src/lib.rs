@@ -6,9 +6,12 @@
 
 pub mod chunker;
 pub mod context;
+pub mod error;
 pub mod indexer;
 pub mod languages;
 pub mod repo_map;
 pub mod retriever;
 pub mod store;
 pub mod watcher;
+
+pub use error::{IndexError, Result};

@@ -15,7 +15,6 @@ lang-go = ["dep:tree-sitter-go"]
 lang-config = ["dep:tree-sitter-bash", "dep:tree-sitter-toml-ng", "dep:tree-sitter-json", "dep:tree-sitter-md"]
 
 [dependencies]
-anyhow.workspace = true
 blake3.workspace = true
 ignore.workspace = true
 notify.workspace = true
@@ -24,6 +23,7 @@ qdrant-client = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 tracing.workspace = true
 tree-sitter.workspace = true

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use crate::error::SkillError;
 
 #[derive(Clone, Debug, Default)]
 pub struct SkillResources {
@@ -39,26 +39,36 @@ pub fn discover_resources(skill_dir: &Path) -> SkillResources {
 /// # Errors
 ///
 /// Returns an error if the path escapes the skill directory or the file cannot be read.
-pub fn load_resource(skill_dir: &Path, relative_path: &str) -> anyhow::Result<Vec<u8>> {
-    let canonical_base = skill_dir
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize skill dir: {}", skill_dir.display()))?;
+pub fn load_resource(skill_dir: &Path, relative_path: &str) -> Result<Vec<u8>, SkillError> {
+    let canonical_base = skill_dir.canonicalize().map_err(|e| {
+        SkillError::Other(format!(
+            "failed to canonicalize skill dir {}: {e}",
+            skill_dir.display()
+        ))
+    })?;
 
     let target = skill_dir.join(relative_path);
-    let canonical_target = target
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize resource path: {}", target.display()))?;
+    let canonical_target = target.canonicalize().map_err(|e| {
+        SkillError::Other(format!(
+            "failed to canonicalize resource path {}: {e}",
+            target.display()
+        ))
+    })?;
 
     if !canonical_target.starts_with(&canonical_base) {
-        bail!(
+        return Err(SkillError::Invalid(format!(
             "path traversal detected: {} escapes {}",
             relative_path,
             skill_dir.display()
-        );
+        )));
     }
 
-    std::fs::read(&canonical_target)
-        .with_context(|| format!("failed to read resource: {}", canonical_target.display()))
+    std::fs::read(&canonical_target).map_err(|e| {
+        SkillError::Other(format!(
+            "failed to read resource {}: {e}",
+            canonical_target.display()
+        ))
+    })
 }
 
 #[cfg(test)]

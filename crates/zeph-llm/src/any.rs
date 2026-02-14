@@ -55,7 +55,7 @@ impl LlmProvider for AnyProvider {
         }
     }
 
-    async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
@@ -68,7 +68,7 @@ impl LlmProvider for AnyProvider {
         }
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {
         match self {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
@@ -94,7 +94,7 @@ impl LlmProvider for AnyProvider {
         }
     }
 
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::LlmError> {
         match self {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
@@ -323,7 +323,7 @@ mod tests {
         let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
         let result = provider.embed("test").await;
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Claude API does not support"));
+        assert!(err.to_string().contains("embedding not supported by"));
     }
 
     #[test]

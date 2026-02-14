@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use crate::error::LlmError;
 use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
@@ -88,19 +88,15 @@ impl ClaudeProvider {
             .json(&body)
     }
 
-    async fn send_request(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         for attempt in 0..=MAX_RETRIES {
-            let response = self
-                .build_request(messages, false)
-                .send()
-                .await
-                .context("failed to send request to Claude API")?;
+            let response = self.build_request(messages, false).send().await?;
 
             let status = response.status();
 
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 if attempt == MAX_RETRIES {
-                    bail!("rate_limited");
+                    return Err(LlmError::RateLimited);
                 }
                 let delay = retry_delay(&response, attempt);
                 self.emit_status(format!(
@@ -119,42 +115,39 @@ impl ClaudeProvider {
                 continue;
             }
 
-            let text = response
-                .text()
-                .await
-                .context("failed to read response body")?;
+            let text = response.text().await.map_err(LlmError::Http)?;
 
             if !status.is_success() {
                 tracing::error!("Claude API error {status}: {text}");
-                bail!("Claude API request failed (status {status})");
+                return Err(LlmError::Other(format!(
+                    "Claude API request failed (status {status})"
+                )));
             }
 
-            let resp: ApiResponse =
-                serde_json::from_str(&text).context("failed to parse Claude API response")?;
+            let resp: ApiResponse = serde_json::from_str(&text)?;
 
             return resp
                 .content
                 .first()
                 .map(|c| c.text.clone())
-                .context("empty response from Claude API");
+                .ok_or(LlmError::EmptyResponse { provider: "claude" });
         }
 
-        bail!("rate_limited")
+        Err(LlmError::RateLimited)
     }
 
-    async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
+    async fn send_stream_request(
+        &self,
+        messages: &[Message],
+    ) -> Result<reqwest::Response, LlmError> {
         for attempt in 0..=MAX_RETRIES {
-            let response = self
-                .build_request(messages, true)
-                .send()
-                .await
-                .context("failed to send streaming request to Claude API")?;
+            let response = self.build_request(messages, true).send().await?;
 
             let status = response.status();
 
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 if attempt == MAX_RETRIES {
-                    bail!("rate_limited");
+                    return Err(LlmError::RateLimited);
                 }
                 let delay = retry_delay(&response, attempt);
                 self.emit_status(format!(
@@ -174,18 +167,17 @@ impl ClaudeProvider {
             }
 
             if !status.is_success() {
-                let text = response
-                    .text()
-                    .await
-                    .context("failed to read error response body")?;
+                let text = response.text().await.map_err(LlmError::Http)?;
                 tracing::error!("Claude API streaming request error {status}: {text}");
-                bail!("Claude API streaming request failed (status {status})");
+                return Err(LlmError::Other(format!(
+                    "Claude API streaming request failed (status {status})"
+                )));
             }
 
             return Ok(response);
         }
 
-        bail!("rate_limited")
+        Err(LlmError::RateLimited)
     }
 }
 
@@ -201,18 +193,18 @@ impl LlmProvider for ClaudeProvider {
         }
     }
 
-    async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
 
         let event_stream = response.bytes_stream().eventsource();
 
         let mapped = event_stream.filter_map(|event| match event {
             Ok(event) => parse_sse_event(&event.data, &event.event),
-            Err(e) => Some(Err(anyhow::anyhow!("SSE parse error: {e}"))),
+            Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
         });
 
         Ok(Box::pin(mapped))
@@ -222,10 +214,8 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-        Err(anyhow::anyhow!(
-            "Claude API does not support embeddings; use Ollama with an embedding model"
-        ))
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Err(LlmError::EmbedUnsupported { provider: "claude" })
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -247,7 +237,7 @@ fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
     Duration::from_secs(BASE_BACKOFF_SECS << attempt)
 }
 
-fn parse_sse_event(data: &str, event_type: &str) -> Option<anyhow::Result<String>> {
+fn parse_sse_event(data: &str, event_type: &str) -> Option<Result<String, LlmError>> {
     match event_type {
         "content_block_delta" => match serde_json::from_str::<StreamEvent>(data) {
             Ok(event) => {
@@ -259,21 +249,26 @@ fn parse_sse_event(data: &str, event_type: &str) -> Option<anyhow::Result<String
                 }
                 None
             }
-            Err(e) => Some(Err(anyhow::anyhow!("failed to parse SSE data: {e}"))),
+            Err(e) => Some(Err(LlmError::SseParse(format!(
+                "failed to parse SSE data: {e}"
+            )))),
         },
         "error" => match serde_json::from_str::<StreamEvent>(data) {
             Ok(event) => {
                 if let Some(err) = event.error {
-                    Some(Err(anyhow::anyhow!(
+                    Some(Err(LlmError::SseParse(format!(
                         "Claude stream error ({}): {}",
-                        err.error_type,
-                        err.message
-                    )))
+                        err.error_type, err.message
+                    ))))
                 } else {
-                    Some(Err(anyhow::anyhow!("Claude stream error: {data}")))
+                    Some(Err(LlmError::SseParse(format!(
+                        "Claude stream error: {data}"
+                    ))))
                 }
             }
-            Err(_) => Some(Err(anyhow::anyhow!("Claude stream error: {data}"))),
+            Err(_) => Some(Err(LlmError::SseParse(format!(
+                "Claude stream error: {data}"
+            )))),
         },
         _ => None,
     }
@@ -523,11 +518,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.to_string()
-                .contains("Claude API does not support embeddings")
-        );
-        assert!(
-            err.to_string()
-                .contains("use Ollama with an embedding model")
+                .contains("embedding not supported by claude")
         );
     }
 

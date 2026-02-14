@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::error::SkillError;
 use crate::loader::SkillMeta;
 
 /// Type alias for boxed embed futures to work around async closure lifetime issues.
@@ -110,12 +111,13 @@ impl SkillMatcherBackend {
     /// # Errors
     ///
     /// Returns an error if the Qdrant sync fails.
+    #[allow(clippy::unused_async)]
     pub async fn sync<F>(
         &mut self,
         meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
-    ) -> anyhow::Result<()>
+    ) -> Result<(), SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {

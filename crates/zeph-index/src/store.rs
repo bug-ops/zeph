@@ -7,6 +7,8 @@ use qdrant_client::qdrant::{
     SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
 };
 
+use crate::error::Result;
+
 const CODE_COLLECTION: &str = "zeph_code_chunks";
 
 /// `Qdrant` + `SQLite` dual-write store for code chunks.
@@ -46,8 +48,8 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `Qdrant` client fails to connect.
-    pub fn new(qdrant_url: &str, pool: sqlx::SqlitePool) -> anyhow::Result<Self> {
-        let qdrant = Qdrant::from_url(qdrant_url).build()?;
+    pub fn new(qdrant_url: &str, pool: sqlx::SqlitePool) -> Result<Self> {
+        let qdrant = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
         Ok(Self {
             qdrant,
             collection: CODE_COLLECTION.into(),
@@ -60,7 +62,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if migration execution fails.
-    pub async fn migrate(&self) -> anyhow::Result<()> {
+    pub async fn migrate(&self) -> Result<()> {
         sqlx::migrate!().run(&self.pool).await?;
         Ok(())
     }
@@ -70,8 +72,13 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` operations fail.
-    pub async fn ensure_collection(&self, vector_size: u64) -> anyhow::Result<()> {
-        if self.qdrant.collection_exists(&self.collection).await? {
+    pub async fn ensure_collection(&self, vector_size: u64) -> Result<()> {
+        if self
+            .qdrant
+            .collection_exists(&self.collection)
+            .await
+            .map_err(Box::new)?
+        {
             return Ok(());
         }
 
@@ -81,7 +88,8 @@ impl CodeStore {
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
                     .quantization_config(ScalarQuantizationBuilder::default()),
             )
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         self.qdrant
             .create_field_index(CreateFieldIndexCollectionBuilder::new(
@@ -89,21 +97,24 @@ impl CodeStore {
                 "language",
                 FieldType::Keyword,
             ))
-            .await?;
+            .await
+            .map_err(Box::new)?;
         self.qdrant
             .create_field_index(CreateFieldIndexCollectionBuilder::new(
                 &self.collection,
                 "file_path",
                 FieldType::Keyword,
             ))
-            .await?;
+            .await
+            .map_err(Box::new)?;
         self.qdrant
             .create_field_index(CreateFieldIndexCollectionBuilder::new(
                 &self.collection,
                 "node_type",
                 FieldType::Keyword,
             ))
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         Ok(())
     }
@@ -113,11 +124,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
-    pub async fn upsert_chunk(
-        &self,
-        chunk: &ChunkInsert<'_>,
-        vector: Vec<f32>,
-    ) -> anyhow::Result<String> {
+    pub async fn upsert_chunk(&self, chunk: &ChunkInsert<'_>, vector: Vec<f32>) -> Result<String> {
         let point_id = uuid::Uuid::new_v4().to_string();
 
         let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
@@ -138,7 +145,8 @@ impl CodeStore {
                 &self.collection,
                 vec![PointStruct::new(point_id.clone(), vector, payload)],
             ))
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         let line_start = i64::try_from(chunk.line_start)?;
         let line_end = i64::try_from(chunk.line_end)?;
@@ -167,7 +175,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
-    pub async fn chunk_exists(&self, content_hash: &str) -> anyhow::Result<bool> {
+    pub async fn chunk_exists(&self, content_hash: &str) -> Result<bool> {
         let row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM chunk_metadata WHERE content_hash = ?")
                 .bind(content_hash)
@@ -181,7 +189,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
-    pub async fn remove_file_chunks(&self, file_path: &str) -> anyhow::Result<usize> {
+    pub async fn remove_file_chunks(&self, file_path: &str) -> Result<usize> {
         let ids: Vec<(String,)> =
             sqlx::query_as("SELECT qdrant_id FROM chunk_metadata WHERE file_path = ?")
                 .bind(file_path)
@@ -201,7 +209,8 @@ impl CodeStore {
             .delete_points(
                 DeletePointsBuilder::new(&self.collection).points(PointsIdsList { ids: point_ids }),
             )
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         let count = ids.len();
         sqlx::query("DELETE FROM chunk_metadata WHERE file_path = ?")
@@ -222,7 +231,7 @@ impl CodeStore {
         query_vector: Vec<f32>,
         limit: usize,
         filter: Option<Filter>,
-    ) -> anyhow::Result<Vec<SearchHit>> {
+    ) -> Result<Vec<SearchHit>> {
         let mut builder = SearchPointsBuilder::new(&self.collection, query_vector, limit as u64)
             .with_payload(true);
 
@@ -230,7 +239,7 @@ impl CodeStore {
             builder = builder.filter(f);
         }
 
-        let results = self.qdrant.search_points(builder).await?;
+        let results = self.qdrant.search_points(builder).await.map_err(Box::new)?;
 
         Ok(results
             .result
@@ -244,7 +253,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
-    pub async fn indexed_files(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn indexed_files(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT file_path FROM chunk_metadata")
             .fetch_all(&self.pool)
             .await?;

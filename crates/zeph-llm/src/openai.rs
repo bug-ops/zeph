@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use crate::error::LlmError;
 use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
@@ -86,7 +86,7 @@ impl OpenAiProvider {
         }
     }
 
-    async fn send_request(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let api_messages = convert_messages(messages);
         let reasoning = self
             .reasoning_effort
@@ -108,34 +108,34 @@ impl OpenAiProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await
-            .context("failed to send request to OpenAI API")?;
+            .await?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read response body")?;
+        let text = response.text().await.map_err(LlmError::Http)?;
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(anyhow::anyhow!("rate_limited"));
+            return Err(LlmError::RateLimited);
         }
 
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
-            bail!("OpenAI API request failed (status {status})");
+            return Err(LlmError::Other(format!(
+                "OpenAI API request failed (status {status})"
+            )));
         }
 
-        let resp: ChatResponse =
-            serde_json::from_str(&text).context("failed to parse OpenAI API response")?;
+        let resp: ChatResponse = serde_json::from_str(&text)?;
 
         resp.choices
             .first()
             .map(|c| c.message.content.clone())
-            .context("empty response from OpenAI API")
+            .ok_or(LlmError::EmptyResponse { provider: "openai" })
     }
 
-    async fn send_stream_request(&self, messages: &[Message]) -> anyhow::Result<reqwest::Response> {
+    async fn send_stream_request(
+        &self,
+        messages: &[Message],
+    ) -> Result<reqwest::Response, LlmError> {
         let api_messages = convert_messages(messages);
         let reasoning = self
             .reasoning_effort
@@ -157,22 +157,20 @@ impl OpenAiProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await
-            .context("failed to send streaming request to OpenAI API")?;
+            .await?;
 
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            bail!("rate_limited");
+            return Err(LlmError::RateLimited);
         }
 
         if !status.is_success() {
-            let text = response
-                .text()
-                .await
-                .context("failed to read error response body")?;
+            let text = response.text().await.map_err(LlmError::Http)?;
             tracing::error!("OpenAI API streaming request error {status}: {text}");
-            bail!("OpenAI API streaming request failed (status {status})");
+            return Err(LlmError::Other(format!(
+                "OpenAI API streaming request failed (status {status})"
+            )));
         }
 
         Ok(response)
@@ -192,10 +190,10 @@ impl LlmProvider for OpenAiProvider {
         }
     }
 
-    async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         match self.send_request(messages).await {
             Ok(text) => Ok(text),
-            Err(e) if e.to_string().contains("rate_limited") => {
+            Err(LlmError::RateLimited) => {
                 self.emit_status("OpenAI rate limited, retrying in 1s");
                 tracing::warn!("OpenAI rate limited, retrying in 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -205,10 +203,10 @@ impl LlmProvider for OpenAiProvider {
         }
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = match self.send_stream_request(messages).await {
             Ok(resp) => resp,
-            Err(e) if e.to_string().contains("rate_limited") => {
+            Err(LlmError::RateLimited) => {
                 self.emit_status("OpenAI rate limited, retrying in 1s");
                 tracing::warn!("OpenAI rate limited, retrying in 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -221,7 +219,7 @@ impl LlmProvider for OpenAiProvider {
 
         let mapped = event_stream.filter_map(|event| match event {
             Ok(event) => parse_sse_event(&event.data),
-            Err(e) => Some(Err(anyhow::anyhow!("SSE parse error: {e}"))),
+            Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
         });
 
         Ok(Box::pin(mapped))
@@ -231,11 +229,11 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let model = self
             .embedding_model
             .as_deref()
-            .context("OpenAI embedding model not configured")?;
+            .ok_or(LlmError::EmbedUnsupported { provider: "openai" })?;
 
         let body = EmbeddingRequest { input: text, model };
 
@@ -246,27 +244,24 @@ impl LlmProvider for OpenAiProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await
-            .context("failed to send embedding request to OpenAI API")?;
+            .await?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read embedding response body")?;
+        let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
             tracing::error!("OpenAI embedding API error {status}: {text}");
-            bail!("OpenAI embedding request failed (status {status})");
+            return Err(LlmError::Other(format!(
+                "OpenAI embedding request failed (status {status})"
+            )));
         }
 
-        let resp: EmbeddingResponse =
-            serde_json::from_str(&text).context("failed to parse OpenAI embedding response")?;
+        let resp: EmbeddingResponse = serde_json::from_str(&text)?;
 
         resp.data
             .first()
             .map(|d| d.embedding.clone())
-            .context("empty embedding response from OpenAI API")
+            .ok_or(LlmError::EmptyResponse { provider: "openai" })
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -278,7 +273,7 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
-fn parse_sse_event(data: &str) -> Option<anyhow::Result<String>> {
+fn parse_sse_event(data: &str) -> Option<Result<String, LlmError>> {
     if data == "[DONE]" {
         return None;
     }
@@ -297,7 +292,9 @@ fn parse_sse_event(data: &str) -> Option<anyhow::Result<String>> {
                 Some(Ok(content.to_owned()))
             }
         }
-        Err(e) => Some(Err(anyhow::anyhow!("failed to parse SSE data: {e}"))),
+        Err(e) => Some(Err(LlmError::SseParse(format!(
+            "failed to parse SSE data: {e}"
+        )))),
     }
 }
 
@@ -704,7 +701,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("embedding model not configured")
+                .contains("embedding not supported")
         );
     }
 

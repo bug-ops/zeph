@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use crate::error::SkillError;
 
 #[derive(Clone, Debug)]
 pub struct SkillMeta {
@@ -31,24 +31,35 @@ impl Skill {
     }
 }
 
-fn validate_skill_name(name: &str, dir_name: &str) -> anyhow::Result<()> {
+fn validate_skill_name(name: &str, dir_name: &str) -> Result<(), SkillError> {
     if name.is_empty() || name.len() > 64 {
-        bail!("skill name must be 1-64 characters, got {}", name.len());
+        return Err(SkillError::Invalid(format!(
+            "skill name must be 1-64 characters, got {}",
+            name.len()
+        )));
     }
     if !name
         .bytes()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     {
-        bail!("skill name must contain only lowercase letters, digits, and hyphens: {name}");
+        return Err(SkillError::Invalid(format!(
+            "skill name must contain only lowercase letters, digits, and hyphens: {name}"
+        )));
     }
     if name.starts_with('-') || name.ends_with('-') {
-        bail!("skill name must not start or end with hyphen: {name}");
+        return Err(SkillError::Invalid(format!(
+            "skill name must not start or end with hyphen: {name}"
+        )));
     }
     if name.contains("--") {
-        bail!("skill name must not contain consecutive hyphens: {name}");
+        return Err(SkillError::Invalid(format!(
+            "skill name must not contain consecutive hyphens: {name}"
+        )));
     }
     if name != dir_name {
-        bail!("skill name '{name}' does not match directory name '{dir_name}'");
+        return Err(SkillError::Invalid(format!(
+            "skill name '{name}' does not match directory name '{dir_name}'"
+        )));
     }
     Ok(())
 }
@@ -109,14 +120,14 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     }
 }
 
-fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
+fn split_frontmatter(content: &str) -> Result<(&str, &str), SkillError> {
     let content = content.trim_start();
     if !content.starts_with("---") {
-        bail!("missing frontmatter delimiter");
+        return Err(SkillError::Invalid("missing frontmatter delimiter".into()));
     }
     let after_open = &content[3..];
     let Some(close) = after_open.find("---") else {
-        bail!("unclosed frontmatter");
+        return Err(SkillError::Invalid("unclosed frontmatter".into()));
     };
     let yaml_str = &after_open[..close];
     let body = after_open[close + 3..].trim();
@@ -128,29 +139,34 @@ fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or the frontmatter is missing/invalid.
-pub fn load_skill_meta(path: &Path) -> anyhow::Result<SkillMeta> {
+pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+        .map_err(|e| SkillError::Other(format!("failed to read {}: {e}", path.display())))?;
 
-    let (yaml_str, _body) =
-        split_frontmatter(&content).with_context(|| format!("in {}", path.display()))?;
+    let (yaml_str, _body) = split_frontmatter(&content)
+        .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
 
     let raw = parse_frontmatter(yaml_str);
 
-    let name = raw
-        .name
-        .filter(|s| !s.is_empty())
-        .with_context(|| format!("missing 'name' in frontmatter of {}", path.display()))?;
-    let description = raw
-        .description
-        .filter(|s| !s.is_empty())
-        .with_context(|| format!("missing 'description' in frontmatter of {}", path.display()))?;
+    let name = raw.name.filter(|s| !s.is_empty()).ok_or_else(|| {
+        SkillError::Invalid(format!(
+            "missing 'name' in frontmatter of {}",
+            path.display()
+        ))
+    })?;
+    let description = raw.description.filter(|s| !s.is_empty()).ok_or_else(|| {
+        SkillError::Invalid(format!(
+            "missing 'description' in frontmatter of {}",
+            path.display()
+        ))
+    })?;
 
     let skill_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
 
     let dir_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-    validate_skill_name(&name, dir_name).with_context(|| format!("in {}", path.display()))?;
+    validate_skill_name(&name, dir_name)
+        .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
 
     Ok(SkillMeta {
         name,
@@ -168,13 +184,13 @@ pub fn load_skill_meta(path: &Path) -> anyhow::Result<SkillMeta> {
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
-pub fn load_skill_body(meta: &SkillMeta) -> anyhow::Result<String> {
+pub fn load_skill_body(meta: &SkillMeta) -> Result<String, SkillError> {
     let path = meta.skill_dir.join("SKILL.md");
     let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+        .map_err(|e| SkillError::Other(format!("failed to read {}: {e}", path.display())))?;
 
-    let (_yaml_str, body) =
-        split_frontmatter(&content).with_context(|| format!("in {}", path.display()))?;
+    let (_yaml_str, body) = split_frontmatter(&content)
+        .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
 
     Ok(body.to_string())
 }
@@ -184,7 +200,7 @@ pub fn load_skill_body(meta: &SkillMeta) -> anyhow::Result<String> {
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or the frontmatter is missing/invalid.
-pub fn load_skill(path: &Path) -> anyhow::Result<Skill> {
+pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
     let meta = load_skill_meta(path)?;
     let body = load_skill_body(&meta)?;
     Ok(Skill { meta, body })

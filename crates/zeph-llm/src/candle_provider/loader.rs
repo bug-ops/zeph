@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use candle_core::Device;
+
+use crate::error::LlmError;
 use candle_core::quantized::gguf_file;
 use candle_transformers::models::quantized_llama::ModelWeights;
 use tokenizers::Tokenizer;
@@ -28,13 +29,13 @@ pub struct LoadedModel {
 /// # Errors
 ///
 /// Returns an error if model loading or tokenizer initialization fails.
-pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedModel> {
+pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedModel, LlmError> {
     match source {
         ModelSource::Local { path } => {
             let tokenizer_path = path
                 .parent()
                 .map(|p| p.join("tokenizer.json"))
-                .context("invalid model path")?;
+                .ok_or_else(|| LlmError::ModelLoad("invalid model path".into()))?;
             let weights = load_gguf_weights(path, device)?;
             let tokenizer = load_tokenizer(&tokenizer_path)?;
             let eos_token_id = resolve_eos_token(&tokenizer);
@@ -45,18 +46,23 @@ pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedMo
             })
         }
         ModelSource::HuggingFace { repo_id, filename } => {
-            let api =
-                hf_hub::api::sync::Api::new().context("failed to create HuggingFace API client")?;
+            let api = hf_hub::api::sync::Api::new().map_err(|e| {
+                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+            })?;
             let repo = api.model(repo_id.clone());
 
             let model_filename = filename.as_deref().unwrap_or("model.gguf");
-            let model_path = repo
-                .get(model_filename)
-                .with_context(|| format!("failed to download {model_filename} from {repo_id}"))?;
+            let model_path = repo.get(model_filename).map_err(|e| {
+                LlmError::ModelLoad(format!(
+                    "failed to download {model_filename} from {repo_id}: {e}"
+                ))
+            })?;
 
-            let tokenizer_path = repo
-                .get("tokenizer.json")
-                .with_context(|| format!("failed to download tokenizer.json from {repo_id}"))?;
+            let tokenizer_path = repo.get("tokenizer.json").map_err(|e| {
+                LlmError::ModelLoad(format!(
+                    "failed to download tokenizer.json from {repo_id}: {e}"
+                ))
+            })?;
 
             let weights = load_gguf_weights(&model_path, device)?;
             let tokenizer = load_tokenizer(&tokenizer_path)?;
@@ -70,17 +76,22 @@ pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedMo
     }
 }
 
-fn load_gguf_weights(path: &Path, device: &Device) -> Result<ModelWeights> {
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open GGUF file: {}", path.display()))?;
-    let content = gguf_file::Content::read(&mut file).context("failed to parse GGUF file")?;
-    ModelWeights::from_gguf(content, &mut file, device)
-        .context("failed to load model weights from GGUF")
+fn load_gguf_weights(path: &Path, device: &Device) -> Result<ModelWeights, LlmError> {
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        LlmError::ModelLoad(format!("failed to open GGUF file {}: {e}", path.display()))
+    })?;
+    let content = gguf_file::Content::read(&mut file)
+        .map_err(|e| LlmError::ModelLoad(format!("failed to parse GGUF file: {e}")))?;
+    ModelWeights::from_gguf(content, &mut file, device).map_err(LlmError::Candle)
 }
 
-fn load_tokenizer(path: &Path) -> Result<Tokenizer> {
-    Tokenizer::from_file(path)
-        .map_err(|e| anyhow::anyhow!("failed to load tokenizer from {}: {e}", path.display()))
+fn load_tokenizer(path: &Path) -> Result<Tokenizer, LlmError> {
+    Tokenizer::from_file(path).map_err(|e| {
+        LlmError::ModelLoad(format!(
+            "failed to load tokenizer from {}: {e}",
+            path.display()
+        ))
+    })
 }
 
 fn resolve_eos_token(tokenizer: &Tokenizer) -> u32 {

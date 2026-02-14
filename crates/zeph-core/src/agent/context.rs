@@ -485,7 +485,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 .match_skills(&all_meta, query, self.max_active_skills, |text| {
                     let owned = text.to_owned();
                     let p = provider.clone();
-                    Box::pin(async move { p.embed(&owned).await })
+                    Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
                 })
                 .await
         } else {

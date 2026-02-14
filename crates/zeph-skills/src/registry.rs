@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta};
 
 struct SkillEntry {
@@ -109,12 +110,12 @@ impl SkillRegistry {
     /// # Errors
     ///
     /// Returns an error if the body cannot be loaded from disk.
-    pub fn get_body(&self, name: &str) -> anyhow::Result<&str> {
+    pub fn get_body(&self, name: &str) -> Result<&str, SkillError> {
         let entry = self
             .entries
             .iter()
             .find(|e| e.meta.name == name)
-            .ok_or_else(|| anyhow::anyhow!("skill not found: {name}"))?;
+            .ok_or_else(|| SkillError::NotFound(name.to_string()))?;
 
         if let Some(body) = entry.body.get() {
             return Ok(body.as_str());
@@ -129,13 +130,13 @@ impl SkillRegistry {
     /// # Errors
     ///
     /// Returns an error if the skill is not found or body cannot be loaded.
-    pub fn get_skill(&self, name: &str) -> anyhow::Result<Skill> {
+    pub fn get_skill(&self, name: &str) -> Result<Skill, SkillError> {
         let body = self.get_body(name)?.to_owned();
         let entry = self
             .entries
             .iter()
             .find(|e| e.meta.name == name)
-            .ok_or_else(|| anyhow::anyhow!("skill not found: {name}"))?;
+            .ok_or_else(|| SkillError::NotFound(name.to_string()))?;
 
         Ok(Skill {
             meta: entry.meta.clone(),

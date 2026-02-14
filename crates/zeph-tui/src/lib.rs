@@ -1,5 +1,6 @@
 pub mod app;
 pub mod channel;
+pub mod error;
 pub mod event;
 pub mod layout;
 pub mod metrics;
@@ -14,6 +15,7 @@ use tokio::sync::mpsc;
 
 pub use app::App;
 pub use channel::TuiChannel;
+pub use error::TuiError;
 pub use event::{AgentEvent, AppEvent, EventReader};
 pub use metrics::{MetricsCollector, MetricsSnapshot};
 
@@ -69,7 +71,7 @@ async fn tui_loop(
     Ok(())
 }
 
-fn init_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, TuiError> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(
@@ -81,7 +83,7 @@ fn init_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     Ok(Terminal::new(backend)?)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), TuiError> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),

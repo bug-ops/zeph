@@ -5,6 +5,7 @@ use teloxide::types::{ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
 use zeph_core::channel::{Channel, ChannelMessage};
 
+use crate::error::ChannelError;
 use crate::markdown::markdown_to_telegram;
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -119,7 +120,7 @@ impl TelegramChannel {
 
     async fn send_or_edit(&mut self) -> anyhow::Result<()> {
         let Some(chat_id) = self.chat_id else {
-            anyhow::bail!("no active chat to send message to");
+            return Err(ChannelError::NoActiveChat.into());
         };
 
         let text = if self.accumulated.is_empty() {
@@ -247,7 +248,7 @@ impl Channel for TelegramChannel {
 
     async fn send(&mut self, text: &str) -> anyhow::Result<()> {
         let Some(chat_id) = self.chat_id else {
-            anyhow::bail!("no active chat to send message to");
+            return Err(ChannelError::NoActiveChat.into());
         };
 
         let formatted_text = markdown_to_telegram(text);

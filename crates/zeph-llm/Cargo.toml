@@ -15,7 +15,7 @@ openai = []
 orchestrator = []
 
 [dependencies]
-anyhow.workspace = true
+thiserror.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
@@ -32,6 +32,7 @@ tokio-stream.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

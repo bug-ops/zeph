@@ -1,5 +1,6 @@
 //! SKILL.md loader, skill registry, and prompt formatter.
 
+pub mod error;
 #[cfg(feature = "self-learning")]
 pub mod evolution;
 pub mod loader;
@@ -10,3 +11,5 @@ pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;
 pub mod watcher;
+
+pub use error::SkillError;

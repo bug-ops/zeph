@@ -50,7 +50,7 @@ impl McpClient {
 
         let transport = TokioChildProcess::new(cmd).map_err(|e| McpError::Connection {
             server_id: server_id.into(),
-            source: e.into(),
+            message: e.to_string(),
         })?;
 
         let service =
@@ -58,7 +58,7 @@ impl McpClient {
                 .await
                 .map_err(|e| McpError::Connection {
                     server_id: server_id.into(),
-                    source: anyhow::anyhow!("{e}"),
+                    message: e.to_string(),
                 })?;
 
         Ok(Self {
@@ -85,7 +85,7 @@ impl McpClient {
                 .await
                 .map_err(|e| McpError::Connection {
                     server_id: server_id.into(),
-                    source: anyhow::anyhow!("{e}"),
+                    message: e.to_string(),
                 })?;
 
         Ok(Self {
@@ -108,7 +108,7 @@ impl McpClient {
             .map_err(|e| McpError::ToolCall {
                 server_id: self.server_id.clone(),
                 tool_name: "tools/list".into(),
-                source: anyhow::anyhow!("{e}"),
+                message: e.to_string(),
             })?;
 
         Ok(tools
@@ -153,7 +153,7 @@ impl McpClient {
             .map_err(|e| McpError::ToolCall {
                 server_id: self.server_id.clone(),
                 tool_name: name.into(),
-                source: anyhow::anyhow!("{e}"),
+                message: e.to_string(),
             })?;
 
         Ok(result)

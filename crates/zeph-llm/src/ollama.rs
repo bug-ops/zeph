@@ -1,5 +1,6 @@
-use anyhow::Context;
 use ollama_rs::Ollama;
+
+use crate::error::LlmError;
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
@@ -42,12 +43,12 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    pub async fn fetch_model_info(&self) -> anyhow::Result<ModelInfo> {
+    pub async fn fetch_model_info(&self) -> Result<ModelInfo, LlmError> {
         let info = self
             .client
             .show_model_info(self.model.clone())
             .await
-            .context("failed to fetch model info from Ollama")?;
+            .map_err(|e| LlmError::Other(format!("failed to fetch model info from Ollama: {e}")))?;
 
         // Try model_info map first (newer ollama versions)
         let ctx = info
@@ -72,11 +73,10 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the connection to Ollama fails.
-    pub async fn health_check(&self) -> anyhow::Result<()> {
-        self.client
-            .list_local_models()
-            .await
-            .context("failed to connect to Ollama — is it running?")?;
+    pub async fn health_check(&self) -> Result<(), LlmError> {
+        self.client.list_local_models().await.map_err(|e| {
+            LlmError::Other(format!("failed to connect to Ollama — is it running? {e}"))
+        })?;
         Ok(())
     }
 
@@ -85,13 +85,13 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the warmup request fails.
-    pub async fn warmup(&self) -> anyhow::Result<()> {
+    pub async fn warmup(&self) -> Result<(), LlmError> {
         let request =
             ChatMessageRequest::new(self.model.clone(), vec![ChatMessage::user("hi".to_owned())]);
         self.client
             .send_chat_messages(request)
             .await
-            .context("Ollama warmup failed")?;
+            .map_err(|e| LlmError::Other(format!("Ollama warmup failed: {e}")))?;
         Ok(())
     }
 }
@@ -101,7 +101,7 @@ impl LlmProvider for OllamaProvider {
         self.context_window_size
     }
 
-    async fn chat(&self, messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
 
         let request = ChatMessageRequest::new(self.model.clone(), ollama_messages);
@@ -110,12 +110,12 @@ impl LlmProvider for OllamaProvider {
             .client
             .send_chat_messages(request)
             .await
-            .context("Ollama chat request failed")?;
+            .map_err(|e| LlmError::Other(format!("Ollama chat request failed: {e}")))?;
 
         Ok(response.message.content)
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
         let request = ChatMessageRequest::new(self.model.clone(), ollama_messages);
 
@@ -123,11 +123,11 @@ impl LlmProvider for OllamaProvider {
             .client
             .send_chat_messages_stream(request)
             .await
-            .context("Ollama streaming request failed")?;
+            .map_err(|e| LlmError::Other(format!("Ollama streaming request failed: {e}")))?;
 
         let mapped = stream.map(|item| match item {
             Ok(response) => Ok(response.message.content),
-            Err(()) => Err(anyhow::anyhow!("Ollama stream chunk failed")),
+            Err(()) => Err(LlmError::Other("Ollama stream chunk failed".into())),
         });
 
         Ok(Box::pin(mapped))
@@ -137,7 +137,7 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let request = GenerateEmbeddingsRequest::new(
             self.embedding_model.clone(),
             EmbeddingsInput::from(text),
@@ -147,13 +147,13 @@ impl LlmProvider for OllamaProvider {
             .client
             .generate_embeddings(request)
             .await
-            .context("Ollama embedding request failed")?;
+            .map_err(|e| LlmError::Other(format!("Ollama embedding request failed: {e}")))?;
 
         response
             .embeddings
             .into_iter()
             .next()
-            .context("empty embeddings response from Ollama")
+            .ok_or(LlmError::EmptyResponse { provider: "ollama" })
     }
 
     fn supports_embeddings(&self) -> bool {

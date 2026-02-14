@@ -243,7 +243,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .search(query, self.max_active_skills, |text| {
                 let owned = text.to_owned();
                 let p = provider.clone();
-                Box::pin(async move { p.embed(&owned).await })
+                Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
             })
             .await
     }
@@ -259,7 +259,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let embed_fn = |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
+            Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
         };
         if let Err(e) = registry
             .sync(&self.mcp_tools, &self.embedding_model, embed_fn)

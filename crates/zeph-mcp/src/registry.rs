@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use anyhow::Context;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, PointStruct, PointsIdsList,
@@ -8,6 +7,7 @@ use qdrant_client::qdrant::{
     value::Kind,
 };
 
+use crate::error::McpError;
 use crate::tool::McpTool;
 
 pub type EmbedFuture =
@@ -61,10 +61,8 @@ impl McpToolRegistry {
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(qdrant_url: &str) -> anyhow::Result<Self> {
-        let client = Qdrant::from_url(qdrant_url)
-            .build()
-            .context("failed to create Qdrant client")?;
+    pub fn new(qdrant_url: &str) -> Result<Self, McpError> {
+        let client = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
 
         Ok(Self {
             client,
@@ -83,7 +81,7 @@ impl McpToolRegistry {
         tools: &[McpTool],
         embedding_model: &str,
         embed_fn: F,
-    ) -> anyhow::Result<SyncStats>
+    ) -> Result<SyncStats, McpError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -142,7 +140,7 @@ impl McpToolRegistry {
                 "embedding_model": embedding_model,
             });
             let payload_map: HashMap<String, qdrant_client::qdrant::Value> =
-                serde_json::from_value(payload).context("failed to convert payload")?;
+                serde_json::from_value(payload)?;
 
             points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
 
@@ -158,7 +156,7 @@ impl McpToolRegistry {
             self.client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection, points_to_upsert))
                 .await
-                .context("failed to upsert MCP tool points")?;
+                .map_err(Box::new)?;
         }
 
         let orphan_ids: Vec<String> = existing
@@ -179,7 +177,7 @@ impl McpToolRegistry {
                         .points(PointsIdsList { ids: point_ids }),
                 )
                 .await
-                .context("failed to delete orphan MCP tool points")?;
+                .map_err(Box::new)?;
         }
 
         tracing::info!(
@@ -241,15 +239,20 @@ impl McpToolRegistry {
             .collect()
     }
 
-    async fn recreate_collection<F>(&self, embed_fn: &F) -> anyhow::Result<()>
+    async fn recreate_collection<F>(&self, embed_fn: &F) -> Result<(), McpError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self.client.collection_exists(&self.collection).await? {
+        if self
+            .client
+            .collection_exists(&self.collection)
+            .await
+            .map_err(Box::new)?
+        {
             self.client
                 .delete_collection(&self.collection)
                 .await
-                .context("failed to delete MCP tools collection for recreation")?;
+                .map_err(Box::new)?;
             tracing::info!(
                 collection = &self.collection,
                 "deleted MCP tools collection for recreation"
@@ -258,18 +261,23 @@ impl McpToolRegistry {
         self.ensure_collection(embed_fn).await
     }
 
-    async fn ensure_collection<F>(&self, embed_fn: &F) -> anyhow::Result<()>
+    async fn ensure_collection<F>(&self, embed_fn: &F) -> Result<(), McpError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self.client.collection_exists(&self.collection).await? {
+        if self
+            .client
+            .collection_exists(&self.collection)
+            .await
+            .map_err(Box::new)?
+        {
             return Ok(());
         }
 
         let probe = embed_fn("dimension probe")
             .await
-            .context("failed to probe embedding dimensions")?;
-        let vector_size = u64::try_from(probe.len()).context("embedding dimension exceeds u64")?;
+            .map_err(|e| McpError::Embedding(e.to_string()))?;
+        let vector_size = u64::try_from(probe.len())?;
 
         self.client
             .create_collection(
@@ -277,7 +285,7 @@ impl McpToolRegistry {
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
             )
             .await
-            .context("failed to create MCP tools collection")?;
+            .map_err(Box::new)?;
 
         tracing::info!(
             collection = &self.collection,
@@ -288,7 +296,7 @@ impl McpToolRegistry {
         Ok(())
     }
 
-    async fn scroll_all(&self) -> anyhow::Result<HashMap<String, HashMap<String, String>>> {
+    async fn scroll_all(&self) -> Result<HashMap<String, HashMap<String, String>>, McpError> {
         let mut result = HashMap::new();
         let mut offset: Option<qdrant_client::qdrant::PointId> = None;
 
@@ -302,11 +310,7 @@ impl McpToolRegistry {
                 builder = builder.offset(off.clone());
             }
 
-            let response = self
-                .client
-                .scroll(builder)
-                .await
-                .context("failed to scroll MCP tool points")?;
+            let response = self.client.scroll(builder).await.map_err(Box::new)?;
 
             for point in &response.result {
                 let Some(key_val) = point.payload.get("tool_key") else {

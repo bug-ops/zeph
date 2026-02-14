@@ -715,7 +715,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
+            Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
         };
 
         let needs_inmemory_rebuild = !self
@@ -922,7 +922,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     self.channel.send(&display).await?;
                     Ok(Some(resp))
                 }
-                Ok(Err(e)) => Err(e),
+                Ok(Err(e)) => Err(e.into()),
                 Err(_) => {
                     self.channel
                         .send("LLM request timed out. Please try again.")
@@ -1265,9 +1265,9 @@ pub(super) mod agent_tests {
     }
 
     impl LlmProvider for MockProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
             if self.fail_chat {
-                anyhow::bail!("mock LLM error");
+                return Err(zeph_llm::LlmError::Other("mock LLM error".into()));
             }
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
@@ -1277,7 +1277,10 @@ pub(super) mod agent_tests {
             }
         }
 
-        async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+        ) -> Result<ChatStream, zeph_llm::LlmError> {
             let response = self.chat(messages).await?;
             let chunks: Vec<_> = response.chars().map(|c| c.to_string()).map(Ok).collect();
             Ok(Box::pin(tokio_stream::iter(chunks)))
@@ -1287,11 +1290,11 @@ pub(super) mod agent_tests {
             self.streaming
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
             if self.embeddings {
                 Ok(vec![0.1, 0.2, 0.3])
             } else {
-                anyhow::bail!("embeddings not supported")
+                Err(zeph_llm::LlmError::EmbedUnsupported { provider: "mock" })
             }
         }
 

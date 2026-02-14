@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 use zeph_core::channel::{Channel, ChannelMessage};
 
+use crate::error::TuiError;
 use crate::event::AgentEvent;
 
 #[derive(Debug)]
@@ -46,7 +47,8 @@ impl Channel for TuiChannel {
         self.agent_event_tx
             .send(AgentEvent::FullMessage(text.to_owned()))
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
@@ -54,35 +56,40 @@ impl Channel for TuiChannel {
         self.agent_event_tx
             .send(AgentEvent::Chunk(chunk.to_owned()))
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn flush_chunks(&mut self) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::Flush)
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn send_typing(&mut self) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::Typing)
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::Status(text.to_owned()))
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn send_queue_count(&mut self, count: usize) -> anyhow::Result<()> {
         self.agent_event_tx
             .send(AgentEvent::QueueCount(count))
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        Ok(())
     }
 
     async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
@@ -93,9 +100,8 @@ impl Channel for TuiChannel {
                 response_tx: tx,
             })
             .await
-            .map_err(|_| anyhow::anyhow!("TUI channel closed"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("confirm dialog cancelled"))
+            .map_err(|_| TuiError::ChannelClosed)?;
+        rx.await.map_err(|_| TuiError::ConfirmCancelled.into())
     }
 }
 

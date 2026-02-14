@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::chunker::{ChunkerConfig, CodeChunk, chunk_file};
 use crate::context::contextualize_for_embedding;
+use crate::error::{IndexError, Result};
 use crate::languages::{detect_language, is_indexable};
 use crate::store::{ChunkInsert, CodeStore};
 use zeph_llm::provider::LlmProvider;
@@ -50,7 +51,7 @@ impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
-    pub async fn index_project(&self, root: &Path) -> anyhow::Result<IndexReport> {
+    pub async fn index_project(&self, root: &Path) -> Result<IndexReport> {
         let start = std::time::Instant::now();
         let mut report = IndexReport::default();
 
@@ -115,7 +116,7 @@ impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
     /// # Errors
     ///
     /// Returns an error if reading, chunking, or embedding fails.
-    pub async fn reindex_file(&self, root: &Path, abs_path: &Path) -> anyhow::Result<usize> {
+    pub async fn reindex_file(&self, root: &Path, abs_path: &Path) -> Result<usize> {
         let rel_path = abs_path
             .strip_prefix(root)
             .unwrap_or(abs_path)
@@ -127,10 +128,9 @@ impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
         Ok(created)
     }
 
-    async fn index_file(&self, abs_path: &Path, rel_path: &str) -> anyhow::Result<(usize, usize)> {
+    async fn index_file(&self, abs_path: &Path, rel_path: &str) -> Result<(usize, usize)> {
         let source = tokio::fs::read_to_string(abs_path).await?;
-        let lang =
-            detect_language(abs_path).ok_or_else(|| anyhow::anyhow!("unsupported language"))?;
+        let lang = detect_language(abs_path).ok_or(IndexError::UnsupportedLanguage)?;
 
         let chunks = chunk_file(&source, rel_path, lang, &self.config.chunker)?;
 

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use anyhow::Context;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, PointStruct, PointsIdsList,
@@ -8,6 +7,7 @@ use qdrant_client::qdrant::{
     value::Kind,
 };
 
+use crate::error::SkillError;
 use crate::loader::SkillMeta;
 use crate::matcher::EmbedFuture;
 
@@ -57,10 +57,8 @@ impl QdrantSkillMatcher {
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(qdrant_url: &str) -> anyhow::Result<Self> {
-        let client = Qdrant::from_url(qdrant_url)
-            .build()
-            .context("failed to create Qdrant client")?;
+    pub fn new(qdrant_url: &str) -> Result<Self, SkillError> {
+        let client = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
 
         Ok(Self {
             client,
@@ -79,7 +77,7 @@ impl QdrantSkillMatcher {
         meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
-    ) -> anyhow::Result<SyncStats>
+    ) -> Result<SyncStats, SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -135,7 +133,7 @@ impl QdrantSkillMatcher {
                 "embedding_model": embedding_model,
             });
             let payload_map: HashMap<String, qdrant_client::qdrant::Value> =
-                serde_json::from_value(payload).context("failed to convert payload")?;
+                serde_json::from_value(payload)?;
 
             points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
 
@@ -151,7 +149,7 @@ impl QdrantSkillMatcher {
             self.client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection, points_to_upsert))
                 .await
-                .context("failed to upsert skill points")?;
+                .map_err(Box::new)?;
         }
 
         let orphan_ids: Vec<String> = existing
@@ -172,7 +170,7 @@ impl QdrantSkillMatcher {
                         .points(PointsIdsList { ids: point_ids }),
                 )
                 .await
-                .context("failed to delete orphan points")?;
+                .map_err(Box::new)?;
         }
 
         tracing::info!(
@@ -238,15 +236,20 @@ impl QdrantSkillMatcher {
             .collect()
     }
 
-    async fn recreate_collection<F>(&self, embed_fn: &F) -> anyhow::Result<()>
+    async fn recreate_collection<F>(&self, embed_fn: &F) -> Result<(), SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self.client.collection_exists(&self.collection).await? {
+        if self
+            .client
+            .collection_exists(&self.collection)
+            .await
+            .map_err(Box::new)?
+        {
             self.client
                 .delete_collection(&self.collection)
                 .await
-                .context("failed to delete collection for dimension change")?;
+                .map_err(Box::new)?;
             tracing::info!(
                 collection = &self.collection,
                 "deleted collection for recreation"
@@ -255,18 +258,23 @@ impl QdrantSkillMatcher {
         self.ensure_collection(embed_fn).await
     }
 
-    async fn ensure_collection<F>(&self, embed_fn: &F) -> anyhow::Result<()>
+    async fn ensure_collection<F>(&self, embed_fn: &F) -> Result<(), SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self.client.collection_exists(&self.collection).await? {
+        if self
+            .client
+            .collection_exists(&self.collection)
+            .await
+            .map_err(Box::new)?
+        {
             return Ok(());
         }
 
         let probe = embed_fn("dimension probe")
             .await
-            .context("failed to probe embedding dimensions")?;
-        let vector_size = u64::try_from(probe.len()).context("embedding dimension exceeds u64")?;
+            .map_err(|e| SkillError::Other(format!("failed to probe embedding dimensions: {e}")))?;
+        let vector_size = u64::try_from(probe.len())?;
 
         self.client
             .create_collection(
@@ -274,7 +282,7 @@ impl QdrantSkillMatcher {
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
             )
             .await
-            .context("failed to create skills collection")?;
+            .map_err(Box::new)?;
 
         tracing::info!(
             collection = &self.collection,
@@ -285,7 +293,7 @@ impl QdrantSkillMatcher {
         Ok(())
     }
 
-    async fn scroll_all(&self) -> anyhow::Result<HashMap<String, HashMap<String, String>>> {
+    async fn scroll_all(&self) -> Result<HashMap<String, HashMap<String, String>>, SkillError> {
         let mut result = HashMap::new();
         let mut offset: Option<qdrant_client::qdrant::PointId> = None;
 
@@ -299,11 +307,7 @@ impl QdrantSkillMatcher {
                 builder = builder.offset(off.clone());
             }
 
-            let response = self
-                .client
-                .scroll(builder)
-                .await
-                .context("failed to scroll skill points")?;
+            let response = self.client.scroll(builder).await.map_err(Box::new)?;
 
             for point in &response.result {
                 let Some(name_val) = point.payload.get("skill_name") else {

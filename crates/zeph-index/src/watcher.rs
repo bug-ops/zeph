@@ -7,6 +7,7 @@ use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 use zeph_llm::provider::LlmProvider;
 
+use crate::error::Result;
 use crate::indexer::CodeIndexer;
 use crate::languages::is_indexable;
 
@@ -21,12 +22,15 @@ impl IndexWatcher {
     pub fn start<P: LlmProvider + Clone + 'static>(
         root: &Path,
         indexer: Arc<CodeIndexer<P>>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self> {
         let (notify_tx, mut notify_rx) = mpsc::channel::<PathBuf>(64);
 
         let mut debouncer = new_debouncer(
             Duration::from_secs(1),
-            move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+            move |events: std::result::Result<
+                Vec<notify_debouncer_mini::DebouncedEvent>,
+                notify::Error,
+            >| {
                 let events = match events {
                     Ok(events) => events,
                     Err(e) => {
@@ -79,11 +83,17 @@ mod tests {
             "fake"
         }
 
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> std::result::Result<String, zeph_llm::LlmError> {
             Ok(String::new())
         }
 
-        async fn chat_stream(&self, _messages: &[Message]) -> anyhow::Result<ChatStream> {
+        async fn chat_stream(
+            &self,
+            _messages: &[Message],
+        ) -> std::result::Result<ChatStream, zeph_llm::LlmError> {
             Ok(Box::pin(tokio_stream::empty()))
         }
 
@@ -91,7 +101,7 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> std::result::Result<Vec<f32>, zeph_llm::LlmError> {
             Ok(vec![0.0; 384])
         }
 

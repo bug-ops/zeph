@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
 use candle_core::Tensor;
+
+use crate::error::LlmError;
 use candle_transformers::generation::LogitsProcessor;
 
 #[derive(Debug, Clone)]
@@ -46,9 +47,9 @@ pub fn generate_tokens<F>(
     config: &GenerationConfig,
     eos_token_id: u32,
     device: &candle_core::Device,
-) -> Result<GenerationOutput>
+) -> Result<GenerationOutput, LlmError>
 where
-    F: FnMut(&Tensor, usize) -> Result<Tensor>,
+    F: FnMut(&Tensor, usize) -> Result<Tensor, LlmError>,
 {
     let mut logits_processor = LogitsProcessor::from_sampling(
         config.seed,
@@ -131,20 +132,20 @@ fn apply_repeat_penalty(
     tokens: &[u32],
     penalty: f32,
     last_n: usize,
-) -> Result<Tensor> {
+) -> Result<Tensor, LlmError> {
     if (penalty - 1.0).abs() < f32::EPSILON {
         return Ok(logits.clone());
     }
     let start = tokens.len().saturating_sub(last_n);
     let recent = &tokens[start..];
     candle_transformers::utils::apply_repeat_penalty(logits, penalty, recent)
-        .context("failed to apply repeat penalty")
+        .map_err(LlmError::Candle)
 }
 
-fn decode_tokens(tokenizer: &tokenizers::Tokenizer, tokens: &[u32]) -> Result<String> {
+fn decode_tokens(tokenizer: &tokenizers::Tokenizer, tokens: &[u32]) -> Result<String, LlmError> {
     tokenizer
         .decode(tokens, true)
-        .map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))
+        .map_err(|e| LlmError::Inference(format!("tokenizer decode failed: {e}")))
 }
 
 #[cfg(test)]

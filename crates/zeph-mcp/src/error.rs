@@ -1,16 +1,13 @@
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
-    #[error("connection failed for server '{server_id}': {source}")]
-    Connection {
-        server_id: String,
-        source: anyhow::Error,
-    },
+    #[error("connection failed for server '{server_id}': {message}")]
+    Connection { server_id: String, message: String },
 
-    #[error("tool call failed: {server_id}/{tool_name}: {source}")]
+    #[error("tool call failed: {server_id}/{tool_name}: {message}")]
     ToolCall {
         server_id: String,
         tool_name: String,
-        source: anyhow::Error,
+        message: String,
     },
 
     #[error("server '{server_id}' not found")]
@@ -31,6 +28,19 @@ pub enum McpError {
         tool_name: String,
         timeout_secs: u64,
     },
+
+    #[cfg(feature = "qdrant")]
+    #[error("Qdrant error: {0}")]
+    Qdrant(#[from] Box<qdrant_client::QdrantError>),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("integer conversion: {0}")]
+    IntConversion(#[from] std::num::TryFromIntError),
+
+    #[error("embedding error: {0}")]
+    Embedding(String),
 }
 
 #[cfg(test)]
@@ -41,7 +51,7 @@ mod tests {
     fn connection_error_display() {
         let err = McpError::Connection {
             server_id: "github".into(),
-            source: anyhow::anyhow!("refused"),
+            message: "refused".into(),
         };
         assert_eq!(
             err.to_string(),
@@ -54,7 +64,7 @@ mod tests {
         let err = McpError::ToolCall {
             server_id: "fs".into(),
             tool_name: "read_file".into(),
-            source: anyhow::anyhow!("not found"),
+            message: "not found".into(),
         };
         assert_eq!(err.to_string(), "tool call failed: fs/read_file: not found");
     }

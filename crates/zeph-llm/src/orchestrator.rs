@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use crate::error::LlmError;
 
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
@@ -181,7 +181,7 @@ impl SubProvider {
 }
 
 impl LlmProvider for SubProvider {
-    async fn chat(&self, messages: &[Message]) -> Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
@@ -192,7 +192,7 @@ impl LlmProvider for SubProvider {
         }
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         match self {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
@@ -214,7 +214,7 @@ impl LlmProvider for SubProvider {
         }
     }
 
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         match self {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
@@ -268,15 +268,17 @@ impl ModelOrchestrator {
         providers: HashMap<String, SubProvider>,
         default_provider: String,
         embed_provider: String,
-    ) -> Result<Self> {
-        anyhow::ensure!(
-            providers.contains_key(&default_provider),
-            "default provider '{default_provider}' not found in providers"
-        );
-        anyhow::ensure!(
-            providers.contains_key(&embed_provider),
-            "embed provider '{embed_provider}' not found in providers"
-        );
+    ) -> Result<Self, LlmError> {
+        if !providers.contains_key(&default_provider) {
+            return Err(LlmError::Other(format!(
+                "default provider '{default_provider}' not found in providers"
+            )));
+        }
+        if !providers.contains_key(&embed_provider) {
+            return Err(LlmError::Other(format!(
+                "embed provider '{embed_provider}' not found in providers"
+            )));
+        }
         Ok(Self {
             routes,
             providers,
@@ -322,13 +324,13 @@ impl ModelOrchestrator {
             .expect("default provider must exist")
     }
 
-    async fn chat_with_fallback(&self, messages: &[Message]) -> Result<String> {
+    async fn chat_with_fallback(&self, messages: &[Message]) -> Result<String, LlmError> {
         let task = TaskType::classify(messages);
         let chain = self
             .routes
             .get(&task)
             .or_else(|| self.routes.get(&TaskType::General))
-            .context("no route configured")?;
+            .ok_or(LlmError::NoRoute)?;
 
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
@@ -361,16 +363,16 @@ impl ModelOrchestrator {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no providers available")))
+        Err(last_error.unwrap_or(LlmError::NoProviders))
     }
 
-    async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream> {
+    async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let task = TaskType::classify(messages);
         let chain = self
             .routes
             .get(&task)
             .or_else(|| self.routes.get(&TaskType::General))
-            .context("no route configured")?;
+            .ok_or(LlmError::NoRoute)?;
 
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
@@ -406,7 +408,7 @@ impl ModelOrchestrator {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no providers available")))
+        Err(last_error.unwrap_or(LlmError::NoProviders))
     }
 }
 
@@ -417,11 +419,11 @@ impl LlmProvider for ModelOrchestrator {
             .and_then(LlmProvider::context_window)
     }
 
-    async fn chat(&self, messages: &[Message]) -> Result<String> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.chat_with_fallback(messages).await
     }
 
-    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream> {
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         self.stream_with_fallback(messages).await
     }
 
@@ -431,11 +433,11 @@ impl LlmProvider for ModelOrchestrator {
             .is_some_and(LlmProvider::supports_streaming)
     }
 
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let provider = self
             .providers
             .get(&self.embed_provider)
-            .context("embed provider not found")?;
+            .ok_or(LlmError::NoProviders)?;
         provider.embed(text).await
     }
 

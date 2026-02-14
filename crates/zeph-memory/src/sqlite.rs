@@ -1,9 +1,10 @@
 use std::str::FromStr;
 
-use anyhow::Context;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use zeph_llm::provider::{Message, MessagePart, Role};
+
+use crate::error::MemoryError;
 
 #[derive(Debug)]
 pub struct SqliteStore {
@@ -19,7 +20,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database cannot be opened or migrations fail.
-    pub async fn new(path: &str) -> anyhow::Result<Self> {
+    pub async fn new(path: &str) -> Result<Self, MemoryError> {
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
@@ -33,13 +34,9 @@ impl SqliteStore {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(opts)
-            .await
-            .context("failed to open SQLite database")?;
+            .await?;
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .context("failed to run migrations")?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -55,11 +52,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    pub async fn create_conversation(&self) -> anyhow::Result<i64> {
+    pub async fn create_conversation(&self) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
             .fetch_one(&self.pool)
-            .await
-            .context("failed to create conversation")?;
+            .await?;
         Ok(row.0)
     }
 
@@ -73,7 +69,7 @@ impl SqliteStore {
         conversation_id: i64,
         role: &str,
         content: &str,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         self.save_message_with_parts(conversation_id, role, content, "[]")
             .await
     }
@@ -89,7 +85,7 @@ impl SqliteStore {
         role: &str,
         content: &str,
         parts_json: &str,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO messages (conversation_id, role, content, parts) VALUES (?, ?, ?, ?) RETURNING id",
         )
@@ -99,7 +95,7 @@ impl SqliteStore {
         .bind(parts_json)
         .fetch_one(&self.pool)
         .await
-        .context("failed to save message")?;
+        ?;
         Ok(row.0)
     }
 
@@ -112,7 +108,7 @@ impl SqliteStore {
         &self,
         conversation_id: i64,
         limit: u32,
-    ) -> anyhow::Result<Vec<Message>> {
+    ) -> Result<Vec<Message>, MemoryError> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT role, content, parts FROM (\
                 SELECT role, content, parts, id FROM messages \
@@ -124,8 +120,7 @@ impl SqliteStore {
         .bind(conversation_id)
         .bind(limit)
         .fetch_all(&self.pool)
-        .await
-        .context("failed to load history")?;
+        .await?;
 
         let messages = rows
             .into_iter()
@@ -146,12 +141,11 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn latest_conversation_id(&self) -> anyhow::Result<Option<i64>> {
+    pub async fn latest_conversation_id(&self) -> Result<Option<i64>, MemoryError> {
         let row: Option<(i64,)> =
             sqlx::query_as("SELECT id FROM conversations ORDER BY id DESC LIMIT 1")
                 .fetch_optional(&self.pool)
-                .await
-                .context("failed to fetch latest conversation")?;
+                .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -160,13 +154,12 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn message_by_id(&self, message_id: i64) -> anyhow::Result<Option<Message>> {
+    pub async fn message_by_id(&self, message_id: i64) -> Result<Option<Message>, MemoryError> {
         let row: Option<(String, String, String)> =
             sqlx::query_as("SELECT role, content, parts FROM messages WHERE id = ?")
                 .bind(message_id)
                 .fetch_optional(&self.pool)
-                .await
-                .context("failed to fetch message by id")?;
+                .await?;
 
         Ok(row.map(|(role_str, content, parts_json)| {
             let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
@@ -183,7 +176,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn messages_by_ids(&self, ids: &[i64]) -> anyhow::Result<Vec<(i64, Message)>> {
+    pub async fn messages_by_ids(&self, ids: &[i64]) -> Result<Vec<(i64, Message)>, MemoryError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -197,10 +190,7 @@ impl SqliteStore {
             q = q.bind(id);
         }
 
-        let rows = q
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to fetch messages by ids")?;
+        let rows = q.fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -226,7 +216,7 @@ impl SqliteStore {
     pub async fn unembedded_message_ids(
         &self,
         limit: Option<usize>,
-    ) -> anyhow::Result<Vec<(i64, i64, String, String)>> {
+    ) -> Result<Vec<(i64, i64, String, String)>, MemoryError> {
         let effective_limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
 
         let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(
@@ -239,8 +229,7 @@ impl SqliteStore {
         )
         .bind(effective_limit)
         .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch unembedded message ids")?;
+        .await?;
 
         Ok(rows)
     }
@@ -250,12 +239,11 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn count_messages(&self, conversation_id: i64) -> anyhow::Result<i64> {
+    pub async fn count_messages(&self, conversation_id: i64) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
             .bind(conversation_id)
             .fetch_one(&self.pool)
-            .await
-            .context("failed to count messages")?;
+            .await?;
         Ok(row.0)
     }
 
@@ -268,14 +256,13 @@ impl SqliteStore {
         &self,
         conversation_id: i64,
         after_id: i64,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         let row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ?")
                 .bind(conversation_id)
                 .bind(after_id)
                 .fetch_one(&self.pool)
-                .await
-                .context("failed to count messages after id")?;
+                .await?;
         Ok(row.0)
     }
 
@@ -289,7 +276,7 @@ impl SqliteStore {
         conversation_id: i64,
         after_message_id: i64,
         limit: usize,
-    ) -> anyhow::Result<Vec<(i64, String, String)>> {
+    ) -> Result<Vec<(i64, String, String)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
 
         let rows: Vec<(i64, String, String)> = sqlx::query_as(
@@ -301,8 +288,7 @@ impl SqliteStore {
         .bind(after_message_id)
         .bind(effective_limit)
         .fetch_all(&self.pool)
-        .await
-        .context("failed to load messages range")?;
+        .await?;
 
         Ok(rows)
     }
@@ -319,7 +305,7 @@ impl SqliteStore {
         first_message_id: i64,
         last_message_id: i64,
         token_estimate: i64,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
              VALUES (?, ?, ?, ?, ?) RETURNING id",
@@ -331,7 +317,7 @@ impl SqliteStore {
         .bind(token_estimate)
         .fetch_one(&self.pool)
         .await
-        .context("failed to save summary")?;
+        ?;
         Ok(row.0)
     }
 
@@ -343,7 +329,7 @@ impl SqliteStore {
     pub async fn load_summaries(
         &self,
         conversation_id: i64,
-    ) -> anyhow::Result<Vec<(i64, i64, String, i64, i64, i64)>> {
+    ) -> Result<Vec<(i64, i64, String, i64, i64, i64)>, MemoryError> {
         let rows: Vec<(i64, i64, String, i64, i64, i64)> = sqlx::query_as(
             "SELECT id, conversation_id, content, first_message_id, last_message_id, token_estimate \
              FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
@@ -351,7 +337,7 @@ impl SqliteStore {
         .bind(conversation_id)
         .fetch_all(&self.pool)
         .await
-        .context("failed to load summaries")?;
+        ?;
 
         Ok(rows)
     }
@@ -364,15 +350,14 @@ impl SqliteStore {
     pub async fn latest_summary_last_message_id(
         &self,
         conversation_id: i64,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> Result<Option<i64>, MemoryError> {
         let row: Option<(i64,)> = sqlx::query_as(
             "SELECT last_message_id FROM summaries \
              WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
         )
         .bind(conversation_id)
         .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch latest summary")?;
+        .await?;
 
         Ok(row.map(|r| r.0))
     }
@@ -382,7 +367,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub async fn record_skill_usage(&self, skill_names: &[&str]) -> anyhow::Result<()> {
+    pub async fn record_skill_usage(&self, skill_names: &[&str]) -> Result<(), MemoryError> {
         for name in skill_names {
             sqlx::query(
                 "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
@@ -393,8 +378,7 @@ impl SqliteStore {
             )
             .bind(name)
             .execute(&self.pool)
-            .await
-            .context("failed to record skill usage")?;
+            .await?;
         }
         Ok(())
     }
@@ -404,14 +388,13 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn load_skill_usage(&self) -> anyhow::Result<Vec<SkillUsageRow>> {
+    pub async fn load_skill_usage(&self) -> Result<Vec<SkillUsageRow>, MemoryError> {
         let rows: Vec<(String, i64, String)> = sqlx::query_as(
             "SELECT skill_name, invocation_count, last_used_at \
              FROM skill_usage ORDER BY invocation_count DESC",
         )
         .fetch_all(&self.pool)
-        .await
-        .context("failed to load skill usage")?;
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -439,7 +422,7 @@ impl SqliteStore {
         conversation_id: Option<i64>,
         outcome: &str,
         error_context: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), MemoryError> {
         sqlx::query(
             "INSERT INTO skill_outcomes (skill_name, version_id, conversation_id, outcome, error_context) \
              VALUES (?, ?, ?, ?, ?)",
@@ -451,7 +434,7 @@ impl SqliteStore {
         .bind(error_context)
         .execute(&self.pool)
         .await
-        .context("failed to record skill outcome")?;
+        ?;
         Ok(())
     }
 
@@ -466,8 +449,8 @@ impl SqliteStore {
         conversation_id: Option<i64>,
         outcome: &str,
         error_context: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await.context("failed to begin tx")?;
+    ) -> Result<(), MemoryError> {
+        let mut tx = self.pool.begin().await?;
         for name in skill_names {
             sqlx::query(
                 "INSERT INTO skill_outcomes \
@@ -480,10 +463,9 @@ impl SqliteStore {
             .bind(outcome)
             .bind(error_context)
             .execute(&mut *tx)
-            .await
-            .context("failed to record skill outcome")?;
+            .await?;
         }
-        tx.commit().await.context("failed to commit outcomes")?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -492,7 +474,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn skill_metrics(&self, skill_name: &str) -> anyhow::Result<Option<SkillMetricsRow>> {
+    pub async fn skill_metrics(
+        &self,
+        skill_name: &str,
+    ) -> Result<Option<SkillMetricsRow>, MemoryError> {
         let row: Option<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
             "SELECT skill_name, version_id, \
              COUNT(*) as total, \
@@ -504,8 +489,7 @@ impl SqliteStore {
         )
         .bind(skill_name)
         .fetch_optional(&self.pool)
-        .await
-        .context("failed to load skill metrics")?;
+        .await?;
 
         Ok(row.map(
             |(skill_name, version_id, total, successes, failures)| SkillMetricsRow {
@@ -523,7 +507,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn load_skill_outcome_stats(&self) -> anyhow::Result<Vec<SkillMetricsRow>> {
+    pub async fn load_skill_outcome_stats(&self) -> Result<Vec<SkillMetricsRow>, MemoryError> {
         let rows: Vec<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
             "SELECT skill_name, version_id, \
              COUNT(*) as total, \
@@ -534,8 +518,7 @@ impl SqliteStore {
              ORDER BY total DESC",
         )
         .fetch_all(&self.pool)
-        .await
-        .context("failed to load skill outcome stats")?;
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -566,7 +549,7 @@ impl SqliteStore {
         source: &str,
         error_context: Option<&str>,
         predecessor_id: Option<i64>,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO skill_versions \
              (skill_name, version, body, description, source, error_context, predecessor_id) \
@@ -580,8 +563,7 @@ impl SqliteStore {
         .bind(error_context)
         .bind(predecessor_id)
         .fetch_one(&self.pool)
-        .await
-        .context("failed to save skill version")?;
+        .await?;
         Ok(row.0)
     }
 
@@ -593,7 +575,7 @@ impl SqliteStore {
     pub async fn active_skill_version(
         &self,
         skill_name: &str,
-    ) -> anyhow::Result<Option<SkillVersionRow>> {
+    ) -> Result<Option<SkillVersionRow>, MemoryError> {
         let row: Option<SkillVersionTuple> = sqlx::query_as(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
@@ -601,8 +583,7 @@ impl SqliteStore {
         )
         .bind(skill_name)
         .fetch_optional(&self.pool)
-        .await
-        .context("failed to load active skill version")?;
+        .await?;
 
         Ok(row.map(skill_version_from_tuple))
     }
@@ -616,24 +597,22 @@ impl SqliteStore {
         &self,
         skill_name: &str,
         version_id: i64,
-    ) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await.context("failed to begin tx")?;
+    ) -> Result<(), MemoryError> {
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1",
         )
         .bind(skill_name)
         .execute(&mut *tx)
-        .await
-        .context("failed to deactivate versions")?;
+        .await?;
 
         sqlx::query("UPDATE skill_versions SET is_active = 1 WHERE id = ?")
             .bind(version_id)
             .execute(&mut *tx)
-            .await
-            .context("failed to activate version")?;
+            .await?;
 
-        tx.commit().await.context("failed to commit activation")?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -642,14 +621,13 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn next_skill_version(&self, skill_name: &str) -> anyhow::Result<i64> {
+    pub async fn next_skill_version(&self, skill_name: &str) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
             "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_name = ?",
         )
         .bind(skill_name)
         .fetch_one(&self.pool)
-        .await
-        .context("failed to get next version")?;
+        .await?;
         Ok(row.0)
     }
 
@@ -658,7 +636,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn last_improvement_time(&self, skill_name: &str) -> anyhow::Result<Option<String>> {
+    pub async fn last_improvement_time(
+        &self,
+        skill_name: &str,
+    ) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT created_at FROM skill_versions \
              WHERE skill_name = ? AND source = 'auto' \
@@ -666,8 +647,7 @@ impl SqliteStore {
         )
         .bind(skill_name)
         .fetch_optional(&self.pool)
-        .await
-        .context("failed to get last improvement time")?;
+        .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -681,13 +661,12 @@ impl SqliteStore {
         skill_name: &str,
         body: &str,
         description: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), MemoryError> {
         let existing: Option<(i64,)> =
             sqlx::query_as("SELECT id FROM skill_versions WHERE skill_name = ? LIMIT 1")
                 .bind(skill_name)
                 .fetch_optional(&self.pool)
-                .await
-                .context("failed to check skill version existence")?;
+                .await?;
 
         if existing.is_none() {
             let id = self
@@ -706,7 +685,7 @@ impl SqliteStore {
     pub async fn load_skill_versions(
         &self,
         skill_name: &str,
-    ) -> anyhow::Result<Vec<SkillVersionRow>> {
+    ) -> Result<Vec<SkillVersionRow>, MemoryError> {
         let rows: Vec<SkillVersionTuple> = sqlx::query_as(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
@@ -714,8 +693,7 @@ impl SqliteStore {
         )
         .bind(skill_name)
         .fetch_all(&self.pool)
-        .await
-        .context("failed to load skill versions")?;
+        .await?;
 
         Ok(rows.into_iter().map(skill_version_from_tuple).collect())
     }
@@ -725,14 +703,13 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn count_auto_versions(&self, skill_name: &str) -> anyhow::Result<i64> {
+    pub async fn count_auto_versions(&self, skill_name: &str) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM skill_versions WHERE skill_name = ? AND source = 'auto'",
         )
         .bind(skill_name)
         .fetch_one(&self.pool)
-        .await
-        .context("failed to count auto versions")?;
+        .await?;
         Ok(row.0)
     }
 
@@ -746,7 +723,7 @@ impl SqliteStore {
         &self,
         skill_name: &str,
         max_versions: u32,
-    ) -> anyhow::Result<u32> {
+    ) -> Result<u32, MemoryError> {
         let result = sqlx::query(
             "DELETE FROM skill_versions WHERE id IN (\
                 SELECT id FROM skill_versions \
@@ -760,8 +737,7 @@ impl SqliteStore {
         .bind(skill_name)
         .bind(max_versions)
         .execute(&self.pool)
-        .await
-        .context("failed to prune skill versions")?;
+        .await?;
         Ok(u32::try_from(result.rows_affected()).unwrap_or(0))
     }
 
@@ -773,13 +749,12 @@ impl SqliteStore {
     pub async fn predecessor_version(
         &self,
         version_id: i64,
-    ) -> anyhow::Result<Option<SkillVersionRow>> {
+    ) -> Result<Option<SkillVersionRow>, MemoryError> {
         let pred_id: Option<(Option<i64>,)> =
             sqlx::query_as("SELECT predecessor_id FROM skill_versions WHERE id = ?")
                 .bind(version_id)
                 .fetch_optional(&self.pool)
-                .await
-                .context("failed to get predecessor id")?;
+                .await?;
 
         let Some((Some(pid),)) = pred_id else {
             return Ok(None);
@@ -792,8 +767,7 @@ impl SqliteStore {
         )
         .bind(pid)
         .fetch_optional(&self.pool)
-        .await
-        .context("failed to load predecessor version")?;
+        .await?;
 
         Ok(row.map(skill_version_from_tuple))
     }

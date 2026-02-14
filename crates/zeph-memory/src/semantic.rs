@@ -1,6 +1,7 @@
 use qdrant_client::qdrant::Condition;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
+use crate::error::MemoryError;
 use crate::qdrant::{Filter, QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
 
@@ -73,7 +74,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         qdrant_url: &str,
         provider: P,
         embedding_model: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, MemoryError> {
         let sqlite = SqliteStore::new(sqlite_path).await?;
         let pool = sqlite.pool().clone();
 
@@ -106,7 +107,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         conversation_id: i64,
         role: &str,
         content: &str,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, MemoryError> {
         let message_id = self
             .sqlite
             .save_message(conversation_id, role, content)
@@ -158,7 +159,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         role: &str,
         content: &str,
         parts_json: &str,
-    ) -> anyhow::Result<(i64, bool)> {
+    ) -> Result<(i64, bool), MemoryError> {
         let message_id = self
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
@@ -210,7 +211,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         query: &str,
         limit: usize,
         filter: Option<SearchFilter>,
-    ) -> anyhow::Result<Vec<RecalledMessage>> {
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
             return Ok(Vec::new());
         };
@@ -248,7 +249,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
-    pub async fn has_embedding(&self, message_id: i64) -> anyhow::Result<bool> {
+    pub async fn has_embedding(&self, message_id: i64) -> Result<bool, MemoryError> {
         match &self.qdrant {
             Some(qdrant) => qdrant.has_embedding(message_id).await,
             None => Ok(false),
@@ -263,7 +264,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     ///
     /// Returns an error if collection initialization or database query fails.
     /// Individual embedding failures are logged but do not stop processing.
-    pub async fn embed_missing(&self) -> anyhow::Result<usize> {
+    pub async fn embed_missing(&self) -> Result<usize, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
             return Ok(0);
         };
@@ -320,7 +321,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         &self,
         conversation_id: i64,
         summary_text: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), MemoryError> {
         let Some(qdrant) = &self.qdrant else {
             return Ok(());
         };
@@ -357,7 +358,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         query: &str,
         limit: usize,
         exclude_conversation_id: Option<i64>,
-    ) -> anyhow::Result<Vec<SessionSummaryResult>> {
+    ) -> Result<Vec<SessionSummaryResult>, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
             return Ok(Vec::new());
         };
@@ -412,7 +413,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn message_count(&self, conversation_id: i64) -> anyhow::Result<i64> {
+    pub async fn message_count(&self, conversation_id: i64) -> Result<i64, MemoryError> {
         self.sqlite.count_messages(conversation_id).await
     }
 
@@ -421,7 +422,10 @@ impl<P: LlmProvider> SemanticMemory<P> {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn unsummarized_message_count(&self, conversation_id: i64) -> anyhow::Result<i64> {
+    pub async fn unsummarized_message_count(
+        &self,
+        conversation_id: i64,
+    ) -> Result<i64, MemoryError> {
         let after_id = self
             .sqlite
             .latest_summary_last_message_id(conversation_id)
@@ -437,7 +441,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn load_summaries(&self, conversation_id: i64) -> anyhow::Result<Vec<Summary>> {
+    pub async fn load_summaries(&self, conversation_id: i64) -> Result<Vec<Summary>, MemoryError> {
         let rows = self.sqlite.load_summaries(conversation_id).await?;
         let summaries = rows
             .into_iter()
@@ -475,7 +479,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
         &self,
         conversation_id: i64,
         message_count: usize,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> Result<Option<i64>, MemoryError> {
         let total = self.sqlite.count_messages(conversation_id).await?;
 
         if total <= i64::try_from(message_count)? {
@@ -567,11 +571,14 @@ mod tests {
     }
 
     impl LlmProvider for TestProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
             Ok("test response".into())
         }
 
-        async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+        ) -> Result<ChatStream, zeph_llm::LlmError> {
             let response = self.chat(messages).await?;
             Ok(Box::pin(tokio_stream::once(Ok(response))))
         }
@@ -580,7 +587,7 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
             Ok(self.embedding.clone())
         }
 
@@ -1134,20 +1141,23 @@ mod tests {
     }
 
     impl LlmProvider for FailChatProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
-            Err(anyhow::anyhow!("chat failed"))
+        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
+            Err(zeph_llm::LlmError::Other("chat failed".into()))
         }
 
-        async fn chat_stream(&self, _messages: &[Message]) -> anyhow::Result<ChatStream> {
-            Err(anyhow::anyhow!("stream failed"))
+        async fn chat_stream(
+            &self,
+            _messages: &[Message],
+        ) -> Result<ChatStream, zeph_llm::LlmError> {
+            Err(zeph_llm::LlmError::Other("stream failed".into()))
         }
 
         fn supports_streaming(&self) -> bool {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-            Err(anyhow::anyhow!("embed not supported"))
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
+            Err(zeph_llm::LlmError::Other("embed not supported".into()))
         }
 
         fn supports_embeddings(&self) -> bool {

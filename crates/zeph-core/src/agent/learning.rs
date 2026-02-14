@@ -243,7 +243,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             },
         ];
 
-        self.provider.chat(&messages).await
+        self.provider.chat(&messages).await.map_err(Into::into)
     }
 
     #[cfg(feature = "self-learning")]

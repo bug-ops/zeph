@@ -3,8 +3,10 @@ use std::pin::Pin;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
+use crate::error::LlmError;
+
 /// Boxed stream of string chunks from an LLM provider.
-pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>;
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
 
 /// Sender for emitting status events (retries, fallbacks) to the UI.
 pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
@@ -123,7 +125,7 @@ pub trait LlmProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the provider fails to communicate or the response is invalid.
-    fn chat(&self, messages: &[Message]) -> impl Future<Output = anyhow::Result<String>> + Send;
+    fn chat(&self, messages: &[Message]) -> impl Future<Output = Result<String, LlmError>> + Send;
 
     /// Send messages and return a stream of response chunks.
     ///
@@ -133,7 +135,7 @@ pub trait LlmProvider: Send + Sync {
     fn chat_stream(
         &self,
         messages: &[Message],
-    ) -> impl Future<Output = anyhow::Result<ChatStream>> + Send;
+    ) -> impl Future<Output = Result<ChatStream, LlmError>> + Send;
 
     /// Whether this provider supports native streaming.
     fn supports_streaming(&self) -> bool;
@@ -143,7 +145,7 @@ pub trait LlmProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the provider does not support embeddings or the request fails.
-    fn embed(&self, text: &str) -> impl Future<Output = anyhow::Result<Vec<f32>>> + Send;
+    fn embed(&self, text: &str) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send;
 
     /// Whether this provider supports embedding generation.
     fn supports_embeddings(&self) -> bool;
@@ -163,11 +165,11 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             Ok(self.response.clone())
         }
 
-        async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+        async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
             let response = self.chat(messages).await?;
             Ok(Box::pin(tokio_stream::once(Ok(response))))
         }
@@ -176,7 +178,7 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Ok(vec![0.1, 0.2, 0.3])
         }
 
@@ -227,11 +229,11 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
-            async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
-                Err(anyhow::anyhow!("provider unavailable"))
+            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+                Err(LlmError::Unavailable)
             }
 
-            async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+            async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
                 let response = self.chat(messages).await?;
                 Ok(Box::pin(tokio_stream::once(Ok(response))))
             }
@@ -240,8 +242,8 @@ mod tests {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-                Err(anyhow::anyhow!("provider unavailable"))
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+                Err(LlmError::Unavailable)
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -281,11 +283,11 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
-            async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
-                Err(anyhow::anyhow!("provider unavailable"))
+            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+                Err(LlmError::Unavailable)
             }
 
-            async fn chat_stream(&self, messages: &[Message]) -> anyhow::Result<ChatStream> {
+            async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
                 let response = self.chat(messages).await?;
                 Ok(Box::pin(tokio_stream::once(Ok(response))))
             }
@@ -294,8 +296,8 @@ mod tests {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-                Err(anyhow::anyhow!("embed unavailable"))
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+                Err(LlmError::EmbedUnsupported { provider: "fail" })
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -314,7 +316,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("embed unavailable")
+                .contains("embedding not supported")
         );
     }
 

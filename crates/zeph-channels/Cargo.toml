@@ -10,6 +10,7 @@ repository.workspace = true
 anyhow.workspace = true
 pulldown-cmark.workspace = true
 teloxide.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
 zeph-core.workspace = true
