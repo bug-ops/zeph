@@ -6,4 +6,5 @@ pub mod semantic;
 pub mod sqlite;
 
 pub use error::MemoryError;
+pub use qdrant::ensure_qdrant_collection;
 pub use semantic::estimate_tokens;

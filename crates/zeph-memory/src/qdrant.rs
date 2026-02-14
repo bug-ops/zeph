@@ -10,6 +10,35 @@ use crate::error::MemoryError;
 
 const COLLECTION_NAME: &str = "zeph_conversations";
 
+/// Ensure a Qdrant collection exists with cosine distance vectors.
+///
+/// Idempotent: no-op if the collection already exists.
+///
+/// # Errors
+///
+/// Returns an error if Qdrant cannot be reached or collection creation fails.
+pub async fn ensure_qdrant_collection(
+    client: &Qdrant,
+    collection: &str,
+    vector_size: u64,
+) -> Result<(), Box<qdrant_client::QdrantError>> {
+    if client
+        .collection_exists(collection)
+        .await
+        .map_err(Box::new)?
+    {
+        return Ok(());
+    }
+    client
+        .create_collection(
+            CreateCollectionBuilder::new(collection)
+                .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
+        )
+        .await
+        .map_err(Box::new)?;
+    Ok(())
+}
+
 pub struct QdrantStore {
     client: Qdrant,
     collection: String,
@@ -64,23 +93,7 @@ impl QdrantStore {
     ///
     /// Returns an error if Qdrant cannot be reached or collection creation fails.
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<(), MemoryError> {
-        if self
-            .client
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
-            return Ok(());
-        }
-
-        self.client
-            .create_collection(
-                CreateCollectionBuilder::new(&self.collection)
-                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-            )
-            .await
-            .map_err(Box::new)?;
-
+        ensure_qdrant_collection(&self.client, &self.collection, vector_size).await?;
         Ok(())
     }
 
@@ -199,23 +212,7 @@ impl QdrantStore {
         name: &str,
         vector_size: u64,
     ) -> Result<(), MemoryError> {
-        if self
-            .client
-            .collection_exists(name)
-            .await
-            .map_err(Box::new)?
-        {
-            return Ok(());
-        }
-
-        self.client
-            .create_collection(
-                CreateCollectionBuilder::new(name)
-                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-            )
-            .await
-            .map_err(Box::new)?;
-
+        ensure_qdrant_collection(&self.client, name, vector_size).await?;
         Ok(())
     }
 

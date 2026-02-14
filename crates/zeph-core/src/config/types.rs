@@ -1,0 +1,655 @@
+use std::collections::HashMap;
+
+use serde::Deserialize;
+use zeph_tools::ToolsConfig;
+
+use crate::vault::Secret;
+
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub agent: AgentConfig,
+    pub llm: LlmConfig,
+    pub skills: SkillsConfig,
+    pub memory: MemoryConfig,
+    pub telegram: Option<TelegramConfig>,
+    #[serde(default)]
+    pub tools: ToolsConfig,
+    #[serde(default)]
+    pub a2a: A2aServerConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+    #[serde(default)]
+    pub index: IndexConfig,
+    #[serde(default)]
+    pub vault: VaultConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+    #[serde(default)]
+    pub timeouts: TimeoutConfig,
+    #[serde(skip)]
+    pub secrets: ResolvedSecrets,
+}
+
+fn default_max_tool_iterations() -> usize {
+    10
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentConfig {
+    pub name: String,
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LlmConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+    pub cloud: Option<CloudLlmConfig>,
+    pub openai: Option<OpenAiConfig>,
+    pub candle: Option<CandleConfig>,
+    pub orchestrator: Option<OrchestratorConfig>,
+}
+
+fn default_embedding_model() -> String {
+    "qwen3-embedding".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloudLlmConfig {
+    pub model: String,
+    pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiConfig {
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CandleConfig {
+    #[serde(default = "default_candle_source")]
+    pub source: String,
+    #[serde(default)]
+    pub local_path: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default = "default_chat_template")]
+    pub chat_template: String,
+    #[serde(default = "default_candle_device")]
+    pub device: String,
+    #[serde(default)]
+    pub embedding_repo: Option<String>,
+    #[serde(default)]
+    pub generation: GenerationParams,
+}
+
+fn default_candle_source() -> String {
+    "huggingface".into()
+}
+
+fn default_chat_template() -> String {
+    "chatml".into()
+}
+
+fn default_candle_device() -> String {
+    "cpu".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenerationParams {
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    #[serde(default = "default_repeat_penalty")]
+    pub repeat_penalty: f32,
+    #[serde(default = "default_repeat_last_n")]
+    pub repeat_last_n: usize,
+}
+
+pub(crate) const MAX_TOKENS_CAP: usize = 32768;
+
+impl GenerationParams {
+    #[must_use]
+    pub fn capped_max_tokens(&self) -> usize {
+        self.max_tokens.min(MAX_TOKENS_CAP)
+    }
+}
+
+impl Default for GenerationParams {
+    fn default() -> Self {
+        Self {
+            temperature: default_temperature(),
+            top_p: None,
+            top_k: None,
+            max_tokens: default_max_tokens(),
+            seed: default_seed(),
+            repeat_penalty: default_repeat_penalty(),
+            repeat_last_n: default_repeat_last_n(),
+        }
+    }
+}
+
+fn default_temperature() -> f64 {
+    0.7
+}
+
+fn default_max_tokens() -> usize {
+    2048
+}
+
+fn default_seed() -> u64 {
+    42
+}
+
+fn default_repeat_penalty() -> f32 {
+    1.1
+}
+
+fn default_repeat_last_n() -> usize {
+    64
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrchestratorConfig {
+    pub default: String,
+    pub embed: String,
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, OrchestratorProviderConfig>,
+    #[serde(default)]
+    pub routes: std::collections::HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrchestratorProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SkillsConfig {
+    pub paths: Vec<String>,
+    #[serde(default = "default_max_active_skills")]
+    pub max_active_skills: usize,
+    #[serde(default)]
+    pub learning: LearningConfig,
+}
+
+fn default_max_active_skills() -> usize {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LearningConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_activate: bool,
+    #[serde(default = "default_min_failures")]
+    pub min_failures: u32,
+    #[serde(default = "default_improve_threshold")]
+    pub improve_threshold: f64,
+    #[serde(default = "default_rollback_threshold")]
+    pub rollback_threshold: f64,
+    #[serde(default = "default_min_evaluations")]
+    pub min_evaluations: u32,
+    #[serde(default = "default_max_versions")]
+    pub max_versions: u32,
+    #[serde(default = "default_cooldown_minutes")]
+    pub cooldown_minutes: u64,
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_activate: false,
+            min_failures: default_min_failures(),
+            improve_threshold: default_improve_threshold(),
+            rollback_threshold: default_rollback_threshold(),
+            min_evaluations: default_min_evaluations(),
+            max_versions: default_max_versions(),
+            cooldown_minutes: default_cooldown_minutes(),
+        }
+    }
+}
+
+fn default_min_failures() -> u32 {
+    3
+}
+fn default_improve_threshold() -> f64 {
+    0.7
+}
+fn default_rollback_threshold() -> f64 {
+    0.5
+}
+fn default_min_evaluations() -> u32 {
+    5
+}
+fn default_max_versions() -> u32 {
+    10
+}
+fn default_cooldown_minutes() -> u64 {
+    60
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryConfig {
+    pub sqlite_path: String,
+    pub history_limit: u32,
+    #[serde(default = "default_qdrant_url")]
+    pub qdrant_url: String,
+    #[serde(default)]
+    pub semantic: SemanticConfig,
+    #[serde(default = "default_summarization_threshold")]
+    pub summarization_threshold: usize,
+    #[serde(default = "default_context_budget_tokens")]
+    pub context_budget_tokens: usize,
+    #[serde(default = "default_compaction_threshold")]
+    pub compaction_threshold: f32,
+    #[serde(default = "default_compaction_preserve_tail")]
+    pub compaction_preserve_tail: usize,
+    #[serde(default = "default_auto_budget")]
+    pub auto_budget: bool,
+    #[serde(default = "default_prune_protect_tokens")]
+    pub prune_protect_tokens: usize,
+    #[serde(default = "default_cross_session_score_threshold")]
+    pub cross_session_score_threshold: f32,
+}
+
+fn default_qdrant_url() -> String {
+    "http://localhost:6334".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IndexConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_index_watch")]
+    pub watch: bool,
+    #[serde(default = "default_index_max_chunks")]
+    pub max_chunks: usize,
+    #[serde(default = "default_index_score_threshold")]
+    pub score_threshold: f32,
+    #[serde(default = "default_index_budget_ratio")]
+    pub budget_ratio: f32,
+    #[serde(default = "default_index_repo_map_tokens")]
+    pub repo_map_tokens: usize,
+    #[serde(default = "default_repo_map_ttl_secs")]
+    pub repo_map_ttl_secs: u64,
+}
+
+fn default_index_watch() -> bool {
+    true
+}
+
+fn default_index_max_chunks() -> usize {
+    12
+}
+
+fn default_index_score_threshold() -> f32 {
+    0.25
+}
+
+fn default_index_budget_ratio() -> f32 {
+    0.40
+}
+
+fn default_index_repo_map_tokens() -> usize {
+    500
+}
+
+fn default_repo_map_ttl_secs() -> u64 {
+    300
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            watch: default_index_watch(),
+            max_chunks: default_index_max_chunks(),
+            score_threshold: default_index_score_threshold(),
+            budget_ratio: default_index_budget_ratio(),
+            repo_map_tokens: default_index_repo_map_tokens(),
+            repo_map_ttl_secs: default_repo_map_ttl_secs(),
+        }
+    }
+}
+
+fn default_summarization_threshold() -> usize {
+    50
+}
+
+fn default_context_budget_tokens() -> usize {
+    0
+}
+
+fn default_compaction_threshold() -> f32 {
+    0.80
+}
+
+fn default_compaction_preserve_tail() -> usize {
+    6
+}
+
+fn default_auto_budget() -> bool {
+    true
+}
+
+fn default_prune_protect_tokens() -> usize {
+    40_000
+}
+
+fn default_cross_session_score_threshold() -> f32 {
+    0.35
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SemanticConfig {
+    #[serde(default = "default_semantic_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_recall_limit")]
+    pub recall_limit: usize,
+}
+
+impl Default for SemanticConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_semantic_enabled(),
+            recall_limit: default_recall_limit(),
+        }
+    }
+}
+
+fn default_semantic_enabled() -> bool {
+    true
+}
+
+fn default_recall_limit() -> usize {
+    5
+}
+
+#[derive(Clone, Deserialize)]
+pub struct TelegramConfig {
+    pub token: Option<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+impl std::fmt::Debug for TelegramConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramConfig")
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("allowed_users", &self.allowed_users)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct A2aServerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_a2a_host")]
+    pub host: String,
+    #[serde(default = "default_a2a_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub public_url: String,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    #[serde(default = "default_a2a_rate_limit")]
+    pub rate_limit: u32,
+    #[serde(default = "default_true")]
+    pub require_tls: bool,
+    #[serde(default = "default_true")]
+    pub ssrf_protection: bool,
+    #[serde(default = "default_a2a_max_body")]
+    pub max_body_size: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_a2a_max_body() -> usize {
+    1_048_576
+}
+
+impl std::fmt::Debug for A2aServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("A2aServerConfig")
+            .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("public_url", &self.public_url)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("rate_limit", &self.rate_limit)
+            .field("require_tls", &self.require_tls)
+            .field("ssrf_protection", &self.ssrf_protection)
+            .field("max_body_size", &self.max_body_size)
+            .finish()
+    }
+}
+
+fn default_a2a_host() -> String {
+    "0.0.0.0".into()
+}
+
+fn default_a2a_port() -> u16 {
+    8080
+}
+
+fn default_a2a_rate_limit() -> u32 {
+    60
+}
+
+impl Default for A2aServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_a2a_host(),
+            port: default_a2a_port(),
+            public_url: String::new(),
+            auth_token: None,
+            rate_limit: default_a2a_rate_limit(),
+            require_tls: true,
+            ssrf_protection: true,
+            max_body_size: default_a2a_max_body(),
+        }
+    }
+}
+
+fn default_llm_timeout() -> u64 {
+    120
+}
+
+fn default_embedding_timeout() -> u64 {
+    30
+}
+
+fn default_a2a_timeout() -> u64 {
+    30
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecurityConfig {
+    #[serde(default = "default_true")]
+    pub redact_secrets: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            redact_secrets: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TimeoutConfig {
+    #[serde(default = "default_llm_timeout")]
+    pub llm_seconds: u64,
+    #[serde(default = "default_embedding_timeout")]
+    pub embedding_seconds: u64,
+    #[serde(default = "default_a2a_timeout")]
+    pub a2a_seconds: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            llm_seconds: default_llm_timeout(),
+            embedding_seconds: default_embedding_timeout(),
+            a2a_seconds: default_a2a_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+    #[serde(default = "default_max_dynamic_servers")]
+    pub max_dynamic_servers: usize,
+}
+
+fn default_max_dynamic_servers() -> usize {
+    10
+}
+
+#[derive(Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub id: String,
+    /// Stdio transport: command to spawn.
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// HTTP transport: remote MCP server URL.
+    pub url: Option<String>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout: u64,
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted: HashMap<&str, &str> = self
+            .env
+            .keys()
+            .map(|k| (k.as_str(), "[REDACTED]"))
+            .collect();
+        f.debug_struct("McpServerConfig")
+            .field("id", &self.id)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &redacted)
+            .field("url", &self.url)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaultConfig {
+    #[serde(default = "default_vault_backend")]
+    pub backend: String,
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_vault_backend(),
+        }
+    }
+}
+
+fn default_vault_backend() -> String {
+    "env".into()
+}
+
+#[derive(Debug, Default)]
+pub struct ResolvedSecrets {
+    pub claude_api_key: Option<Secret>,
+    pub openai_api_key: Option<Secret>,
+}
+
+impl Config {
+    pub(crate) fn default() -> Self {
+        Self {
+            agent: AgentConfig {
+                name: "Zeph".into(),
+                max_tool_iterations: 10,
+            },
+            llm: LlmConfig {
+                provider: "ollama".into(),
+                base_url: "http://localhost:11434".into(),
+                model: "mistral:7b".into(),
+                embedding_model: default_embedding_model(),
+                cloud: None,
+                openai: None,
+                candle: None,
+                orchestrator: None,
+            },
+            skills: SkillsConfig {
+                paths: vec!["./skills".into()],
+                max_active_skills: default_max_active_skills(),
+                learning: LearningConfig::default(),
+            },
+            memory: MemoryConfig {
+                sqlite_path: "./data/zeph.db".into(),
+                history_limit: 50,
+                qdrant_url: default_qdrant_url(),
+                semantic: SemanticConfig::default(),
+                summarization_threshold: default_summarization_threshold(),
+                context_budget_tokens: default_context_budget_tokens(),
+                compaction_threshold: default_compaction_threshold(),
+                compaction_preserve_tail: default_compaction_preserve_tail(),
+                auto_budget: default_auto_budget(),
+                prune_protect_tokens: default_prune_protect_tokens(),
+                cross_session_score_threshold: default_cross_session_score_threshold(),
+            },
+            telegram: None,
+            tools: ToolsConfig::default(),
+            a2a: A2aServerConfig::default(),
+            mcp: McpConfig::default(),
+            index: IndexConfig::default(),
+            vault: VaultConfig::default(),
+            security: SecurityConfig::default(),
+            timeouts: TimeoutConfig::default(),
+            secrets: ResolvedSecrets::default(),
+        }
+    }
+}
