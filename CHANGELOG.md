@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Persist `MessagePart` data to SQLite via `remember_with_parts()` — pruning state now survives session restarts (#229)
+- Clear tool output body from memory after Tier 1 pruning to reclaim heap (#230)
+
+### Added
+- Repo map cache with configurable TTL (`repo_map_ttl_secs`, default 300s) to avoid per-message filesystem traversal (#231)
+- Cross-session memory score threshold (`cross_session_score_threshold`, default 0.35) to filter low-relevance results (#232)
+
 ## [0.9.4] - 2026-02-14
 
 ### Added

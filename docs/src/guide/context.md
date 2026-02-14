@@ -2,7 +2,7 @@
 
 Zeph's context engineering pipeline manages how information flows into the LLM context window. It combines semantic recall, proportional budget allocation, message trimming, environment injection, tool output management, and runtime compaction into a unified system.
 
-All context engineering features are **disabled by default** (`context_budget_tokens = 0`). Set a non-zero budget to activate the pipeline.
+All context engineering features are **disabled by default** (`context_budget_tokens = 0`). Set a non-zero budget or enable `auto_budget = true` to activate the pipeline.
 
 ## Configuration
 
@@ -12,6 +12,7 @@ context_budget_tokens = 128000    # Set to your model's context window size (0 =
 compaction_threshold = 0.75       # Compact when usage exceeds this fraction
 compaction_preserve_tail = 4      # Keep last N messages during compaction
 prune_protect_tokens = 40000      # Protect recent N tokens from Tier 1 tool output pruning
+cross_session_score_threshold = 0.35  # Minimum relevance for cross-session results (0.0-1.0)
 
 [memory.semantic]
 enabled = true                    # Required for semantic recall
@@ -94,7 +95,8 @@ Before invoking the LLM for compaction, Zeph scans messages outside the protecte
 
 - Only tool outputs in messages older than the protected tail are pruned
 - The most recent `prune_protect_tokens` tokens (default: 40,000) worth of messages are never pruned, preserving recent tool context
-- Pruned parts have their `compacted_at` timestamp set and are not pruned again
+- Pruned parts have their `compacted_at` timestamp set, body is cleared from memory to reclaim heap, and they are not pruned again
+- Pruned parts are persisted to SQLite before clearing, so pruning state survives session restarts
 - The `tool_output_prunes` metric tracks how many parts were pruned
 
 ### Tier 2: LLM Compaction (Fallback)
@@ -144,4 +146,5 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold | `0.75` |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |
+| `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory results | `0.35` |
 | `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization | `false` |

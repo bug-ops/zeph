@@ -135,7 +135,7 @@ On subsequent runs, the indexer skips unchanged chunks by checking BLAKE3 conten
 
 ## Repo Map
 
-A lightweight structural map of the project, generated via tree-sitter signature extraction (no function bodies). Included in the system prompt on every turn.
+A lightweight structural map of the project, generated via tree-sitter signature extraction (no function bodies). Included in the system prompt and cached with a configurable TTL (default: 5 minutes) to avoid per-message filesystem traversal.
 
 Example output:
 
@@ -198,6 +198,9 @@ exclude = ["target", "node_modules", ".git", "vendor", "dist", "build", "__pycac
 # Token budget for repo map in system prompt (0 = no repo map).
 repo_map_budget = 1024
 
+# Cache TTL for repo map in seconds (avoids per-message regeneration).
+repo_map_ttl_secs = 300
+
 [index.chunker]
 # Target chunk size in non-whitespace characters (~300-400 tokens).
 target_size = 600
@@ -238,6 +241,7 @@ Language support is controlled by feature flags on the `zeph-index` crate. All d
 | `ZEPH_INDEX_ENABLED` | Enable code indexing | `false` |
 | `ZEPH_INDEX_AUTO_INDEX` | Auto-index on startup | `true` |
 | `ZEPH_INDEX_REPO_MAP_BUDGET` | Token budget for repo map | `1024` |
+| `ZEPH_INDEX_REPO_MAP_TTL_SECS` | Cache TTL for repo map in seconds | `300` |
 
 ## Embedding Model Recommendations
 
