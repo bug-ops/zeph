@@ -397,7 +397,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-
     /// Inject pre-formatted code context into the message list.
     /// The caller is responsible for retrieving and formatting the text.
     pub fn inject_code_context(&mut self, text: &str) {
@@ -414,7 +413,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             ),
         );
     }
-
 
     #[must_use]
     pub fn context_messages(&self) -> &[Message] {
@@ -649,7 +647,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.channel.send(&output).await
     }
 
-
     async fn handle_feedback(&mut self, input: &str) -> anyhow::Result<()> {
         #[cfg(feature = "self-learning")]
         {
@@ -705,7 +702,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 .await
         }
     }
-
 
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_paths);
@@ -794,7 +790,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         tracing::info!("config reloaded");
     }
-
 
     async fn process_response(&mut self) -> anyhow::Result<()> {
         self.doom_loop_history.clear();
@@ -1205,7 +1200,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let _ = self.channel.send_status("").await;
         }
     }
-
 }
 
 async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
@@ -2334,5 +2328,4 @@ pub(super) mod agent_tests {
         let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
         assert!(!recent.windows(2).all(|w| w[0] == w[1]));
     }
-
 }

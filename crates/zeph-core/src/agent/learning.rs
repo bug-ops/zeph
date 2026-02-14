@@ -44,11 +44,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[cfg(not(feature = "self-learning"))]
     #[allow(clippy::unused_async)]
-    pub(super) async fn record_skill_outcomes(
-        &self,
-        _outcome: &str,
-        _error_context: Option<&str>,
-    ) {
+    pub(super) async fn record_skill_outcomes(&self, _outcome: &str, _error_context: Option<&str>) {
     }
 
     #[cfg(feature = "self-learning")]

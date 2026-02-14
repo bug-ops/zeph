@@ -1,8 +1,7 @@
 use super::{
-    Agent, ContextBudget, EnvironmentContext, LlmProvider, Channel, ToolExecutor,
-    Message, MessagePart, Role, Skill,
+    Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget, EnvironmentContext,
+    LlmProvider, Message, MessagePart, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, ToolExecutor,
     build_system_prompt, estimate_tokens, format_skills_catalog, format_skills_prompt,
-    RECALL_PREFIX, CODE_CONTEXT_PREFIX, SUMMARY_PREFIX, CROSS_SESSION_PREFIX,
 };
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
