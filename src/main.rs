@@ -645,7 +645,7 @@ async fn create_skill_matcher(
     let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
         let owned = text.to_owned();
         let p = p.clone();
-        Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
+        Box::pin(async move { p.embed(&owned).await })
     };
 
     if config.memory.semantic.enabled && memory.has_qdrant() {
@@ -951,7 +951,7 @@ async fn create_mcp_registry(
             let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
                 let owned = text.to_owned();
                 let p = p.clone();
-                Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
+                Box::pin(async move { p.embed(&owned).await })
             };
             if let Err(e) = reg.sync(mcp_tools, embedding_model, &embed_fn).await {
                 tracing::warn!("MCP tool embedding sync failed: {e:#}");

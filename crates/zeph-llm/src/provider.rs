@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::pin::Pin;
 
 use futures_core::Stream;
@@ -7,6 +8,12 @@ use crate::error::LlmError;
 
 /// Boxed stream of string chunks from an LLM provider.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
+
+/// Boxed future returning an embedding vector.
+pub type EmbedFuture = Pin<Box<dyn Future<Output = Result<Vec<f32>, LlmError>> + Send>>;
+
+/// Closure type for embedding text into a vector.
+pub type EmbedFn = Box<dyn Fn(&str) -> EmbedFuture + Send + Sync>;
 
 /// Sender for emitting status events (retries, fallbacks) to the UI.
 pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;

@@ -448,8 +448,9 @@ mod tests {
         let matcher = QdrantSkillMatcher::new("http://localhost:6334").unwrap();
         let metas = vec![make_meta("s", "desc")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
-        let embed_fn =
-            |_: &str| -> EmbedFuture { Box::pin(async { Err(anyhow::anyhow!("embed failed")) }) };
+        let embed_fn = |_: &str| -> EmbedFuture {
+            Box::pin(async { Err(zeph_llm::LlmError::Other("embed failed".into())) })
+        };
         let results = matcher.match_skills(&refs, "query", 5, embed_fn).await;
         assert!(results.is_empty());
     }

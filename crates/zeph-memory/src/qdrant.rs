@@ -9,6 +9,20 @@ use sqlx::SqlitePool;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
 
+/// Distinguishes regular messages from summaries when storing embeddings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Regular,
+    Summary,
+}
+
+impl MessageKind {
+    #[must_use]
+    pub fn is_summary(self) -> bool {
+        matches!(self, Self::Summary)
+    }
+}
+
 const COLLECTION_NAME: &str = "zeph_conversations";
 
 /// Ensure a Qdrant collection exists with cosine distance vectors.
@@ -111,7 +125,7 @@ impl QdrantStore {
         conversation_id: ConversationId,
         role: &str,
         vector: Vec<f32>,
-        is_summary: bool,
+        kind: MessageKind,
         model: &str,
     ) -> Result<String, MemoryError> {
         let point_id = uuid::Uuid::new_v4().to_string();
@@ -121,7 +135,7 @@ impl QdrantStore {
             "message_id": message_id.0,
             "conversation_id": conversation_id.0,
             "role": role,
-            "is_summary": is_summary,
+            "is_summary": kind.is_summary(),
         });
         let payload_map: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
             serde_json::from_value(payload)?;

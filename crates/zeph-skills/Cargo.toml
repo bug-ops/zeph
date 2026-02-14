@@ -12,7 +12,6 @@ qdrant = ["dep:blake3", "dep:qdrant-client", "dep:serde_json", "dep:uuid"]
 self-learning = []
 
 [dependencies]
-anyhow.workspace = true
 blake3 = { workspace = true, optional = true }
 notify.workspace = true
 notify-debouncer-mini.workspace = true
@@ -22,6 +21,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
 uuid = { workspace = true, optional = true, features = ["v5"] }
+zeph-llm.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

@@ -715,7 +715,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await.map_err(Into::into) })
+            Box::pin(async move { p.embed(&owned).await })
         };
 
         let needs_inmemory_rebuild = !self

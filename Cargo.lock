@@ -8276,7 +8276,6 @@ dependencies = [
 name = "zeph-mcp"
 version = "0.9.5"
 dependencies = [
- "anyhow",
  "blake3",
  "qdrant-client",
  "rmcp",
@@ -8286,6 +8285,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeph-llm",
  "zeph-tools",
 ]
 
@@ -8321,6 +8321,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeph-llm",
 ]
 
 [[package]]

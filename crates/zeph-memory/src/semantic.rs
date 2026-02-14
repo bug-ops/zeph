@@ -2,7 +2,7 @@ use qdrant_client::qdrant::Condition;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::error::MemoryError;
-use crate::qdrant::{Filter, QdrantStore, SearchFilter};
+use crate::qdrant::{Filter, MessageKind, QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
 use crate::types::{ConversationId, MessageId};
 
@@ -129,7 +129,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
                             conversation_id,
                             role,
                             vector,
-                            false,
+                            MessageKind::Regular,
                             &self.embedding_model,
                         )
                         .await
@@ -182,7 +182,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
                             conversation_id,
                             role,
                             vector,
-                            false,
+                            MessageKind::Regular,
                             &self.embedding_model,
                         )
                         .await
@@ -293,7 +293,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
                             *conversation_id,
                             role,
                             vector,
-                            false,
+                            MessageKind::Regular,
                             &self.embedding_model,
                         )
                         .await
@@ -548,7 +548,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
                             conversation_id,
                             "system",
                             vector,
-                            true,
+                            MessageKind::Summary,
                             &self.embedding_model,
                         )
                         .await

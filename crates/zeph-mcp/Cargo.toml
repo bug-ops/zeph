@@ -11,7 +11,6 @@ default = []
 qdrant = ["dep:blake3", "dep:qdrant-client", "dep:uuid"]
 
 [dependencies]
-anyhow.workspace = true
 blake3 = { workspace = true, optional = true }
 qdrant-client = { workspace = true, optional = true, features = ["serde"] }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
@@ -21,6 +20,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "time", "rt"] }
 tracing.workspace = true
 uuid = { workspace = true, optional = true, features = ["v5"] }
+zeph-llm.workspace = true
 zeph-tools.workspace = true
 
 [dev-dependencies]

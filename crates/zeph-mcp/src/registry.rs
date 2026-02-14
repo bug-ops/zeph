@@ -10,8 +10,7 @@ use qdrant_client::qdrant::{
 use crate::error::McpError;
 use crate::tool::McpTool;
 
-pub type EmbedFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<f32>>> + Send>>;
+pub use zeph_llm::provider::EmbedFuture;
 
 const COLLECTION_NAME: &str = "zeph_mcp_tools";
 
@@ -506,7 +505,7 @@ mod tests {
     async fn search_empty_registry_returns_empty() {
         let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
         let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
-            Box::pin(async { Err(anyhow::anyhow!("no qdrant")) })
+            Box::pin(async { Err(zeph_llm::LlmError::Other("no qdrant".into())) })
         };
         let results = registry.search("test query", 5, embed_fn).await;
         assert!(results.is_empty());
@@ -574,7 +573,11 @@ mod tests {
     async fn search_with_embedding_failure_returns_empty() {
         let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
         let embed_fn = |_: &str| -> crate::registry::EmbedFuture {
-            Box::pin(async { Err(anyhow::anyhow!("embedding model not loaded")) })
+            Box::pin(async {
+                Err(zeph_llm::LlmError::Other(
+                    "embedding model not loaded".into(),
+                ))
+            })
         };
         let results = registry.search("search query", 10, embed_fn).await;
         assert!(results.is_empty());

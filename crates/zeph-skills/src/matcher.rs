@@ -1,11 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
 
-/// Type alias for boxed embed futures to work around async closure lifetime issues.
-pub type EmbedFuture = Pin<Box<dyn Future<Output = anyhow::Result<Vec<f32>>> + Send>>;
+pub use zeph_llm::provider::EmbedFuture;
 
 #[derive(Debug)]
 pub struct SkillMatcher {
@@ -216,7 +212,7 @@ mod tests {
 
     fn embed_fn_fail(text: &str) -> EmbedFuture {
         let _ = text;
-        Box::pin(async { Err(anyhow::anyhow!("error")) })
+        Box::pin(async { Err(zeph_llm::LlmError::Other("error".into())) })
     }
 
     #[tokio::test]
@@ -277,7 +273,7 @@ mod tests {
 
         let embed_fn = |text: &str| -> EmbedFuture {
             if text == "bad skill" {
-                Box::pin(async { Err(anyhow::anyhow!("embed failed")) })
+                Box::pin(async { Err(zeph_llm::LlmError::Other("embed failed".into())) })
             } else {
                 Box::pin(async { Ok(vec![1.0, 0.0]) })
             }
