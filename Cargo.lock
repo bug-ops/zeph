@@ -8356,7 +8356,6 @@ dependencies = [
  "thiserror 2.0.18",
  "throbber-widgets-tui",
  "tokio",
- "tracing",
  "unicode-width",
  "zeph-core",
 ]

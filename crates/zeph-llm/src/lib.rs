@@ -13,3 +13,4 @@ pub mod orchestrator;
 pub mod provider;
 
 pub use error::LlmError;
+pub use provider::LlmProvider;

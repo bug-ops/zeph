@@ -9,3 +9,7 @@ pub mod metrics;
 pub mod project;
 pub mod redact;
 pub mod vault;
+
+pub use agent::Agent;
+pub use channel::{Channel, ChannelMessage};
+pub use config::Config;
