@@ -813,5 +813,6 @@ mod tests {
         let req = obj["required"].as_array().unwrap();
         assert!(req.iter().any(|v| v.as_str() == Some("url")));
         assert!(req.iter().any(|v| v.as_str() == Some("select")));
+        assert!(!req.iter().any(|v| v.as_str() == Some("extract")));
     }
 }

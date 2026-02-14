@@ -17,9 +17,10 @@ const DEFAULT_BLOCKED: &[&str] = &[
 
 const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
-struct BashParams {
+pub(crate) struct BashParams {
     /// The bash command to execute
     command: String,
 }

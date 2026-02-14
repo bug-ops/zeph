@@ -53,16 +53,6 @@ impl ToolRegistry {
         out.push_str("</tools>");
         out
     }
-
-    #[must_use]
-    pub fn format_for_prompt(&self) -> String {
-        let mut out = String::from("<tools>\n");
-        for tool in &self.tools {
-            format_tool(&mut out, tool);
-        }
-        out.push_str("</tools>");
-        out
-    }
 }
 
 fn format_tool(out: &mut String, tool: &ToolDef) {
@@ -82,6 +72,20 @@ fn format_tool(out: &mut String, tool: &ToolDef) {
     }
     format_schema_params(out, &tool.schema);
     out.push('\n');
+}
+
+/// Extract the primary type when schemars renders `Option<T>` as `"type": ["T", "null"]`
+/// or `"anyOf": [{"type": "T"}, {"type": "null"}]`.
+fn extract_non_null_type(obj: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
+    if let Some(arr) = obj.get("type").and_then(|v| v.as_array()) {
+        return arr.iter().filter_map(|v| v.as_str()).find(|t| *t != "null");
+    }
+    obj.get("anyOf")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_object())
+        .filter_map(|o| o.get("type")?.as_str())
+        .find(|t| *t != "null")
 }
 
 fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
@@ -105,8 +109,11 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
     for (name, prop) in props {
         let prop_obj = prop.as_object();
         let ty = prop_obj
-            .and_then(|o| o.get("type"))
-            .and_then(|v| v.as_str())
+            .and_then(|o| {
+                o.get("type")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| extract_non_null_type(o))
+            })
             .unwrap_or("string");
         let desc = prop_obj
             .and_then(|o| o.get("description"))
@@ -124,21 +131,8 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemars::JsonSchema;
-
-    #[derive(JsonSchema)]
-    struct BashParams {
-        /// The bash command to execute
-        command: String,
-    }
-
-    #[derive(JsonSchema)]
-    struct ReadParams {
-        /// File path
-        path: String,
-        /// Line offset
-        offset: Option<u32>,
-    }
+    use crate::file::ReadParams;
+    use crate::shell::BashParams;
 
     fn sample_tools() -> Vec<ToolDef> {
         vec![
@@ -185,7 +179,8 @@ mod tests {
     #[test]
     fn format_for_prompt_contains_tools() {
         let reg = ToolRegistry::from_definitions(sample_tools());
-        let prompt = reg.format_for_prompt();
+        let prompt =
+            reg.format_for_prompt_filtered(&crate::permissions::PermissionPolicy::default());
         assert!(prompt.contains("<tools>"));
         assert!(prompt.contains("</tools>"));
         assert!(prompt.contains("## bash"));
@@ -195,14 +190,16 @@ mod tests {
     #[test]
     fn format_for_prompt_shows_invocation_fenced() {
         let reg = ToolRegistry::from_definitions(sample_tools());
-        let prompt = reg.format_for_prompt();
+        let prompt =
+            reg.format_for_prompt_filtered(&crate::permissions::PermissionPolicy::default());
         assert!(prompt.contains("Invocation: use ```bash fenced block"));
     }
 
     #[test]
     fn format_for_prompt_shows_invocation_tool_call() {
         let reg = ToolRegistry::from_definitions(sample_tools());
-        let prompt = reg.format_for_prompt();
+        let prompt =
+            reg.format_for_prompt_filtered(&crate::permissions::PermissionPolicy::default());
         assert!(prompt.contains("Invocation: use tool_call"));
         assert!(prompt.contains("\"tool_id\": \"read\""));
     }
@@ -210,7 +207,8 @@ mod tests {
     #[test]
     fn format_for_prompt_shows_param_info() {
         let reg = ToolRegistry::from_definitions(sample_tools());
-        let prompt = reg.format_for_prompt();
+        let prompt =
+            reg.format_for_prompt_filtered(&crate::permissions::PermissionPolicy::default());
         assert!(prompt.contains("command:"));
         assert!(prompt.contains("required"));
         assert!(prompt.contains("string"));
@@ -219,9 +217,14 @@ mod tests {
     #[test]
     fn format_for_prompt_shows_optional_params() {
         let reg = ToolRegistry::from_definitions(sample_tools());
-        let prompt = reg.format_for_prompt();
+        let prompt =
+            reg.format_for_prompt_filtered(&crate::permissions::PermissionPolicy::default());
         assert!(prompt.contains("offset:"));
         assert!(prompt.contains("optional"));
+        assert!(
+            prompt.contains("(integer, optional)"),
+            "Option<u32> should render as integer, not string: {prompt}"
+        );
     }
 
     #[test]

@@ -6,9 +6,10 @@ use schemars::JsonSchema;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::{InvocationHint, ToolDef};
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
-struct ReadParams {
+pub(crate) struct ReadParams {
     /// File path
     path: String,
     /// Line offset
@@ -17,6 +18,7 @@ struct ReadParams {
     limit: Option<u32>,
 }
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct WriteParams {
@@ -26,6 +28,7 @@ struct WriteParams {
     content: String,
 }
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct EditParams {
@@ -37,6 +40,7 @@ struct EditParams {
     new_string: String,
 }
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct GlobParams {
@@ -44,6 +48,7 @@ struct GlobParams {
     pattern: String,
 }
 
+// Schema-only: fields are read by schemars derive, not by Rust code directly.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct GrepParams {
