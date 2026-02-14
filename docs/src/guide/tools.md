@@ -59,6 +59,41 @@ If 3 consecutive tool iterations produce identical output strings, the loop brea
 
 At the start of each iteration, the agent estimates total token usage. If usage exceeds 80% of the configured `context_budget_tokens`, the loop stops to avoid exceeding the model's context window.
 
+## Permissions
+
+The `[tools.permissions]` section defines pattern-based access control per tool. Each tool ID maps to an ordered array of rules. Rules use glob patterns matched case-insensitively against the tool input (command string for `bash`, file path for file tools). First matching rule wins; if no rule matches, the default action is `Ask`.
+
+Three actions are available:
+
+| Action | Behavior |
+|--------|----------|
+| `allow` | Execute silently without confirmation |
+| `ask` | Prompt the user for confirmation before execution |
+| `deny` | Block execution; denied tools are hidden from the LLM system prompt |
+
+```toml
+[tools.permissions.bash]
+[[tools.permissions.bash]]
+pattern = "*sudo*"
+action = "deny"
+
+[[tools.permissions.bash]]
+pattern = "cargo *"
+action = "allow"
+
+[[tools.permissions.bash]]
+pattern = "*"
+action = "ask"
+```
+
+When `[tools.permissions]` is absent, legacy `blocked_commands` and `confirm_patterns` from `[tools.shell]` are automatically converted to equivalent permission rules (`deny` and `ask` respectively).
+
+## Output Overflow
+
+Tool output exceeding 30 000 characters is truncated (head + tail split) before being sent to the LLM. The full untruncated output is saved to `~/.zeph/data/tool-output/{uuid}.txt`, and the truncated message includes the file path so the LLM can read the complete output if needed.
+
+Stale overflow files older than 24 hours are cleaned up automatically on startup.
+
 ## Configuration
 
 ```toml
@@ -75,6 +110,12 @@ allowed_paths = []         # Sandbox directories (empty = cwd only)
 
 [tools.file]
 allowed_paths = []         # Sandbox directories for file tools (empty = cwd only)
+
+# Pattern-based permissions (optional; overrides legacy blocked_commands/confirm_patterns)
+# [tools.permissions.bash]
+# [[tools.permissions.bash]]
+# pattern = "cargo *"
+# action = "allow"
 ```
 
 The `tools.file.allowed_paths` setting controls which directories `FileExecutor` can access for `read`, `write`, `edit`, `glob`, and `grep` operations. Shell and file sandboxes are configured independently.

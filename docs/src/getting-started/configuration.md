@@ -94,6 +94,18 @@ confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "dro
 [tools.file]
 allowed_paths = []          # Directories file tools can access (empty = cwd only)
 
+# Pattern-based permissions per tool (optional; overrides legacy blocked_commands/confirm_patterns)
+# [tools.permissions.bash]
+# [[tools.permissions.bash]]
+# pattern = "*sudo*"
+# action = "deny"
+# [[tools.permissions.bash]]
+# pattern = "cargo *"
+# action = "allow"
+# [[tools.permissions.bash]]
+# pattern = "*"
+# action = "ask"
+
 [tools.scrape]
 timeout = 15
 max_body_bytes = 1048576  # 1MB

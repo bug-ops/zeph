@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Pattern-based permission policy with glob matching per tool (allow/ask/deny), first-match-wins evaluation (#248)
+- Legacy blocked_commands and confirm_patterns auto-migrated to permission rules (#249)
+- Denied tools excluded from LLM system prompt (#250)
+- Tool output overflow: full output saved to file when truncated, path notice appended for LLM access (#251)
+- Stale tool output overflow files cleaned up on startup (>24h TTL) (#252)
 - `ToolRegistry` with typed `ToolDef` definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape) (#239)
 - `FileExecutor` for sandboxed file operations: read, write, edit, glob, grep (#242)
 - `ToolCall` struct and `execute_tool_call()` on `ToolExecutor` trait for structured tool invocation (#241)
@@ -23,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AgentTaskProcessor` replaces `EchoTaskProcessor` for real A2A inference (#262)
 
 ### Changed
+- ShellExecutor uses PermissionPolicy for all permission checks instead of legacy find_blocked_command/find_confirm_command
+- Replaced unmaintained dirs-next 2.0 with dirs 6.x
 - Batch messages retrieval in semantic recall: replaced N+1 query pattern with `messages_by_ids()` for improved performance
 
 ### Fixed

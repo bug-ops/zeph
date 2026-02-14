@@ -21,7 +21,7 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and Hugg
 
 **Run anywhere.** Local models via Ollama or Candle (GGUF with Metal/CUDA), cloud APIs (Claude, OpenAI, GPT-compatible endpoints like Together AI and Groq), or all of them at once through the multi-model orchestrator with automatic fallback chains.
 
-**Production-ready security.** Shell sandboxing with path restrictions, command filtering (12 blocked patterns), destructive command confirmation, file operation sandbox with path traversal protection, secret redaction, audit logging, SSRF protection, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
+**Production-ready security.** Shell sandboxing with path restrictions, pattern-based permission policy per tool, destructive command confirmation, file operation sandbox with path traversal protection, tool output overflow-to-file (with LLM-accessible paths), secret redaction, audit logging, SSRF protection, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
 
 **Self-improving.** Skills evolve through failure detection, self-reflection, and LLM-generated improvements — with optional manual approval before activation.
 
@@ -93,6 +93,7 @@ cargo build --release --features tui
 | **Code Indexing** | AST-based chunking (tree-sitter), semantic retrieval, repo map generation, incremental indexing | [Code Indexing](https://bug-ops.github.io/zeph/guide/code-indexing.html) |
 | **Context Engineering** | Two-tier context pruning (selective tool-output pruning before LLM compaction), semantic recall injection, proportional budget allocation, token-based protection zone for recent context, config hot-reload | [Context](https://bug-ops.github.io/zeph/guide/context.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) |
 | **Semantic Memory** | SQLite + Qdrant vector search for contextual recall | [Memory](https://bug-ops.github.io/zeph/guide/semantic-memory.html) |
+| **Tool Permissions** | Pattern-based permission policy (allow/ask/deny) with glob matching per tool, excluded denied tools from prompts | [Tools](https://bug-ops.github.io/zeph/guide/tools.html) |
 | **MCP Client** | Connect external tool servers (stdio + HTTP), unified matching | [MCP](https://bug-ops.github.io/zeph/guide/mcp.html) |
 | **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming, delegated task inference through agent pipeline | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
