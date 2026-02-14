@@ -6,7 +6,7 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 
 Agent loop, configuration loading, and context builder.
 
-- `Agent<P, C, T>` — main agent loop with streaming support and message queue drain
+- `Agent<P, C, T>` — main agent loop with streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection, and context budget check (stops at 80% threshold)
 - `Config` — TOML config loading with env var overrides
 - `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management
 - Context builder — assembles system prompt from skills, memory, summaries, environment, and project config
@@ -61,10 +61,13 @@ Channel implementations for the Zeph agent.
 
 Tool execution abstraction and shell backend.
 
-- `ToolExecutor` trait — accepts LLM response, returns tool output
+- `ToolExecutor` trait — accepts LLM response or structured `ToolCall`, returns tool output
+- `ToolRegistry` — typed definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape), injected into system prompt as `<tools>` catalog
+- `ToolCall` / `execute_tool_call()` — structured tool invocation with typed parameters alongside legacy bash extraction (dual-mode)
+- `FileExecutor` — sandboxed file operations (read, write, edit, glob, grep) with ancestor-walk path canonicalization
 - `ShellExecutor` — bash block parser, command safety filter, sandbox validation
 - `WebScrapeExecutor` — HTML scraping with CSS selectors, SSRF protection
-- `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch
+- `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch, routes structured tool calls by `tool_id` to the appropriate backend
 - `AuditLogger` — structured JSON audit trail for all executions
 - `truncate_tool_output()` — head+tail split at 30K chars with UTF-8 safe boundaries
 

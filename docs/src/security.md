@@ -47,6 +47,25 @@ Commands matching `confirm_patterns` trigger an interactive confirmation before 
 - Default patterns: `rm`, `git push -f`, `git push --force`, `drop table`, `drop database`, `truncate`
 - Configurable via `tools.shell.confirm_patterns` in TOML
 
+## File Executor Sandbox
+
+`FileExecutor` enforces the same `allowed_paths` sandbox as the shell executor for all file operations (`read`, `write`, `edit`, `glob`, `grep`).
+
+**Path validation:**
+- All paths are resolved to absolute form and canonicalized before access
+- Non-existing paths (e.g., for `write`) use ancestor-walk canonicalization: the resolver walks up the path tree to the nearest existing ancestor, canonicalizes it, then re-appends the remaining segments. This prevents symlink and `..` traversal on paths that do not yet exist on disk
+- If the resolved path does not fall under any entry in `allowed_paths`, the operation is rejected with a `SandboxViolation` error
+
+**Glob and grep enforcement:**
+- `glob` results are post-filtered: matched paths outside the sandbox are silently excluded
+- `grep` validates the search root directory before scanning begins
+
+**Configuration** is shared with the shell sandbox:
+```toml
+[tools.shell]
+allowed_paths = ["/home/user/workspace"]  # Empty = cwd only
+```
+
 ## Audit Logging
 
 Structured JSON audit log for all tool executions:

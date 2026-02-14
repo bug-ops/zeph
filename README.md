@@ -17,11 +17,11 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and Hugg
 
 **Token-efficient by design.** Most agent frameworks inject every tool and instruction into every prompt. Zeph embeds skills and MCP tools as vectors, then selects only the top-K relevant ones per query via cosine similarity. Prompt size stays O(K) — not O(N) — regardless of how many capabilities are installed.
 
-**Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
+**Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. Doom-loop detection breaks runaway tool cycles after 3 identical consecutive outputs, with configurable iteration limits (default 10). ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
 
 **Run anywhere.** Local models via Ollama or Candle (GGUF with Metal/CUDA), cloud APIs (Claude, OpenAI, GPT-compatible endpoints like Together AI and Groq), or all of them at once through the multi-model orchestrator with automatic fallback chains.
 
-**Production-ready security.** Shell sandboxing with path restrictions, command filtering (12 blocked patterns), destructive command confirmation, secret redaction, audit logging, SSRF protection, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
+**Production-ready security.** Shell sandboxing with path restrictions, command filtering (12 blocked patterns), destructive command confirmation, file operation sandbox with path traversal protection, secret redaction, audit logging, SSRF protection, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
 
 **Self-improving.** Skills evolve through failure detection, self-reflection, and LLM-generated improvements — with optional manual approval before activation.
 
@@ -99,7 +99,7 @@ cargo build --release --features tui
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
 | **TUI Dashboard** | ratatui terminal UI with markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
 | **Multi-Channel I/O** | CLI, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
-| **Defense-in-Depth** | Shell sandbox, command filter, secret redaction, audit log, SSRF protection | [Security](https://bug-ops.github.io/zeph/security.html) |
+| **Defense-in-Depth** | Shell sandbox, file sandbox with path traversal protection, command filter, secret redaction, audit log, SSRF protection, doom-loop detection | [Security](https://bug-ops.github.io/zeph/security.html) |
 
 ## Architecture
 
@@ -111,7 +111,7 @@ zeph (binary)
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming
-├── zeph-tools      — shell executor, web scraper, composite tool dispatch
+├── zeph-tools      — 7 built-in tools (shell, file, web scrape, fetch, grep, glob, think), tool registry, composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)

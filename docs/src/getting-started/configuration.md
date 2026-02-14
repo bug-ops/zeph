@@ -30,6 +30,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
 | `[memory.semantic]` | `recall_limit` |
 | `[index]` | `repo_map_ttl_secs`, `watch` |
+| `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
 **Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, Telegram token, MCP servers, A2A config, skill paths.
@@ -41,6 +42,7 @@ Check for `config reloaded` in the log to confirm a successful reload.
 ```toml
 [agent]
 name = "Zeph"
+max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
 
 [llm]
 provider = "ollama"
@@ -141,6 +143,7 @@ rate_limit = 60
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory with Qdrant (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
+| `ZEPH_AGENT_MAX_TOOL_ITERATIONS` | Max tool loop iterations per response (default: 10) |
 | `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization (default: false) |
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
 | `ZEPH_TOOLS_SCRAPE_TIMEOUT` | Web scrape request timeout in seconds (default: 15) |
