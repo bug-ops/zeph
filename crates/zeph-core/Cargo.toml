@@ -11,7 +11,7 @@ default = []
 index = ["dep:zeph-index"]
 mcp = ["dep:zeph-mcp"]
 self-learning = ["zeph-skills/self-learning"]
-vault-age = ["dep:age", "dep:serde_json", "dep:thiserror"]
+vault-age = ["dep:age", "dep:thiserror"]
 
 [dependencies]
 age = { workspace = true, optional = true }
@@ -19,7 +19,7 @@ anyhow.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
@@ -33,7 +33,6 @@ zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 

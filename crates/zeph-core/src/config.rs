@@ -271,6 +271,8 @@ pub struct MemoryConfig {
     pub auto_budget: bool,
     #[serde(default = "default_prune_protect_tokens")]
     pub prune_protect_tokens: usize,
+    #[serde(default = "default_cross_session_score_threshold")]
+    pub cross_session_score_threshold: f32,
 }
 
 fn default_qdrant_url() -> String {
@@ -289,6 +291,8 @@ pub struct IndexConfig {
     pub budget_ratio: f32,
     #[serde(default = "default_index_repo_map_tokens")]
     pub repo_map_tokens: usize,
+    #[serde(default = "default_repo_map_ttl_secs")]
+    pub repo_map_ttl_secs: u64,
 }
 
 fn default_index_max_chunks() -> usize {
@@ -307,6 +311,10 @@ fn default_index_repo_map_tokens() -> usize {
     500
 }
 
+fn default_repo_map_ttl_secs() -> u64 {
+    300
+}
+
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
@@ -315,6 +323,7 @@ impl Default for IndexConfig {
             score_threshold: default_index_score_threshold(),
             budget_ratio: default_index_budget_ratio(),
             repo_map_tokens: default_index_repo_map_tokens(),
+            repo_map_ttl_secs: default_repo_map_ttl_secs(),
         }
     }
 }
@@ -341,6 +350,10 @@ fn default_auto_budget() -> bool {
 
 fn default_prune_protect_tokens() -> usize {
     40_000
+}
+
+fn default_cross_session_score_threshold() -> f32 {
+    0.35
 }
 
 #[derive(Debug, Deserialize)]
@@ -871,6 +884,7 @@ impl Config {
                 compaction_preserve_tail: default_compaction_preserve_tail(),
                 auto_budget: default_auto_budget(),
                 prune_protect_tokens: default_prune_protect_tokens(),
+                cross_session_score_threshold: default_cross_session_score_threshold(),
             },
             telegram: None,
             tools: ToolsConfig::default(),

@@ -85,6 +85,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     message_queue: VecDeque<QueuedMessage>,
     prune_protect_tokens: usize,
+    cross_session_score_threshold: f32,
     summarize_tool_output_enabled: bool,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
@@ -94,6 +95,10 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     code_retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
     #[cfg(feature = "index")]
     repo_map_tokens: usize,
+    #[cfg(feature = "index")]
+    cached_repo_map: Option<(String, std::time::Instant)>,
+    #[cfg(feature = "index")]
+    repo_map_ttl: std::time::Duration,
     warmup_ready: Option<watch::Receiver<bool>>,
 }
 
@@ -162,6 +167,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_manager: None,
             message_queue: VecDeque::new(),
             prune_protect_tokens: 40_000,
+            cross_session_score_threshold: 0.35,
             summarize_tool_output_enabled: false,
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
@@ -171,6 +177,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             code_retriever: None,
             #[cfg(feature = "index")]
             repo_map_tokens: 0,
+            #[cfg(feature = "index")]
+            cached_repo_map: None,
+            #[cfg(feature = "index")]
+            repo_map_ttl: std::time::Duration::from_secs(300),
             warmup_ready: None,
         }
     }
@@ -301,9 +311,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         mut self,
         retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>,
         repo_map_tokens: usize,
+        repo_map_ttl_secs: u64,
     ) -> Self {
         self.code_retriever = Some(retriever);
         self.repo_map_tokens = repo_map_tokens;
+        self.repo_map_ttl = std::time::Duration::from_secs(repo_map_ttl_secs);
         self
     }
 
@@ -495,7 +507,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let mut modified = false;
             for part in &mut msg.parts {
                 if let &mut MessagePart::ToolOutput {
-                    ref body,
+                    ref mut body,
                     ref mut compacted_at,
                     ..
                 } = part
@@ -504,6 +516,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 {
                     freed += estimate_tokens(body);
                     *compacted_at = Some(now);
+                    *body = String::new();
                     modified = true;
                 }
             }
@@ -725,7 +738,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        let results = memory.search_session_summaries(query, 5, Some(cid)).await?;
+        let threshold = self.cross_session_score_threshold;
+        let results: Vec<_> = memory
+            .search_session_summaries(query, 5, Some(cid))
+            .await?
+            .into_iter()
+            .filter(|r| r.score >= threshold)
+            .collect();
         if results.is_empty() {
             return Ok(());
         }
@@ -1624,6 +1643,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.compaction_threshold = config.memory.compaction_threshold;
         self.compaction_preserve_tail = config.memory.compaction_preserve_tail;
         self.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.cross_session_score_threshold = config.memory.cross_session_score_threshold;
+
+        #[cfg(feature = "index")]
+        {
+            self.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
+        }
 
         tracing::info!("config reloaded");
     }
@@ -1706,13 +1731,20 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         #[cfg(feature = "index")]
         if self.code_retriever.is_some() && self.repo_map_tokens > 0 {
-            match zeph_index::repo_map::generate_repo_map(&cwd, self.repo_map_tokens) {
-                Ok(map) if !map.is_empty() => {
-                    system_prompt.push_str("\n\n");
-                    system_prompt.push_str(&map);
-                }
-                Ok(_) => {}
-                Err(e) => tracing::debug!("repo map generation failed: {e:#}"),
+            let now = std::time::Instant::now();
+            let map = if let Some((ref cached, generated_at)) = self.cached_repo_map
+                && now.duration_since(generated_at) < self.repo_map_ttl
+            {
+                cached.clone()
+            } else {
+                let fresh = zeph_index::repo_map::generate_repo_map(&cwd, self.repo_map_tokens)
+                    .unwrap_or_default();
+                self.cached_repo_map = Some((fresh.clone(), now));
+                fresh
+            };
+            if !map.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&map);
             }
         }
 
@@ -2085,7 +2117,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
             return;
         };
-        if let Err(e) = memory.remember(cid, role_str(role), content).await {
+
+        let parts_json = self
+            .messages
+            .last()
+            .filter(|m| !m.parts.is_empty())
+            .and_then(|m| serde_json::to_string(&m.parts).ok())
+            .unwrap_or_else(|| "[]".to_string());
+
+        if let Err(e) = memory
+            .remember_with_parts(cid, role_str(role), content, &parts_json)
+            .await
+        {
             tracing::error!("failed to persist message: {e:#}");
             return;
         }
@@ -4245,8 +4288,12 @@ mod agent_tests {
         assert!(freed > 0);
         assert_eq!(rx.borrow().tool_output_prunes, 1);
 
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &agent.messages[1].parts[0]
+        {
             assert!(compacted_at.is_some());
+            assert!(body.is_empty(), "body should be cleared after prune");
         } else {
             panic!("expected ToolOutput");
         }
@@ -4434,5 +4481,77 @@ mod agent_tests {
         assert!(alloc.semantic_recall > 0);
         // cross_session should be smaller than summaries
         assert!(alloc.cross_session < alloc.summaries);
+    }
+
+    #[cfg(feature = "index")]
+    #[test]
+    fn test_repo_map_cache_hit() {
+        use std::time::{Duration, Instant};
+
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.repo_map_ttl = Duration::from_secs(300);
+
+        let now = Instant::now();
+        agent.cached_repo_map = Some(("cached map".into(), now));
+
+        let (cached, generated_at) = agent.cached_repo_map.as_ref().unwrap();
+        assert_eq!(cached, "cached map");
+
+        let elapsed = Instant::now().duration_since(*generated_at);
+        assert!(
+            elapsed < agent.repo_map_ttl,
+            "cache should still be valid within TTL"
+        );
+
+        let original_instant = *generated_at;
+        let (_, second_generated_at) = agent.cached_repo_map.as_ref().unwrap();
+        assert_eq!(
+            original_instant, *second_generated_at,
+            "cached instant should not change on reuse"
+        );
+    }
+
+    #[test]
+    fn test_cross_session_score_threshold_filters() {
+        use zeph_memory::semantic::SessionSummaryResult;
+
+        let threshold: f32 = 0.35;
+
+        let results = vec![
+            SessionSummaryResult {
+                summary_text: "high score".into(),
+                score: 0.9,
+                conversation_id: 1,
+            },
+            SessionSummaryResult {
+                summary_text: "at threshold".into(),
+                score: 0.35,
+                conversation_id: 2,
+            },
+            SessionSummaryResult {
+                summary_text: "below threshold".into(),
+                score: 0.2,
+                conversation_id: 3,
+            },
+            SessionSummaryResult {
+                summary_text: "way below".into(),
+                score: 0.0,
+                conversation_id: 4,
+            },
+        ];
+
+        let filtered: Vec<_> = results
+            .into_iter()
+            .filter(|r| r.score >= threshold)
+            .collect();
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].summary_text, "high score");
+        assert_eq!(filtered[1].summary_text, "at threshold");
     }
 }

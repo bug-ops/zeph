@@ -357,6 +357,7 @@ async fn main() -> anyhow::Result<()> {
                 agent.with_code_retriever(
                     std::sync::Arc::new(retriever),
                     config.index.repo_map_tokens,
+                    config.index.repo_map_ttl_secs,
                 )
             }
             Err(e) => {

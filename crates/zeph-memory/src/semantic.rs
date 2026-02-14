@@ -144,6 +144,54 @@ impl<P: LlmProvider> SemanticMemory<P> {
         Ok(message_id)
     }
 
+    /// Save a message with pre-serialized parts JSON to `SQLite` and optionally embed in Qdrant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    pub async fn remember_with_parts(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+    ) -> anyhow::Result<i64> {
+        let message_id = self
+            .sqlite
+            .save_message_with_parts(conversation_id, role, content, parts_json)
+            .await?;
+
+        if let Some(qdrant) = &self.qdrant
+            && self.provider.supports_embeddings()
+        {
+            match self.provider.embed(content).await {
+                Ok(vector) => {
+                    let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+                    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+                        tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
+                    } else if let Err(e) = qdrant
+                        .store(
+                            message_id,
+                            conversation_id,
+                            role,
+                            vector,
+                            false,
+                            &self.embedding_model,
+                        )
+                        .await
+                    {
+                        tracing::warn!("Failed to store embedding: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate embedding: {e:#}");
+                }
+            }
+        }
+
+        Ok(message_id)
+    }
+
     /// Recall semantically relevant messages based on a query string.
     ///
     /// # Errors
@@ -573,6 +621,24 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].role, Role::User);
         assert_eq!(history[0].content, "hello");
+    }
+
+    #[tokio::test]
+    async fn remember_with_parts_saves_parts_json() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        let parts_json =
+            r#"[{"kind":"ToolOutput","tool_name":"shell","body":"hello","compacted_at":null}]"#;
+        let msg_id = memory
+            .remember_with_parts(cid, "assistant", "tool output", parts_json)
+            .await
+            .unwrap();
+        assert!(msg_id > 0);
+
+        let history = memory.sqlite.load_history(cid, 50).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "tool output");
     }
 
     #[tokio::test]

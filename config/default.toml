@@ -100,6 +100,8 @@ compaction_threshold = 0.80
 compaction_preserve_tail = 6
 # Token budget protected from tool output pruning (recent context zone)
 prune_protect_tokens = 40000
+# Minimum relevance score for cross-session memory results (0.0-1.0)
+cross_session_score_threshold = 0.35
 
 [memory.semantic]
 # Enable semantic memory with vector search
@@ -121,6 +123,8 @@ score_threshold = 0.25
 budget_ratio = 0.40
 # Token budget for repo structural map in system prompt (0 = disabled)
 repo_map_tokens = 500
+# Cache TTL for repo map in seconds (avoids regeneration on every message)
+repo_map_ttl_secs = 300
 
 [mcp]
 # Allowlist of permitted commands for /mcp add (empty = allow all)
