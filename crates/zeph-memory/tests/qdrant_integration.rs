@@ -2,7 +2,7 @@ use testcontainers::ContainerAsync;
 use testcontainers::GenericImage;
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use zeph_memory::qdrant::QdrantStore;
+use zeph_memory::qdrant::{MessageKind, QdrantStore};
 use zeph_memory::sqlite::SqliteStore;
 
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
@@ -52,7 +52,7 @@ async fn store_and_search_vector() {
             cid,
             "user",
             vector.clone(),
-            false,
+            MessageKind::Regular,
             "qwen3-embedding",
         )
         .await
@@ -82,11 +82,11 @@ async fn search_with_conversation_filter() {
     let v2 = vec![0.1, 0.2, 0.3, 0.5];
 
     qdrant
-        .store(msg1, cid1, "user", v1, false, "qwen3-embedding")
+        .store(msg1, cid1, "user", v1, MessageKind::Regular, "qwen3-embedding")
         .await
         .unwrap();
     qdrant
-        .store(msg2, cid2, "user", v2, false, "qwen3-embedding")
+        .store(msg2, cid2, "user", v2, MessageKind::Regular, "qwen3-embedding")
         .await
         .unwrap();
 
