@@ -125,7 +125,10 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     tracing_subscriber::fmt::init();
 
-    let vault_args = parse_vault_args();
+    let config_path = resolve_config_path();
+    let mut config = Config::load(&config_path)?;
+
+    let vault_args = parse_vault_args(&config);
     let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
         "env" => Box::new(EnvVaultProvider),
         #[cfg(feature = "vault-age")]
@@ -141,8 +144,6 @@ async fn main() -> anyhow::Result<()> {
         other => bail!("unknown vault backend: {other}"),
     };
 
-    let config_path = resolve_config_path();
-    let mut config = Config::load(&config_path)?;
     config.resolve_secrets(vault.as_ref()).await?;
 
     let mut provider = create_provider(&config)?;
@@ -303,7 +304,19 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "a2a")]
     if config.a2a.enabled {
-        spawn_a2a_server(&config, shutdown_rx.clone());
+        let a2a_provider = std::sync::Arc::new(provider.clone());
+        let skill_names: Vec<&str> = all_meta.iter().map(|m| m.name.as_str()).collect();
+        let a2a_system_prompt = format!(
+            "You are {}. Available skills: {}",
+            config.agent.name,
+            skill_names.join(", ")
+        );
+        spawn_a2a_server(
+            &config,
+            shutdown_rx.clone(),
+            a2a_provider,
+            a2a_system_prompt,
+        );
     }
 
     #[cfg(feature = "mcp")]
@@ -787,7 +800,12 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 }
 
 #[cfg(feature = "a2a")]
-fn spawn_a2a_server(config: &Config, shutdown_rx: watch::Receiver<bool>) {
+fn spawn_a2a_server(
+    config: &Config,
+    shutdown_rx: watch::Receiver<bool>,
+    provider: std::sync::Arc<AnyProvider>,
+    system_prompt: String,
+) {
     let public_url = if config.a2a.public_url.is_empty() {
         format!("http://{}:{}", config.a2a.host, config.a2a.port)
     } else {
@@ -801,7 +819,10 @@ fn spawn_a2a_server(config: &Config, shutdown_rx: watch::Receiver<bool>) {
             .build();
 
     let processor: std::sync::Arc<dyn zeph_a2a::TaskProcessor> =
-        std::sync::Arc::new(EchoTaskProcessor);
+        std::sync::Arc::new(AgentTaskProcessor {
+            provider,
+            system_prompt,
+        });
     let a2a_server = zeph_a2a::A2aServer::new(
         card,
         processor,
@@ -827,10 +848,13 @@ fn spawn_a2a_server(config: &Config, shutdown_rx: watch::Receiver<bool>) {
 }
 
 #[cfg(feature = "a2a")]
-struct EchoTaskProcessor;
+struct AgentTaskProcessor {
+    provider: std::sync::Arc<AnyProvider>,
+    system_prompt: String,
+}
 
 #[cfg(feature = "a2a")]
-impl zeph_a2a::TaskProcessor for EchoTaskProcessor {
+impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     fn process(
         &self,
         _task_id: String,
@@ -841,12 +865,31 @@ impl zeph_a2a::TaskProcessor for EchoTaskProcessor {
                 + Send,
         >,
     > {
+        let provider = self.provider.clone();
+        let system_prompt = self.system_prompt.clone();
+        let user_text = message.text_content().unwrap_or("").to_owned();
+
         Box::pin(async move {
-            let text = message.text_content().unwrap_or("").to_owned();
+            let messages = vec![
+                zeph_llm::provider::Message::from_legacy(
+                    zeph_llm::provider::Role::System,
+                    &system_prompt,
+                ),
+                zeph_llm::provider::Message::from_legacy(
+                    zeph_llm::provider::Role::User,
+                    &user_text,
+                ),
+            ];
+
+            let response_text = provider.chat(&messages).await.map_err(|e| {
+                tracing::error!("A2A inference failed: {e:#}");
+                zeph_a2a::A2aError::Server("inference failed".to_owned())
+            })?;
+
             Ok(zeph_a2a::ProcessResult {
                 response: zeph_a2a::Message {
                     role: zeph_a2a::Role::Agent,
-                    parts: vec![zeph_a2a::Part::text(format!("echo: {text}"))],
+                    parts: vec![zeph_a2a::Part::text(response_text)],
                     message_id: None,
                     task_id: None,
                     context_id: None,
@@ -1081,12 +1124,17 @@ struct VaultArgs {
     vault_path: Option<String>,
 }
 
-fn parse_vault_args() -> VaultArgs {
+/// Priority: CLI --vault > `ZEPH_VAULT_BACKEND` env > config.vault.backend > "env"
+fn parse_vault_args(config: &Config) -> VaultArgs {
     let args: Vec<String> = std::env::args().collect();
-    let backend = args
+    let cli_backend = args
         .windows(2)
         .find(|w| w[0] == "--vault")
-        .map_or_else(|| "env".into(), |w| w[1].clone());
+        .map(|w| w[1].clone());
+    let env_backend = std::env::var("ZEPH_VAULT_BACKEND").ok();
+    let backend = cli_backend
+        .or(env_backend)
+        .unwrap_or_else(|| config.vault.backend.clone());
     let key_path = args
         .windows(2)
         .find(|w| w[0] == "--vault-key")
@@ -1175,10 +1223,29 @@ mod tests {
 
     #[test]
     fn vault_args_defaults_in_test_context() {
-        let args = parse_vault_args();
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let args = parse_vault_args(&config);
         assert_eq!(args.backend, "env");
         assert!(args.key_path.is_none());
         assert!(args.vault_path.is_none());
+    }
+
+    #[test]
+    fn vault_args_uses_config_backend_as_fallback() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.vault.backend = "age".into();
+        let args = parse_vault_args(&config);
+        assert_eq!(args.backend, "age");
+    }
+
+    #[test]
+    fn vault_args_env_overrides_config() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.vault.backend = "age".into();
+        unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "env") };
+        let args = parse_vault_args(&config);
+        unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
+        assert_eq!(args.backend, "env");
     }
 
     #[test]
@@ -1591,49 +1658,17 @@ mod tests {
 
     #[cfg(feature = "a2a")]
     #[test]
-    fn echo_task_processor_construction() {
-        let processor = EchoTaskProcessor;
-        assert!(std::mem::size_of_val(&processor) == 0);
-    }
-
-    #[cfg(feature = "a2a")]
-    #[tokio::test]
-    async fn echo_task_processor_echo_response() {
-        use zeph_a2a::TaskProcessor;
-        let processor = EchoTaskProcessor;
-        let message = zeph_a2a::Message {
-            role: zeph_a2a::Role::User,
-            parts: vec![zeph_a2a::Part::text("hello")],
-            message_id: None,
-            task_id: None,
-            context_id: None,
-            metadata: None,
+    fn agent_task_processor_construction() {
+        let provider = std::sync::Arc::new(AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        )));
+        let processor = AgentTaskProcessor {
+            provider,
+            system_prompt: "test prompt".into(),
         };
-
-        let result = processor.process("task-1".into(), message).await.unwrap();
-        let response_text = result.response.text_content().unwrap();
-        assert_eq!(response_text, "echo: hello");
-        assert_eq!(result.response.role, zeph_a2a::Role::Agent);
-        assert!(result.artifacts.is_empty());
-    }
-
-    #[cfg(feature = "a2a")]
-    #[tokio::test]
-    async fn echo_task_processor_empty_message() {
-        use zeph_a2a::TaskProcessor;
-        let processor = EchoTaskProcessor;
-        let message = zeph_a2a::Message {
-            role: zeph_a2a::Role::User,
-            parts: vec![],
-            message_id: None,
-            task_id: None,
-            context_id: None,
-            metadata: None,
-        };
-
-        let result = processor.process("task-2".into(), message).await.unwrap();
-        let response_text = result.response.text_content().unwrap();
-        assert_eq!(response_text, "echo: ");
+        assert!(!processor.system_prompt.is_empty());
     }
 
     #[test]
