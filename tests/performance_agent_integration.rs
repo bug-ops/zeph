@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
@@ -24,14 +25,14 @@ impl MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
         Ok(self.response.clone())
     }
 
     async fn chat_stream(
         &self,
         messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
         let response = self.chat(messages).await?;
         Ok(Box::pin(tokio_stream::once(Ok(response))))
     }
@@ -40,7 +41,7 @@ impl LlmProvider for MockProvider {
         false
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Ok(vec![0.1, 0.2, 0.3])
     }
 

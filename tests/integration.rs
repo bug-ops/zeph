@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelMessage};
 use zeph_core::config::{Config, SecurityConfig, TimeoutConfig};
+use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::SqliteStore;
@@ -29,14 +30,14 @@ impl MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
         Ok(self.response.clone())
     }
 
     async fn chat_stream(
         &self,
         messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
         let response = self.chat(messages).await?;
         Ok(Box::pin(tokio_stream::once(Ok(response))))
     }
@@ -45,7 +46,7 @@ impl LlmProvider for MockProvider {
         false
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Ok(vec![0.1, 0.2, 0.3])
     }
 
@@ -64,14 +65,14 @@ struct StreamingMockProvider {
 }
 
 impl LlmProvider for StreamingMockProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
         Ok(self.response.clone())
     }
 
     async fn chat_stream(
         &self,
         _messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
         let chunks = self
             .response
             .chars()
@@ -84,7 +85,7 @@ impl LlmProvider for StreamingMockProvider {
         true
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Ok(vec![0.1, 0.2, 0.3])
     }
 
@@ -101,14 +102,14 @@ impl LlmProvider for StreamingMockProvider {
 struct EmptyResponseProvider;
 
 impl LlmProvider for EmptyResponseProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
         Ok(String::new())
     }
 
     async fn chat_stream(
         &self,
         _messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
         Ok(Box::pin(tokio_stream::once(Ok(String::new()))))
     }
 
@@ -116,7 +117,7 @@ impl LlmProvider for EmptyResponseProvider {
         false
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Ok(vec![0.1, 0.2, 0.3])
     }
 
@@ -133,23 +134,23 @@ impl LlmProvider for EmptyResponseProvider {
 struct FailingProvider;
 
 impl LlmProvider for FailingProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
-        Err(anyhow::anyhow!("provider unavailable"))
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+        Err(LlmError::Unavailable)
     }
 
     async fn chat_stream(
         &self,
         _messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
-        Err(anyhow::anyhow!("provider unavailable"))
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
+        Err(LlmError::Unavailable)
     }
 
     fn supports_streaming(&self) -> bool {
         false
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-        Err(anyhow::anyhow!("embed unavailable"))
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Err(LlmError::Unavailable)
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -168,7 +169,7 @@ struct CountingProvider {
 }
 
 impl LlmProvider for CountingProvider {
-    async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         Ok(self.response.clone())
     }
@@ -176,7 +177,7 @@ impl LlmProvider for CountingProvider {
     async fn chat_stream(
         &self,
         messages: &[Message],
-    ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
         let response = self.chat(messages).await?;
         Ok(Box::pin(tokio_stream::once(Ok(response))))
     }
@@ -185,7 +186,7 @@ impl LlmProvider for CountingProvider {
         false
     }
 
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Ok(vec![0.1, 0.2, 0.3])
     }
 
@@ -1538,7 +1539,7 @@ async fn agent_llm_timeout_non_streaming() {
     struct SlowProvider;
 
     impl LlmProvider for SlowProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             Ok("should not arrive".into())
         }
@@ -1546,7 +1547,7 @@ async fn agent_llm_timeout_non_streaming() {
         async fn chat_stream(
             &self,
             _messages: &[Message],
-        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+        ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             Ok(Box::pin(tokio_stream::once(Ok("never".into()))))
         }
@@ -1555,7 +1556,7 @@ async fn agent_llm_timeout_non_streaming() {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Ok(vec![0.1, 0.2, 0.3])
         }
 
@@ -1602,7 +1603,7 @@ async fn agent_llm_timeout_streaming() {
     struct SlowStreamingProvider;
 
     impl LlmProvider for SlowStreamingProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             Ok("should not arrive".into())
         }
@@ -1610,7 +1611,7 @@ async fn agent_llm_timeout_streaming() {
         async fn chat_stream(
             &self,
             _messages: &[Message],
-        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+        ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             Ok(Box::pin(tokio_stream::once(Ok("never".into()))))
         }
@@ -1619,7 +1620,7 @@ async fn agent_llm_timeout_streaming() {
             true
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Ok(vec![0.1, 0.2, 0.3])
         }
 
@@ -2324,6 +2325,7 @@ mod self_learning {
     use zeph_core::agent::Agent;
     use zeph_core::channel::{Channel, ChannelMessage};
     use zeph_core::config::LearningConfig;
+    use zeph_llm::error::LlmError;
     use zeph_llm::provider::{LlmProvider, Message};
     use zeph_memory::semantic::SemanticMemory;
     use zeph_memory::sqlite::SqliteStore;
@@ -2344,14 +2346,14 @@ mod self_learning {
     }
 
     impl LlmProvider for MockProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             Ok(self.response.clone())
         }
 
         async fn chat_stream(
             &self,
             messages: &[Message],
-        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+        ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
             let response = self.chat(messages).await?;
             Ok(Box::pin(tokio_stream::once(Ok(response))))
         }
@@ -2360,7 +2362,7 @@ mod self_learning {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Ok(vec![0.1, 0.2, 0.3])
         }
 
@@ -2380,7 +2382,7 @@ mod self_learning {
     }
 
     impl LlmProvider for SequentialProvider {
-        async fn chat(&self, _messages: &[Message]) -> anyhow::Result<String> {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let mut q = self.responses.lock().unwrap();
             Ok(q.pop_front().unwrap_or_default())
@@ -2389,7 +2391,7 @@ mod self_learning {
         async fn chat_stream(
             &self,
             messages: &[Message],
-        ) -> anyhow::Result<zeph_llm::provider::ChatStream> {
+        ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
             let response = self.chat(messages).await?;
             Ok(Box::pin(tokio_stream::once(Ok(response))))
         }
@@ -2398,7 +2400,7 @@ mod self_learning {
             false
         }
 
-        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Ok(vec![0.1, 0.2, 0.3])
         }
 
