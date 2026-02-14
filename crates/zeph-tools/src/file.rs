@@ -1,8 +1,59 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
+
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
-use crate::registry::{ParamDef, ParamType, ToolDef};
+use crate::registry::{InvocationHint, ToolDef};
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct ReadParams {
+    /// File path
+    path: String,
+    /// Line offset
+    offset: Option<u32>,
+    /// Max lines
+    limit: Option<u32>,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct WriteParams {
+    /// File path
+    path: String,
+    /// Content to write
+    content: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct EditParams {
+    /// File path
+    path: String,
+    /// Text to find
+    old_string: String,
+    /// Replacement text
+    new_string: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct GlobParams {
+    /// Glob pattern
+    pattern: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct GrepParams {
+    /// Regex pattern
+    pattern: String,
+    /// Search path
+    path: Option<String>,
+    /// Case sensitive
+    case_sensitive: Option<bool>,
+}
 
 /// File operations executor sandboxed to allowed paths.
 #[derive(Debug)]
@@ -219,108 +270,37 @@ impl ToolExecutor for FileExecutor {
         self.execute_file_tool(&call.tool_id, &call.params)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![
             ToolDef {
                 id: "read",
                 description: "Read file contents with optional offset/limit",
-                parameters: vec![
-                    ParamDef {
-                        name: "path",
-                        description: "File path",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "offset",
-                        description: "Line offset",
-                        required: false,
-                        param_type: ParamType::Integer,
-                    },
-                    ParamDef {
-                        name: "limit",
-                        description: "Max lines",
-                        required: false,
-                        param_type: ParamType::Integer,
-                    },
-                ],
+                schema: schemars::schema_for!(ReadParams),
+                invocation: InvocationHint::ToolCall,
             },
             ToolDef {
                 id: "write",
                 description: "Write content to a file",
-                parameters: vec![
-                    ParamDef {
-                        name: "path",
-                        description: "File path",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "content",
-                        description: "Content to write",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                ],
+                schema: schemars::schema_for!(WriteParams),
+                invocation: InvocationHint::ToolCall,
             },
             ToolDef {
                 id: "edit",
                 description: "Replace a string in a file",
-                parameters: vec![
-                    ParamDef {
-                        name: "path",
-                        description: "File path",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "old_string",
-                        description: "Text to find",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "new_string",
-                        description: "Replacement text",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                ],
+                schema: schemars::schema_for!(EditParams),
+                invocation: InvocationHint::ToolCall,
             },
             ToolDef {
                 id: "glob",
                 description: "Find files matching a glob pattern",
-                parameters: vec![ParamDef {
-                    name: "pattern",
-                    description: "Glob pattern",
-                    required: true,
-                    param_type: ParamType::String,
-                }],
+                schema: schemars::schema_for!(GlobParams),
+                invocation: InvocationHint::ToolCall,
             },
             ToolDef {
                 id: "grep",
                 description: "Search file contents with regex",
-                parameters: vec![
-                    ParamDef {
-                        name: "pattern",
-                        description: "Regex pattern",
-                        required: true,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "path",
-                        description: "Search path",
-                        required: false,
-                        param_type: ParamType::String,
-                    },
-                    ParamDef {
-                        name: "case_sensitive",
-                        description: "Case sensitive",
-                        required: false,
-                        param_type: ParamType::Boolean,
-                    },
-                ],
+                schema: schemars::schema_for!(GrepParams),
+                invocation: InvocationHint::ToolCall,
             },
         ]
     }
@@ -622,5 +602,34 @@ mod tests {
         ]);
         let result = exec.execute_file_tool("grep", &params);
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn tool_definitions_returns_five_tools() {
+        let exec = FileExecutor::new(vec![]);
+        let defs = exec.tool_definitions();
+        assert_eq!(defs.len(), 5);
+        let ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["read", "write", "edit", "glob", "grep"]);
+    }
+
+    #[test]
+    fn tool_definitions_all_use_tool_call() {
+        let exec = FileExecutor::new(vec![]);
+        for def in exec.tool_definitions() {
+            assert_eq!(def.invocation, InvocationHint::ToolCall);
+        }
+    }
+
+    #[test]
+    fn tool_definitions_read_schema_has_params() {
+        let exec = FileExecutor::new(vec![]);
+        let defs = exec.tool_definitions();
+        let read = defs.iter().find(|d| d.id == "read").unwrap();
+        let obj = read.schema.as_object().unwrap();
+        let props = obj["properties"].as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("offset"));
+        assert!(props.contains_key("limit"));
     }
 }

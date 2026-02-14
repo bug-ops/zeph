@@ -1,17 +1,22 @@
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use url::Url;
 
 use crate::config::ScrapeConfig;
 use crate::executor::{ToolError, ToolExecutor, ToolOutput};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ScrapeInstruction {
+    /// HTTPS URL to scrape
     url: String,
+    /// CSS selector
     select: String,
+    /// Extract mode: text, html, or attr:<name>
     #[serde(default = "default_extract")]
     extract: String,
+    /// Max results to return
     limit: Option<usize>,
 }
 
@@ -66,6 +71,16 @@ impl WebScrapeExecutor {
 }
 
 impl ToolExecutor for WebScrapeExecutor {
+    fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
+        use crate::registry::{InvocationHint, ToolDef};
+        vec![ToolDef {
+            id: "web_scrape",
+            description: "Scrape data from a web page via CSS selectors",
+            schema: schemars::schema_for!(ScrapeInstruction),
+            invocation: InvocationHint::FencedBlock("scrape"),
+        }]
+    }
+
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let blocks = extract_scrape_blocks(response);
         if blocks.is_empty() {
@@ -769,5 +784,34 @@ mod tests {
     #[test]
     fn ipv4_mapped_ipv6_public_allowed() {
         assert!(validate_url("https://[::ffff:93.184.216.34]/path").is_ok());
+    }
+
+    #[test]
+    fn tool_definitions_returns_web_scrape() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].id, "web_scrape");
+        assert_eq!(
+            defs[0].invocation,
+            crate::registry::InvocationHint::FencedBlock("scrape")
+        );
+    }
+
+    #[test]
+    fn tool_definitions_schema_has_all_params() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let defs = executor.tool_definitions();
+        let obj = defs[0].schema.as_object().unwrap();
+        let props = obj["properties"].as_object().unwrap();
+        assert!(props.contains_key("url"));
+        assert!(props.contains_key("select"));
+        assert!(props.contains_key("extract"));
+        assert!(props.contains_key("limit"));
+        let req = obj["required"].as_array().unwrap();
+        assert!(req.iter().any(|v| v.as_str() == Some("url")));
+        assert!(req.iter().any(|v| v.as_str() == Some("select")));
     }
 }

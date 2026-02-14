@@ -1739,7 +1739,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if defs.is_empty() {
                 None
             } else {
-                let reg = zeph_tools::ToolRegistry::new();
+                let reg = zeph_tools::ToolRegistry::from_definitions(defs);
                 Some(reg.format_for_prompt_filtered(&self.permission_policy))
             }
         };
