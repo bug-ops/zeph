@@ -105,8 +105,8 @@ mod tests {
     }
 
     async fn create_test_indexer() -> Arc<CodeIndexer<FakeProvider>> {
-        let store =
-            crate::store::CodeStore::new("http://localhost:6334", create_test_pool().await).unwrap();
+        let store = crate::store::CodeStore::new("http://localhost:6334", create_test_pool().await)
+            .unwrap();
         Arc::new(CodeIndexer::new(
             store,
             Arc::new(FakeProvider),
