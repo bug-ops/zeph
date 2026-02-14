@@ -38,6 +38,9 @@ pub enum MessagePart {
     Summary {
         text: String,
     },
+    CrossSession {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,7 +91,8 @@ impl Message {
                 MessagePart::Text { text }
                 | MessagePart::Recall { text }
                 | MessagePart::CodeContext { text }
-                | MessagePart::Summary { text } => out.push_str(text),
+                | MessagePart::Summary { text }
+                | MessagePart::CrossSession { text } => out.push_str(text),
                 MessagePart::ToolOutput {
                     tool_name,
                     body,

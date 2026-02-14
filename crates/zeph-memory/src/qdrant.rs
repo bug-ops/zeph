@@ -1,7 +1,8 @@
 use anyhow::Context;
 use qdrant_client::Qdrant;
+pub use qdrant_client::qdrant::Filter;
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, Distance, Filter, PointStruct, SearchPointsBuilder,
+    Condition, CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder,
     UpsertPointsBuilder, VectorParamsBuilder,
 };
 use sqlx::SqlitePool;
@@ -187,6 +188,89 @@ impl QdrantStore {
             .collect();
 
         Ok(search_results)
+    }
+
+    /// Ensure a named collection exists in Qdrant with the given vector size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Qdrant cannot be reached or collection creation fails.
+    pub async fn ensure_named_collection(
+        &self,
+        name: &str,
+        vector_size: u64,
+    ) -> anyhow::Result<()> {
+        if self.client.collection_exists(name).await? {
+            return Ok(());
+        }
+
+        self.client
+            .create_collection(
+                CreateCollectionBuilder::new(name)
+                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
+            )
+            .await
+            .context("failed to create named Qdrant collection")?;
+
+        Ok(())
+    }
+
+    /// Store a vector in a named Qdrant collection with arbitrary payload.
+    ///
+    /// Returns the UUID of the newly created point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Qdrant upsert fails.
+    pub async fn store_to_collection(
+        &self,
+        collection: &str,
+        payload: serde_json::Value,
+        vector: Vec<f32>,
+    ) -> anyhow::Result<String> {
+        let point_id = uuid::Uuid::new_v4().to_string();
+
+        let payload_map: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
+            serde_json::from_value(payload).context("failed to convert payload")?;
+
+        let point = PointStruct::new(point_id.clone(), vector, payload_map);
+
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(collection, vec![point]))
+            .await
+            .context("failed to upsert point to named collection")?;
+
+        Ok(point_id)
+    }
+
+    /// Search a named Qdrant collection, returning scored points with payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Qdrant search fails.
+    pub async fn search_collection(
+        &self,
+        collection: &str,
+        query_vector: &[f32],
+        limit: usize,
+        filter: Option<Filter>,
+    ) -> anyhow::Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
+        let limit_u64 = u64::try_from(limit).context("limit exceeds u64")?;
+
+        let mut builder = SearchPointsBuilder::new(collection, query_vector.to_vec(), limit_u64)
+            .with_payload(true);
+
+        if let Some(f) = filter {
+            builder = builder.filter(f);
+        }
+
+        let results = self
+            .client
+            .search_points(builder)
+            .await
+            .context("failed to search named collection")?;
+
+        Ok(results.result)
     }
 
     /// Check whether an embedding already exists for the given message ID.

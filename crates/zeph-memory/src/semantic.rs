@@ -1,7 +1,10 @@
+use qdrant_client::qdrant::Condition;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
-use crate::qdrant::{QdrantStore, SearchFilter};
+use crate::qdrant::{Filter, QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
+
+const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
 
 #[derive(Debug)]
 pub struct RecalledMessage {
@@ -17,6 +20,13 @@ pub struct Summary {
     pub first_message_id: i64,
     pub last_message_id: i64,
     pub token_estimate: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionSummaryResult {
+    pub summary_text: String,
+    pub score: f32,
+    pub conversation_id: i64,
 }
 
 /// Estimate token count using chars/4 heuristic.
@@ -241,6 +251,90 @@ impl<P: LlmProvider> SemanticMemory<P> {
 
         tracing::info!("Embedded {count}/{} missing messages", unembedded.len());
         Ok(count)
+    }
+
+    /// Store a session summary into the dedicated `zeph_session_summaries` Qdrant collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding or Qdrant storage fails.
+    pub async fn store_session_summary(
+        &self,
+        conversation_id: i64,
+        summary_text: &str,
+    ) -> anyhow::Result<()> {
+        let Some(qdrant) = &self.qdrant else {
+            return Ok(());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(());
+        }
+
+        let vector = self.provider.embed(summary_text).await?;
+        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+        qdrant
+            .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
+            .await?;
+
+        let payload = serde_json::json!({
+            "conversation_id": conversation_id,
+            "summary_text": summary_text,
+        });
+
+        qdrant
+            .store_to_collection(SESSION_SUMMARIES_COLLECTION, payload, vector)
+            .await?;
+
+        tracing::debug!(conversation_id, "stored session summary");
+        Ok(())
+    }
+
+    /// Search session summaries from other conversations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding or Qdrant search fails.
+    pub async fn search_session_summaries(
+        &self,
+        query: &str,
+        limit: usize,
+        exclude_conversation_id: Option<i64>,
+    ) -> anyhow::Result<Vec<SessionSummaryResult>> {
+        let Some(qdrant) = &self.qdrant else {
+            return Ok(Vec::new());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(Vec::new());
+        }
+
+        let vector = self.provider.embed(query).await?;
+        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+        qdrant
+            .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
+            .await?;
+
+        let filter = exclude_conversation_id
+            .map(|cid| Filter::must_not(vec![Condition::matches("conversation_id", cid)]));
+
+        let points = qdrant
+            .search_collection(SESSION_SUMMARIES_COLLECTION, &vector, limit, filter)
+            .await?;
+
+        let results = points
+            .into_iter()
+            .filter_map(|point| {
+                let payload = &point.payload;
+                let summary_text = payload.get("summary_text")?.as_str()?.to_owned();
+                let conversation_id = payload.get("conversation_id")?.as_integer()?;
+                Some(SessionSummaryResult {
+                    summary_text,
+                    score: point.score,
+                    conversation_id,
+                })
+            })
+            .collect();
+
+        Ok(results)
     }
 
     /// Access the underlying `SqliteStore` for operations that don't involve semantics.
@@ -1105,5 +1199,62 @@ mod tests {
         let memory = test_semantic_memory(false).await;
         let summaries = memory.load_summaries(999).await.unwrap();
         assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_session_summary_no_qdrant_noop() {
+        let memory = test_semantic_memory(true).await;
+        let result = memory.store_session_summary(1, "test summary").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn store_session_summary_no_embeddings_noop() {
+        let memory = test_semantic_memory(false).await;
+        let result = memory.store_session_summary(1, "test summary").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn search_session_summaries_no_qdrant_empty() {
+        let memory = test_semantic_memory(true).await;
+        let results = memory
+            .search_session_summaries("query", 5, None)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_session_summaries_no_embeddings_empty() {
+        let memory = test_semantic_memory(false).await;
+        let results = memory
+            .search_session_summaries("query", 5, Some(1))
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn session_summary_result_debug() {
+        let result = SessionSummaryResult {
+            summary_text: "test".into(),
+            score: 0.9,
+            conversation_id: 1,
+        };
+        let dbg = format!("{result:?}");
+        assert!(dbg.contains("SessionSummaryResult"));
+    }
+
+    #[test]
+    fn session_summary_result_clone() {
+        let result = SessionSummaryResult {
+            summary_text: "test".into(),
+            score: 0.9,
+            conversation_id: 1,
+        };
+        let cloned = result.clone();
+        assert_eq!(result.summary_text, cloned.summary_text);
+        assert_eq!(result.conversation_id, cloned.conversation_id);
     }
 }

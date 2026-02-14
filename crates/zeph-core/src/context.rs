@@ -108,6 +108,7 @@ pub struct BudgetAllocation {
     pub skills: usize,
     pub summaries: usize,
     pub semantic_recall: usize,
+    pub cross_session: usize,
     pub code_context: usize,
     pub recent_history: usize,
     pub response_reserve: usize,
@@ -146,6 +147,7 @@ impl ContextBudget {
                 skills: 0,
                 summaries: 0,
                 semantic_recall: 0,
+                cross_session: 0,
                 code_context: 0,
                 recent_history: 0,
                 response_reserve: 0,
@@ -160,8 +162,9 @@ impl ContextBudget {
 
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
-        let summaries = (available as f32 * 0.10) as usize;
-        let semantic_recall = (available as f32 * 0.10) as usize;
+        let summaries = (available as f32 * 0.08) as usize;
+        let semantic_recall = (available as f32 * 0.08) as usize;
+        let cross_session = (available as f32 * 0.04) as usize;
         let code_context = (available as f32 * 0.30) as usize;
         let recent_history = (available as f32 * 0.50) as usize;
 
@@ -170,6 +173,7 @@ impl ContextBudget {
             skills: skills_tokens,
             summaries,
             semantic_recall,
+            cross_session,
             code_context,
             recent_history,
             response_reserve,
@@ -221,6 +225,7 @@ mod tests {
         assert!(alloc.skills > 0);
         assert!(alloc.summaries > 0);
         assert!(alloc.semantic_recall > 0);
+        assert!(alloc.cross_session > 0);
         assert!(alloc.recent_history > 0);
     }
 
@@ -241,6 +246,7 @@ mod tests {
         assert_eq!(alloc.skills, 0);
         assert_eq!(alloc.summaries, 0);
         assert_eq!(alloc.semantic_recall, 0);
+        assert_eq!(alloc.cross_session, 0);
         assert_eq!(alloc.code_context, 0);
         assert_eq!(alloc.recent_history, 0);
         assert_eq!(alloc.response_reserve, 0);
@@ -322,5 +328,16 @@ mod tests {
         assert!(prompt.contains("## Tool Use"));
         assert!(prompt.contains("## Guidelines"));
         assert!(prompt.contains("## Security"));
+    }
+
+    #[test]
+    fn budget_allocation_cross_session_percentage() {
+        let budget = ContextBudget::new(10000, 0.20);
+        let alloc = budget.allocate("", "");
+
+        // cross_session = 4%, summaries = 8%, recall = 8%
+        assert!(alloc.cross_session > 0);
+        assert!(alloc.cross_session < alloc.summaries);
+        assert_eq!(alloc.summaries, alloc.semantic_recall);
     }
 }

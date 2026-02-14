@@ -33,6 +33,7 @@ const MESSAGE_MERGE_WINDOW: Duration = Duration::from_millis(500);
 const RECALL_PREFIX: &str = "[semantic recall]\n";
 const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
+const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
@@ -452,6 +453,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             m.context_compactions += 1;
         });
 
+        if let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id)
+            && let Err(e) = memory.store_session_summary(cid, &summary).await
+        {
+            tracing::warn!("failed to store session summary: {e:#}");
+        }
+
         Ok(())
     }
 
@@ -689,6 +696,64 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         });
     }
 
+    fn remove_cross_session_messages(&mut self) {
+        self.messages.retain(|m| {
+            if m.role != Role::System {
+                return true;
+            }
+            if m.parts
+                .first()
+                .is_some_and(|p| matches!(p, MessagePart::CrossSession { .. }))
+            {
+                return false;
+            }
+            !m.content.starts_with(CROSS_SESSION_PREFIX)
+        });
+    }
+
+    async fn inject_cross_session_context(
+        &mut self,
+        query: &str,
+        token_budget: usize,
+    ) -> anyhow::Result<()> {
+        self.remove_cross_session_messages();
+
+        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
+            return Ok(());
+        };
+        if token_budget == 0 {
+            return Ok(());
+        }
+
+        let results = memory.search_session_summaries(query, 5, Some(cid)).await?;
+        if results.is_empty() {
+            return Ok(());
+        }
+
+        let mut text = String::from(CROSS_SESSION_PREFIX);
+        let mut tokens_used = estimate_tokens(&text);
+
+        for item in &results {
+            let entry = format!("- {}\n", item.summary_text);
+            let cost = estimate_tokens(&entry);
+            if tokens_used + cost > token_budget {
+                break;
+            }
+            text.push_str(&entry);
+            tokens_used += cost;
+        }
+
+        if tokens_used > estimate_tokens(CROSS_SESSION_PREFIX) && self.messages.len() > 1 {
+            self.messages.insert(
+                1,
+                Message::from_parts(Role::System, vec![MessagePart::CrossSession { text }]),
+            );
+            tracing::debug!(tokens_used, "injected cross-session context");
+        }
+
+        Ok(())
+    }
+
     async fn inject_summaries(&mut self, token_budget: usize) -> anyhow::Result<()> {
         self.remove_summary_messages();
 
@@ -781,6 +846,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let alloc = budget.allocate(system_prompt, &self.last_skills_prompt);
 
         self.inject_summaries(alloc.summaries).await?;
+
+        self.inject_cross_session_context(query, alloc.cross_session)
+            .await?;
 
         self.inject_semantic_recall(query, alloc.semantic_recall)
             .await?;
@@ -4236,5 +4304,135 @@ mod agent_tests {
 
         agent.maybe_compact().await.unwrap();
         assert_eq!(rx.borrow().context_compactions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_inject_cross_session_no_memory_noop() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let msg_count = agent.messages.len();
+
+        agent
+            .inject_cross_session_context("test", 1000)
+            .await
+            .unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_inject_cross_session_zero_budget_noop() {
+        let provider = MockProvider::new(vec![]);
+        let (memory, cid) = create_memory_with_summaries(provider.clone(), &["summary"]).await;
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50);
+        let msg_count = agent.messages.len();
+
+        agent.inject_cross_session_context("test", 0).await.unwrap();
+        assert_eq!(agent.messages.len(), msg_count);
+    }
+
+    #[tokio::test]
+    async fn test_remove_cross_session_messages() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.messages.insert(
+            1,
+            Message::from_parts(
+                Role::System,
+                vec![MessagePart::CrossSession {
+                    text: "old cross-session".into(),
+                }],
+            ),
+        );
+        assert_eq!(agent.messages.len(), 2);
+
+        agent.remove_cross_session_messages();
+        assert_eq!(agent.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_remove_cross_session_preserves_other_system() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.messages.insert(
+            1,
+            Message::from_parts(
+                Role::System,
+                vec![MessagePart::Summary {
+                    text: "keep this summary".into(),
+                }],
+            ),
+        );
+        agent.messages.insert(
+            2,
+            Message::from_parts(
+                Role::System,
+                vec![MessagePart::CrossSession {
+                    text: "remove this".into(),
+                }],
+            ),
+        );
+        assert_eq!(agent.messages.len(), 3);
+
+        agent.remove_cross_session_messages();
+        assert_eq!(agent.messages.len(), 2);
+        assert!(agent.messages[1].content.contains("keep this summary"));
+    }
+
+    #[tokio::test]
+    async fn test_store_session_summary_on_compaction() {
+        let provider = MockProvider::new(vec!["compacted summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (memory, cid) = create_memory_with_summaries(provider.clone(), &[]).await;
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 50)
+            .with_context_budget(10000, 0.20, 0.80, 2, 0);
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+                parts: vec![],
+            });
+        }
+
+        // compact_context should succeed (non-fatal store)
+        agent.compact_context().await.unwrap();
+        assert!(agent.messages[1].content.contains("compacted summary"));
+    }
+
+    #[test]
+    fn test_budget_allocation_cross_session() {
+        let budget = crate::context::ContextBudget::new(1000, 0.20);
+        let alloc = budget.allocate("", "");
+
+        assert!(alloc.cross_session > 0);
+        assert!(alloc.summaries > 0);
+        assert!(alloc.semantic_recall > 0);
+        // cross_session should be smaller than summaries
+        assert!(alloc.cross_session < alloc.summaries);
     }
 }
