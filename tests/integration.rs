@@ -10,7 +10,6 @@ use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::SqliteStore;
-use zeph_memory::types::ConversationId;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
