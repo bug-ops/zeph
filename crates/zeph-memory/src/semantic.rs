@@ -226,16 +226,19 @@ impl<P: LlmProvider> SemanticMemory<P> {
 
         let results = qdrant.search(&query_vector, limit, filter).await?;
 
-        // TODO: Optimize N+1 query pattern by using SELECT WHERE id IN (...) for batch fetch
-        let mut recalled = Vec::with_capacity(results.len());
-        for result in results {
-            if let Ok(Some(msg)) = self.sqlite.message_by_id(result.message_id).await {
-                recalled.push(RecalledMessage {
-                    message: msg,
-                    score: result.score,
-                });
-            }
-        }
+        let ids: Vec<i64> = results.iter().map(|r| r.message_id).collect();
+        let messages = self.sqlite.messages_by_ids(&ids).await?;
+        let msg_map: std::collections::HashMap<i64, _> = messages.into_iter().collect();
+
+        let recalled = results
+            .iter()
+            .filter_map(|r| {
+                msg_map.get(&r.message_id).map(|msg| RecalledMessage {
+                    message: msg.clone(),
+                    score: r.score,
+                })
+            })
+            .collect();
 
         Ok(recalled)
     }

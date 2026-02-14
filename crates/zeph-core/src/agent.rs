@@ -82,6 +82,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     #[cfg(feature = "mcp")]
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
     prune_protect_tokens: usize,
     cross_session_score_threshold: f32,
@@ -166,6 +167,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             mcp_registry: None,
             #[cfg(feature = "mcp")]
             mcp_manager: None,
+            start_time: Instant::now(),
             message_queue: VecDeque::new(),
             prune_protect_tokens: 40_000,
             cross_session_score_threshold: 0.35,
@@ -372,7 +374,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics_tx {
-            tx.send_modify(f);
+            let elapsed = self.start_time.elapsed().as_secs();
+            tx.send_modify(|m| {
+                m.uptime_seconds = elapsed;
+                f(m);
+            });
         }
     }
 
@@ -3559,6 +3565,23 @@ mod agent_tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
         agent.update_metrics(|m| m.api_calls = 999);
+    }
+
+    #[test]
+    fn update_metrics_sets_uptime_seconds() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.update_metrics(|m| m.api_calls = 1);
+
+        let snapshot = rx.borrow();
+        assert!(snapshot.uptime_seconds < 2);
+        assert_eq!(snapshot.api_calls, 1);
     }
 
     #[test]

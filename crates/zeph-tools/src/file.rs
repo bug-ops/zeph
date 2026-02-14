@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::executor::{ToolError, ToolOutput};
+use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::registry::{ParamDef, ParamType, ToolDef};
 
 /// File operations executor sandboxed to allowed paths.
 #[derive(Debug)]
@@ -95,14 +96,12 @@ impl FileExecutor {
     ) -> Result<Option<ToolOutput>, ToolError> {
         let path_str = param_str(params, "path")?;
         let content = param_str(params, "content")?;
-        let path = Path::new(&path_str);
-
-        self.validate_path(path)?;
+        let path = self.validate_path(Path::new(&path_str))?;
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, &content)?;
+        std::fs::write(&path, &content)?;
 
         Ok(Some(ToolOutput {
             tool_name: "write".to_owned(),
@@ -211,6 +210,122 @@ impl FileExecutor {
     }
 }
 
+impl ToolExecutor for FileExecutor {
+    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(None)
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_file_tool(&call.tool_id, &call.params)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        vec![
+            ToolDef {
+                id: "read",
+                description: "Read file contents with optional offset/limit",
+                parameters: vec![
+                    ParamDef {
+                        name: "path",
+                        description: "File path",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "offset",
+                        description: "Line offset",
+                        required: false,
+                        param_type: ParamType::Integer,
+                    },
+                    ParamDef {
+                        name: "limit",
+                        description: "Max lines",
+                        required: false,
+                        param_type: ParamType::Integer,
+                    },
+                ],
+            },
+            ToolDef {
+                id: "write",
+                description: "Write content to a file",
+                parameters: vec![
+                    ParamDef {
+                        name: "path",
+                        description: "File path",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "content",
+                        description: "Content to write",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                ],
+            },
+            ToolDef {
+                id: "edit",
+                description: "Replace a string in a file",
+                parameters: vec![
+                    ParamDef {
+                        name: "path",
+                        description: "File path",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "old_string",
+                        description: "Text to find",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "new_string",
+                        description: "Replacement text",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                ],
+            },
+            ToolDef {
+                id: "glob",
+                description: "Find files matching a glob pattern",
+                parameters: vec![ParamDef {
+                    name: "pattern",
+                    description: "Glob pattern",
+                    required: true,
+                    param_type: ParamType::String,
+                }],
+            },
+            ToolDef {
+                id: "grep",
+                description: "Search file contents with regex",
+                parameters: vec![
+                    ParamDef {
+                        name: "pattern",
+                        description: "Regex pattern",
+                        required: true,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "path",
+                        description: "Search path",
+                        required: false,
+                        param_type: ParamType::String,
+                    },
+                    ParamDef {
+                        name: "case_sensitive",
+                        description: "Case sensitive",
+                        required: false,
+                        param_type: ParamType::Boolean,
+                    },
+                ],
+            },
+        ]
+    }
+}
+
 /// Canonicalize a path by walking up to the nearest existing ancestor.
 fn resolve_via_ancestors(path: &Path) -> PathBuf {
     let mut existing = path;
@@ -218,7 +333,11 @@ fn resolve_via_ancestors(path: &Path) -> PathBuf {
     while !existing.exists() {
         if let Some(parent) = existing.parent() {
             if let Some(name) = existing.file_name() {
-                suffix = PathBuf::from(name).join(&suffix);
+                if suffix.as_os_str().is_empty() {
+                    suffix = PathBuf::from(name);
+                } else {
+                    suffix = PathBuf::from(name).join(&suffix);
+                }
             }
             existing = parent;
         } else {
@@ -462,6 +581,35 @@ mod tests {
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
         let result = exec.execute_file_tool("glob", &params).unwrap().unwrap();
         assert!(!result.summary.contains("secret.rs"));
+    }
+
+    #[tokio::test]
+    async fn tool_executor_execute_tool_call_delegates() {
+        let dir = temp_dir();
+        let file = dir.path().join("test.txt");
+        fs::write(&file, "content").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "read".to_owned(),
+            params: make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.tool_name, "read");
+        assert!(result.summary.contains("content"));
+    }
+
+    #[test]
+    fn tool_executor_tool_definitions_lists_all() {
+        let exec = FileExecutor::new(vec![]);
+        let defs = exec.tool_definitions();
+        let ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+        assert!(ids.contains(&"read"));
+        assert!(ids.contains(&"write"));
+        assert!(ids.contains(&"edit"));
+        assert!(ids.contains(&"glob"));
+        assert!(ids.contains(&"grep"));
+        assert_eq!(defs.len(), 5);
     }
 
     #[test]

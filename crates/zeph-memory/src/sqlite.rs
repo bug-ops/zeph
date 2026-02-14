@@ -178,6 +178,46 @@ impl SqliteStore {
         }))
     }
 
+    /// Fetch messages by a list of IDs in a single query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn messages_by_ids(&self, ids: &[i64]) -> anyhow::Result<Vec<(i64, Message)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let query =
+            format!("SELECT id, role, content, parts FROM messages WHERE id IN ({placeholders})");
+        let mut q = sqlx::query_as::<_, (i64, String, String, String)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch messages by ids")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, role_str, content, parts_json)| {
+                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
+                (
+                    id,
+                    Message {
+                        role: parse_role(&role_str),
+                        content,
+                        parts,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Return message IDs and content for messages without embeddings.
     ///
     /// # Errors
@@ -984,6 +1024,36 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(after.0, 0);
+    }
+
+    #[tokio::test]
+    async fn messages_by_ids_batch_fetch() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        let id1 = store.save_message(cid, "user", "hello").await.unwrap();
+        let id2 = store.save_message(cid, "assistant", "hi").await.unwrap();
+        let _id3 = store.save_message(cid, "user", "bye").await.unwrap();
+
+        let results = store.messages_by_ids(&[id1, id2]).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, id1);
+        assert_eq!(results[0].1.content, "hello");
+        assert_eq!(results[1].0, id2);
+        assert_eq!(results[1].1.content, "hi");
+    }
+
+    #[tokio::test]
+    async fn messages_by_ids_empty_input() {
+        let store = test_store().await;
+        let results = store.messages_by_ids(&[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn messages_by_ids_nonexistent() {
+        let store = test_store().await;
+        let results = store.messages_by_ids(&[999, 1000]).await.unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

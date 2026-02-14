@@ -31,7 +31,7 @@ use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillWatcher;
-use zeph_tools::{CompositeExecutor, ShellExecutor, WebScrapeExecutor};
+use zeph_tools::{CompositeExecutor, FileExecutor, ShellExecutor, WebScrapeExecutor};
 #[cfg(feature = "tui")]
 use zeph_tui::{App, EventReader, TuiChannel};
 
@@ -186,6 +186,11 @@ async fn main() -> anyhow::Result<()> {
 
     if config.memory.semantic.enabled && memory.has_qdrant() {
         tracing::info!("semantic memory enabled, Qdrant connected");
+        match memory.embed_missing().await {
+            Ok(n) if n > 0 => tracing::info!("backfilled {n} missing embedding(s)"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("embed_missing failed: {e:#}"),
+        }
     }
 
     let all_meta = registry.all_meta();
@@ -240,6 +245,15 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let scrape_executor = WebScrapeExecutor::new(&config.tools.scrape);
+    let file_executor = FileExecutor::new(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
 
     #[cfg(feature = "mcp")]
     let (tool_executor, mcp_tools, mcp_manager) = {
@@ -248,14 +262,20 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 
         let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
-        let base_executor = CompositeExecutor::new(shell_executor, scrape_executor);
+        let base_executor = CompositeExecutor::new(
+            file_executor,
+            CompositeExecutor::new(shell_executor, scrape_executor),
+        );
         let executor = CompositeExecutor::new(base_executor, mcp_executor);
 
         (executor, mcp_tools, mcp_manager)
     };
 
     #[cfg(not(feature = "mcp"))]
-    let tool_executor = CompositeExecutor::new(shell_executor, scrape_executor);
+    let tool_executor = CompositeExecutor::new(
+        file_executor,
+        CompositeExecutor::new(shell_executor, scrape_executor),
+    );
 
     let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(4);
     let _watcher = match SkillWatcher::start(&skill_paths, reload_tx) {
