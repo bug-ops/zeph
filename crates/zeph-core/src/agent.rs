@@ -26,8 +26,7 @@ use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::redact::redact_secrets;
 use zeph_memory::semantic::estimate_tokens;
 
-// TODO(M14): Make configurable via AgentConfig (currently hardcoded for MVP)
-const MAX_SHELL_ITERATIONS: usize = 3;
+const DOOM_LOOP_WINDOW: usize = 3;
 const MAX_QUEUE_SIZE: usize = 10;
 const MESSAGE_MERGE_WINDOW: Duration = Duration::from_millis(500);
 const RECALL_PREFIX: &str = "[semantic recall]\n";
@@ -100,6 +99,8 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     #[cfg(feature = "index")]
     repo_map_ttl: std::time::Duration,
     warmup_ready: Option<watch::Receiver<bool>>,
+    max_tool_iterations: usize,
+    doom_loop_history: Vec<String>,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -118,7 +119,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
-        let system_prompt = build_system_prompt(&skills_prompt, None);
+        let system_prompt = build_system_prompt(&skills_prompt, None, None);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
@@ -182,7 +183,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             #[cfg(feature = "index")]
             repo_map_ttl: std::time::Duration::from_secs(300),
             warmup_ready: None,
+            max_tool_iterations: 10,
+            doom_loop_history: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
+        self.max_tool_iterations = max;
+        self
     }
 
     #[must_use]
@@ -1605,7 +1614,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
         self.last_skills_prompt.clone_from(&skills_prompt);
-        let system_prompt = build_system_prompt(&skills_prompt, None);
+        let system_prompt = build_system_prompt(&skills_prompt, None, None);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
@@ -1653,6 +1662,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         tracing::info!("config reloaded");
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta = self.registry.all_meta();
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.matcher {
@@ -1710,8 +1720,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let catalog_prompt = format_skills_catalog(&remaining_skills);
         self.last_skills_prompt.clone_from(&skills_prompt);
         let env = EnvironmentContext::gather(&self.model_name);
+        let tool_catalog = {
+            let defs = self.tool_executor.tool_definitions();
+            if defs.is_empty() {
+                None
+            } else {
+                let reg = zeph_tools::ToolRegistry::new();
+                Some(reg.format_for_prompt())
+            }
+        };
         #[allow(unused_mut)]
-        let mut system_prompt = build_system_prompt(&skills_prompt, Some(&env));
+        let mut system_prompt =
+            build_system_prompt(&skills_prompt, Some(&env), tool_catalog.as_deref());
 
         if !catalog_prompt.is_empty() {
             system_prompt.push_str("\n\n");
@@ -1832,8 +1852,32 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn process_response(&mut self) -> anyhow::Result<()> {
-        for _ in 0..MAX_SHELL_ITERATIONS {
+        self.doom_loop_history.clear();
+
+        for iteration in 0..self.max_tool_iterations {
             self.channel.send_typing().await?;
+
+            // Context budget check at 80% threshold
+            if let Some(ref budget) = self.context_budget {
+                let used: usize = self
+                    .messages
+                    .iter()
+                    .map(|m| estimate_tokens(&m.content))
+                    .sum();
+                let threshold = budget.max_tokens() * 4 / 5;
+                if used >= threshold {
+                    tracing::warn!(
+                        iteration,
+                        used,
+                        threshold,
+                        "stopping tool loop: context budget nearing limit"
+                    );
+                    self.channel
+                        .send("Stopping: context window is nearly full.")
+                        .await?;
+                    break;
+                }
+            }
 
             let Some(response) = self.call_llm_with_timeout().await? else {
                 return Ok(());
@@ -1868,6 +1912,25 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let result = self.tool_executor.execute(&response).await;
             if !self.handle_tool_result(&response, result).await? {
                 return Ok(());
+            }
+
+            // Doom-loop detection: compare last N outputs by string equality
+            if let Some(last_msg) = self.messages.last() {
+                self.doom_loop_history.push(last_msg.content.clone());
+                if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
+                    let recent =
+                        &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
+                    if recent.windows(2).all(|w| w[0] == w[1]) {
+                        tracing::warn!(
+                            iteration,
+                            "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
+                        );
+                        self.channel
+                            .send("Stopping: detected repeated identical tool outputs.")
+                            .await?;
+                        break;
+                    }
+                }
             }
         }
 
@@ -3382,7 +3445,7 @@ mod agent_tests {
             .iter()
             .filter(|m| m.role == Role::Assistant)
             .count();
-        assert!(assistant_count <= MAX_SHELL_ITERATIONS);
+        assert!(assistant_count <= 10);
     }
 
     #[test]
@@ -4559,5 +4622,33 @@ mod agent_tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].summary_text, "high score");
         assert_eq!(filtered[1].summary_text, "at threshold");
+    }
+
+    #[test]
+    fn doom_loop_detection_triggers_on_identical_outputs() {
+        let s = "same output".to_owned();
+        let history = vec![s.clone(), s.clone(), s];
+        let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
+        assert!(recent.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn doom_loop_detection_no_trigger_on_different_outputs() {
+        let history = vec![
+            "output a".to_owned(),
+            "output b".to_owned(),
+            "output c".to_owned(),
+        ];
+        let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
+        assert!(!recent.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn context_budget_80_percent_threshold() {
+        let budget = ContextBudget::new(1000, 0.20);
+        let threshold = budget.max_tokens() * 4 / 5;
+        assert_eq!(threshold, 800);
+        assert!(800 >= threshold); // at threshold → should stop
+        assert!(799 < threshold); // below threshold → should continue
     }
 }

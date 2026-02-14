@@ -1,4 +1,12 @@
+use std::collections::HashMap;
 use std::fmt;
+
+/// Structured tool invocation from LLM.
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub tool_id: String,
+    pub params: HashMap<String, serde_json::Value>,
+}
 
 /// Structured result from tool execution.
 #[derive(Debug, Clone)]
@@ -93,6 +101,19 @@ pub trait ToolExecutor: Send + Sync {
         response: &str,
     ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         self.execute(response)
+    }
+
+    /// Return tool definitions this executor can handle.
+    fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
+        vec![]
+    }
+
+    /// Execute a structured tool call. Returns `None` if `tool_id` is not handled.
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 }
 
@@ -200,5 +221,24 @@ mod tests {
         let result = truncate_tool_output(&long);
         assert!(result.contains("truncated"));
         assert!(result.contains("chars"));
+    }
+
+    #[derive(Debug)]
+    struct DefaultExecutor;
+    impl ToolExecutor for DefaultExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_default_returns_none() {
+        let exec = DefaultExecutor;
+        let call = ToolCall {
+            tool_id: "anything".to_owned(),
+            params: std::collections::HashMap::new(),
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
     }
 }

@@ -7,16 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `ToolRegistry` with typed `ToolDef` definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape) (#239)
+- `FileExecutor` for sandboxed file operations: read, write, edit, glob, grep (#242)
+- `ToolCall` struct and `execute_tool_call()` on `ToolExecutor` trait for structured tool invocation (#241)
+- `CompositeExecutor` routes structured tool calls to correct sub-executor by tool_id (#243)
+- Tool catalog section in system prompt via `ToolRegistry::format_for_prompt()` (#244)
+- Configurable `max_tool_iterations` (default 10, previously hardcoded 3) via TOML and `ZEPH_AGENT_MAX_TOOL_ITERATIONS` env var (#245)
+- Doom-loop detection: breaks agent loop on 3 consecutive identical tool outputs
+- Context budget check at 80% threshold stops iteration before context overflow
 - `IndexWatcher` for incremental code index updates on file changes via `notify` file watcher (#233)
 - `watch` config field in `[index]` section (default `true`) to enable/disable file watching
+- Repo map cache with configurable TTL (`repo_map_ttl_secs`, default 300s) to avoid per-message filesystem traversal (#231)
+- Cross-session memory score threshold (`cross_session_score_threshold`, default 0.35) to filter low-relevance results (#232)
 
 ### Fixed
 - Persist `MessagePart` data to SQLite via `remember_with_parts()` — pruning state now survives session restarts (#229)
 - Clear tool output body from memory after Tier 1 pruning to reclaim heap (#230)
-
-### Added
-- Repo map cache with configurable TTL (`repo_map_ttl_secs`, default 300s) to avoid per-message filesystem traversal (#231)
-- Cross-session memory score threshold (`cross_session_score_threshold`, default 0.35) to filter low-relevance results (#232)
 
 ## [0.9.4] - 2026-02-14
 

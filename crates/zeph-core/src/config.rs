@@ -32,9 +32,15 @@ pub struct Config {
     pub secrets: ResolvedSecrets,
 }
 
+fn default_max_tool_iterations() -> usize {
+    10
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -864,6 +870,7 @@ impl Config {
         Self {
             agent: AgentConfig {
                 name: "Zeph".into(),
+                max_tool_iterations: 10,
             },
             llm: LlmConfig {
                 provider: "ollama".into(),

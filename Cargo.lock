@@ -8323,6 +8323,8 @@ dependencies = [
 name = "zeph-tools"
 version = "0.9.4"
 dependencies = [
+ "glob",
+ "regex",
  "reqwest 0.13.2",
  "scrape-core",
  "serde",

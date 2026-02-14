@@ -1,4 +1,5 @@
-use crate::executor::{ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::registry::ToolDef;
 
 /// Chains two `ToolExecutor` implementations with first-match-wins dispatch.
 ///
@@ -30,6 +31,19 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
             return Ok(Some(output));
         }
         self.second.execute_confirmed(response).await
+    }
+
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        let mut defs = self.first.tool_definitions();
+        defs.extend(self.second.tool_definitions());
+        defs
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        if let Some(output) = self.first.execute_tool_call(call).await? {
+            return Ok(Some(output));
+        }
+        self.second.execute_tool_call(call).await
     }
 }
 
@@ -133,5 +147,82 @@ mod tests {
         let composite = CompositeExecutor::new(MatchingExecutor, SecondExecutor);
         let debug = format!("{composite:?}");
         assert!(debug.contains("CompositeExecutor"));
+    }
+
+    #[derive(Debug)]
+    struct FileToolExecutor;
+    impl ToolExecutor for FileToolExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            if call.tool_id == "read" || call.tool_id == "write" {
+                Ok(Some(ToolOutput {
+                    tool_name: call.tool_id.clone(),
+                    summary: "file_handler".to_owned(),
+                    blocks_executed: 1,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ShellToolExecutor;
+    impl ToolExecutor for ShellToolExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            if call.tool_id == "bash" {
+                Ok(Some(ToolOutput {
+                    tool_name: "bash".to_owned(),
+                    summary: "shell_handler".to_owned(),
+                    blocks_executed: 1,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_routes_to_file_executor() {
+        let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
+        let call = ToolCall {
+            tool_id: "read".to_owned(),
+            params: std::collections::HashMap::new(),
+        };
+        let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary, "file_handler");
+    }
+
+    #[tokio::test]
+    async fn tool_call_routes_to_shell_executor() {
+        let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: std::collections::HashMap::new(),
+        };
+        let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary, "shell_handler");
+    }
+
+    #[tokio::test]
+    async fn tool_call_unhandled_returns_none() {
+        let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
+        let call = ToolCall {
+            tool_id: "unknown".to_owned(),
+            params: std::collections::HashMap::new(),
+        };
+        let result = composite.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
     }
 }

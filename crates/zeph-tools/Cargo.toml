@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+glob.workspace = true
+regex.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 scrape-core.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -303,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
         config.skills.max_active_skills,
         tool_executor,
     )
+    .with_max_tool_iterations(config.agent.max_tool_iterations)
     .with_model_name(config.llm.model.clone())
     .with_embedding_model(embed_model.clone())
     .with_skill_reload(skill_paths, reload_rx)

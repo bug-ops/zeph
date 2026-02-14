@@ -37,12 +37,23 @@ the user explicitly asks about a skill by name.\n\
 - Do not execute commands that could cause data loss without confirmation.";
 
 #[must_use]
-pub fn build_system_prompt(skills_prompt: &str, env: Option<&EnvironmentContext>) -> String {
+pub fn build_system_prompt(
+    skills_prompt: &str,
+    env: Option<&EnvironmentContext>,
+    tool_catalog: Option<&str>,
+) -> String {
     let mut prompt = BASE_PROMPT.to_string();
 
     if let Some(env) = env {
         prompt.push_str("\n\n");
         prompt.push_str(&env.format());
+    }
+
+    if let Some(catalog) = tool_catalog
+        && !catalog.is_empty()
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(catalog);
     }
 
     if !skills_prompt.is_empty() {
@@ -187,14 +198,14 @@ mod tests {
 
     #[test]
     fn without_skills() {
-        let prompt = build_system_prompt("", None);
+        let prompt = build_system_prompt("", None, None);
         assert!(prompt.starts_with("You are Zeph"));
         assert!(!prompt.contains("available_skills"));
     }
 
     #[test]
     fn with_skills() {
-        let prompt = build_system_prompt("<available_skills>test</available_skills>", None);
+        let prompt = build_system_prompt("<available_skills>test</available_skills>", None, None);
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<available_skills>"));
     }
@@ -308,7 +319,7 @@ mod tests {
             os: "linux".into(),
             model_name: "test".into(),
         };
-        let prompt = build_system_prompt("skills here", Some(&env));
+        let prompt = build_system_prompt("skills here", Some(&env), None);
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<environment>"));
         assert!(prompt.contains("skills here"));
@@ -316,7 +327,7 @@ mod tests {
 
     #[test]
     fn build_system_prompt_without_env() {
-        let prompt = build_system_prompt("skills here", None);
+        let prompt = build_system_prompt("skills here", None, None);
         assert!(prompt.contains("You are Zeph"));
         assert!(!prompt.contains("<environment>"));
         assert!(prompt.contains("skills here"));
@@ -324,7 +335,7 @@ mod tests {
 
     #[test]
     fn base_prompt_contains_guidelines() {
-        let prompt = build_system_prompt("", None);
+        let prompt = build_system_prompt("", None, None);
         assert!(prompt.contains("## Tool Use"));
         assert!(prompt.contains("## Guidelines"));
         assert!(prompt.contains("## Security"));
