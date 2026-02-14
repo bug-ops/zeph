@@ -2125,16 +2125,22 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .and_then(|m| serde_json::to_string(&m.parts).ok())
             .unwrap_or_else(|| "[]".to_string());
 
-        if let Err(e) = memory
+        let (_message_id, embedding_stored) = match memory
             .remember_with_parts(cid, role_str(role), content, &parts_json)
             .await
         {
-            tracing::error!("failed to persist message: {e:#}");
-            return;
-        }
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("failed to persist message: {e:#}");
+                return;
+            }
+        };
 
         self.update_metrics(|m| {
             m.sqlite_message_count += 1;
+            if embedding_stored {
+                m.embeddings_generated += 1;
+            }
         });
 
         self.check_summarization().await;

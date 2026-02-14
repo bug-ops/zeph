@@ -146,6 +146,9 @@ impl<P: LlmProvider> SemanticMemory<P> {
 
     /// Save a message with pre-serialized parts JSON to `SQLite` and optionally embed in Qdrant.
     ///
+    /// Returns `(message_id, embedding_stored)` tuple where `embedding_stored` is `true` if
+    /// an embedding was successfully generated and stored in Qdrant.
+    ///
     /// # Errors
     ///
     /// Returns an error if the `SQLite` save fails.
@@ -155,11 +158,13 @@ impl<P: LlmProvider> SemanticMemory<P> {
         role: &str,
         content: &str,
         parts_json: &str,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<(i64, bool)> {
         let message_id = self
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
+
+        let mut embedding_stored = false;
 
         if let Some(qdrant) = &self.qdrant
             && self.provider.supports_embeddings()
@@ -181,6 +186,8 @@ impl<P: LlmProvider> SemanticMemory<P> {
                         .await
                     {
                         tracing::warn!("Failed to store embedding: {e:#}");
+                    } else {
+                        embedding_stored = true;
                     }
                 }
                 Err(e) => {
@@ -189,7 +196,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
             }
         }
 
-        Ok(message_id)
+        Ok((message_id, embedding_stored))
     }
 
     /// Recall semantically relevant messages based on a query string.
@@ -630,7 +637,7 @@ mod tests {
 
         let parts_json =
             r#"[{"kind":"ToolOutput","tool_name":"shell","body":"hello","compacted_at":null}]"#;
-        let msg_id = memory
+        let (msg_id, _embedding_stored) = memory
             .remember_with_parts(cid, "assistant", "tool output", parts_json)
             .await
             .unwrap();
