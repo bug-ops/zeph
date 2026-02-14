@@ -115,6 +115,8 @@ recall_limit = 5
 [index]
 # Enable code indexing and retrieval (requires Qdrant)
 enabled = false
+# Watch for file changes and reindex incrementally
+watch = true
 # Maximum code chunks to retrieve per query
 max_chunks = 12
 # Minimum cosine similarity score to accept

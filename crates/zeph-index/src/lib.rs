@@ -11,3 +11,4 @@ pub mod languages;
 pub mod repo_map;
 pub mod retriever;
 pub mod store;
+pub mod watcher;

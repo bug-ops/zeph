@@ -17,6 +17,7 @@ use zeph_index::{
     indexer::{CodeIndexer, IndexerConfig},
     retriever::{CodeRetriever, RetrievalConfig},
     store::CodeStore,
+    watcher::IndexWatcher,
 };
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
@@ -325,6 +326,8 @@ async fn main() -> anyhow::Result<()> {
     .with_config_reload(config_path.clone(), config_reload_rx);
 
     #[cfg(feature = "index")]
+    let mut _index_watcher: Option<IndexWatcher> = None;
+    #[cfg(feature = "index")]
     let agent = if config.index.enabled {
         let init = async {
             let store = CodeStore::new(&config.memory.qdrant_url, index_pool)?;
@@ -337,14 +340,19 @@ async fn main() -> anyhow::Result<()> {
             };
             let retriever =
                 CodeRetriever::new(store.clone(), provider_arc.clone(), retrieval_config);
-            let indexer = CodeIndexer::new(store, provider_arc, IndexerConfig::default());
+            let indexer = std::sync::Arc::new(CodeIndexer::new(
+                store,
+                provider_arc,
+                IndexerConfig::default(),
+            ));
             anyhow::Ok((retriever, indexer))
         };
         match init.await {
             Ok((retriever, indexer)) => {
+                let indexer_clone = indexer.clone();
                 tokio::spawn(async move {
                     let root = std::env::current_dir().unwrap_or_default();
-                    match indexer.index_project(&root).await {
+                    match indexer_clone.index_project(&root).await {
                         Ok(report) => tracing::info!(
                             files = report.files_indexed,
                             chunks = report.chunks_created,
@@ -354,6 +362,21 @@ async fn main() -> anyhow::Result<()> {
                         Err(e) => tracing::warn!("background indexing failed: {e:#}"),
                     }
                 });
+                _index_watcher = if config.index.watch {
+                    let root = std::env::current_dir().unwrap_or_default();
+                    match IndexWatcher::start(&root, indexer) {
+                        Ok(w) => {
+                            tracing::info!("index watcher started");
+                            Some(w)
+                        }
+                        Err(e) => {
+                            tracing::warn!("index watcher failed to start: {e:#}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 agent.with_code_retriever(
                     std::sync::Arc::new(retriever),
                     config.index.repo_map_tokens,

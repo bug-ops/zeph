@@ -133,6 +133,17 @@ The Qdrant collection uses INT8 scalar quantization for ~4x memory reduction wit
 
 On subsequent runs, the indexer skips unchanged chunks by checking BLAKE3 content hashes in SQLite. Only modified or new files are re-embedded. Deleted files are detected by comparing the current file set against the SQLite index, and their chunks are removed from both stores.
 
+## File Watcher
+
+When `watch = true` (default), an `IndexWatcher` monitors project files for changes during the session. On file modification, the changed file is automatically re-indexed via `reindex_file()` without rebuilding the entire index. The watcher uses 1-second debounce to batch rapid changes and only processes files with indexable extensions.
+
+Disable with:
+
+```toml
+[index]
+watch = false
+```
+
 ## Repo Map
 
 A lightweight structural map of the project, generated via tree-sitter signature extraction (no function bodies). Included in the system prompt and cached with a configurable TTL (default: 5 minutes) to avoid per-message filesystem traversal.

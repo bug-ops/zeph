@@ -18,6 +18,8 @@ lang-config = ["dep:tree-sitter-bash", "dep:tree-sitter-toml-ng", "dep:tree-sitt
 anyhow.workspace = true
 blake3.workspace = true
 ignore.workspace = true
+notify.workspace = true
+notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -40,8 +42,9 @@ tree-sitter-toml-ng = { version = "0.7", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-stream.workspace = true
 
 [lints]
 workspace = true

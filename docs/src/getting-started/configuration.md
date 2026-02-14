@@ -29,6 +29,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[timeouts]` | `llm_seconds`, `embedding_seconds`, `a2a_seconds` |
 | `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
 | `[memory.semantic]` | `recall_limit` |
+| `[index]` | `repo_map_ttl_secs`, `watch` |
 | `[skills]` | `max_active_skills` |
 
 **Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, Telegram token, MCP servers, A2A config, skill paths.

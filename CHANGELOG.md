@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `IndexWatcher` for incremental code index updates on file changes via `notify` file watcher (#233)
+- `watch` config field in `[index]` section (default `true`) to enable/disable file watching
+
 ### Fixed
 - Persist `MessagePart` data to SQLite via `remember_with_parts()` — pruning state now survives session restarts (#229)
 - Clear tool output body from memory after Tier 1 pruning to reclaim heap (#230)

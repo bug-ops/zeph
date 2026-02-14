@@ -283,6 +283,8 @@ fn default_qdrant_url() -> String {
 pub struct IndexConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_index_watch")]
+    pub watch: bool,
     #[serde(default = "default_index_max_chunks")]
     pub max_chunks: usize,
     #[serde(default = "default_index_score_threshold")]
@@ -293,6 +295,10 @@ pub struct IndexConfig {
     pub repo_map_tokens: usize,
     #[serde(default = "default_repo_map_ttl_secs")]
     pub repo_map_ttl_secs: u64,
+}
+
+fn default_index_watch() -> bool {
+    true
 }
 
 fn default_index_max_chunks() -> usize {
@@ -319,6 +325,7 @@ impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            watch: default_index_watch(),
             max_chunks: default_index_max_chunks(),
             score_threshold: default_index_score_threshold(),
             budget_ratio: default_index_budget_ratio(),
