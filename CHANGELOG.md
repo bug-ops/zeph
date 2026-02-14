@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `ToolDef` schema field replaced `Vec<ParamDef>` with `schemars::Schema` auto-derived from Rust structs via `#[derive(JsonSchema)]`
+- **BREAKING**: `ParamDef` and `ParamType` removed from `zeph-tools` public API
+- **BREAKING**: `ToolRegistry::new()` replaced with `ToolRegistry::from_definitions()`; registry no longer hardcodes built-in tools — each executor owns its definitions via `tool_definitions()`
+- `ToolDef` now includes `InvocationHint` (FencedBlock/ToolCall) so LLM prompt shows exact invocation format per tool
+- `web_scrape` tool definition includes all parameters (`url`, `select`, `extract`, `limit`) auto-derived from `ScrapeInstruction`
+- `ShellExecutor` and `WebScrapeExecutor` now implement `tool_definitions()` for single source of truth
+
 ## [0.9.5] - 2026-02-14
 
 ### Added

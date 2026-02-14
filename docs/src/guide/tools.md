@@ -1,20 +1,20 @@
 # Tool System
 
-Zeph provides a typed tool system that gives the LLM structured access to file operations, shell commands, and web scraping. The system supports two execution modes: fenced bash block extraction (legacy) and structured tool calls with typed parameters.
+Zeph provides a typed tool system that gives the LLM structured access to file operations, shell commands, and web scraping. Each executor owns its tool definitions with schemas derived from Rust structs via `schemars`, ensuring a single source of truth between deserialization and prompt generation.
 
 ## Tool Registry
 
-`ToolRegistry` defines 7 built-in tools that are injected into the system prompt as a `<tools>` catalog so the LLM knows what is available.
+Each tool executor declares its definitions via `tool_definitions()`. On every LLM turn the agent collects all definitions into a `ToolRegistry` and renders them into the system prompt as a `<tools>` catalog. Tool parameter schemas are auto-generated from Rust structs using `#[derive(JsonSchema)]` from the `schemars` crate.
 
-| Tool ID | Description | Required Parameters | Optional Parameters |
-|---------|-------------|---------------------|---------------------|
-| `bash` | Execute a shell command | `command` (string) | |
-| `read` | Read file contents | `path` (string) | `offset` (integer), `limit` (integer) |
-| `edit` | Replace a string in a file | `path` (string), `old_string` (string), `new_string` (string) | |
-| `write` | Write content to a file | `path` (string), `content` (string) | |
-| `glob` | Find files matching a glob pattern | `pattern` (string) | |
-| `grep` | Search file contents with regex | `pattern` (string) | `path` (string), `case_sensitive` (boolean) |
-| `web_scrape` | Scrape data from a web page via CSS selectors | `url` (string) | |
+| Tool ID | Description | Invocation | Required Parameters | Optional Parameters |
+|---------|-------------|------------|---------------------|---------------------|
+| `bash` | Execute a shell command | ` ```bash ` | `command` (string) | |
+| `read` | Read file contents | `ToolCall` | `path` (string) | `offset` (integer), `limit` (integer) |
+| `edit` | Replace a string in a file | `ToolCall` | `path` (string), `old_string` (string), `new_string` (string) | |
+| `write` | Write content to a file | `ToolCall` | `path` (string), `content` (string) | |
+| `glob` | Find files matching a glob pattern | `ToolCall` | `pattern` (string) | |
+| `grep` | Search file contents with regex | `ToolCall` | `pattern` (string) | `path` (string), `case_sensitive` (boolean) |
+| `web_scrape` | Scrape data from a web page via CSS selectors | ` ```scrape ` | `url` (string), `select` (string) | `extract` (string), `limit` (integer) |
 
 ## FileExecutor
 
@@ -29,12 +29,12 @@ See [Security](../security.md#file-executor-sandbox) for details on the path val
 
 ## Dual-Mode Execution
 
-The agent loop supports two tool invocation modes:
+The agent loop supports two tool invocation modes, distinguished by `InvocationHint` on each `ToolDef`:
 
-1. **Bash extraction** -- the original mode. The LLM emits fenced ` ```bash ``` ` blocks, and `ShellExecutor` parses and runs them through the safety filter.
-2. **Structured tool calls** -- the LLM emits a `ToolCall` with `tool_id` and typed `params`. `CompositeExecutor` routes the call to the appropriate backend (`FileExecutor` for file tools, `ShellExecutor` for `bash`, `WebScrapeExecutor` for `web_scrape`).
+1. **Fenced block** (`InvocationHint::FencedBlock("bash")` / `FencedBlock("scrape")`) — the LLM emits a fenced code block with the specified tag. `ShellExecutor` handles ` ```bash ` blocks, `WebScrapeExecutor` handles ` ```scrape ` blocks containing JSON with CSS selectors.
+2. **Structured tool call** (`InvocationHint::ToolCall`) — the LLM emits a `ToolCall` with `tool_id` and typed `params`. `CompositeExecutor` routes the call to `FileExecutor` for file tools.
 
-Both modes coexist in the same iteration. The agent first checks for structured tool calls, then falls back to bash block extraction.
+Both modes coexist in the same iteration. The system prompt includes invocation instructions per tool so the LLM knows exactly which format to use.
 
 ## Iteration Control
 

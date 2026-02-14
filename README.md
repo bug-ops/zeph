@@ -112,7 +112,7 @@ zeph (binary)
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming
-├── zeph-tools      — ToolRegistry with 7 built-in tools (shell, file read/write/edit/glob/grep, web scrape), composite dispatch
+├── zeph-tools      — schemars-driven tool registry (shell, file ops, web scrape), composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)
