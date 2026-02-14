@@ -82,11 +82,25 @@ async fn search_with_conversation_filter() {
     let v2 = vec![0.1, 0.2, 0.3, 0.5];
 
     qdrant
-        .store(msg1, cid1, "user", v1, MessageKind::Regular, "qwen3-embedding")
+        .store(
+            msg1,
+            cid1,
+            "user",
+            v1,
+            MessageKind::Regular,
+            "qwen3-embedding",
+        )
         .await
         .unwrap();
     qdrant
-        .store(msg2, cid2, "user", v2, MessageKind::Regular, "qwen3-embedding")
+        .store(
+            msg2,
+            cid2,
+            "user",
+            v2,
+            MessageKind::Regular,
+            "qwen3-embedding",
+        )
         .await
         .unwrap();
 
