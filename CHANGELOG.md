@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-02-14
+
 ### Added
 - Pattern-based permission policy with glob matching per tool (allow/ask/deny), first-match-wins evaluation (#248)
 - Legacy blocked_commands and confirm_patterns auto-migrated to permission rules (#249)
