@@ -269,6 +269,8 @@ pub struct MemoryConfig {
     pub compaction_preserve_tail: usize,
     #[serde(default = "default_auto_budget")]
     pub auto_budget: bool,
+    #[serde(default = "default_prune_protect_tokens")]
+    pub prune_protect_tokens: usize,
 }
 
 fn default_qdrant_url() -> String {
@@ -335,6 +337,10 @@ fn default_compaction_preserve_tail() -> usize {
 
 fn default_auto_budget() -> bool {
     true
+}
+
+fn default_prune_protect_tokens() -> usize {
+    40_000
 }
 
 #[derive(Debug, Deserialize)]
@@ -656,6 +662,11 @@ impl Config {
         {
             self.memory.auto_budget = enabled;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_PRUNE_PROTECT_TOKENS")
+            && let Ok(tokens) = v.parse::<usize>()
+        {
+            self.memory.prune_protect_tokens = tokens;
+        }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
         {
@@ -859,6 +870,7 @@ impl Config {
                 compaction_threshold: default_compaction_threshold(),
                 compaction_preserve_tail: default_compaction_preserve_tail(),
                 auto_budget: default_auto_budget(),
+                prune_protect_tokens: default_prune_protect_tokens(),
             },
             telegram: None,
             tools: ToolsConfig::default(),
@@ -881,7 +893,7 @@ mod tests {
 
     use super::*;
 
-    const ENV_KEYS: [&str; 46] = [
+    const ENV_KEYS: [&str; 47] = [
         "ZEPH_LLM_PROVIDER",
         "ZEPH_LLM_BASE_URL",
         "ZEPH_LLM_MODEL",
@@ -894,6 +906,7 @@ mod tests {
         "ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS",
         "ZEPH_MEMORY_COMPACTION_THRESHOLD",
         "ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL",
+        "ZEPH_MEMORY_PRUNE_PROTECT_TOKENS",
         "ZEPH_MEMORY_SEMANTIC_ENABLED",
         "ZEPH_MEMORY_RECALL_LIMIT",
         "ZEPH_SKILLS_MAX_ACTIVE",

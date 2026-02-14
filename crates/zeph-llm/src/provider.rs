@@ -21,7 +21,12 @@ pub enum Role {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessagePart {
     Text { text: String },
-    ToolOutput { tool_name: String, body: String },
+    ToolOutput {
+        tool_name: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compacted_at: Option<i64>,
+    },
     Recall { text: String },
     CodeContext { text: String },
     Summary { text: String },
@@ -60,6 +65,13 @@ impl Message {
         &self.content
     }
 
+    /// Re-synchronize `content` from `parts` after in-place mutation.
+    pub fn rebuild_content(&mut self) {
+        if !self.parts.is_empty() {
+            self.content = Self::flatten_parts(&self.parts);
+        }
+    }
+
     fn flatten_parts(parts: &[MessagePart]) -> String {
         use std::fmt::Write;
         let mut out = String::new();
@@ -69,8 +81,16 @@ impl Message {
                 | MessagePart::Recall { text }
                 | MessagePart::CodeContext { text }
                 | MessagePart::Summary { text } => out.push_str(text),
-                MessagePart::ToolOutput { tool_name, body } => {
-                    let _ = write!(out, "[tool output: {tool_name}]\n```\n{body}\n```");
+                MessagePart::ToolOutput {
+                    tool_name,
+                    body,
+                    compacted_at,
+                } => {
+                    if compacted_at.is_some() {
+                        let _ = write!(out, "[tool output: {tool_name}] (pruned)");
+                    } else {
+                        let _ = write!(out, "[tool output: {tool_name}]\n```\n{body}\n```");
+                    }
                 }
             }
         }
@@ -353,6 +373,7 @@ mod tests {
             MessagePart::ToolOutput {
                 tool_name: "bash".into(),
                 body: "output".into(),
+                compacted_at: None,
             },
             MessagePart::Recall {
                 text: "recall".into(),
@@ -398,6 +419,7 @@ mod tests {
             vec![MessagePart::ToolOutput {
                 tool_name: "bash".into(),
                 body: "hello world".into(),
+                compacted_at: None,
             }],
         );
         assert!(msg.content.contains("[tool output: bash]"));
@@ -410,5 +432,65 @@ mod tests {
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content, "hello");
         assert!(msg.parts.is_empty());
+    }
+
+    #[test]
+    fn flatten_skips_compacted_tool_output() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::Text {
+                    text: "prefix ".into(),
+                },
+                MessagePart::ToolOutput {
+                    tool_name: "bash".into(),
+                    body: "big output".into(),
+                    compacted_at: Some(1234),
+                },
+                MessagePart::Text {
+                    text: " suffix".into(),
+                },
+            ],
+        );
+        assert!(msg.content.contains("(pruned)"));
+        assert!(!msg.content.contains("big output"));
+        assert!(msg.content.contains("prefix "));
+        assert!(msg.content.contains(" suffix"));
+    }
+
+    #[test]
+    fn rebuild_content_syncs_after_mutation() {
+        let mut msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: "original".into(),
+                compacted_at: None,
+            }],
+        );
+        assert!(msg.content.contains("original"));
+
+        if let MessagePart::ToolOutput {
+            ref mut compacted_at,
+            ..
+        } = msg.parts[0]
+        {
+            *compacted_at = Some(999);
+        }
+        msg.rebuild_content();
+
+        assert!(msg.content.contains("(pruned)"));
+        assert!(!msg.content.contains("original"));
+    }
+
+    #[test]
+    fn tool_output_compacted_at_serde_default() {
+        let json = r#"{"kind":"tool_output","tool_name":"bash","body":"out"}"#;
+        let part: MessagePart = serde_json::from_str(json).unwrap();
+        if let MessagePart::ToolOutput { compacted_at, .. } = part {
+            assert!(compacted_at.is_none());
+        } else {
+            panic!("expected ToolOutput");
+        }
     }
 }

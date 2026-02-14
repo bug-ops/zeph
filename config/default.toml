@@ -98,6 +98,8 @@ auto_budget = true
 compaction_threshold = 0.80
 # Number of recent messages to preserve during compaction
 compaction_preserve_tail = 6
+# Token budget protected from tool output pruning (recent context zone)
+prune_protect_tokens = 40000
 
 [memory.semantic]
 # Enable semantic memory with vector search

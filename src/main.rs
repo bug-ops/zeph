@@ -317,6 +317,7 @@ async fn main() -> anyhow::Result<()> {
         0.20,
         config.memory.compaction_threshold,
         config.memory.compaction_preserve_tail,
+        config.memory.prune_protect_tokens,
     )
     .with_shutdown(shutdown_rx)
     .with_security(config.security, config.timeouts)

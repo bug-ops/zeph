@@ -83,6 +83,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     #[cfg(feature = "mcp")]
     mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     message_queue: VecDeque<QueuedMessage>,
+    prune_protect_tokens: usize,
     summarize_tool_output_enabled: bool,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
@@ -159,6 +160,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             #[cfg(feature = "mcp")]
             mcp_manager: None,
             message_queue: VecDeque::new(),
+            prune_protect_tokens: 40_000,
             summarize_tool_output_enabled: false,
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
@@ -269,12 +271,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         reserve_ratio: f32,
         compaction_threshold: f32,
         compaction_preserve_tail: usize,
+        prune_protect_tokens: usize,
     ) -> Self {
         if budget_tokens > 0 {
             self.context_budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
         }
         self.compaction_threshold = compaction_threshold;
         self.compaction_preserve_tail = compaction_preserve_tail;
+        self.prune_protect_tokens = prune_protect_tokens;
         self
     }
 
@@ -449,6 +453,95 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         });
 
         Ok(())
+    }
+
+    /// Prune tool output bodies outside the protection zone, oldest first.
+    /// Returns the number of tokens freed.
+    #[allow(clippy::cast_precision_loss)]
+    fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
+        let protect = self.prune_protect_tokens;
+        let mut tail_tokens = 0usize;
+        let mut protection_boundary = self.messages.len();
+        if protect > 0 {
+            for (i, msg) in self.messages.iter().enumerate().rev() {
+                tail_tokens += estimate_tokens(&msg.content);
+                if tail_tokens >= protect {
+                    protection_boundary = i;
+                    break;
+                }
+                if i == 0 {
+                    protection_boundary = 0;
+                }
+            }
+        }
+
+        let mut freed = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        for msg in &mut self.messages[..protection_boundary] {
+            if freed >= min_to_free {
+                break;
+            }
+            let mut modified = false;
+            for part in &mut msg.parts {
+                if let &mut MessagePart::ToolOutput {
+                    ref body,
+                    ref mut compacted_at,
+                    ..
+                } = part
+                    && compacted_at.is_none()
+                    && !body.is_empty()
+                {
+                    freed += estimate_tokens(body);
+                    *compacted_at = Some(now);
+                    modified = true;
+                }
+            }
+            if modified {
+                msg.rebuild_content();
+            }
+        }
+
+        if freed > 0 {
+            self.update_metrics(|m| m.tool_output_prunes += 1);
+            tracing::info!(freed, protection_boundary, "pruned tool outputs");
+        }
+        freed
+    }
+
+    /// Two-tier compaction: Tier 1 prunes tool outputs, Tier 2 falls back to full LLM compaction.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    async fn maybe_compact(&mut self) -> anyhow::Result<()> {
+        if !self.should_compact() {
+            return Ok(());
+        }
+
+        let budget = self
+            .context_budget
+            .as_ref()
+            .map_or(0, ContextBudget::max_tokens);
+        let total_tokens: usize = self.messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+        let threshold = (budget as f32 * self.compaction_threshold) as usize;
+        let min_to_free = total_tokens.saturating_sub(threshold);
+
+        let freed = self.prune_tool_outputs(min_to_free);
+        if freed >= min_to_free {
+            tracing::info!(freed, "tier-1 pruning sufficient");
+            return Ok(());
+        }
+
+        tracing::info!(freed, min_to_free, "tier-1 insufficient, falling back to tier-2 compaction");
+        let _ = self.channel.send_status("compacting context...").await;
+        let result = self.compact_context().await;
+        let _ = self.channel.send_status("").await;
+        result
     }
 
     fn remove_recall_messages(&mut self) {
@@ -866,12 +959,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         self.rebuild_system_prompt(&text).await;
 
-        if self.should_compact() {
-            let _ = self.channel.send_status("compacting context...").await;
-            if let Err(e) = self.compact_context().await {
-                tracing::warn!("context compaction failed: {e:#}");
-            }
-            let _ = self.channel.send_status("").await;
+        if let Err(e) = self.maybe_compact().await {
+            tracing::warn!("context compaction failed: {e:#}");
         }
 
         if let Err(e) = self.prepare_context(trimmed).await {
@@ -889,23 +978,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             parts: vec![],
         });
         self.persist_message(Role::User, &text).await;
-
-        if self.should_compact() {
-            let _ = self.channel.send_status("compacting context...").await;
-            if let Err(e) = self.compact_context().await {
-                tracing::warn!("context compaction failed: {e:#}");
-            }
-            let _ = self.channel.send_status("").await;
-        }
-
-        if let Err(e) = self.prepare_context(&text).await {
-            tracing::warn!("context preparation failed: {e:#}");
-        }
-
-        #[cfg(feature = "self-learning")]
-        {
-            self.reflection_used = false;
-        }
 
         if let Err(e) = self.process_response().await {
             tracing::error!("Response processing failed: {e:#}");
@@ -1475,6 +1547,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         self.compaction_threshold = config.memory.compaction_threshold;
         self.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+        self.prune_protect_tokens = config.memory.prune_protect_tokens;
 
         tracing::info!("config reloaded");
     }
@@ -1831,11 +1904,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
-                self.messages.push(Message {
-                    role: Role::User,
-                    content: formatted_output.clone(),
-                    parts: vec![],
-                });
+                self.messages.push(Message::from_parts(
+                    Role::User,
+                    vec![MessagePart::ToolOutput {
+                        tool_name: output.tool_name.clone(),
+                        body: processed,
+                        compacted_at: None,
+                    }],
+                ));
                 self.persist_message(Role::User, &formatted_output).await;
                 Ok(true)
             }
@@ -1858,11 +1934,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         let display = self.maybe_redact(&formatted);
                         self.channel.send(&display).await?;
-                        self.messages.push(Message {
-                            role: Role::User,
-                            content: formatted.clone(),
-                            parts: vec![],
-                        });
+                        self.messages.push(Message::from_parts(
+                            Role::User,
+                            vec![MessagePart::ToolOutput {
+                                tool_name: out.tool_name.clone(),
+                                body: processed,
+                                compacted_at: None,
+                            }],
+                        ));
                         self.persist_message(Role::User, &formatted).await;
                     }
                 } else {
@@ -3320,7 +3399,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(1000, 0.20, 0.75, 4);
+            .with_context_budget(1000, 0.20, 0.75, 4, 0);
         assert!(!agent.should_compact());
     }
 
@@ -3332,7 +3411,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(100, 0.20, 0.75, 4);
+            .with_context_budget(100, 0.20, 0.75, 4, 0);
 
         for i in 0..20 {
             agent.messages.push(Message {
@@ -3352,7 +3431,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(100, 0.20, 0.75, 2);
+            .with_context_budget(100, 0.20, 0.75, 2, 0);
 
         let system_content = agent.messages[0].content.clone();
 
@@ -3390,7 +3469,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(100, 0.20, 0.75, 4);
+            .with_context_budget(100, 0.20, 0.75, 4, 0);
 
         agent.messages.push(Message {
             role: Role::User,
@@ -3416,7 +3495,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(0, 0.20, 0.75, 4);
+            .with_context_budget(0, 0.20, 0.75, 4, 0);
         assert!(agent.context_budget.is_none());
     }
 
@@ -3428,7 +3507,7 @@ mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(4096, 0.20, 0.80, 6);
+            .with_context_budget(4096, 0.20, 0.80, 6, 0);
 
         assert!(agent.context_budget.is_some());
         assert_eq!(agent.context_budget.as_ref().unwrap().max_tokens(), 4096);
@@ -3445,7 +3524,7 @@ mod agent_tests {
         let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(100, 0.20, 0.75, 2)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
             .with_metrics(tx);
 
         for i in 0..8 {
@@ -4062,5 +4141,92 @@ mod agent_tests {
         assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg0");
         assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg1");
         assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg2");
+    }
+
+    #[test]
+    fn test_prune_frees_tokens() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_metrics(tx);
+
+        let big_body = "x".repeat(500);
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: big_body,
+                compacted_at: None,
+            }],
+        ));
+
+        let freed = agent.prune_tool_outputs(10);
+        assert!(freed > 0);
+        assert_eq!(rx.borrow().tool_output_prunes, 1);
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+            assert!(compacted_at.is_some());
+        } else {
+            panic!("expected ToolOutput");
+        }
+    }
+
+    #[test]
+    fn test_prune_respects_protection_zone() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(10000, 0.20, 0.75, 4, 999_999);
+
+        let big_body = "x".repeat(500);
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: big_body,
+                compacted_at: None,
+            }],
+        ));
+
+        let freed = agent.prune_tool_outputs(10);
+        assert_eq!(freed, 0);
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+            assert!(compacted_at.is_none());
+        } else {
+            panic!("expected ToolOutput");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tier2_after_insufficient_prune() {
+        let provider = MockProvider::new(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
+            .with_metrics(tx);
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} with enough content to push over budget threshold"),
+                parts: vec![],
+            });
+        }
+
+        agent.maybe_compact().await.unwrap();
+        assert_eq!(rx.borrow().context_compactions, 1);
     }
 }
