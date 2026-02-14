@@ -230,7 +230,13 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    let mut shell_executor = ShellExecutor::new(&config.tools.shell);
+    tokio::task::spawn_blocking(|| {
+        zeph_tools::cleanup_overflow_files(std::time::Duration::from_secs(86_400));
+    });
+
+    let permission_policy = config.tools.permission_policy();
+    let mut shell_executor =
+        ShellExecutor::new(&config.tools.shell).with_permissions(permission_policy.clone());
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
     {
@@ -357,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
     .with_shutdown(shutdown_rx)
     .with_security(config.security, config.timeouts)
     .with_tool_summarization(config.tools.summarize_output)
+    .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path.clone(), config_reload_rx);
 
     #[cfg(feature = "index")]

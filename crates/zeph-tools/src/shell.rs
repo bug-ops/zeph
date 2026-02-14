@@ -6,6 +6,7 @@ use tokio::process::Command;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
 use crate::executor::{ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
+use crate::permissions::{PermissionAction, PermissionPolicy};
 
 const DEFAULT_BLOCKED: &[&str] = &[
     "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
@@ -23,6 +24,7 @@ pub struct ShellExecutor {
     confirm_patterns: Vec<String>,
     audit_logger: Option<AuditLogger>,
     tool_event_tx: Option<ToolEventTx>,
+    permission_policy: Option<PermissionPolicy>,
 }
 
 impl ShellExecutor {
@@ -66,6 +68,7 @@ impl ShellExecutor {
             confirm_patterns: config.confirm_patterns.clone(),
             audit_logger: None,
             tool_event_tx: None,
+            permission_policy: None,
         }
     }
 
@@ -78,6 +81,12 @@ impl ShellExecutor {
     #[must_use]
     pub fn with_tool_event_tx(mut self, tx: ToolEventTx) -> Self {
         self.tool_event_tx = Some(tx);
+        self
+    }
+
+    #[must_use]
+    pub fn with_permissions(mut self, policy: PermissionPolicy) -> Self {
+        self.permission_policy = Some(policy);
         self
     }
 
@@ -105,27 +114,51 @@ impl ShellExecutor {
         let blocks_executed = blocks.len() as u32;
 
         for block in &blocks {
-            if let Some(blocked) = self.find_blocked_command(block) {
-                self.log_audit(
-                    block,
-                    AuditResult::Blocked {
-                        reason: format!("blocked command: {blocked}"),
-                    },
-                    0,
-                )
-                .await;
-                return Err(ToolError::Blocked {
-                    command: blocked.to_owned(),
-                });
+            if let Some(ref policy) = self.permission_policy {
+                match policy.check("bash", block) {
+                    PermissionAction::Deny => {
+                        self.log_audit(
+                            block,
+                            AuditResult::Blocked {
+                                reason: "denied by permission policy".to_owned(),
+                            },
+                            0,
+                        )
+                        .await;
+                        return Err(ToolError::Blocked {
+                            command: (*block).to_owned(),
+                        });
+                    }
+                    PermissionAction::Ask if !skip_confirm => {
+                        return Err(ToolError::ConfirmationRequired {
+                            command: (*block).to_owned(),
+                        });
+                    }
+                    _ => {}
+                }
+            } else {
+                if let Some(blocked) = self.find_blocked_command(block) {
+                    self.log_audit(
+                        block,
+                        AuditResult::Blocked {
+                            reason: format!("blocked command: {blocked}"),
+                        },
+                        0,
+                    )
+                    .await;
+                    return Err(ToolError::Blocked {
+                        command: blocked.to_owned(),
+                    });
+                }
+
+                if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
+                    return Err(ToolError::ConfirmationRequired {
+                        command: pattern.to_owned(),
+                    });
+                }
             }
 
             self.validate_sandbox(block)?;
-
-            if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
-                return Err(ToolError::ConfirmationRequired {
-                    command: pattern.to_owned(),
-                });
-            }
 
             if let Some(ref tx) = self.tool_event_tx {
                 let _ = tx.send(ToolEvent::Started {
@@ -947,6 +980,46 @@ mod tests {
     #[test]
     fn extract_absolute_paths_empty() {
         assert!(extract_absolute_paths("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_deny_blocks_command() {
+        let policy = PermissionPolicy::from_legacy(&["forbidden".to_owned()], &[]);
+        let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
+        let response = "```bash\nforbidden command\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn policy_ask_requires_confirmation() {
+        let policy = PermissionPolicy::from_legacy(&[], &["risky".to_owned()]);
+        let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
+        let response = "```bash\nrisky operation\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_allow_skips_checks() {
+        use crate::permissions::PermissionRule;
+        use std::collections::HashMap;
+        let mut rules = HashMap::new();
+        rules.insert(
+            "bash".to_owned(),
+            vec![PermissionRule {
+                pattern: "*".to_owned(),
+                action: PermissionAction::Allow,
+            }],
+        );
+        let policy = PermissionPolicy::new(rules);
+        let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
+        let response = "```bash\necho hello\n```";
+        let result = executor.execute(response).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

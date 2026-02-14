@@ -87,6 +87,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     prune_protect_tokens: usize,
     cross_session_score_threshold: f32,
     summarize_tool_output_enabled: bool,
+    permission_policy: zeph_tools::PermissionPolicy,
     #[cfg(feature = "mcp")]
     mcp_allowed_commands: Vec<String>,
     #[cfg(feature = "mcp")]
@@ -172,6 +173,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             prune_protect_tokens: 40_000,
             cross_session_score_threshold: 0.35,
             summarize_tool_output_enabled: false,
+            permission_policy: zeph_tools::PermissionPolicy::default(),
             #[cfg(feature = "mcp")]
             mcp_allowed_commands: Vec::new(),
             #[cfg(feature = "mcp")]
@@ -283,6 +285,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
         self.summarize_tool_output_enabled = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_policy(mut self, policy: zeph_tools::PermissionPolicy) -> Self {
+        self.permission_policy = policy;
         self
     }
 
@@ -1732,7 +1740,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 None
             } else {
                 let reg = zeph_tools::ToolRegistry::new();
-                Some(reg.format_for_prompt())
+                Some(reg.format_for_prompt_filtered(&self.permission_policy))
             }
         };
         #[allow(unused_mut)]
@@ -2040,10 +2048,20 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if output.len() <= zeph_tools::MAX_TOOL_OUTPUT_CHARS {
             return output.to_string();
         }
-        if self.summarize_tool_output_enabled {
-            return self.summarize_tool_output(output).await;
-        }
-        zeph_tools::truncate_tool_output(output)
+        let overflow_notice = if let Some(path) = zeph_tools::save_overflow(output) {
+            format!(
+                "\n[full output saved to {}, use read tool to access]",
+                path.display()
+            )
+        } else {
+            String::new()
+        };
+        let truncated = if self.summarize_tool_output_enabled {
+            self.summarize_tool_output(output).await
+        } else {
+            zeph_tools::truncate_tool_output(output)
+        };
+        format!("{truncated}{overflow_notice}")
     }
 
     /// Returns `true` if the tool loop should continue.

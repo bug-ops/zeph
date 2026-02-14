@@ -8323,6 +8323,8 @@ dependencies = [
 name = "zeph-tools"
 version = "0.9.4"
 dependencies = [
+ "dirs",
+ "filetime",
  "glob",
  "regex",
  "reqwest 0.13.2",
@@ -8335,6 +8337,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

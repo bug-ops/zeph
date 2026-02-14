@@ -7,8 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+dirs = "6.0"
 glob.workspace = true
 regex.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 reqwest = { workspace = true, features = ["rustls"] }
 scrape-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -19,6 +21,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+filetime = "0.2"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true

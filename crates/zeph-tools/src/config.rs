@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::permissions::{PermissionPolicy, PermissionsConfig};
+
 fn default_true() -> bool {
     true
 }
@@ -36,6 +38,23 @@ pub struct ToolsConfig {
     pub scrape: ScrapeConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub permissions: Option<PermissionsConfig>,
+}
+
+impl ToolsConfig {
+    /// Build a `PermissionPolicy` from explicit config or legacy shell fields.
+    #[must_use]
+    pub fn permission_policy(&self) -> PermissionPolicy {
+        if let Some(ref perms) = self.permissions {
+            PermissionPolicy::from(perms.clone())
+        } else {
+            PermissionPolicy::from_legacy(
+                &self.shell.blocked_commands,
+                &self.shell.confirm_patterns,
+            )
+        }
+    }
 }
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
@@ -72,6 +91,7 @@ impl Default for ToolsConfig {
             shell: ShellConfig::default(),
             scrape: ScrapeConfig::default(),
             audit: AuditConfig::default(),
+            permissions: None,
         }
     }
 }
@@ -288,5 +308,52 @@ mod tests {
         let config = AuditConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.destination, "stdout");
+    }
+
+    #[test]
+    fn permission_policy_from_legacy_fields() {
+        let config = ToolsConfig {
+            shell: ShellConfig {
+                blocked_commands: vec!["sudo".to_owned()],
+                confirm_patterns: vec!["rm ".to_owned()],
+                ..ShellConfig::default()
+            },
+            ..ToolsConfig::default()
+        };
+        let policy = config.permission_policy();
+        assert_eq!(
+            policy.check("bash", "sudo apt"),
+            crate::permissions::PermissionAction::Deny
+        );
+        assert_eq!(
+            policy.check("bash", "rm file"),
+            crate::permissions::PermissionAction::Ask
+        );
+    }
+
+    #[test]
+    fn permission_policy_from_explicit_config() {
+        let toml_str = r#"
+            [permissions]
+            [[permissions.bash]]
+            pattern = "*sudo*"
+            action = "deny"
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        let policy = config.permission_policy();
+        assert_eq!(
+            policy.check("bash", "sudo rm"),
+            crate::permissions::PermissionAction::Deny
+        );
+    }
+
+    #[test]
+    fn permission_policy_default_uses_legacy() {
+        let config = ToolsConfig::default();
+        assert!(config.permissions.is_none());
+        let policy = config.permission_policy();
+        // Default ShellConfig has confirm_patterns, so legacy rules are generated
+        assert!(!config.shell.confirm_patterns.is_empty());
+        assert!(policy.rules().contains_key("bash"));
     }
 }

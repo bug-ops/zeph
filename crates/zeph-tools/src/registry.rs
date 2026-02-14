@@ -55,6 +55,37 @@ impl ToolRegistry {
         self.tools.iter().find(|t| t.id == id)
     }
 
+    /// Format tools for prompt, excluding tools fully denied by policy.
+    #[must_use]
+    pub fn format_for_prompt_filtered(
+        &self,
+        policy: &crate::permissions::PermissionPolicy,
+    ) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("<tools>\n");
+        for tool in &self.tools {
+            if policy.is_fully_denied(tool.id) {
+                continue;
+            }
+            let _ = writeln!(out, "## {}", tool.id);
+            let _ = writeln!(out, "{}", tool.description);
+            if !tool.parameters.is_empty() {
+                let _ = writeln!(out, "Parameters:");
+                for p in &tool.parameters {
+                    let req = if p.required { "required" } else { "optional" };
+                    let _ = writeln!(
+                        out,
+                        "  - {}: {} ({}, {})",
+                        p.name, p.description, p.param_type, req
+                    );
+                }
+            }
+            out.push('\n');
+        }
+        out.push_str("</tools>");
+        out
+    }
+
     #[must_use]
     pub fn format_for_prompt(&self) -> String {
         use std::fmt::Write;
@@ -270,5 +301,57 @@ mod tests {
     fn default_registry() {
         let reg = ToolRegistry::default();
         assert_eq!(reg.tools().len(), 7);
+    }
+
+    #[test]
+    fn format_filtered_excludes_fully_denied() {
+        use crate::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+        use std::collections::HashMap;
+        let mut rules = HashMap::new();
+        rules.insert(
+            "bash".to_owned(),
+            vec![PermissionRule {
+                pattern: "*".to_owned(),
+                action: PermissionAction::Deny,
+            }],
+        );
+        let policy = PermissionPolicy::new(rules);
+        let reg = ToolRegistry::new();
+        let prompt = reg.format_for_prompt_filtered(&policy);
+        assert!(!prompt.contains("## bash"));
+        assert!(prompt.contains("## read"));
+    }
+
+    #[test]
+    fn format_filtered_includes_mixed_rules() {
+        use crate::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+        use std::collections::HashMap;
+        let mut rules = HashMap::new();
+        rules.insert(
+            "bash".to_owned(),
+            vec![
+                PermissionRule {
+                    pattern: "echo *".to_owned(),
+                    action: PermissionAction::Allow,
+                },
+                PermissionRule {
+                    pattern: "*".to_owned(),
+                    action: PermissionAction::Deny,
+                },
+            ],
+        );
+        let policy = PermissionPolicy::new(rules);
+        let reg = ToolRegistry::new();
+        let prompt = reg.format_for_prompt_filtered(&policy);
+        assert!(prompt.contains("## bash"));
+    }
+
+    #[test]
+    fn format_filtered_no_rules_includes_all() {
+        let policy = crate::permissions::PermissionPolicy::default();
+        let reg = ToolRegistry::new();
+        let prompt = reg.format_for_prompt_filtered(&policy);
+        assert!(prompt.contains("## bash"));
+        assert!(prompt.contains("## read"));
     }
 }

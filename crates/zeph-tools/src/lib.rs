@@ -5,6 +5,8 @@ pub mod composite;
 pub mod config;
 pub mod executor;
 pub mod file;
+pub mod overflow;
+pub mod permissions;
 pub mod registry;
 pub mod scrape;
 pub mod shell;
@@ -17,6 +19,8 @@ pub use executor::{
     truncate_tool_output,
 };
 pub use file::FileExecutor;
+pub use overflow::{cleanup_overflow_files, save_overflow};
+pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig};
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
 pub use shell::ShellExecutor;
