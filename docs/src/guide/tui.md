@@ -155,7 +155,7 @@ The TUI dashboard displays real-time metrics collected from the agent loop via `
 | Panel | Metrics |
 |-------|---------|
 | **Skills** | Active/total skill count, matched skill names per query |
-| **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count |
+| **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count, tool output prunes |
 | **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name |
 
 Metrics are updated at key instrumentation points in the agent loop:

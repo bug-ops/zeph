@@ -27,7 +27,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 |---------|--------|
 | `[security]` | `redact_secrets` |
 | `[timeouts]` | `llm_seconds`, `embedding_seconds`, `a2a_seconds` |
-| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail` |
+| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens` |
 | `[memory.semantic]` | `recall_limit` |
 | `[skills]` | `max_active_skills` |
 
@@ -69,6 +69,7 @@ summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
 compaction_threshold = 0.75    # Compact when context usage exceeds this fraction
 compaction_preserve_tail = 4   # Keep last N messages during compaction
+prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -133,6 +134,7 @@ rate_limit = 60
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold as fraction of context budget (default: 0.75) |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
+| `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning (default: 40000) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory with Qdrant (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |

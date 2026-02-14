@@ -11,6 +11,7 @@ All context engineering features are **disabled by default** (`context_budget_to
 context_budget_tokens = 128000    # Set to your model's context window size (0 = unlimited)
 compaction_threshold = 0.75       # Compact when usage exceeds this fraction
 compaction_preserve_tail = 4      # Keep last N messages during compaction
+prune_protect_tokens = 40000      # Protect recent N tokens from Tier 1 tool output pruning
 
 [memory.semantic]
 enabled = true                    # Required for semantic recall
@@ -83,16 +84,29 @@ Every system prompt rebuild injects an `<environment>` block with:
 - Current git branch (if in a git repo)
 - Active model name
 
-## Runtime Context Compaction
+## Two-Tier Context Pruning
 
-When total message tokens exceed `compaction_threshold` (default: 75%) of the context budget:
+When total message tokens exceed `compaction_threshold` (default: 75%) of the context budget, a two-tier pruning strategy activates:
+
+### Tier 1: Selective Tool Output Pruning
+
+Before invoking the LLM for compaction, Zeph scans messages outside the protected tail for `ToolOutput` parts and replaces their content with a short placeholder. This is a cheap, synchronous operation that often frees enough tokens to stay under the threshold without an LLM call.
+
+- Only tool outputs in messages older than the protected tail are pruned
+- The most recent `prune_protect_tokens` tokens (default: 40,000) worth of messages are never pruned, preserving recent tool context
+- Pruned parts have their `compacted_at` timestamp set and are not pruned again
+- The `tool_output_prunes` metric tracks how many parts were pruned
+
+### Tier 2: LLM Compaction (Fallback)
+
+If Tier 1 does not free enough tokens, the standard LLM compaction runs:
 
 1. Middle messages (between system prompt and last N recent) are extracted
 2. Sent to the LLM with a structured summarization prompt
 3. Replaced with a single summary message
 4. Last `compaction_preserve_tail` messages (default: 4) are always preserved
 
-Compaction is idempotent and runs automatically during the agent loop.
+Both tiers are idempotent and run automatically during the agent loop.
 
 ## Tool Output Management
 
@@ -129,4 +143,5 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget in tokens | `0` (unlimited) |
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold | `0.75` |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
+| `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |
 | `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization | `false` |

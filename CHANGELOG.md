@@ -39,6 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `inject_summaries()` in Agent: injects SQLite conversation summaries into context (newest-first, budget-aware, with deduplication)
 - Wire `zeph-index` Code RAG pipeline into agent loop (feature-gated `index`): `CodeRetriever` integration, `inject_code_rag()` in `prepare_context()`, repo map in system prompt, background project indexing on startup
 - `IndexConfig` with `[index]` TOML section and `ZEPH_INDEX_*` env overrides (enabled, max_chunks, score_threshold, budget_ratio, repo_map_tokens)
+- Two-tier context pruning strategy for granular token reclamation before full LLM compaction
+  - Tier 1: selective `ToolOutput` part pruning with `compacted_at` timestamp on pruned parts
+  - Tier 2: LLM-based compaction fallback when tier 1 is insufficient
+  - `prune_protect_tokens` config field for token-based protection zone (shields recent context from pruning)
+  - `tool_output_prunes` metric tracking tier 1 pruning operations
+  - `compacted_at` field on `MessagePart::ToolOutput` for pruning audit trail
 - `MessagePart` enum (Text, ToolOutput, Recall, CodeContext, Summary) for typed message content with independent lifecycle
 - `Message::from_parts()` constructor with `to_llm_content()` flattening for LLM provider consumption
 - `Message::from_legacy()` backward-compatible constructor for simple text messages
