@@ -1,6 +1,6 @@
 # Docker Deployment
 
-Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.9.3`.
+Docker Compose automatically pulls the latest image from GitHub Container Registry. To use a specific version, set `ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.9.4`.
 
 ## Quick Start (Ollama + Qdrant in containers)
 
@@ -56,7 +56,7 @@ ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
 
 ```bash
 # Use a specific release version
-ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.9.3 docker compose up
+ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.9.4 docker compose up
 
 # Always pull latest
 docker compose pull && docker compose up

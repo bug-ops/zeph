@@ -11,7 +11,7 @@ Zeph uses Cargo feature flags to control optional functionality. Default feature
 | `orchestrator` | Enabled | Multi-model routing with task-based classification and fallback chains |
 | `self-learning` | Enabled | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
 | `vault-age` | Enabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
-| `index` | Disabled | AST-based code indexing and semantic retrieval via tree-sitter ([guide](guide/code-indexing.md)) |
+| `index` | Enabled | AST-based code indexing and semantic retrieval via tree-sitter ([guide](guide/code-indexing.md)) |
 | `tui` | Disabled | ratatui-based TUI dashboard with real-time agent metrics |
 | `metal` | Disabled | Metal GPU acceleration for candle on macOS (implies `candle`) |
 | `cuda` | Disabled | CUDA GPU acceleration for candle on Linux (implies `candle`) |
@@ -22,7 +22,6 @@ Zeph uses Cargo feature flags to control optional functionality. Default feature
 cargo build --release                                     # all default features
 cargo build --release --features metal                    # macOS with Metal GPU
 cargo build --release --features cuda                     # Linux with NVIDIA GPU
-cargo build --release --features index                    # with code indexing
 cargo build --release --features tui                      # with TUI dashboard
 cargo build --release --no-default-features               # minimal binary
 ```

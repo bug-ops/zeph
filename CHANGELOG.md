@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-02-14
+
 ### Added
 - Bounded FIFO message queue (max 10) in agent loop: users can submit messages during inference, queued messages are delivered sequentially when response cycle completes
 - Channel trait extended with `try_recv()` (non-blocking poll) and `send_queue_count()` with default no-op impls
@@ -53,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - inject_semantic_recall, inject_code_context, inject_summaries now create typed MessagePart variants
 
 ### Changed
+- `index` feature enabled by default (Code RAG pipeline active out of the box)
 - Agent error handler shows specific error context instead of generic message
 - TUI inline code rendered as blue with dark background glow instead of bright yellow
 - TUI header uses deep blue background (`Rgb(20, 40, 80)`) for improved contrast
