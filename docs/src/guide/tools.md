@@ -72,7 +72,12 @@ summarize_output = false
 [tools.shell]
 timeout = 30
 allowed_paths = []         # Sandbox directories (empty = cwd only)
+
+[tools.file]
+allowed_paths = []         # Sandbox directories for file tools (empty = cwd only)
 ```
+
+The `tools.file.allowed_paths` setting controls which directories `FileExecutor` can access for `read`, `write`, `edit`, `glob`, and `grep` operations. Shell and file sandboxes are configured independently.
 
 | Variable | Description |
 |----------|-------------|

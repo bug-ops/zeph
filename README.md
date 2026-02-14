@@ -82,7 +82,7 @@ cargo build --release --features tui
 ```
 
 > [!TIP]
-> Use `--config /path/to/config.toml` or `ZEPH_CONFIG=...` to override the default config path. Full reference: [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html)
+> Use `--config /path/to/config.toml` or `ZEPH_CONFIG=...` to override the default config path. Configure secret backends (env, age) via `vault.backend` in config or CLI flags (`--vault`, `--vault-key`, `--vault-path`). Full reference: [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html)
 
 ## Key Features
 
@@ -94,7 +94,7 @@ cargo build --release --features tui
 | **Context Engineering** | Two-tier context pruning (selective tool-output pruning before LLM compaction), semantic recall injection, proportional budget allocation, token-based protection zone for recent context, config hot-reload | [Context](https://bug-ops.github.io/zeph/guide/context.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) |
 | **Semantic Memory** | SQLite + Qdrant vector search for contextual recall | [Memory](https://bug-ops.github.io/zeph/guide/semantic-memory.html) |
 | **MCP Client** | Connect external tool servers (stdio + HTTP), unified matching | [MCP](https://bug-ops.github.io/zeph/guide/mcp.html) |
-| **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
+| **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming, delegated task inference through agent pipeline | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
 | **TUI Dashboard** | ratatui terminal UI with markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
@@ -111,7 +111,7 @@ zeph (binary)
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming
-├── zeph-tools      — 7 built-in tools (shell, file, web scrape, fetch, grep, glob, think), tool registry, composite dispatch
+├── zeph-tools      — ToolRegistry with 7 built-in tools (shell, file read/write/edit/glob/grep, web scrape), composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)

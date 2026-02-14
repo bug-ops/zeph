@@ -91,6 +91,9 @@ allowed_paths = []          # Directories shell can access (empty = cwd only)
 allow_network = true        # false blocks curl/wget/nc
 confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
 
+[tools.file]
+allowed_paths = []          # Directories file tools can access (empty = cwd only)
+
 [tools.scrape]
 timeout = 15
 max_body_bytes = 1048576  # 1MB
@@ -108,7 +111,7 @@ embedding_seconds = 30      # Embedding generation timeout
 a2a_seconds = 30            # A2A remote call timeout
 
 [vault]
-backend = "env"  # "env" (default) or "age"
+backend = "env"  # "env" (default) or "age"; CLI --vault overrides this
 
 [a2a]
 enabled = false
@@ -157,6 +160,7 @@ rate_limit = 60
 | `ZEPH_A2A_REQUIRE_TLS` | Require HTTPS for outbound A2A connections (default: true) |
 | `ZEPH_A2A_SSRF_PROTECTION` | Block private/loopback IPs in A2A client (default: true) |
 | `ZEPH_A2A_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
+| `ZEPH_TOOLS_FILE_ALLOWED_PATHS` | Comma-separated directories file tools can access (empty = cwd) |
 | `ZEPH_TOOLS_SHELL_ALLOWED_PATHS` | Comma-separated directories shell can access (empty = cwd) |
 | `ZEPH_TOOLS_SHELL_ALLOW_NETWORK` | Allow network commands from shell (default: true) |
 | `ZEPH_TOOLS_AUDIT_ENABLED` | Enable audit logging for tool executions (default: false) |

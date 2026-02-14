@@ -19,10 +19,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `watch` config field in `[index]` section (default `true`) to enable/disable file watching
 - Repo map cache with configurable TTL (`repo_map_ttl_secs`, default 300s) to avoid per-message filesystem traversal (#231)
 - Cross-session memory score threshold (`cross_session_score_threshold`, default 0.35) to filter low-relevance results (#232)
+- `embed_missing()` called on startup for embedding backfill when Qdrant available (#261)
+- `AgentTaskProcessor` replaces `EchoTaskProcessor` for real A2A inference (#262)
+
+### Changed
+- Batch messages retrieval in semantic recall: replaced N+1 query pattern with `messages_by_ids()` for improved performance
 
 ### Fixed
 - Persist `MessagePart` data to SQLite via `remember_with_parts()` — pruning state now survives session restarts (#229)
 - Clear tool output body from memory after Tier 1 pruning to reclaim heap (#230)
+- TUI uptime display now updates from agent start time instead of always showing 0s (#259)
+- `FileExecutor` `handle_write` now uses canonical path for security (TOCTOU prevention) (#260)
+- `resolve_via_ancestors` trailing slash bug on macOS
+- `vault.backend` from config now used as default backend; CLI `--vault` flag overrides config (#263)
+- A2A error responses sanitized to prevent provider URL leakage
 
 ## [0.9.4] - 2026-02-14
 

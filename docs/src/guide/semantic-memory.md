@@ -27,6 +27,7 @@ Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claud
 - **Automatic embedding:** Messages are embedded asynchronously using the configured `embedding_model` and stored in Qdrant alongside SQLite.
 - **Semantic recall:** Context builder injects semantically relevant messages from full history, not just recent messages.
 - **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to SQLite-only mode (recency-based history).
+- **Startup backfill:** On startup, if Qdrant is available, Zeph calls `embed_missing()` to backfill embeddings for any messages stored while Qdrant was offline. This ensures the vector index stays in sync with SQLite without manual intervention.
 
 ## Storage Architecture
 

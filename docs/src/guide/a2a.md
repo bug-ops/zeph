@@ -37,6 +37,12 @@ rate_limit = 60
 - **Payload limits:** `a2a.max_body_size` caps request body (default: 1 MiB)
 - **Rate limiting:** per-IP sliding window (default: 60 requests/minute)
 
+## Task Processing
+
+Incoming `message/send` requests are routed through `AgentTaskProcessor`, which forwards the message to the configured LLM provider for real inference. The processor creates a task, sends the user message to the LLM, and returns the model response as a completed A2A task artifact.
+
+> Current limitation: the A2A task processor runs inference only (no tool execution or memory context).
+
 ## A2A Client
 
 Zeph can also connect to other A2A agents as a client:

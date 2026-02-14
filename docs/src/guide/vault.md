@@ -4,6 +4,15 @@ Zeph resolves secrets (`ZEPH_CLAUDE_API_KEY`, `ZEPH_OPENAI_API_KEY`, `ZEPH_TELEG
 
 > Never commit secrets to version control. Use environment variables or age-encrypted vault files.
 
+## Backend Selection
+
+The vault backend is determined by the following priority (highest to lowest):
+
+1. **CLI flag:** `--vault env` or `--vault age`
+2. **Environment variable:** `ZEPH_VAULT_BACKEND`
+3. **Config file:** `vault.backend` in TOML config
+4. **Default:** `"env"`
+
 ## Backends
 
 | Backend | Description | Activation |
