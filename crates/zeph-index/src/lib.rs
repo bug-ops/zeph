@@ -4,11 +4,11 @@
 //! chunks are embedded and stored in Qdrant, and retrieved via hybrid search
 //! (semantic + grep routing) for injection into the agent context window.
 
-pub mod chunker;
-pub mod context;
+pub(crate) mod chunker;
+pub(crate) mod context;
 pub mod error;
 pub mod indexer;
-pub mod languages;
+pub(crate) mod languages;
 pub mod repo_map;
 pub mod retriever;
 pub mod store;

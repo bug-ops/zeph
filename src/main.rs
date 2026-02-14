@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tokio::sync::watch;
+use zeph_channels::CliChannel;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
-use zeph_core::channel::{Channel, ChannelMessage, CliChannel};
+use zeph_core::channel::{Channel, ChannelMessage};
 use zeph_core::config::Config;
 use zeph_core::config_watcher::ConfigWatcher;
 #[cfg(feature = "vault-age")]

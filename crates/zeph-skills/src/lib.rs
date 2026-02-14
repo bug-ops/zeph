@@ -9,7 +9,7 @@ pub mod prompt;
 #[cfg(feature = "qdrant")]
 pub mod qdrant_matcher;
 pub mod registry;
-pub mod resource;
+pub(crate) mod resource;
 pub mod watcher;
 
 pub use error::SkillError;

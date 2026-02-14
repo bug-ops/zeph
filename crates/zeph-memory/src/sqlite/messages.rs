@@ -2,6 +2,7 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+use crate::types::{ConversationId, MessageId};
 
 fn parse_role(s: &str) -> Role {
     match s {
@@ -26,10 +27,11 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    pub async fn create_conversation(&self) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
-            .fetch_one(&self.pool)
-            .await?;
+    pub async fn create_conversation(&self) -> Result<ConversationId, MemoryError> {
+        let row: (ConversationId,) =
+            sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
+                .fetch_one(&self.pool)
+                .await?;
         Ok(row.0)
     }
 
@@ -40,10 +42,10 @@ impl SqliteStore {
     /// Returns an error if the insert fails.
     pub async fn save_message(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         role: &str,
         content: &str,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<MessageId, MemoryError> {
         self.save_message_with_parts(conversation_id, role, content, "[]")
             .await
     }
@@ -55,12 +57,12 @@ impl SqliteStore {
     /// Returns an error if the insert fails.
     pub async fn save_message_with_parts(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         role: &str,
         content: &str,
         parts_json: &str,
-    ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+    ) -> Result<MessageId, MemoryError> {
+        let row: (MessageId,) = sqlx::query_as(
             "INSERT INTO messages (conversation_id, role, content, parts) VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(conversation_id)
@@ -80,7 +82,7 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn load_history(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(
@@ -115,8 +117,8 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn latest_conversation_id(&self) -> Result<Option<i64>, MemoryError> {
-        let row: Option<(i64,)> =
+    pub async fn latest_conversation_id(&self) -> Result<Option<ConversationId>, MemoryError> {
+        let row: Option<(ConversationId,)> =
             sqlx::query_as("SELECT id FROM conversations ORDER BY id DESC LIMIT 1")
                 .fetch_optional(&self.pool)
                 .await?;
@@ -128,7 +130,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn message_by_id(&self, message_id: i64) -> Result<Option<Message>, MemoryError> {
+    pub async fn message_by_id(
+        &self,
+        message_id: MessageId,
+    ) -> Result<Option<Message>, MemoryError> {
         let row: Option<(String, String, String)> =
             sqlx::query_as("SELECT role, content, parts FROM messages WHERE id = ?")
                 .bind(message_id)
@@ -150,7 +155,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn messages_by_ids(&self, ids: &[i64]) -> Result<Vec<(i64, Message)>, MemoryError> {
+    pub async fn messages_by_ids(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<Vec<(MessageId, Message)>, MemoryError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -159,7 +167,7 @@ impl SqliteStore {
 
         let query =
             format!("SELECT id, role, content, parts FROM messages WHERE id IN ({placeholders})");
-        let mut q = sqlx::query_as::<_, (i64, String, String, String)>(&query);
+        let mut q = sqlx::query_as::<_, (MessageId, String, String, String)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -190,10 +198,10 @@ impl SqliteStore {
     pub async fn unembedded_message_ids(
         &self,
         limit: Option<usize>,
-    ) -> Result<Vec<(i64, i64, String, String)>, MemoryError> {
+    ) -> Result<Vec<(MessageId, ConversationId, String, String)>, MemoryError> {
         let effective_limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
 
-        let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(
+        let rows: Vec<(MessageId, ConversationId, String, String)> = sqlx::query_as(
             "SELECT m.id, m.conversation_id, m.role, m.content \
              FROM messages m \
              LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
@@ -213,7 +221,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn count_messages(&self, conversation_id: i64) -> Result<i64, MemoryError> {
+    pub async fn count_messages(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
             .bind(conversation_id)
             .fetch_one(&self.pool)
@@ -228,8 +239,8 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn count_messages_after(
         &self,
-        conversation_id: i64,
-        after_id: i64,
+        conversation_id: ConversationId,
+        after_id: MessageId,
     ) -> Result<i64, MemoryError> {
         let row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ?")
@@ -247,13 +258,13 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn load_messages_range(
         &self,
-        conversation_id: i64,
-        after_message_id: i64,
+        conversation_id: ConversationId,
+        after_message_id: MessageId,
         limit: usize,
-    ) -> Result<Vec<(i64, String, String)>, MemoryError> {
+    ) -> Result<Vec<(MessageId, String, String)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
 
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        let rows: Vec<(MessageId, String, String)> = sqlx::query_as(
             "SELECT id, role, content FROM messages \
              WHERE conversation_id = ? AND id > ? \
              ORDER BY id ASC LIMIT ?",
@@ -281,8 +292,8 @@ mod tests {
         let store = test_store().await;
         let id1 = store.create_conversation().await.unwrap();
         let id2 = store.create_conversation().await.unwrap();
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
+        assert_eq!(id1, ConversationId(1));
+        assert_eq!(id2, ConversationId(2));
     }
 
     #[tokio::test]
@@ -296,8 +307,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(msg_id1, 1);
-        assert_eq!(msg_id2, 2);
+        assert_eq!(msg_id1, MessageId(1));
+        assert_eq!(msg_id2, MessageId(2));
 
         let history = store.load_history(cid, 50).await.unwrap();
         assert_eq!(history.len(), 2);
@@ -446,7 +457,10 @@ mod tests {
     #[tokio::test]
     async fn messages_by_ids_nonexistent() {
         let store = test_store().await;
-        let results = store.messages_by_ids(&[999, 1000]).await.unwrap();
+        let results = store
+            .messages_by_ids(&[MessageId(999), MessageId(1000)])
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -466,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn message_by_id_returns_none_for_nonexistent() {
         let store = test_store().await;
-        let msg = store.message_by_id(999).await.unwrap();
+        let msg = store.message_by_id(MessageId(999)).await.unwrap();
         assert!(msg.is_none());
     }
 
@@ -547,11 +561,14 @@ mod tests {
 
         let id1 = store.save_message(cid, "user", "msg1").await.unwrap();
         let _id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
-        let _id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+        let id3 = store.save_message(cid, "user", "msg3").await.unwrap();
 
-        assert_eq!(store.count_messages_after(cid, 0).await.unwrap(), 3);
+        assert_eq!(
+            store.count_messages_after(cid, MessageId(0)).await.unwrap(),
+            3
+        );
         assert_eq!(store.count_messages_after(cid, id1).await.unwrap(), 2);
-        assert_eq!(store.count_messages_after(cid, _id3).await.unwrap(), 0);
+        assert_eq!(store.count_messages_after(cid, id3).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -580,7 +597,10 @@ mod tests {
         store.save_message(cid, "assistant", "msg2").await.unwrap();
         store.save_message(cid, "user", "msg3").await.unwrap();
 
-        let msgs = store.load_messages_range(cid, 0, 2).await.unwrap();
+        let msgs = store
+            .load_messages_range(cid, MessageId(0), 2)
+            .await
+            .unwrap();
         assert_eq!(msgs.len(), 2);
     }
 }

@@ -47,8 +47,8 @@ pub fn contextualize_for_embedding(chunk: &CodeChunk) -> String {
 }
 
 /// Generate a short header for display in retrieved results.
-#[must_use]
-pub fn chunk_display_header(chunk: &CodeChunk) -> String {
+#[cfg(test)]
+fn chunk_display_header(chunk: &CodeChunk) -> String {
     let name = chunk.entity_name.as_deref().unwrap_or(&chunk.node_type);
     format!(
         "{} :: {} (lines {}-{})",

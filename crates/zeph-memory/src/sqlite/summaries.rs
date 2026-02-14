@@ -1,5 +1,6 @@
 use super::SqliteStore;
 use crate::error::MemoryError;
+use crate::types::{ConversationId, MessageId};
 
 impl SqliteStore {
     /// Save a summary and return its ID.
@@ -9,10 +10,10 @@ impl SqliteStore {
     /// Returns an error if the insert fails.
     pub async fn save_summary(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         content: &str,
-        first_message_id: i64,
-        last_message_id: i64,
+        first_message_id: MessageId,
+        last_message_id: MessageId,
         token_estimate: i64,
     ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
@@ -37,9 +38,9 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn load_summaries(
         &self,
-        conversation_id: i64,
-    ) -> Result<Vec<(i64, i64, String, i64, i64, i64)>, MemoryError> {
-        let rows: Vec<(i64, i64, String, i64, i64, i64)> = sqlx::query_as(
+        conversation_id: ConversationId,
+    ) -> Result<Vec<(i64, ConversationId, String, MessageId, MessageId, i64)>, MemoryError> {
+        let rows: Vec<(i64, ConversationId, String, MessageId, MessageId, i64)> = sqlx::query_as(
             "SELECT id, conversation_id, content, first_message_id, last_message_id, token_estimate \
              FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
         )
@@ -58,9 +59,9 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn latest_summary_last_message_id(
         &self,
-        conversation_id: i64,
-    ) -> Result<Option<i64>, MemoryError> {
-        let row: Option<(i64,)> = sqlx::query_as(
+        conversation_id: ConversationId,
+    ) -> Result<Option<MessageId>, MemoryError> {
+        let row: Option<(MessageId,)> = sqlx::query_as(
             "SELECT last_message_id FROM summaries \
              WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
         )

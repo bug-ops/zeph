@@ -4,7 +4,9 @@ pub mod error;
 pub mod qdrant;
 pub mod semantic;
 pub mod sqlite;
+pub mod types;
 
 pub use error::MemoryError;
 pub use qdrant::ensure_qdrant_collection;
 pub use semantic::estimate_tokens;
+pub use types::{ConversationId, MessageId};

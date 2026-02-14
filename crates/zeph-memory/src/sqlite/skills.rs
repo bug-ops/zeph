@@ -115,7 +115,7 @@ impl SqliteStore {
         &self,
         skill_name: &str,
         version_id: Option<i64>,
-        conversation_id: Option<i64>,
+        conversation_id: Option<crate::types::ConversationId>,
         outcome: &str,
         error_context: Option<&str>,
     ) -> Result<(), MemoryError> {
@@ -142,7 +142,7 @@ impl SqliteStore {
     pub async fn record_skill_outcomes_batch(
         &self,
         skill_names: &[String],
-        conversation_id: Option<i64>,
+        conversation_id: Option<crate::types::ConversationId>,
         outcome: &str,
         error_context: Option<&str>,
     ) -> Result<(), MemoryError> {
@@ -532,11 +532,23 @@ mod tests {
         let store = test_store().await;
 
         store
-            .record_skill_outcome("git", None, Some(1), "success", None)
+            .record_skill_outcome(
+                "git",
+                None,
+                Some(crate::types::ConversationId(1)),
+                "success",
+                None,
+            )
             .await
             .unwrap();
         store
-            .record_skill_outcome("git", None, Some(1), "tool_failure", Some("exit code 1"))
+            .record_skill_outcome(
+                "git",
+                None,
+                Some(crate::types::ConversationId(1)),
+                "tool_failure",
+                Some("exit code 1"),
+            )
             .await
             .unwrap();
 
@@ -818,7 +830,7 @@ mod tests {
             .record_skill_outcome(
                 "docker",
                 None,
-                Some(1),
+                Some(crate::types::ConversationId(1)),
                 "tool_failure",
                 Some("container not found"),
             )

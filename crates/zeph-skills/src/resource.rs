@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::SkillError;
-
 #[derive(Clone, Debug, Default)]
 pub struct SkillResources {
     pub scripts: Vec<PathBuf>,
@@ -11,7 +9,7 @@ pub struct SkillResources {
 
 /// Discover available resource directories for a skill.
 #[must_use]
-pub fn discover_resources(skill_dir: &Path) -> SkillResources {
+pub(crate) fn discover_resources(skill_dir: &Path) -> SkillResources {
     let mut resources = SkillResources::default();
 
     for (subdir, target) in [
@@ -39,7 +37,12 @@ pub fn discover_resources(skill_dir: &Path) -> SkillResources {
 /// # Errors
 ///
 /// Returns an error if the path escapes the skill directory or the file cannot be read.
-pub fn load_resource(skill_dir: &Path, relative_path: &str) -> Result<Vec<u8>, SkillError> {
+#[cfg(test)]
+fn load_resource(
+    skill_dir: &Path,
+    relative_path: &str,
+) -> Result<Vec<u8>, crate::error::SkillError> {
+    use crate::error::SkillError;
     let canonical_base = skill_dir.canonicalize().map_err(|e| {
         SkillError::Other(format!(
             "failed to canonicalize skill dir {}: {e}",

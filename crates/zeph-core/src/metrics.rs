@@ -13,7 +13,7 @@ pub struct MetricsSnapshot {
     pub mcp_tool_count: usize,
     pub active_mcp_tools: Vec<String>,
     pub sqlite_message_count: u64,
-    pub sqlite_conversation_id: Option<i64>,
+    pub sqlite_conversation_id: Option<zeph_memory::ConversationId>,
     pub qdrant_available: bool,
     pub embeddings_generated: u64,
     pub last_llm_latency_ms: u64,

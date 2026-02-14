@@ -21,6 +21,7 @@ pub struct CodeChunk {
 
 /// Chunker configuration.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_field_names)]
 pub struct ChunkerConfig {
     /// Target chunk size in non-whitespace characters (default: 600).
     pub target_size: usize,

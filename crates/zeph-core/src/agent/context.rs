@@ -892,7 +892,7 @@ mod tests {
     async fn create_memory_with_summaries(
         provider: MockProvider,
         summaries: &[&str],
-    ) -> (SemanticMemory<MockProvider>, i64) {
+    ) -> (SemanticMemory<MockProvider>, zeph_memory::ConversationId) {
         let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test")
             .await
             .unwrap();
@@ -1342,22 +1342,22 @@ mod tests {
             SessionSummaryResult {
                 summary_text: "high score".into(),
                 score: 0.9,
-                conversation_id: 1,
+                conversation_id: zeph_memory::ConversationId(1),
             },
             SessionSummaryResult {
                 summary_text: "at threshold".into(),
                 score: 0.35,
-                conversation_id: 2,
+                conversation_id: zeph_memory::ConversationId(2),
             },
             SessionSummaryResult {
                 summary_text: "below threshold".into(),
                 score: 0.2,
-                conversation_id: 3,
+                conversation_id: zeph_memory::ConversationId(3),
             },
             SessionSummaryResult {
                 summary_text: "way below".into(),
                 score: 0.0,
-                conversation_id: 4,
+                conversation_id: zeph_memory::ConversationId(4),
             },
         ];
 

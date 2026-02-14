@@ -7,6 +7,7 @@ use qdrant_client::qdrant::{
 use sqlx::SqlitePool;
 
 use crate::error::MemoryError;
+use crate::types::{ConversationId, MessageId};
 
 const COLLECTION_NAME: &str = "zeph_conversations";
 
@@ -55,14 +56,14 @@ impl std::fmt::Debug for QdrantStore {
 
 #[derive(Debug)]
 pub struct SearchFilter {
-    pub conversation_id: Option<i64>,
+    pub conversation_id: Option<ConversationId>,
     pub role: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct SearchResult {
-    pub message_id: i64,
-    pub conversation_id: i64,
+    pub message_id: MessageId,
+    pub conversation_id: ConversationId,
     pub score: f32,
 }
 
@@ -106,8 +107,8 @@ impl QdrantStore {
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
     pub async fn store(
         &self,
-        message_id: i64,
-        conversation_id: i64,
+        message_id: MessageId,
+        conversation_id: ConversationId,
         role: &str,
         vector: Vec<f32>,
         is_summary: bool,
@@ -117,8 +118,8 @@ impl QdrantStore {
         let dimensions = i64::try_from(vector.len())?;
 
         let payload: serde_json::Value = serde_json::json!({
-            "message_id": message_id,
-            "conversation_id": conversation_id,
+            "message_id": message_id.0,
+            "conversation_id": conversation_id.0,
             "role": role,
             "is_summary": is_summary,
         });
@@ -169,7 +170,7 @@ impl QdrantStore {
             let mut conditions = Vec::new();
 
             if let Some(cid) = f.conversation_id {
-                conditions.push(Condition::matches("conversation_id", cid));
+                conditions.push(Condition::matches("conversation_id", cid.0));
             }
             if let Some(ref role) = f.role {
                 conditions.push(Condition::matches("role", role.clone()));
@@ -188,8 +189,8 @@ impl QdrantStore {
             .filter_map(|point| {
                 let payload = &point.payload;
 
-                let message_id = payload.get("message_id")?.as_integer()?;
-                let conversation_id = payload.get("conversation_id")?.as_integer()?;
+                let message_id = MessageId(payload.get("message_id")?.as_integer()?);
+                let conversation_id = ConversationId(payload.get("conversation_id")?.as_integer()?);
 
                 Some(SearchResult {
                     message_id,
@@ -275,7 +276,7 @@ impl QdrantStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
-    pub async fn has_embedding(&self, message_id: i64) -> Result<bool, MemoryError> {
+    pub async fn has_embedding(&self, message_id: MessageId) -> Result<bool, MemoryError> {
         let row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
                 .bind(message_id)
