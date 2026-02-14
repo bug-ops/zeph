@@ -20,16 +20,24 @@ pub enum Role {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessagePart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     ToolOutput {
         tool_name: String,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compacted_at: Option<i64>,
     },
-    Recall { text: String },
-    CodeContext { text: String },
-    Summary { text: String },
+    Recall {
+        text: String,
+    },
+    CodeContext {
+        text: String,
+    },
+    Summary {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

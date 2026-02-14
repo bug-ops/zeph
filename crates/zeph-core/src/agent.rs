@@ -527,7 +527,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .context_budget
             .as_ref()
             .map_or(0, ContextBudget::max_tokens);
-        let total_tokens: usize = self.messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+        let total_tokens: usize = self
+            .messages
+            .iter()
+            .map(|m| estimate_tokens(&m.content))
+            .sum();
         let threshold = (budget as f32 * self.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
 
@@ -537,7 +541,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        tracing::info!(freed, min_to_free, "tier-1 insufficient, falling back to tier-2 compaction");
+        tracing::info!(
+            freed,
+            min_to_free,
+            "tier-1 insufficient, falling back to tier-2 compaction"
+        );
         let _ = self.channel.send_status("compacting context...").await;
         let result = self.compact_context().await;
         let _ = self.channel.send_status("").await;
