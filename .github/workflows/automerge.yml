@@ -1,0 +1,80 @@
+name: Auto-merge PR
+
+on:
+  pull_request_review:
+    types: [submitted]
+  status: {}
+  pull_request:
+    types: [ready_for_review, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    name: Auto-merge PR when ready
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      github.event_name == 'status'
+    steps:
+      - name: Get PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_review" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "status" ]; then
+            # Find PR associated with this commit
+            PR_NUMBER=$(gh pr list --search "${{ github.sha }}" --json number --jq '.[0].number')
+            echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if PR exists
+        if: steps.pr.outputs.number == ''
+        run: |
+          echo "No PR found for this event"
+          exit 0
+
+      - name: Wait for CI checks to complete
+        if: steps.pr.outputs.number != ''
+        uses: lewagon/wait-on-check-action@v1.5.0
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          running-workflow-name: 'Auto-merge PR when ready'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          allowed-conclusions: success
+
+      - name: Check if PR is approved
+        if: steps.pr.outputs.number != ''
+        id: approval
+        run: |
+          PR_NUMBER=${{ steps.pr.outputs.number }}
+          
+          # Check for approvals
+          APPROVALS=$(gh pr view $PR_NUMBER --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')
+          
+          if [ "$APPROVALS" -gt 0 ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+            echo "PR #$PR_NUMBER has $APPROVALS approval(s)"
+          else
+            echo "approved=false" >> $GITHUB_OUTPUT
+            echo "PR #$PR_NUMBER has no approvals yet"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: steps.pr.outputs.number != '' && steps.approval.outputs.approved == 'true'
+        run: |
+          PR_NUMBER=${{ steps.pr.outputs.number }}
+          echo "Enabling auto-merge for PR #$PR_NUMBER"
+          gh pr merge --auto --squash $PR_NUMBER
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
