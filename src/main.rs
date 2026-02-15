@@ -474,7 +474,7 @@ async fn main() -> anyhow::Result<()> {
     let agent = if tui_active {
         let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
         tx.send_modify(|m| {
-            m.model_name = config.llm.model.clone();
+            m.model_name.clone_from(&config.llm.model);
         });
         tui_metrics_rx = Some(rx);
         agent.with_metrics(tx)
@@ -537,14 +537,14 @@ async fn main() -> anyhow::Result<()> {
         let mut agent = agent.with_warmup_ready(warmup_rx);
 
         let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
-        let agent_task = tokio::spawn(async move { agent.run().await });
+        let agent_future = agent.run();
 
         tokio::select! {
             result = tui_task => {
                 return result?;
             }
-            result = agent_task => {
-                return result?;
+            result = agent_future => {
+                return result;
             }
         }
     }

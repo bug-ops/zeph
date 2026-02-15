@@ -530,20 +530,23 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         #[cfg(feature = "index")]
         self.remove_code_context_messages();
 
+        // Own the query to satisfy Send bounds when agent.run() is spawned
+        let query = query.to_owned();
+
         // Fetch all context sources concurrently
         #[cfg(not(feature = "index"))]
         let (summaries_msg, cross_session_msg, recall_msg) = tokio::try_join!(
             Self::fetch_summaries(&self.memory_state, alloc.summaries),
-            Self::fetch_cross_session(&self.memory_state, query, alloc.cross_session),
-            Self::fetch_semantic_recall(&self.memory_state, query, alloc.semantic_recall),
+            Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
+            Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
         )?;
 
         #[cfg(feature = "index")]
         let (summaries_msg, cross_session_msg, recall_msg, code_rag_text) = tokio::try_join!(
             Self::fetch_summaries(&self.memory_state, alloc.summaries),
-            Self::fetch_cross_session(&self.memory_state, query, alloc.cross_session),
-            Self::fetch_semantic_recall(&self.memory_state, query, alloc.semantic_recall),
-            Self::fetch_code_rag(&self.index, query, alloc.code_context),
+            Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
+            Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
+            Self::fetch_code_rag(&self.index, &query, alloc.code_context),
         )?;
 
         // Insert fetched messages (order: recall, cross-session, summaries at position 1)
