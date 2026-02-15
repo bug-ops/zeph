@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,7 +85,7 @@ impl McpClient {
         url: &str,
         timeout: Duration,
     ) -> Result<Self, McpError> {
-        validate_url_ssrf(url)?;
+        validate_url_ssrf(url).await?;
 
         let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
 
@@ -193,11 +193,19 @@ fn is_private_ip(addr: IpAddr) -> bool {
                 || ip.is_unspecified()    // 0.0.0.0
                 || ip.is_broadcast() // 255.255.255.255
         }
-        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unspecified(),
+        IpAddr::V6(ip) => {
+            ip.is_loopback()               // ::1
+                || ip.is_unspecified()     // ::
+                || ip.to_ipv4_mapped().is_some_and(|v4| {
+                    v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                })                         // ::ffff:127.0.0.1 etc.
+                || (ip.segments()[0] & 0xfe00) == 0xfc00   // fc00::/7 unique local
+                || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
     }
 }
 
-fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
+async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
         url: url.into(),
         message: e.to_string(),
@@ -211,9 +219,8 @@ fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let port = parsed.port_or_known_default().unwrap_or(443);
     let addr_str = format!("{host}:{port}");
 
-    // DNS resolution to catch hostnames pointing to private IPs
-    let addrs = addr_str
-        .to_socket_addrs()
+    let addrs = tokio::net::lookup_host(&addr_str)
+        .await
         .map_err(|e| McpError::InvalidUrl {
             url: url.into(),
             message: format!("DNS resolution failed: {e}"),
@@ -235,51 +242,61 @@ fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ssrf_blocks_localhost() {
-        let err = validate_url_ssrf("http://127.0.0.1:8080/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_localhost() {
+        let err = validate_url_ssrf("http://127.0.0.1:8080/mcp")
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_private_10() {
-        let err = validate_url_ssrf("http://10.0.0.1/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_private_10() {
+        let err = validate_url_ssrf("http://10.0.0.1/mcp").await.unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_private_172() {
-        let err = validate_url_ssrf("http://172.16.0.1/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_private_172() {
+        let err = validate_url_ssrf("http://172.16.0.1/mcp")
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_private_192() {
-        let err = validate_url_ssrf("http://192.168.1.1/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_private_192() {
+        let err = validate_url_ssrf("http://192.168.1.1/mcp")
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_link_local() {
-        let err = validate_url_ssrf("http://169.254.1.1/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_link_local() {
+        let err = validate_url_ssrf("http://169.254.1.1/mcp")
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_zero() {
-        let err = validate_url_ssrf("http://0.0.0.0/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_zero() {
+        let err = validate_url_ssrf("http://0.0.0.0/mcp").await.unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_blocks_ipv6_loopback() {
-        let err = validate_url_ssrf("http://[::1]:8080/mcp").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_blocks_ipv6_loopback() {
+        let err = validate_url_ssrf("http://[::1]:8080/mcp")
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
     }
 
-    #[test]
-    fn ssrf_rejects_invalid_url() {
-        let err = validate_url_ssrf("not-a-url").unwrap_err();
+    #[tokio::test]
+    async fn ssrf_rejects_invalid_url() {
+        let err = validate_url_ssrf("not-a-url").await.unwrap_err();
         assert!(matches!(err, McpError::InvalidUrl { .. }));
     }
 

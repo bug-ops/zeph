@@ -213,6 +213,8 @@ impl ShellExecutor {
     }
 
     fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+
         for token in extract_paths(code) {
             if has_traversal(token) {
                 return Err(ToolError::SandboxViolation {
@@ -223,7 +225,6 @@ impl ShellExecutor {
             let path = if token.starts_with('/') {
                 PathBuf::from(token)
             } else {
-                let cwd = std::env::current_dir().unwrap_or_default();
                 cwd.join(token)
             };
             let canonical = path.canonicalize().unwrap_or(path);

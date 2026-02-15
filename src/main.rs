@@ -537,6 +537,7 @@ async fn main() -> anyhow::Result<()> {
         let mut agent = agent.with_warmup_ready(warmup_rx);
 
         let tui_task = tokio::spawn(zeph_tui::run_tui(app, event_rx));
+        // No Box::pin here: TUI branch already spawns tasks, no large_futures lint
         let agent_future = agent.run();
 
         tokio::select! {
@@ -551,6 +552,7 @@ async fn main() -> anyhow::Result<()> {
 
     warmup_provider(&warmup_provider_clone).await;
     tokio::spawn(forward_status_to_stderr(status_rx));
+    // Box::pin avoids clippy::large_futures on non-TUI path
     Box::pin(agent.run()).await
 }
 

@@ -38,7 +38,7 @@ struct RateLimitState {
 fn spawn_eviction_task(counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(EVICTION_INTERVAL);
-        interval.tick().await; // skip immediate first tick
+        interval.tick().await;
         loop {
             interval.tick().await;
             let now = Instant::now();
@@ -133,7 +133,18 @@ async fn rate_limit_middleware(
     let mut counters = state.counters.lock().await;
 
     if counters.len() >= MAX_RATE_LIMIT_ENTRIES && !counters.contains_key(&ip) {
-        counters.clear();
+        let before_eviction = counters.len();
+        counters.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
+        let after_eviction = counters.len();
+
+        if after_eviction >= MAX_RATE_LIMIT_ENTRIES {
+            tracing::warn!(
+                before = before_eviction,
+                after = after_eviction,
+                limit = MAX_RATE_LIMIT_ENTRIES,
+                "rate limiter still at capacity after stale entry eviction"
+            );
+        }
     }
 
     let entry = counters.entry(ip).or_insert((0, now));

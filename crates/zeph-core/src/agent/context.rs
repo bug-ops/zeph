@@ -65,6 +65,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 Role::Assistant => "assistant",
                 Role::System => "system",
             };
+            // write! to String never fails, safe to ignore
             let _ = write!(history_text, "[{role}]: {}", m.content);
         }
 

@@ -50,6 +50,7 @@ thiserror = "2.0"
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 tokio = "1"
 tokio-stream = "0.1"
+tokio-util = "0.7"
 toml = "1.0"
 tower = "0.5"
 tower-http = "0.6"
