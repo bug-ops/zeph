@@ -68,10 +68,13 @@ impl PermissionPolicy {
                 action: PermissionAction::Ask,
             });
         }
+        // Allow everything not explicitly blocked or requiring confirmation.
+        rules.push(PermissionRule {
+            pattern: "*".to_owned(),
+            action: PermissionAction::Allow,
+        });
         let mut map = HashMap::new();
-        if !rules.is_empty() {
-            map.insert("bash".to_owned(), rules);
-        }
+        map.insert("bash".to_owned(), rules);
         Self { rules: map }
     }
 
@@ -190,6 +193,8 @@ mod tests {
         let policy = PermissionPolicy::from_legacy(&["sudo".to_owned()], &["rm ".to_owned()]);
         assert_eq!(policy.check("bash", "sudo apt"), PermissionAction::Deny);
         assert_eq!(policy.check("bash", "rm file"), PermissionAction::Ask);
+        assert_eq!(policy.check("bash", "find . -name foo"), PermissionAction::Allow);
+        assert_eq!(policy.check("bash", "ls -la"), PermissionAction::Allow);
     }
 
     #[test]
