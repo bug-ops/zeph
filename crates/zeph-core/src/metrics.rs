@@ -23,6 +23,8 @@ pub struct MetricsSnapshot {
     pub summaries_count: u64,
     pub context_compactions: u64,
     pub tool_output_prunes: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
 }
 
 pub struct MetricsCollector {

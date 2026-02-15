@@ -13,8 +13,13 @@ use crate::provider::{
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const ANTHROPIC_BETA: &str = "prompt-caching-2024-07-31";
 const MAX_RETRIES: u32 = 3;
 const BASE_BACKOFF_SECS: u64 = 1;
+
+const CACHE_MARKER_STABLE: &str = "<!-- cache:stable -->";
+const CACHE_MARKER_TOOLS: &str = "<!-- cache:tools -->";
+const CACHE_MARKER_VOLATILE: &str = "<!-- cache:volatile -->";
 
 pub struct ClaudeProvider {
     client: reqwest::Client,
@@ -74,11 +79,12 @@ impl ClaudeProvider {
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (system, chat_messages) = split_messages(messages);
+        let system_blocks = system.map(|s| split_system_into_blocks(&s));
 
         let body = RequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
-            system: system.as_deref(),
+            system: system_blocks,
             messages: &chat_messages,
             stream,
         };
@@ -87,6 +93,7 @@ impl ClaudeProvider {
             .post(API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", ANTHROPIC_BETA)
             .header("content-type", "application/json")
             .json(&body)
     }
@@ -128,6 +135,10 @@ impl ClaudeProvider {
             }
 
             let resp: ApiResponse = serde_json::from_str(&text)?;
+
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+            }
 
             return resp
                 .content
@@ -248,10 +259,11 @@ impl LlmProvider for ClaudeProvider {
             })
             .collect();
 
+        let system_blocks = system.map(|s| split_system_into_blocks(&s));
         let body = ToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
-            system: system.as_deref(),
+            system: system_blocks,
             messages: &chat_messages,
             tools: &api_tools,
         };
@@ -262,6 +274,7 @@ impl LlmProvider for ClaudeProvider {
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-beta", ANTHROPIC_BETA)
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
@@ -296,6 +309,9 @@ impl LlmProvider for ClaudeProvider {
             tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
 
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+            }
             let parsed = parse_tool_response(resp);
             tracing::debug!(?parsed, "parsed ChatResponse");
             return Ok(parsed);
@@ -313,6 +329,16 @@ fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
         return Duration::from_secs(secs);
     }
     Duration::from_secs(BASE_BACKOFF_SECS << attempt)
+}
+
+fn log_cache_usage(usage: &ApiUsage) {
+    tracing::debug!(
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        cache_creation = usage.cache_creation_input_tokens,
+        cache_read = usage.cache_read_input_tokens,
+        "Claude API usage"
+    );
 }
 
 fn parse_sse_event(data: &str, event_type: &str) -> Option<Result<String, LlmError>> {
@@ -379,6 +405,88 @@ fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>)
     (system, chat)
 }
 
+#[derive(Serialize, Clone, Debug)]
+struct SystemContentBlock {
+    #[serde(rename = "type")]
+    block_type: &'static str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
+}
+
+fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
+    // Split on volatile marker first: everything before is cacheable
+    let (cacheable_part, volatile_part) = if let Some(pos) = system.find(CACHE_MARKER_VOLATILE) {
+        (
+            &system[..pos],
+            Some(&system[pos + CACHE_MARKER_VOLATILE.len()..]),
+        )
+    } else {
+        (system, None)
+    };
+
+    let mut blocks = Vec::new();
+    let cache_markers = [CACHE_MARKER_STABLE, CACHE_MARKER_TOOLS];
+    let mut remaining = cacheable_part;
+
+    for marker in &cache_markers {
+        if let Some(pos) = remaining.find(marker) {
+            let before = remaining[..pos].trim();
+            if !before.is_empty() {
+                blocks.push(SystemContentBlock {
+                    block_type: "text",
+                    text: before.to_owned(),
+                    cache_control: Some(CacheControl {
+                        cache_type: "ephemeral",
+                    }),
+                });
+            }
+            remaining = &remaining[pos + marker.len()..];
+        }
+    }
+
+    let remaining = remaining.trim();
+    if !remaining.is_empty() {
+        blocks.push(SystemContentBlock {
+            block_type: "text",
+            text: remaining.to_owned(),
+            cache_control: Some(CacheControl {
+                cache_type: "ephemeral",
+            }),
+        });
+    }
+
+    if let Some(volatile) = volatile_part {
+        let volatile = volatile.trim();
+        if !volatile.is_empty() {
+            blocks.push(SystemContentBlock {
+                block_type: "text",
+                text: volatile.to_owned(),
+                cache_control: None,
+            });
+        }
+    }
+
+    // No markers at all: cache the entire prompt as one block
+    if blocks.is_empty() {
+        blocks.push(SystemContentBlock {
+            block_type: "text",
+            text: system.to_owned(),
+            cache_control: Some(CacheControl {
+                cache_type: "ephemeral",
+            }),
+        });
+    }
+
+    blocks
+}
+
 #[derive(Serialize)]
 struct AnthropicTool<'a> {
     name: &'a str,
@@ -391,7 +499,7 @@ struct ToolRequestBody<'a> {
     model: &'a str,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a str>,
+    system: Option<Vec<SystemContentBlock>>,
     messages: &'a [StructuredApiMessage],
     tools: &'a [AnthropicTool<'a>],
 }
@@ -431,6 +539,8 @@ enum AnthropicContentBlock {
 #[derive(Deserialize)]
 struct ToolApiResponse {
     content: Vec<AnthropicContentBlock>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
@@ -548,7 +658,7 @@ struct RequestBody<'a> {
     model: &'a str,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a str>,
+    system: Option<Vec<SystemContentBlock>>,
     messages: &'a [ApiMessage<'a>],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
@@ -563,6 +673,21 @@ struct ApiMessage<'a> {
 #[derive(Deserialize)]
 struct ApiResponse {
     content: Vec<ContentBlock>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(clippy::struct_field_names)]
+struct ApiUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -820,16 +945,24 @@ mod tests {
     }
 
     #[test]
-    fn request_body_serializes_with_system() {
+    fn request_body_serializes_with_system_blocks() {
         let body = RequestBody {
             model: "claude-sonnet-4-5-20250929",
             max_tokens: 1024,
-            system: Some("You are helpful."),
+            system: Some(vec![SystemContentBlock {
+                block_type: "text",
+                text: "You are helpful.".into(),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral",
+                }),
+            }]),
             messages: &[],
             stream: false,
         };
         let json = serde_json::to_string(&body).unwrap();
-        assert!(json.contains("\"system\":\"You are helpful.\""));
+        assert!(json.contains("\"system\""));
+        assert!(json.contains("You are helpful."));
+        assert!(json.contains("\"cache_control\""));
     }
 
     #[test]
@@ -1093,6 +1226,60 @@ mod tests {
     }
 
     #[test]
+    fn split_system_no_markers_caches_entire_block() {
+        let blocks = split_system_into_blocks("You are Zeph, an AI assistant.");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_some());
+        assert!(blocks[0].text.contains("Zeph"));
+    }
+
+    #[test]
+    fn split_system_with_all_markers() {
+        let system = format!(
+            "base prompt\n{CACHE_MARKER_STABLE}\nskills here\n\
+             {CACHE_MARKER_TOOLS}\ntool catalog\n\
+             {CACHE_MARKER_VOLATILE}\nvolatile stuff"
+        );
+        let blocks = split_system_into_blocks(&system);
+        assert_eq!(blocks.len(), 4);
+        assert!(blocks[0].cache_control.is_some());
+        assert!(blocks[0].text.contains("base prompt"));
+        assert!(blocks[1].cache_control.is_some());
+        assert!(blocks[1].text.contains("skills here"));
+        assert!(blocks[2].cache_control.is_some());
+        assert!(blocks[2].text.contains("tool catalog"));
+        assert!(blocks[3].cache_control.is_none());
+        assert!(blocks[3].text.contains("volatile stuff"));
+    }
+
+    #[test]
+    fn split_system_partial_markers() {
+        let system = format!("base prompt\n{CACHE_MARKER_VOLATILE}\nvolatile only");
+        let blocks = split_system_into_blocks(&system);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].cache_control.is_some());
+        assert!(blocks[1].cache_control.is_none());
+    }
+
+    #[test]
+    fn api_usage_deserialization() {
+        let json = r#"{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":1000,"cache_read_input_tokens":900}"#;
+        let usage: ApiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.cache_creation_input_tokens, 1000);
+        assert_eq!(usage.cache_read_input_tokens, 900);
+    }
+
+    #[test]
+    fn api_response_with_usage() {
+        let json = r#"{"content":[{"text":"Hello"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#;
+        let resp: ApiResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.usage.is_some());
+        assert_eq!(resp.usage.unwrap().input_tokens, 10);
+    }
+
+    #[test]
     fn api_response_deserializes() {
         let json = r#"{"content":[{"text":"Hello world"}]}"#;
         let resp: ApiResponse = serde_json::from_str(json).unwrap();
@@ -1203,6 +1390,7 @@ mod tests {
             content: vec![AnthropicContentBlock::Text {
                 text: "Hello".into(),
             }],
+            usage: None,
         };
         let result = parse_tool_response(resp);
         assert!(matches!(result, ChatResponse::Text(s) if s == "Hello"));
@@ -1221,6 +1409,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 },
             ],
+            usage: None,
         };
         let result = parse_tool_response(resp);
         if let ChatResponse::ToolUse { text, tool_calls } = result {
@@ -1241,6 +1430,7 @@ mod tests {
                 name: "read".into(),
                 input: serde_json::json!({"path": "/tmp/file.txt"}),
             }],
+            usage: None,
         };
         let result = parse_tool_response(resp);
         if let ChatResponse::ToolUse { text, tool_calls } = result {

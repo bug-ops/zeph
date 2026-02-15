@@ -674,6 +674,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             system_prompt.push_str(&catalog_prompt);
         }
 
+        system_prompt.push_str("\n<!-- cache:stable -->");
+        system_prompt.push_str("\n<!-- cache:volatile -->");
+
         #[cfg(feature = "mcp")]
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
