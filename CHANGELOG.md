@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ToolDefinition`, `ChatResponse`, `ToolUseRequest` types in zeph-llm (#254)
 - `ToolUse`/`ToolResult` variants in `MessagePart` for structured tool flow (#255)
 - Dual-mode agent loop: native structured path alongside legacy text extraction (#258)
+- Dual system prompt: native tool_use instructions for capable providers, fenced-block instructions for legacy providers
 
 ## [0.9.7] - 2026-02-15
 

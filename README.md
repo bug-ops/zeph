@@ -88,6 +88,7 @@ cargo build --release --features tui
 
 | Feature | Description | Docs |
 |---------|-------------|------|
+| **Native Tool Use** | Structured tool calling via Claude tool_use and OpenAI function calling APIs; automatic fallback to text extraction for local models | [Tools](https://bug-ops.github.io/zeph/guide/tools.html) |
 | **Hybrid Inference** | Ollama, Claude, OpenAI, Candle (GGUF) — local, cloud, or both | [OpenAI](https://bug-ops.github.io/zeph/guide/openai.html) · [Candle](https://bug-ops.github.io/zeph/guide/candle.html) |
 | **Skills-First Architecture** | Embedding-based top-K matching, progressive loading, hot-reload | [Skills](https://bug-ops.github.io/zeph/guide/skills.html) |
 | **Code Indexing** | AST-based chunking (tree-sitter), semantic retrieval, repo map generation, incremental indexing | [Code Indexing](https://bug-ops.github.io/zeph/guide/code-indexing.html) |
@@ -109,7 +110,7 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for t
 ├── zeph-core       — Agent split into 7 submodules (context, streaming, persistence,
 │                     learning, mcp, index), typed AgentError/ChannelError, config hot-reload
 ├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, orchestrator,
-│                     typed LlmError, EmbedFuture/EmbedFn type aliases
+│                     native tool_use (Claude/OpenAI), typed LlmError
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning, typed SkillError
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization, typed MemoryError
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)

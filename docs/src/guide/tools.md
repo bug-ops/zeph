@@ -27,9 +27,24 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 
 See [Security](../security.md#file-executor-sandbox) for details on the path validation mechanism.
 
-## Dual-Mode Execution
+## Native Tool Use
 
-The agent loop supports two tool invocation modes, distinguished by `InvocationHint` on each `ToolDef`:
+Providers that support structured tool calling (Claude, OpenAI) use the native API-level tool mechanism instead of text-based fenced blocks. The agent detects this via `LlmProvider::supports_tool_use()` and switches to the native path automatically.
+
+In native mode:
+
+- Tool definitions (name, description, JSON Schema parameters) are passed to the LLM API alongside the messages.
+- The LLM returns structured `tool_use` content blocks with typed parameters.
+- The agent executes each tool call and sends results back as `tool_result` messages.
+- The system prompt instructs the LLM to use the structured mechanism, not fenced code blocks.
+
+The native path uses the same tool executors and permission checks as the legacy path. The only difference is how tools are invoked and results are returned — structured JSON instead of text parsing.
+
+Types involved: `ToolDefinition` (name + description + JSON Schema), `ChatResponse` (Text or ToolUse), `ToolUseRequest` (id + name + input), and `ToolUse`/`ToolResult` variants in `MessagePart`.
+
+## Legacy Text Extraction
+
+Providers without native tool support (Ollama, Candle) use text-based tool invocation, distinguished by `InvocationHint` on each `ToolDef`:
 
 1. **Fenced block** (`InvocationHint::FencedBlock("bash")` / `FencedBlock("scrape")`) — the LLM emits a fenced code block with the specified tag. `ShellExecutor` handles ` ```bash ` blocks, `WebScrapeExecutor` handles ` ```scrape ` blocks containing JSON with CSS selectors.
 2. **Structured tool call** (`InvocationHint::ToolCall`) — the LLM emits a `ToolCall` with `tool_id` and typed `params`. `CompositeExecutor` routes the call to `FileExecutor` for file tools.
