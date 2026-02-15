@@ -93,7 +93,11 @@ Pull requests are automatically merged when:
 - The PR has been approved by at least one reviewer
 - The PR is not in draft mode
 
-Once these conditions are met, the auto-merge workflow will enable GitHub's auto-merge feature with squash strategy. The PR will be merged automatically when all branch protection requirements are satisfied.
+Once these conditions are met, the auto-merge workflow will:
+1. Update the PR branch with the latest changes from the default branch (using merge commit)
+2. Enable GitHub's auto-merge feature with squash strategy
+
+The PR will be merged automatically when all branch protection requirements are satisfied.
 
 ## Commit Messages
 
