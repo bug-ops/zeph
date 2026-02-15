@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Native tool_use support for Claude provider (Anthropic API format) (#256)
+- Native function calling support for OpenAI provider (#257)
+- `ToolDefinition`, `ChatResponse`, `ToolUseRequest` types in zeph-llm (#254)
+- `ToolUse`/`ToolResult` variants in `MessagePart` for structured tool flow (#255)
+- Dual-mode agent loop: native structured path alongside legacy text extraction (#258)
+
 ## [0.9.7] - 2026-02-15
 
 ### Performance
