@@ -238,6 +238,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         });
     }
 
+    #[cfg(test)]
     pub(super) async fn inject_semantic_recall(
         &mut self,
         query: &str,
@@ -245,18 +246,34 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> Result<(), super::error::AgentError> {
         self.remove_recall_messages();
 
-        let Some(memory) = &self.memory_state.memory else {
-            return Ok(());
+        if let Some(msg) =
+            Self::fetch_semantic_recall(&self.memory_state, query, token_budget).await?
+        {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn fetch_semantic_recall(
+        memory_state: &super::MemoryState<P>,
+        query: &str,
+        token_budget: usize,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        let Some(memory) = &memory_state.memory else {
+            return Ok(None);
         };
-        if self.memory_state.recall_limit == 0 || token_budget == 0 {
-            return Ok(());
+        if memory_state.recall_limit == 0 || token_budget == 0 {
+            return Ok(None);
         }
 
         let recalled = memory
-            .recall(query, self.memory_state.recall_limit, None)
+            .recall(query, memory_state.recall_limit, None)
             .await?;
         if recalled.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut recall_text = String::from(RECALL_PREFIX);
@@ -277,17 +294,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tokens_used += entry_tokens;
         }
 
-        if tokens_used > estimate_tokens(RECALL_PREFIX) && self.messages.len() > 1 {
-            self.messages.insert(
-                1,
-                Message::from_parts(
-                    Role::System,
-                    vec![MessagePart::Recall { text: recall_text }],
-                ),
-            );
+        if tokens_used > estimate_tokens(RECALL_PREFIX) {
+            Ok(Some(Message::from_parts(
+                Role::System,
+                vec![MessagePart::Recall { text: recall_text }],
+            )))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
     pub(super) fn remove_code_context_messages(&mut self) {
@@ -335,6 +349,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         });
     }
 
+    #[cfg(test)]
     async fn inject_cross_session_context(
         &mut self,
         query: &str,
@@ -342,16 +357,31 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> Result<(), super::error::AgentError> {
         self.remove_cross_session_messages();
 
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
-            return Ok(());
-        };
-        if token_budget == 0 {
-            return Ok(());
+        if let Some(msg) =
+            Self::fetch_cross_session(&self.memory_state, query, token_budget).await?
+        {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+                tracing::debug!("injected cross-session context");
+            }
         }
 
-        let threshold = self.memory_state.cross_session_score_threshold;
+        Ok(())
+    }
+
+    async fn fetch_cross_session(
+        memory_state: &super::MemoryState<P>,
+        query: &str,
+        token_budget: usize,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
+            return Ok(None);
+        };
+        if token_budget == 0 {
+            return Ok(None);
+        }
+
+        let threshold = memory_state.cross_session_score_threshold;
         let results: Vec<_> = memory
             .search_session_summaries(query, 5, Some(cid))
             .await?
@@ -359,7 +389,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter(|r| r.score >= threshold)
             .collect();
         if results.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut text = String::from(CROSS_SESSION_PREFIX);
@@ -375,35 +405,47 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tokens_used += cost;
         }
 
-        if tokens_used > estimate_tokens(CROSS_SESSION_PREFIX) && self.messages.len() > 1 {
-            self.messages.insert(
-                1,
-                Message::from_parts(Role::System, vec![MessagePart::CrossSession { text }]),
-            );
-            tracing::debug!(tokens_used, "injected cross-session context");
+        if tokens_used > estimate_tokens(CROSS_SESSION_PREFIX) {
+            Ok(Some(Message::from_parts(
+                Role::System,
+                vec![MessagePart::CrossSession { text }],
+            )))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
+    #[cfg(test)]
     async fn inject_summaries(
         &mut self,
         token_budget: usize,
     ) -> Result<(), super::error::AgentError> {
         self.remove_summary_messages();
 
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
-            return Ok(());
+        if let Some(msg) = Self::fetch_summaries(&self.memory_state, token_budget).await? {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+                tracing::debug!("injected summaries into context");
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn fetch_summaries(
+        memory_state: &super::MemoryState<P>,
+        token_budget: usize,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
+            return Ok(None);
         };
         if token_budget == 0 {
-            return Ok(());
+            return Ok(None);
         }
 
         let summaries = memory.load_summaries(cid).await?;
         if summaries.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut summary_text = String::from(SUMMARY_PREFIX);
@@ -422,18 +464,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tokens_used += cost;
         }
 
-        if tokens_used > estimate_tokens(SUMMARY_PREFIX) && self.messages.len() > 1 {
-            self.messages.insert(
-                1,
-                Message::from_parts(
-                    Role::System,
-                    vec![MessagePart::Summary { text: summary_text }],
-                ),
-            );
-            tracing::debug!(tokens_used, "injected summaries into context");
+        if tokens_used > estimate_tokens(SUMMARY_PREFIX) {
+            Ok(Some(Message::from_parts(
+                Role::System,
+                vec![MessagePart::Summary { text: summary_text }],
+            )))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
     fn trim_messages_to_budget(&mut self, token_budget: usize) {
@@ -485,16 +523,51 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
         let alloc = budget.allocate(system_prompt, &self.skill_state.last_skills_prompt);
 
-        self.inject_summaries(alloc.summaries).await?;
+        // Remove stale injected messages before concurrent fetch
+        self.remove_summary_messages();
+        self.remove_cross_session_messages();
+        self.remove_recall_messages();
+        #[cfg(feature = "index")]
+        self.remove_code_context_messages();
 
-        self.inject_cross_session_context(query, alloc.cross_session)
-            .await?;
-
-        self.inject_semantic_recall(query, alloc.semantic_recall)
-            .await?;
+        // Fetch all context sources concurrently
+        #[cfg(not(feature = "index"))]
+        let (summaries_msg, cross_session_msg, recall_msg) = tokio::try_join!(
+            Self::fetch_summaries(&self.memory_state, alloc.summaries),
+            Self::fetch_cross_session(&self.memory_state, query, alloc.cross_session),
+            Self::fetch_semantic_recall(&self.memory_state, query, alloc.semantic_recall),
+        )?;
 
         #[cfg(feature = "index")]
-        self.inject_code_rag(query, alloc.code_context).await?;
+        let (summaries_msg, cross_session_msg, recall_msg, code_rag_text) = tokio::try_join!(
+            Self::fetch_summaries(&self.memory_state, alloc.summaries),
+            Self::fetch_cross_session(&self.memory_state, query, alloc.cross_session),
+            Self::fetch_semantic_recall(&self.memory_state, query, alloc.semantic_recall),
+            Self::fetch_code_rag(&self.index, query, alloc.code_context),
+        )?;
+
+        // Insert fetched messages (order: recall, cross-session, summaries at position 1)
+        if let Some(msg) = recall_msg {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+            }
+        }
+        if let Some(msg) = cross_session_msg {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+            }
+        }
+        if let Some(msg) = summaries_msg {
+            if self.messages.len() > 1 {
+                self.messages.insert(1, msg);
+                tracing::debug!("injected summaries into context");
+            }
+        }
+
+        #[cfg(feature = "index")]
+        if let Some(text) = code_rag_text {
+            self.inject_code_context(&text);
+        }
 
         self.trim_messages_to_budget(alloc.recent_history);
 
