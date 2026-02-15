@@ -222,7 +222,12 @@ mod tests {
 
     #[test]
     fn with_skills() {
-        let prompt = build_system_prompt("<available_skills>test</available_skills>", None, None, false);
+        let prompt = build_system_prompt(
+            "<available_skills>test</available_skills>",
+            None,
+            None,
+            false,
+        );
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<available_skills>"));
     }

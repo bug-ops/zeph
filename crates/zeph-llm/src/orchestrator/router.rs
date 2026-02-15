@@ -6,9 +6,7 @@ use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
-use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition,
-};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
 /// Inner provider enum without the Orchestrator variant to break recursive type cycles.
 #[derive(Debug, Clone)]

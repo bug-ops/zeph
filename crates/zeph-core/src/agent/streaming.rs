@@ -11,11 +11,17 @@ use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         if self.provider.supports_tool_use() {
-            tracing::debug!(provider = self.provider.name(), "using native tool_use path");
+            tracing::debug!(
+                provider = self.provider.name(),
+                "using native tool_use path"
+            );
             return self.process_response_native_tools().await;
         }
 
-        tracing::debug!(provider = self.provider.name(), "using legacy text extraction path");
+        tracing::debug!(
+            provider = self.provider.name(),
+            "using legacy text extraction path"
+        );
         self.doom_loop_history.clear();
 
         for iteration in 0..self.max_tool_iterations {

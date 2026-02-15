@@ -290,10 +290,7 @@ impl ToolExecutor for ShellExecutor {
         }]
     }
 
-    async fn execute_tool_call(
-        &self,
-        call: &ToolCall,
-    ) -> Result<Option<ToolOutput>, ToolError> {
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "bash" {
             return Ok(None);
         }
