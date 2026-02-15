@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
-use crate::executor::{ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
+use crate::executor::{ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
 use crate::permissions::{PermissionAction, PermissionPolicy};
 
 const DEFAULT_BLOCKED: &[&str] = &[
@@ -288,6 +288,26 @@ impl ToolExecutor for ShellExecutor {
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::FencedBlock("bash"),
         }]
+    }
+
+    async fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        if call.tool_id != "bash" {
+            return Ok(None);
+        }
+        let command = call
+            .params
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if command.is_empty() {
+            return Ok(None);
+        }
+        // Wrap as a fenced block so execute_inner can extract and run it
+        let synthetic = format!("```bash\n{command}\n```");
+        self.execute_inner(&synthetic, false).await
     }
 }
 
