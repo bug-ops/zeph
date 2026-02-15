@@ -663,7 +663,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         };
         #[allow(unused_mut)]
         let mut system_prompt =
-            build_system_prompt(&skills_prompt, Some(&env), tool_catalog.as_deref());
+            build_system_prompt(
+                &skills_prompt,
+                Some(&env),
+                tool_catalog.as_deref(),
+                self.provider.supports_tool_use(),
+            );
 
         if !catalog_prompt.is_empty() {
             system_prompt.push_str("\n\n");

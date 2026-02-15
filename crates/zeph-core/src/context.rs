@@ -1,9 +1,10 @@
 use zeph_memory::semantic::estimate_tokens;
 
-const BASE_PROMPT: &str = "\
-You are Zeph, an AI coding assistant running in the user's terminal.\n\
-\n\
-## Tool Use\n\
+const BASE_PROMPT_HEADER: &str = "\
+You are Zeph, an AI coding assistant running in the user's terminal.";
+
+const TOOL_USE_LEGACY: &str = "\
+\n\n## Tool Use\n\
 The ONLY way to execute commands is by writing bash in a fenced code block \
 with the `bash` language tag. The block runs automatically and the output is returned to you.\n\
 \n\
@@ -13,11 +14,18 @@ ls -la\n\
 ```\n\
 \n\
 Do NOT invent other formats (tool_code, tool_call, <execute>, etc.). \
-Only ```bash blocks are executed; anything else is treated as plain text.\n\
-\n\
-## Skills\n\
+Only ```bash blocks are executed; anything else is treated as plain text.";
+
+const TOOL_USE_NATIVE: &str = "\
+\n\n## Tool Use\n\
+You have access to tools via the API. Use them by calling the appropriate tool \
+with the required parameters. Do NOT write fenced code blocks to invoke tools; \
+use the structured tool_use mechanism instead.";
+
+const BASE_PROMPT_TAIL: &str = "\
+\n\n## Skills\n\
 Skills are instructions that may appear below inside XML tags. \
-Read them and follow the instructions; use ```bash blocks to act.\n\
+Read them and follow the instructions.\n\
 \n\
 If you see a list of other skill names and descriptions, those are \
 for reference only. You cannot invoke or load them. Ignore them unless \
@@ -41,8 +49,17 @@ pub fn build_system_prompt(
     skills_prompt: &str,
     env: Option<&EnvironmentContext>,
     tool_catalog: Option<&str>,
+    native_tools: bool,
 ) -> String {
-    let mut prompt = BASE_PROMPT.to_string();
+    let mut prompt = BASE_PROMPT_HEADER.to_string();
+
+    if native_tools {
+        prompt.push_str(TOOL_USE_NATIVE);
+    } else {
+        prompt.push_str(TOOL_USE_LEGACY);
+    }
+
+    prompt.push_str(BASE_PROMPT_TAIL);
 
     if let Some(env) = env {
         prompt.push_str("\n\n");
@@ -198,14 +215,14 @@ mod tests {
 
     #[test]
     fn without_skills() {
-        let prompt = build_system_prompt("", None, None);
+        let prompt = build_system_prompt("", None, None, false);
         assert!(prompt.starts_with("You are Zeph"));
         assert!(!prompt.contains("available_skills"));
     }
 
     #[test]
     fn with_skills() {
-        let prompt = build_system_prompt("<available_skills>test</available_skills>", None, None);
+        let prompt = build_system_prompt("<available_skills>test</available_skills>", None, None, false);
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<available_skills>"));
     }
@@ -319,7 +336,7 @@ mod tests {
             os: "linux".into(),
             model_name: "test".into(),
         };
-        let prompt = build_system_prompt("skills here", Some(&env), None);
+        let prompt = build_system_prompt("skills here", Some(&env), None, false);
         assert!(prompt.contains("You are Zeph"));
         assert!(prompt.contains("<environment>"));
         assert!(prompt.contains("skills here"));
@@ -327,7 +344,7 @@ mod tests {
 
     #[test]
     fn build_system_prompt_without_env() {
-        let prompt = build_system_prompt("skills here", None, None);
+        let prompt = build_system_prompt("skills here", None, None, false);
         assert!(prompt.contains("You are Zeph"));
         assert!(!prompt.contains("<environment>"));
         assert!(prompt.contains("skills here"));
@@ -335,7 +352,7 @@ mod tests {
 
     #[test]
     fn base_prompt_contains_guidelines() {
-        let prompt = build_system_prompt("", None, None);
+        let prompt = build_system_prompt("", None, None, false);
         assert!(prompt.contains("## Tool Use"));
         assert!(prompt.contains("## Guidelines"));
         assert!(prompt.contains("## Security"));

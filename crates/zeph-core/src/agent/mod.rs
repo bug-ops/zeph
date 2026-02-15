@@ -142,7 +142,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
-        let system_prompt = build_system_prompt(&skills_prompt, None, None);
+        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
@@ -724,7 +724,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        let system_prompt = build_system_prompt(&skills_prompt, None, None);
+        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
