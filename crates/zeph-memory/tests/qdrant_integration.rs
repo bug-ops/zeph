@@ -8,7 +8,7 @@ use zeph_memory::sqlite::SqliteStore;
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
 
 fn qdrant_image() -> GenericImage {
-    GenericImage::new("qdrant/qdrant", "v1.13.6")
+    GenericImage::new("qdrant/qdrant", "v1.16.0")
         .with_wait_for(WaitFor::message_on_stdout("gRPC listening"))
         .with_exposed_port(QDRANT_GRPC_PORT)
 }
