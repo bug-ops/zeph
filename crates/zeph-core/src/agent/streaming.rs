@@ -6,7 +6,7 @@ use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use zeph_memory::semantic::estimate_tokens;
 
-use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
+use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
@@ -83,6 +83,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             if !self.handle_tool_result(&response, result).await? {
                 return Ok(());
             }
+
+            // Prune tool output bodies from older iterations to reduce context growth
+            self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
 
             // Doom-loop detection: compare last N outputs by string equality
             if let Some(last_msg) = self.messages.last() {
@@ -191,7 +194,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             parts: vec![],
         }];
 
-        match self.provider.chat(&messages).await {
+        match self.summary_or_primary_provider().chat(&messages).await {
             Ok(summary) => format!("[tool output summary]\n```\n{summary}\n```"),
             Err(e) => {
                 tracing::warn!(
@@ -427,6 +430,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             };
             self.handle_native_tool_calls(text.as_deref(), &tool_calls)
                 .await?;
+
+            // Prune tool output bodies from older iterations to reduce context growth
+            self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
 
             if self.check_doom_loop(iteration).await? {
                 break;

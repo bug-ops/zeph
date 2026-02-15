@@ -3,6 +3,9 @@
 name = "Zeph"
 # Maximum tool execution iterations per user message (doom-loop protection)
 max_tool_iterations = 10
+# Optional local model for tool output summarization and context compaction.
+# Format: "ollama/<model>". Falls back to primary provider if unset.
+# summary_model = "ollama/llama3.2"
 
 [llm]
 # LLM provider: "ollama" for local models or "claude" for Claude API

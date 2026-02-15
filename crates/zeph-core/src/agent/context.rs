@@ -84,7 +84,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         );
 
         let summary = self
-            .provider
+            .summary_or_primary_provider()
             .chat(&[Message {
                 role: Role::User,
                 content: compaction_prompt,
@@ -179,6 +179,58 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if freed > 0 {
             self.update_metrics(|m| m.tool_output_prunes += 1);
             tracing::info!(freed, protection_boundary, "pruned tool outputs");
+        }
+        freed
+    }
+
+    /// Inline pruning for tool loops: clear tool output bodies from messages
+    /// older than the last `keep_recent` messages. Called after each tool iteration
+    /// to prevent context growth during long tool loops.
+    pub(crate) fn prune_stale_tool_outputs(&mut self, keep_recent: usize) -> usize {
+        if self.messages.len() <= keep_recent + 1 {
+            return 0;
+        }
+        let boundary = self.messages.len().saturating_sub(keep_recent);
+        let mut freed = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        // Skip system prompt (index 0), prune from 1..boundary
+        for msg in &mut self.messages[1..boundary] {
+            let mut modified = false;
+            for part in &mut msg.parts {
+                match part {
+                    MessagePart::ToolOutput {
+                        body, compacted_at, ..
+                    } if compacted_at.is_none() && !body.is_empty() => {
+                        freed += estimate_tokens(body);
+                        *compacted_at = Some(now);
+                        *body = String::new();
+                        modified = true;
+                    }
+                    MessagePart::ToolResult { content, .. } if estimate_tokens(content) > 20 => {
+                        freed += estimate_tokens(content);
+                        "[pruned]".clone_into(content);
+                        freed -= 1;
+                        modified = true;
+                    }
+                    _ => {}
+                }
+            }
+            if modified {
+                msg.rebuild_content();
+            }
+        }
+        if freed > 0 {
+            self.update_metrics(|m| m.tool_output_prunes += 1);
+            tracing::debug!(
+                freed,
+                boundary,
+                keep_recent,
+                "inline pruned stale tool outputs"
+            );
         }
         freed
     }
@@ -1507,5 +1559,111 @@ mod tests {
         assert_eq!(threshold, 800);
         assert!(800 >= threshold); // at threshold → should stop
         assert!(799 < threshold); // below threshold → should continue
+    }
+
+    #[test]
+    fn prune_stale_tool_outputs_clears_old() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(10000, 0.20, 0.75, 4, 0)
+            .with_metrics(tx);
+
+        // Add 6 messages with tool outputs
+        for i in 0..6 {
+            agent.messages.push(Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolOutput {
+                    tool_name: format!("tool_{i}"),
+                    body: "x".repeat(200),
+                    compacted_at: None,
+                }],
+            ));
+        }
+        // 7 messages total (1 system + 6 user)
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        assert!(freed > 0);
+        assert_eq!(rx.borrow().tool_output_prunes, 1);
+
+        // Messages 1..3 should be pruned (boundary = 7-4=3)
+        for i in 1..3 {
+            if let MessagePart::ToolOutput {
+                body, compacted_at, ..
+            } = &agent.messages[i].parts[0]
+            {
+                assert!(body.is_empty(), "message {i} should be pruned");
+                assert!(compacted_at.is_some());
+            }
+        }
+        // Messages 3..6 should be untouched
+        for i in 3..7 {
+            if let MessagePart::ToolOutput { body, .. } = &agent.messages[i].parts[0] {
+                assert!(!body.is_empty(), "message {i} should be kept");
+            }
+        }
+    }
+
+    #[test]
+    fn prune_stale_tool_outputs_noop_when_few_messages() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: "output".into(),
+                compacted_at: None,
+            }],
+        ));
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn prune_stale_prunes_tool_result_too() {
+        let provider = MockProvider::new(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Add old message with large ToolResult
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "x".repeat(500),
+                is_error: false,
+            }],
+        ));
+        // Add 4 recent messages
+        for _ in 0..4 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: "recent".into(),
+                parts: vec![],
+            });
+        }
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        assert!(freed > 0);
+
+        if let MessagePart::ToolResult { content, .. } = &agent.messages[1].parts[0] {
+            assert_eq!(content, "[pruned]");
+        } else {
+            panic!("expected ToolResult");
+        }
     }
 }

@@ -39,6 +39,8 @@ pub struct AgentConfig {
     pub name: String,
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
+    #[serde(default)]
+    pub summary_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -612,6 +614,7 @@ impl Config {
             agent: AgentConfig {
                 name: "Zeph".into(),
                 max_tool_iterations: 10,
+                summary_model: None,
             },
             llm: LlmConfig {
                 provider: "ollama".into(),

@@ -363,6 +363,19 @@ async fn main() -> anyhow::Result<()> {
     let index_provider = provider.clone();
     let warmup_provider_clone = provider.clone();
 
+    let summary_provider = config.agent.summary_model.as_ref().and_then(|model_spec| {
+        match create_summary_provider(model_spec, &config) {
+            Ok(sp) => {
+                tracing::info!(model = %model_spec, "summary provider configured");
+                Some(sp)
+            }
+            Err(e) => {
+                tracing::warn!("failed to create summary provider: {e:#}, using primary");
+                None
+            }
+        }
+    });
+
     let agent = Agent::new(
         provider,
         channel,
@@ -394,6 +407,12 @@ async fn main() -> anyhow::Result<()> {
     .with_tool_summarization(config.tools.summarize_output)
     .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path.clone(), config_reload_rx);
+
+    let agent = if let Some(sp) = summary_provider {
+        agent.with_summary_provider(sp)
+    } else {
+        agent
+    };
 
     #[cfg(feature = "index")]
     let mut _index_watcher: Option<IndexWatcher> = None;
@@ -836,6 +855,16 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
         other => bail!("unknown LLM provider: {other}"),
+    }
+}
+
+fn create_summary_provider(model_spec: &str, config: &Config) -> anyhow::Result<AnyProvider> {
+    if let Some(model) = model_spec.strip_prefix("ollama/") {
+        let base_url = &config.llm.base_url;
+        let provider = OllamaProvider::new(base_url, model.to_owned(), String::new());
+        Ok(AnyProvider::Ollama(provider))
+    } else {
+        bail!("unsupported summary_model format: {model_spec} (expected 'ollama/<model>')")
     }
 }
 
