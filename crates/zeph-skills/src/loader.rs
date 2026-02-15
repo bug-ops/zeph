@@ -400,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn validate_path_within_rejects_symlink_escape() {
         let base = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -407,16 +408,13 @@ mod tests {
         let outside_file = outside.path().join("secret.txt");
         std::fs::write(&outside_file, "secret").unwrap();
 
-        #[cfg(unix)]
-        {
-            let link_path = base.path().join("evil-link");
-            std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
-            let err = validate_path_within(&link_path, base.path()).unwrap_err();
-            assert!(
-                format!("{err:#}").contains("escapes skills directory"),
-                "expected path traversal error, got: {err:#}"
-            );
-        }
+        let link_path = base.path().join("evil-link");
+        std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
+        let err = validate_path_within(&link_path, base.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("escapes skills directory"),
+            "expected path traversal error, got: {err:#}"
+        );
     }
 
     #[test]
