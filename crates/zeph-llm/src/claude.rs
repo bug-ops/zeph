@@ -293,8 +293,12 @@ impl LlmProvider for ClaudeProvider {
                 )));
             }
 
+            tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
+
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
-            return Ok(parse_tool_response(resp));
+            let parsed = parse_tool_response(resp);
+            tracing::debug!(?parsed, "parsed ChatResponse");
+            return Ok(parsed);
         }
 
         Err(LlmError::RateLimited)

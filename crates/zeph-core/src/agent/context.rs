@@ -649,7 +649,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .last_skills_prompt
             .clone_from(&skills_prompt);
         let env = EnvironmentContext::gather(&self.model_name);
-        let tool_catalog = {
+        let tool_catalog = if self.provider.supports_tool_use() {
+            // Native tool_use: tools are passed via API, skip prompt-based instructions
+            None
+        } else {
             let defs = self.tool_executor.tool_definitions();
             if defs.is_empty() {
                 None

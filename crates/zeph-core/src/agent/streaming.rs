@@ -391,10 +391,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let chat_result = self.call_chat_with_tools(&tool_defs).await?;
 
             let Some(chat_result) = chat_result else {
+                tracing::debug!("chat_with_tools returned None (timeout)");
                 return Ok(());
             };
 
-            // Text/Done → display and return
+            tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
+
+            // Text → display and return
             if let ChatResponse::Text(text) = &chat_result {
                 if !text.is_empty() {
                     let display = self.maybe_redact(text);
