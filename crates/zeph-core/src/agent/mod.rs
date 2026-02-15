@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
-use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
+use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
@@ -407,7 +407,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             1,
             Message::from_parts(
                 Role::System,
-                vec![MessagePart::CodeContext { text: content }],
+                vec![zeph_llm::provider::MessagePart::CodeContext { text: content }],
             ),
         );
     }
@@ -774,7 +774,7 @@ pub(super) mod agent_tests {
     pub(crate) use super::*;
     use crate::channel::ChannelMessage;
     use std::sync::{Arc, Mutex};
-    use zeph_llm::provider::{ChatStream, MessagePart};
+    use zeph_llm::provider::ChatStream;
     use zeph_tools::executor::{ToolError, ToolOutput};
 
     #[derive(Clone)]
