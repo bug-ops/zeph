@@ -32,7 +32,12 @@ zeph-memory.workspace = true
 zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
 
+[[bench]]
+name = "context_building"
+harness = false
+
 [dev-dependencies]
+criterion.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 

@@ -16,8 +16,13 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 
+[[bench]]
+name = "token_estimation"
+harness = false
+
 [dev-dependencies]
 anyhow.workspace = true
+criterion.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-stream.workspace = true

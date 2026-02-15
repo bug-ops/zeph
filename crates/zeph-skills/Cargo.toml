@@ -23,8 +23,13 @@ tracing.workspace = true
 uuid = { workspace = true, optional = true, features = ["v5"] }
 zeph-llm.workspace = true
 
+[[bench]]
+name = "matcher"
+harness = false
+
 [dev-dependencies]
 anyhow.workspace = true
+criterion.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
