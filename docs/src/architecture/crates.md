@@ -27,7 +27,7 @@ LLM provider abstraction and backend implementations.
 - `ClaudeProvider` — Anthropic Messages API with SSE streaming
 - `OpenAiProvider` — OpenAI + compatible APIs (raw reqwest)
 - `CandleProvider` — local GGUF model inference via candle
-- `AnyProvider` — enum dispatch for runtime provider selection
+- `AnyProvider` — enum dispatch for runtime provider selection, generated via `delegate_provider!` macro
 - `ModelOrchestrator` — task-based multi-model routing with fallback chains
 
 ## zeph-skills
@@ -40,7 +40,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 - `QdrantSkillMatcher` — persistent embeddings with BLAKE3 delta sync
 - `format_skills_prompt()` — assembles prompt with OS-filtered resources
 - `format_skills_catalog()` — description-only entries for non-matched skills
-- `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection
+- `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection and canonical path validation
 - Filesystem watcher for hot-reload (500ms debounce)
 
 ## zeph-memory
@@ -48,6 +48,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 SQLite-backed conversation persistence with Qdrant vector search.
 
 - `SqliteStore` — conversations, messages, summaries, skill usage, skill versions
+- `QdrantOps` — shared helper consolidating common Qdrant operations (ensure_collection, upsert, search, delete, scroll), used by `QdrantStore`, `CodeStore`, `QdrantSkillMatcher`, and `McpToolRegistry`
 - `QdrantStore` — vector storage and cosine similarity search with `MessageKind` enum (`Regular` | `Summary`) for payload classification
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
 - Automatic collection creation, graceful degradation without Qdrant
@@ -103,7 +104,7 @@ A2A protocol client and server (optional, feature-gated).
 - `A2aClient` — JSON-RPC 2.0 client with SSE streaming
 - `AgentRegistry` — agent card discovery with TTL cache
 - `AgentCardBuilder` — construct agent cards from runtime config
-- A2A Server — axum-based HTTP server with bearer auth, rate limiting, body size limits
+- A2A Server — axum-based HTTP server with bearer auth, rate limiting with TTL-based eviction (60s sweep, 10K max entries), body size limits
 - `TaskManager` — in-memory task lifecycle management
 
 ## zeph-tui

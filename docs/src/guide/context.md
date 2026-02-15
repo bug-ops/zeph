@@ -51,6 +51,10 @@ When `context_budget_tokens > 0`, the context window is structured as:
 └─────────────────────────────────────────────────┘
 ```
 
+## Parallel Context Preparation
+
+Context sources (summaries, cross-session recall, semantic recall, code RAG) are fetched concurrently via `tokio::try_join!`, reducing context build latency to the slowest single source rather than the sum of all.
+
 ## Proportional Budget Allocation
 
 Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history:

@@ -36,6 +36,7 @@ Commands are validated against a configurable filesystem allowlist before execut
 
 - `allowed_paths = []` (default) restricts access to the working directory only
 - Paths are canonicalized to prevent traversal attacks (`../../etc/passwd`)
+- Relative paths containing `..` segments are rejected before canonicalization as an additional defense layer
 - `allow_network = false` blocks network tools (`curl`, `wget`, `nc`, `ncat`, `netcat`)
 
 ## Destructive Command Confirmation
@@ -91,7 +92,7 @@ Each entry includes timestamp, tool name, command, result (success/blocked/error
 
 LLM responses are scanned for common secret patterns before display:
 
-- Detected patterns: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`
+- Detected patterns: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`, `AIza` (Google API), `glpat-` (GitLab)
 - Secrets replaced with `[REDACTED]` preserving original whitespace formatting
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
 
@@ -138,6 +139,7 @@ Rust-native memory safety guarantees:
 
 - **Minimal `unsafe`:** One audited `unsafe` block behind `candle` feature flag (memory-mapped safetensors loading). Core crates enforce `#![deny(unsafe_code)]`
 - **No panic in production:** `unwrap()` and `expect()` linted via clippy
+- **Reduced attack surface:** Unused database backends (MySQL) and transitive dependencies (RSA) are excluded from the build
 - **Secure dependencies:** All crates audited with `cargo-deny`
 - **MSRV policy:** Rust 1.88+ (Edition 2024) for latest security patches
 

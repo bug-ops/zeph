@@ -32,6 +32,7 @@
 - [Overview](architecture/overview.md)
 - [Crates](architecture/crates.md)
 - [Token Efficiency](architecture/token-efficiency.md)
+- [Performance](architecture/performance.md)
 
 ---
 

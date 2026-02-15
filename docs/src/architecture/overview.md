@@ -43,7 +43,7 @@ zeph (binary)
 The agent loop processes user input in a continuous cycle:
 
 1. Read initial user message via `channel.recv()`
-2. Build context from skills, memory, and environment
+2. Build context from skills, memory, and environment (summaries, cross-session recall, semantic recall, and code RAG are fetched concurrently via `try_join!`)
 3. Stream LLM response token-by-token
 4. Execute any tool calls in the response
 5. Drain queued messages (if any) via `channel.try_recv()` and repeat from step 2

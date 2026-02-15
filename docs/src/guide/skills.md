@@ -90,7 +90,7 @@ skills/
         └── windows.md
 ```
 
-Resources in `scripts/`, `references/`, and `assets/` are loaded on demand with path traversal protection. OS-specific reference files (named `linux.md`, `macos.md`, `windows.md`) are automatically filtered by the current platform.
+Resources in `scripts/`, `references/`, and `assets/` are loaded on demand with path traversal protection. Skill directories are validated via canonical path resolution to ensure they reside under a configured skill root, preventing symlink-based escapes. OS-specific reference files (named `linux.md`, `macos.md`, `windows.md`) are automatically filtered by the current platform.
 
 ### Name Validation
 

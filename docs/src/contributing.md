@@ -57,6 +57,14 @@ cargo +nightly fmt --check
 cargo clippy --all-targets
 ```
 
+### Benchmarks
+
+```bash
+cargo bench -p zeph-memory --bench token_estimation
+cargo bench -p zeph-skills --bench matcher
+cargo bench -p zeph-core --bench context_building
+```
+
 ### Coverage
 
 ```bash

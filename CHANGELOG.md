@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-02-15
+
+### Performance
+- Token estimation uses `len() / 3` for improved accuracy (#328)
+- Explicit tokio feature selection replacing broad feature gates (#326)
+- Concurrent skill embedding for faster startup (#327)
+- Pre-allocate strings in hot paths to reduce allocations (#329)
+- Parallel context building via `try_join!` (#331)
+- Criterion benchmark suite for core operations (#330)
+
+### Security
+- Path traversal protection in shell sandbox (#325)
+- Canonical path validation in skill loader (#322)
+- SSRF protection for MCP server connections (#323)
+- Remove MySQL/RSA vulnerable transitive dependencies (#324)
+- Secret redaction patterns for Google and GitLab tokens (#320)
+- TTL-based eviction for rate limiter entries (#321)
+
+### Changed
+- `QdrantOps` shared helper trait for Qdrant collection operations (#304)
+- `delegate_provider!` macro replacing boilerplate provider delegation (#303)
+- Remove `TuiError` in favor of unified error handling (#302)
+- Generic `recv_optional` replacing per-channel optional receive logic (#301)
+
+### Dependencies
+- Upgraded rmcp to 0.15, toml to 1.0, uuid to 1.21 (#296)
+- Cleaned up deny.toml advisory and license configuration (#312)
+
 ## [0.9.6] - 2026-02-15
 
 ### Changed
@@ -720,7 +748,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/bug-ops/zeph/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/bug-ops/zeph/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/bug-ops/zeph/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/bug-ops/zeph/compare/v0.9.3...v0.9.4

@@ -15,13 +15,13 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and Hugg
 
 ## Why Zeph
 
-**Token-efficient by design.** Most agent frameworks inject every tool and instruction into every prompt. Zeph embeds skills and MCP tools as vectors, then selects only the top-K relevant ones per query via cosine similarity. Prompt size stays O(K) — not O(N) — regardless of how many capabilities are installed.
+**Token-efficient by design.** Most agent frameworks inject every tool and instruction into every prompt. Zeph embeds skills and MCP tools as vectors (with concurrent embedding via `buffer_unordered`), then selects only the top-K relevant ones per query via cosine similarity. Prompt size stays O(K) -- not O(N) -- regardless of how many capabilities are installed.
 
-**Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. Doom-loop detection breaks runaway tool cycles after 3 identical consecutive outputs, with configurable iteration limits (default 10). ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
+**Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Parallel context preparation via `try_join!` and optimized byte-length token estimation. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. Doom-loop detection breaks runaway tool cycles after 3 identical consecutive outputs, with configurable iteration limits (default 10). ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
 
 **Run anywhere.** Local models via Ollama or Candle (GGUF with Metal/CUDA), cloud APIs (Claude, OpenAI, GPT-compatible endpoints like Together AI and Groq), or all of them at once through the multi-model orchestrator with automatic fallback chains.
 
-**Production-ready security.** Shell sandboxing with path restrictions, pattern-based permission policy per tool, destructive command confirmation, file operation sandbox with path traversal protection, tool output overflow-to-file (with LLM-accessible paths), secret redaction, audit logging, SSRF protection, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
+**Production-ready security.** Shell sandboxing with path restrictions and relative path traversal detection, pattern-based permission policy per tool, destructive command confirmation, file operation sandbox with path traversal protection, tool output overflow-to-file (with LLM-accessible paths), secret redaction (AWS, OpenAI, Anthropic, Google, GitLab), audit logging, SSRF protection (including MCP client), rate limiter with TTL-based eviction, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
 
 **Self-improving.** Skills evolve through failure detection, self-reflection, and LLM-generated improvements — with optional manual approval before activation.
 
@@ -94,13 +94,13 @@ cargo build --release --features tui
 | **Context Engineering** | Two-tier context pruning (selective tool-output pruning before LLM compaction), semantic recall injection, proportional budget allocation, token-based protection zone for recent context, config hot-reload | [Context](https://bug-ops.github.io/zeph/guide/context.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) |
 | **Semantic Memory** | SQLite + Qdrant vector search for contextual recall | [Memory](https://bug-ops.github.io/zeph/guide/semantic-memory.html) |
 | **Tool Permissions** | Pattern-based permission policy (allow/ask/deny) with glob matching per tool, excluded denied tools from prompts | [Tools](https://bug-ops.github.io/zeph/guide/tools.html) |
-| **MCP Client** | Connect external tool servers (stdio + HTTP), unified matching | [MCP](https://bug-ops.github.io/zeph/guide/mcp.html) |
+| **MCP Client** | Connect external tool servers (stdio + HTTP), unified matching, SSRF protection | [MCP](https://bug-ops.github.io/zeph/guide/mcp.html) |
 | **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming, delegated task inference through agent pipeline | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
 | **TUI Dashboard** | ratatui terminal UI with markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
 | **Multi-Channel I/O** | CLI, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
-| **Defense-in-Depth** | Shell sandbox, file sandbox with path traversal protection, command filter, secret redaction, audit log, SSRF protection, doom-loop detection | [Security](https://bug-ops.github.io/zeph/security.html) |
+| **Defense-in-Depth** | Shell sandbox with relative path traversal detection, file sandbox, command filter, secret redaction (Google/GitLab patterns), audit log, SSRF protection (agent + MCP), rate limiter TTL eviction, doom-loop detection | [Security](https://bug-ops.github.io/zeph/security.html) |
 
 ## Architecture
 
@@ -120,7 +120,7 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for t
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)
 ```
 
-**Error handling:** Typed errors throughout all library crates -- `AgentError` (7 variants), `ChannelError` (4 variants), `LlmError`, `MemoryError`, `SkillError`. `anyhow` is used only in `main.rs` for top-level orchestration.
+**Error handling:** Typed errors throughout all library crates -- `AgentError` (7 variants), `ChannelError` (4 variants), `LlmError`, `MemoryError`, `SkillError`. `anyhow` is used only in `main.rs` for top-level orchestration. Shared Qdrant operations consolidated via `QdrantOps` helper. `AnyProvider` dispatch deduplicated via `delegate_provider!` macro.
 
 **Agent decomposition:** The agent module in `zeph-core` is split into 7 submodules (`mod.rs`, `context.rs`, `streaming.rs`, `persistence.rs`, `learning.rs`, `mcp.rs`, `index.rs`) with 5 inner field-grouping structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`).
 

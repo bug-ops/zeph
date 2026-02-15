@@ -8133,7 +8133,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -8155,7 +8155,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "axum 0.8.8",
  "eventsource-stream",
@@ -8178,7 +8178,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "criterion",
  "pulldown-cmark",
@@ -8191,7 +8191,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "age",
  "anyhow",
@@ -8217,7 +8217,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "blake3",
  "ignore",
@@ -8249,7 +8249,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -8271,7 +8271,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "blake3",
  "qdrant-client",
@@ -8290,7 +8290,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "criterion",
@@ -8308,7 +8308,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -8329,7 +8329,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "dirs",
  "filetime",
@@ -8351,7 +8351,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "crossterm",
