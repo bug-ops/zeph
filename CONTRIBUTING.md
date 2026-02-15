@@ -81,6 +81,15 @@ cargo llvm-cov --all-features --workspace
 4. Ensure all checks pass: `cargo +nightly fmt`, `cargo clippy`, `cargo nextest run --lib --bins`
 5. Write a clear PR description following the template
 
+### Auto-merge
+
+Pull requests are automatically merged when:
+- All CI checks pass (lint, tests, integration tests, coverage, Docker build and security scan)
+- The PR has been approved by at least one reviewer
+- The PR is not in draft mode
+
+Once these conditions are met, the auto-merge workflow will enable GitHub's auto-merge feature with squash strategy. The PR will be merged automatically when all branch protection requirements are satisfied.
+
 ## Commit Messages
 
 - Use imperative mood: "Add feature" not "Added feature"
