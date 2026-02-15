@@ -547,21 +547,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         )?;
 
         // Insert fetched messages (order: recall, cross-session, summaries at position 1)
-        if let Some(msg) = recall_msg {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-            }
+        if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
+            self.messages.insert(1, msg);
         }
-        if let Some(msg) = cross_session_msg {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-            }
+        if let Some(msg) = cross_session_msg.filter(|_| self.messages.len() > 1) {
+            self.messages.insert(1, msg);
         }
-        if let Some(msg) = summaries_msg {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-                tracing::debug!("injected summaries into context");
-            }
+        if let Some(msg) = summaries_msg.filter(|_| self.messages.len() > 1) {
+            self.messages.insert(1, msg);
+            tracing::debug!("injected summaries into context");
         }
 
         #[cfg(feature = "index")]
