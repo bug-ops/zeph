@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use zeph_llm::provider::MessagePart;
 use zeph_memory::semantic::estimate_tokens;
 use zeph_skills::prompt::format_skills_catalog;
@@ -49,18 +51,22 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        let history_text: String = to_compact
+        let estimated_len: usize = to_compact
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => "system",
-                };
-                format!("[{role}]: {}", m.content)
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+            .map(|m| "[assistant]: ".len() + m.content.len() + 2)
+            .sum();
+        let mut history_text = String::with_capacity(estimated_len);
+        for (i, m) in to_compact.iter().enumerate() {
+            if i > 0 {
+                history_text.push_str("\n\n");
+            }
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let _ = write!(history_text, "[{role}]: {}", m.content);
+        }
 
         let compaction_prompt = format!(
             "Summarize this conversation excerpt into a structured continuation note. \
