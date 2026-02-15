@@ -9,6 +9,38 @@ use crate::error::LlmError;
 /// Boxed stream of string chunks from an LLM provider.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
 
+/// Minimal tool definition for LLM providers.
+///
+/// Decoupled from `zeph-tools::ToolDef` to avoid cross-crate dependency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema object describing parameters.
+    pub parameters: serde_json::Value,
+}
+
+/// Structured tool invocation request from the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolUseRequest {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
+/// Response from `chat_with_tools()`.
+#[derive(Debug, Clone)]
+pub enum ChatResponse {
+    /// Model produced text output only.
+    Text(String),
+    /// Model requests one or more tool invocations.
+    ToolUse {
+        /// Any text the model emitted before/alongside tool calls.
+        text: Option<String>,
+        tool_calls: Vec<ToolUseRequest>,
+    },
+}
+
 /// Boxed future returning an embedding vector.
 pub type EmbedFuture = Pin<Box<dyn Future<Output = Result<Vec<f32>, LlmError>> + Send>>;
 
@@ -49,6 +81,17 @@ pub enum MessagePart {
     },
     CrossSession {
         text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
     },
 }
 
@@ -113,6 +156,16 @@ impl Message {
                         let _ = write!(out, "[tool output: {tool_name}]\n```\n{body}\n```");
                     }
                 }
+                MessagePart::ToolUse { id, name, .. } => {
+                    let _ = write!(out, "[tool_use: {name}({id})]");
+                }
+                MessagePart::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => {
+                    let _ = write!(out, "[tool_result: {tool_use_id}]\n{content}");
+                }
             }
         }
         out
@@ -159,6 +212,30 @@ pub trait LlmProvider: Send + Sync {
 
     /// Provider name for logging and identification.
     fn name(&self) -> &'static str;
+
+    /// Whether this provider supports native `tool_use` / function calling.
+    fn supports_tool_use(&self) -> bool {
+        false
+    }
+
+    /// Send messages with tool definitions, returning a structured response.
+    ///
+    /// Default: falls back to `chat()` and wraps the result in `ChatResponse::Text`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider fails to communicate or the response is invalid.
+    fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> impl Future<Output = Result<ChatResponse, LlmError>> + Send {
+        async {
+            let _ = tools;
+            let text = self.chat(messages).await?;
+            Ok(ChatResponse::Text(text))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -502,6 +579,132 @@ mod tests {
 
         assert!(msg.content.contains("(pruned)"));
         assert!(!msg.content.contains("original"));
+    }
+
+    #[test]
+    fn message_part_tool_use_serde_round_trip() {
+        let part = MessagePart::ToolUse {
+            id: "toolu_123".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let deserialized: MessagePart = serde_json::from_str(&json).unwrap();
+        if let MessagePart::ToolUse { id, name, input } = deserialized {
+            assert_eq!(id, "toolu_123");
+            assert_eq!(name, "bash");
+            assert_eq!(input["command"], "ls");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn message_part_tool_result_serde_round_trip() {
+        let part = MessagePart::ToolResult {
+            tool_use_id: "toolu_123".into(),
+            content: "file1.rs\nfile2.rs".into(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let deserialized: MessagePart = serde_json::from_str(&json).unwrap();
+        if let MessagePart::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = deserialized
+        {
+            assert_eq!(tool_use_id, "toolu_123");
+            assert_eq!(content, "file1.rs\nfile2.rs");
+            assert!(!is_error);
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn message_part_tool_result_is_error_default() {
+        let json = r#"{"kind":"tool_result","tool_use_id":"id","content":"err"}"#;
+        let part: MessagePart = serde_json::from_str(json).unwrap();
+        if let MessagePart::ToolResult { is_error, .. } = part {
+            assert!(!is_error);
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn chat_response_construction() {
+        let text = ChatResponse::Text("hello".into());
+        assert!(matches!(text, ChatResponse::Text(s) if s == "hello"));
+
+        let tool_use = ChatResponse::ToolUse {
+            text: Some("I'll run that".into()),
+            tool_calls: vec![ToolUseRequest {
+                id: "1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            }],
+        };
+        assert!(matches!(tool_use, ChatResponse::ToolUse { .. }));
+    }
+
+    #[test]
+    fn flatten_parts_tool_use() {
+        let msg = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        );
+        assert!(msg.content.contains("[tool_use: bash(t1)]"));
+    }
+
+    #[test]
+    fn flatten_parts_tool_result() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output here".into(),
+                is_error: false,
+            }],
+        );
+        assert!(msg.content.contains("[tool_result: t1]"));
+        assert!(msg.content.contains("output here"));
+    }
+
+    #[test]
+    fn tool_definition_serde_round_trip() {
+        let def = ToolDefinition {
+            name: "bash".into(),
+            description: "Execute a shell command".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let deserialized: ToolDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "bash");
+        assert_eq!(deserialized.description, "Execute a shell command");
+    }
+
+    #[tokio::test]
+    async fn supports_tool_use_default_returns_false() {
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(!provider.supports_tool_use());
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_default_delegates_to_chat() {
+        let provider = StubProvider {
+            response: "hello".into(),
+        };
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result = provider.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(s) if s == "hello"));
     }
 
     #[test]

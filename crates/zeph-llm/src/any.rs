@@ -6,7 +6,7 @@ use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 #[cfg(feature = "orchestrator")]
 use crate::orchestrator::ModelOrchestrator;
-use crate::provider::{ChatStream, LlmProvider, Message, StatusTx};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
 /// and evaluating the given closure for each arm.
@@ -85,6 +85,18 @@ impl LlmProvider for AnyProvider {
 
     fn name(&self) -> &'static str {
         delegate_provider!(self, |p| p.name())
+    }
+
+    fn supports_tool_use(&self) -> bool {
+        delegate_provider!(self, |p| p.supports_tool_use())
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, crate::LlmError> {
+        delegate_provider!(self, |p| p.chat_with_tools(messages, tools).await)
     }
 }
 

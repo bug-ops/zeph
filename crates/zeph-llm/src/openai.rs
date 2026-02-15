@@ -6,7 +6,10 @@ use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, Role, StatusTx};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
+    ToolUseRequest,
+};
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -124,7 +127,7 @@ impl OpenAiProvider {
             )));
         }
 
-        let resp: ChatResponse = serde_json::from_str(&text)?;
+        let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
 
         resp.choices
             .first()
@@ -271,6 +274,101 @@ impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &'static str {
         "openai"
     }
+
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        let api_messages = convert_messages_structured(messages);
+        let reasoning = self
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| Reasoning { effort });
+
+        let api_tools: Vec<OpenAiTool> = tools
+            .iter()
+            .map(|t| OpenAiTool {
+                r#type: "function",
+                function: OpenAiFunction {
+                    name: &t.name,
+                    description: &t.description,
+                    parameters: &t.parameters,
+                },
+            })
+            .collect();
+
+        let body = ToolChatRequest {
+            model: &self.model,
+            messages: &api_messages,
+            max_tokens: self.max_tokens,
+            tools: &api_tools,
+            reasoning,
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(LlmError::RateLimited);
+        }
+
+        if !status.is_success() {
+            tracing::error!("OpenAI API error {status}: {text}");
+            return Err(LlmError::Other(format!(
+                "OpenAI API request failed (status {status})"
+            )));
+        }
+
+        let resp: ToolChatResponse = serde_json::from_str(&text)?;
+
+        let choice = resp
+            .choices
+            .into_iter()
+            .next()
+            .ok_or(LlmError::EmptyResponse { provider: "openai" })?;
+
+        if let Some(tool_calls) = choice.message.tool_calls
+            && !tool_calls.is_empty()
+        {
+            let text = if choice.message.content.is_empty() {
+                None
+            } else {
+                Some(choice.message.content)
+            };
+            let calls = tool_calls
+                .into_iter()
+                .map(|tc| {
+                    let input = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                    ToolUseRequest {
+                        id: tc.id,
+                        name: tc.function.name,
+                        input,
+                    }
+                })
+                .collect();
+            return Ok(ChatResponse::ToolUse {
+                text,
+                tool_calls: calls,
+            });
+        }
+
+        Ok(ChatResponse::Text(choice.message.content))
+    }
 }
 
 fn parse_sse_event(data: &str) -> Option<Result<String, LlmError>> {
@@ -338,7 +436,7 @@ struct ApiMessage<'a> {
 }
 
 #[derive(Deserialize)]
-struct ChatResponse {
+struct OpenAiChatResponse {
     choices: Vec<ChatChoice>,
 }
 
@@ -366,6 +464,178 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenAiTool<'a> {
+    r#type: &'a str,
+    function: OpenAiFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunction<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ToolChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [StructuredApiMessage],
+    max_tokens: u32,
+    tools: &'a [OpenAiTool<'a>],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning<'a>>,
+}
+
+#[derive(Serialize)]
+struct StructuredApiMessage {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiToolCallOut>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolCallOut {
+    id: String,
+    r#type: String,
+    function: OpenAiFunctionCall,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Deserialize)]
+struct ToolChatResponse {
+    choices: Vec<ToolChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ToolChatChoice {
+    message: ToolChatMessage,
+}
+
+#[derive(Deserialize)]
+struct ToolChatMessage {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolCall {
+    id: String,
+    function: OpenAiToolCallFunction,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage> {
+    let mut result = Vec::new();
+
+    for msg in messages {
+        let has_tool_parts = msg.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolUse { .. } | MessagePart::ToolResult { .. }
+            )
+        });
+
+        if has_tool_parts {
+            // Assistant messages with ToolUse parts → tool_calls field
+            if msg.role == Role::Assistant {
+                let text_content: String = msg
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                let tool_calls: Vec<OpenAiToolCallOut> = msg
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::ToolUse { id, name, input } => Some(OpenAiToolCallOut {
+                            id: id.clone(),
+                            r#type: "function".to_owned(),
+                            function: OpenAiFunctionCall {
+                                name: name.clone(),
+                                arguments: serde_json::to_string(input).unwrap_or_default(),
+                            },
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+
+                result.push(StructuredApiMessage {
+                    role: "assistant".to_owned(),
+                    content: text_content,
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
+                    tool_call_id: None,
+                });
+            } else {
+                // User messages with ToolResult parts → role: "tool" messages
+                for part in &msg.parts {
+                    match part {
+                        MessagePart::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            result.push(StructuredApiMessage {
+                                role: "tool".to_owned(),
+                                content: content.clone(),
+                                tool_calls: None,
+                                tool_call_id: Some(tool_use_id.clone()),
+                            });
+                        }
+                        MessagePart::Text { text } if !text.is_empty() => {
+                            result.push(StructuredApiMessage {
+                                role: "user".to_owned(),
+                                content: text.clone(),
+                                tool_calls: None,
+                                tool_call_id: None,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        } else {
+            let role = match msg.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            result.push(StructuredApiMessage {
+                role: role.to_owned(),
+                content: msg.to_llm_content().to_owned(),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+    }
+
+    result
 }
 
 #[derive(Serialize)]
@@ -558,7 +828,7 @@ mod tests {
     #[test]
     fn parse_chat_response() {
         let json = r#"{"choices":[{"message":{"content":"Hello!"}}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: OpenAiChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 1);
         assert_eq!(resp.choices[0].message.content, "Hello!");
     }
@@ -745,7 +1015,7 @@ mod tests {
     #[test]
     fn chat_response_empty_choices() {
         let json = r#"{"choices":[]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: OpenAiChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.choices.is_empty());
     }
 
@@ -854,5 +1124,105 @@ mod tests {
 
         let embedding = provider.embed("Hello world").await.unwrap();
         assert!(!embedding.is_empty());
+    }
+
+    #[test]
+    fn supports_tool_use_returns_true() {
+        assert!(test_provider().supports_tool_use());
+    }
+
+    #[test]
+    fn openai_tool_serialization() {
+        let tool = OpenAiTool {
+            r#type: "function",
+            function: OpenAiFunction {
+                name: "bash",
+                description: "Execute a shell command",
+                parameters: &serde_json::json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"]
+                }),
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"type\":\"function\""));
+        assert!(json.contains("\"name\":\"bash\""));
+        assert!(json.contains("\"parameters\""));
+    }
+
+    #[test]
+    fn parse_tool_chat_response_with_tool_calls() {
+        let json = r#"{
+            "choices": [{
+                "message": {
+                    "content": "I'll run that",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let resp: ToolChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        let tc = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].id, "call_123");
+        assert_eq!(tc[0].function.name, "bash");
+    }
+
+    #[test]
+    fn parse_tool_chat_response_text_only() {
+        let json = r#"{"choices":[{"message":{"content":"Hello!"}}]}"#;
+        let resp: ToolChatResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.choices[0].message.tool_calls.is_none());
+    }
+
+    #[test]
+    fn convert_messages_structured_with_tool_parts() {
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "Running command".into(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "call_1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command": "ls"}),
+                    },
+                ],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "file1.rs".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+        let result = convert_messages_structured(&messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "assistant");
+        assert!(result[0].tool_calls.is_some());
+        assert_eq!(result[1].role, "tool");
+        assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn convert_messages_structured_plain_messages() {
+        let messages = vec![Message::from_legacy(Role::User, "hello")];
+        let result = convert_messages_structured(&messages);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "hello");
+        assert!(result[0].tool_calls.is_none());
     }
 }

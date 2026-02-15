@@ -1,6 +1,6 @@
 use tokio_stream::StreamExt;
-use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
+use zeph_llm::provider::{ChatResponse, LlmProvider, Message, MessagePart, Role, ToolDefinition};
+use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
@@ -10,6 +10,10 @@ use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
+        if self.provider.supports_tool_use() {
+            return self.process_response_native_tools().await;
+        }
+
         self.doom_loop_history.clear();
 
         for iteration in 0..self.max_tool_iterations {
@@ -346,5 +350,204 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         } else {
             std::borrow::Cow::Borrowed(text)
         }
+    }
+
+    async fn process_response_native_tools(&mut self) -> Result<(), super::error::AgentError> {
+        self.doom_loop_history.clear();
+
+        let tool_defs: Vec<ToolDefinition> = self
+            .tool_executor
+            .tool_definitions()
+            .iter()
+            .map(tool_def_to_definition)
+            .collect();
+
+        for iteration in 0..self.max_tool_iterations {
+            self.channel.send_typing().await?;
+
+            if let Some(ref budget) = self.context_state.budget {
+                let used: usize = self
+                    .messages
+                    .iter()
+                    .map(|m| estimate_tokens(&m.content))
+                    .sum();
+                let threshold = budget.max_tokens() * 4 / 5;
+                if used >= threshold {
+                    tracing::warn!(
+                        iteration,
+                        used,
+                        threshold,
+                        "stopping tool loop: context budget nearing limit"
+                    );
+                    self.channel
+                        .send("Stopping: context window is nearly full.")
+                        .await?;
+                    break;
+                }
+            }
+
+            let chat_result = self.call_chat_with_tools(&tool_defs).await?;
+
+            let Some(chat_result) = chat_result else {
+                return Ok(());
+            };
+
+            // Text/Done → display and return
+            if let ChatResponse::Text(text) = &chat_result {
+                if !text.is_empty() {
+                    let display = self.maybe_redact(text);
+                    self.channel.send(&display).await?;
+                }
+                self.messages
+                    .push(Message::from_legacy(Role::Assistant, text.as_str()));
+                self.persist_message(Role::Assistant, text).await;
+                return Ok(());
+            }
+
+            // ToolUse → execute tools and loop
+            let ChatResponse::ToolUse { text, tool_calls } = chat_result else {
+                unreachable!();
+            };
+            self.handle_native_tool_calls(text.as_deref(), &tool_calls)
+                .await?;
+
+            if self.check_doom_loop(iteration).await? {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn call_chat_with_tools(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+    ) -> Result<Option<ChatResponse>, super::error::AgentError> {
+        let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
+        let start = std::time::Instant::now();
+
+        let result = if let Ok(result) = tokio::time::timeout(
+            llm_timeout,
+            self.provider.chat_with_tools(&self.messages, tool_defs),
+        )
+        .await
+        {
+            result?
+        } else {
+            self.channel
+                .send("LLM request timed out. Please try again.")
+                .await?;
+            return Ok(None);
+        };
+
+        let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.last_llm_latency_ms = latency;
+        });
+
+        Ok(Some(result))
+    }
+
+    async fn handle_native_tool_calls(
+        &mut self,
+        text: Option<&str>,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    ) -> Result<(), super::error::AgentError> {
+        if let Some(t) = text
+            && !t.is_empty()
+        {
+            let display = self.maybe_redact(t);
+            self.channel.send(&display).await?;
+        }
+
+        let mut parts: Vec<MessagePart> = Vec::new();
+        if let Some(t) = text
+            && !t.is_empty()
+        {
+            parts.push(MessagePart::Text { text: t.to_owned() });
+        }
+        for tc in tool_calls {
+            parts.push(MessagePart::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.input.clone(),
+            });
+        }
+        let assistant_msg = Message::from_parts(Role::Assistant, parts);
+        self.persist_message(Role::Assistant, &assistant_msg.content)
+            .await;
+        self.messages.push(assistant_msg);
+
+        let mut result_parts: Vec<MessagePart> = Vec::new();
+        for tc in tool_calls {
+            let params: std::collections::HashMap<String, serde_json::Value> =
+                if let serde_json::Value::Object(map) = &tc.input {
+                    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+            let call = ToolCall {
+                tool_id: tc.name.clone(),
+                params,
+            };
+
+            let (output, is_error) = match self.tool_executor.execute_tool_call(&call).await {
+                Ok(Some(out)) => (out.summary, false),
+                Ok(None) => ("(no output)".to_owned(), false),
+                Err(e) => (format!("[error] {e}"), true),
+            };
+
+            let processed = self.maybe_summarize_tool_output(&output).await;
+            let formatted = format_tool_output(&tc.name, &processed);
+            let display = self.maybe_redact(&formatted);
+            self.channel.send(&display).await?;
+
+            result_parts.push(MessagePart::ToolResult {
+                tool_use_id: tc.id.clone(),
+                content: processed,
+                is_error,
+            });
+        }
+
+        let user_msg = Message::from_parts(Role::User, result_parts);
+        self.persist_message(Role::User, &user_msg.content).await;
+        self.messages.push(user_msg);
+
+        Ok(())
+    }
+
+    /// Returns `true` if a doom loop was detected and the caller should break.
+    async fn check_doom_loop(
+        &mut self,
+        iteration: usize,
+    ) -> Result<bool, super::error::AgentError> {
+        if let Some(last_msg) = self.messages.last() {
+            self.doom_loop_history.push(last_msg.content.clone());
+            if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
+                let recent =
+                    &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
+                if recent.windows(2).all(|w| w[0] == w[1]) {
+                    tracing::warn!(
+                        iteration,
+                        "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
+                    );
+                    self.channel
+                        .send("Stopping: detected repeated identical tool outputs.")
+                        .await?;
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
+    ToolDefinition {
+        name: def.id.to_string(),
+        description: def.description.to_string(),
+        parameters: serde_json::to_value(&def.schema).unwrap_or_default(),
     }
 }

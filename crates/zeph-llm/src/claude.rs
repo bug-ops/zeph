@@ -6,7 +6,10 @@ use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, Role, StatusTx};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
+    ToolUseRequest,
+};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -225,6 +228,77 @@ impl LlmProvider for ClaudeProvider {
     fn name(&self) -> &'static str {
         "claude"
     }
+
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        let (system, chat_messages) = split_messages_structured(messages);
+        let api_tools: Vec<AnthropicTool> = tools
+            .iter()
+            .map(|t| AnthropicTool {
+                name: &t.name,
+                description: &t.description,
+                input_schema: &t.parameters,
+            })
+            .collect();
+
+        let body = ToolRequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system.as_deref(),
+            messages: &chat_messages,
+            tools: &api_tools,
+        };
+
+        for attempt in 0..=MAX_RETRIES {
+            let response = self
+                .client
+                .post(API_URL)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = response.status();
+
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                if attempt == MAX_RETRIES {
+                    return Err(LlmError::RateLimited);
+                }
+                let delay = retry_delay(&response, attempt);
+                self.emit_status(format!(
+                    "Claude rate limited, retrying in {}s ({}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            let text = response.text().await.map_err(LlmError::Http)?;
+
+            if !status.is_success() {
+                tracing::error!("Claude API error {status}: {text}");
+                return Err(LlmError::Other(format!(
+                    "Claude API request failed (status {status})"
+                )));
+            }
+
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            return Ok(parse_tool_response(resp));
+        }
+
+        Err(LlmError::RateLimited)
+    }
 }
 
 fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
@@ -289,6 +363,170 @@ fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>)
                 role: "assistant",
                 content: msg.to_llm_content(),
             }),
+        }
+    }
+
+    let system = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
+
+    (system, chat)
+}
+
+#[derive(Serialize)]
+struct AnthropicTool<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ToolRequestBody<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<&'a str>,
+    messages: &'a [StructuredApiMessage],
+    tools: &'a [AnthropicTool<'a>],
+}
+
+#[derive(Serialize)]
+struct StructuredApiMessage {
+    role: String,
+    content: StructuredContent,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum StructuredContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlock>),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
+}
+
+#[derive(Deserialize)]
+struct ToolApiResponse {
+    content: Vec<AnthropicContentBlock>,
+}
+
+fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for block in resp.content {
+        match block {
+            AnthropicContentBlock::Text { text } => text_parts.push(text),
+            AnthropicContentBlock::ToolUse { id, name, input } => {
+                tool_calls.push(ToolUseRequest { id, name, input });
+            }
+            AnthropicContentBlock::ToolResult { .. } => {}
+        }
+    }
+
+    if tool_calls.is_empty() {
+        let combined = text_parts.join("");
+        ChatResponse::Text(combined)
+    } else {
+        let text = if text_parts.is_empty() {
+            None
+        } else {
+            Some(text_parts.join(""))
+        };
+        ChatResponse::ToolUse { text, tool_calls }
+    }
+}
+
+fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<StructuredApiMessage>) {
+    let mut system_parts = Vec::new();
+    let mut chat = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            Role::System => system_parts.push(msg.to_llm_content()),
+            Role::User | Role::Assistant => {
+                let role = if msg.role == Role::User {
+                    "user"
+                } else {
+                    "assistant"
+                };
+                let has_tool_parts = msg.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::ToolUse { .. } | MessagePart::ToolResult { .. }
+                    )
+                });
+
+                if has_tool_parts {
+                    let mut blocks = Vec::new();
+                    for part in &msg.parts {
+                        match part {
+                            MessagePart::Text { text }
+                            | MessagePart::Recall { text }
+                            | MessagePart::CodeContext { text }
+                            | MessagePart::Summary { text }
+                            | MessagePart::CrossSession { text } => {
+                                if !text.is_empty() {
+                                    blocks.push(AnthropicContentBlock::Text { text: text.clone() });
+                                }
+                            }
+                            MessagePart::ToolOutput {
+                                tool_name, body, ..
+                            } => {
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: format!("[tool output: {tool_name}]\n{body}"),
+                                });
+                            }
+                            MessagePart::ToolUse { id, name, input } => {
+                                blocks.push(AnthropicContentBlock::ToolUse {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                });
+                            }
+                            MessagePart::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
+                                blocks.push(AnthropicContentBlock::ToolResult {
+                                    tool_use_id: tool_use_id.clone(),
+                                    content: content.clone(),
+                                    is_error: *is_error,
+                                });
+                            }
+                        }
+                    }
+                    chat.push(StructuredApiMessage {
+                        role: role.to_owned(),
+                        content: StructuredContent::Blocks(blocks),
+                    });
+                } else {
+                    chat.push(StructuredApiMessage {
+                        role: role.to_owned(),
+                        content: StructuredContent::Text(msg.to_llm_content().to_owned()),
+                    });
+                }
+            }
         }
     }
 
@@ -935,6 +1173,130 @@ mod tests {
 
         assert!(chat_response.contains('4'));
         assert!(stream_response.contains('4'));
+    }
+
+    #[test]
+    fn anthropic_tool_serialization() {
+        let tool = AnthropicTool {
+            name: "bash",
+            description: "Execute a shell command",
+            input_schema: &serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "required": ["command"]
+            }),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"name\":\"bash\""));
+        assert!(json.contains("\"input_schema\""));
+    }
+
+    #[test]
+    fn parse_tool_response_text_only() {
+        let resp = ToolApiResponse {
+            content: vec![AnthropicContentBlock::Text {
+                text: "Hello".into(),
+            }],
+        };
+        let result = parse_tool_response(resp);
+        assert!(matches!(result, ChatResponse::Text(s) if s == "Hello"));
+    }
+
+    #[test]
+    fn parse_tool_response_with_tool_use() {
+        let resp = ToolApiResponse {
+            content: vec![
+                AnthropicContentBlock::Text {
+                    text: "I'll run that".into(),
+                },
+                AnthropicContentBlock::ToolUse {
+                    id: "toolu_123".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+        };
+        let result = parse_tool_response(resp);
+        if let ChatResponse::ToolUse { text, tool_calls } = result {
+            assert_eq!(text.unwrap(), "I'll run that");
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].name, "bash");
+            assert_eq!(tool_calls[0].id, "toolu_123");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn parse_tool_response_tool_use_only() {
+        let resp = ToolApiResponse {
+            content: vec![AnthropicContentBlock::ToolUse {
+                id: "toolu_456".into(),
+                name: "read".into(),
+                input: serde_json::json!({"path": "/tmp/file.txt"}),
+            }],
+        };
+        let result = parse_tool_response(resp);
+        if let ChatResponse::ToolUse { text, tool_calls } = result {
+            assert!(text.is_none());
+            assert_eq!(tool_calls.len(), 1);
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn parse_tool_response_json_deserialization() {
+        let json = r#"{"content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"toolu_abc","name":"bash","input":{"command":"ls"}}]}"#;
+        let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
+        let result = parse_tool_response(resp);
+        assert!(matches!(result, ChatResponse::ToolUse { .. }));
+    }
+
+    #[test]
+    fn split_messages_structured_with_tool_parts() {
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "I'll run that".into(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "t1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command": "ls"}),
+                    },
+                ],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "file1.rs".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+        let (system, chat) = split_messages_structured(&messages);
+        assert!(system.is_none());
+        assert_eq!(chat.len(), 2);
+
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(assistant_json.contains("tool_use"));
+        assert!(assistant_json.contains("\"id\":\"t1\""));
+
+        let user_json = serde_json::to_string(&chat[1]).unwrap();
+        assert!(user_json.contains("tool_result"));
+        assert!(user_json.contains("\"tool_use_id\":\"t1\""));
+    }
+
+    #[test]
+    fn supports_tool_use_returns_true() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert!(provider.supports_tool_use());
     }
 
     #[test]
