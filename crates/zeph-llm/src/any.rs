@@ -8,6 +8,23 @@ use crate::openai::OpenAiProvider;
 use crate::orchestrator::ModelOrchestrator;
 use crate::provider::{ChatStream, LlmProvider, Message, StatusTx};
 
+/// Generates a match over all `AnyProvider` variants, binding the inner provider
+/// and evaluating the given closure for each arm.
+macro_rules! delegate_provider {
+    ($self:expr, |$p:ident| $expr:expr) => {
+        match $self {
+            AnyProvider::Ollama($p) => $expr,
+            AnyProvider::Claude($p) => $expr,
+            #[cfg(feature = "openai")]
+            AnyProvider::OpenAi($p) => $expr,
+            #[cfg(feature = "candle")]
+            AnyProvider::Candle($p) => $expr,
+            #[cfg(feature = "orchestrator")]
+            AnyProvider::Orchestrator($p) => $expr,
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),
@@ -43,94 +60,31 @@ impl AnyProvider {
 
 impl LlmProvider for AnyProvider {
     fn context_window(&self) -> Option<usize> {
-        match self {
-            Self::Ollama(p) => p.context_window(),
-            Self::Claude(p) => p.context_window(),
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.context_window(),
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.context_window(),
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.context_window(),
-        }
+        delegate_provider!(self, |p| p.context_window())
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {
-        match self {
-            Self::Ollama(p) => p.chat(messages).await,
-            Self::Claude(p) => p.chat(messages).await,
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.chat(messages).await,
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.chat(messages).await,
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.chat(messages).await,
-        }
+        delegate_provider!(self, |p| p.chat(messages).await)
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {
-        match self {
-            Self::Ollama(p) => p.chat_stream(messages).await,
-            Self::Claude(p) => p.chat_stream(messages).await,
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.chat_stream(messages).await,
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.chat_stream(messages).await,
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.chat_stream(messages).await,
-        }
+        delegate_provider!(self, |p| p.chat_stream(messages).await)
     }
 
     fn supports_streaming(&self) -> bool {
-        match self {
-            Self::Ollama(p) => p.supports_streaming(),
-            Self::Claude(p) => p.supports_streaming(),
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.supports_streaming(),
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.supports_streaming(),
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.supports_streaming(),
-        }
+        delegate_provider!(self, |p| p.supports_streaming())
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::LlmError> {
-        match self {
-            Self::Ollama(p) => p.embed(text).await,
-            Self::Claude(p) => p.embed(text).await,
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.embed(text).await,
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.embed(text).await,
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.embed(text).await,
-        }
+        delegate_provider!(self, |p| p.embed(text).await)
     }
 
     fn supports_embeddings(&self) -> bool {
-        match self {
-            Self::Ollama(p) => p.supports_embeddings(),
-            Self::Claude(p) => p.supports_embeddings(),
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.supports_embeddings(),
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.supports_embeddings(),
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.supports_embeddings(),
-        }
+        delegate_provider!(self, |p| p.supports_embeddings())
     }
 
     fn name(&self) -> &'static str {
-        match self {
-            Self::Ollama(p) => p.name(),
-            Self::Claude(p) => p.name(),
-            #[cfg(feature = "openai")]
-            Self::OpenAi(p) => p.name(),
-            #[cfg(feature = "candle")]
-            Self::Candle(p) => p.name(),
-            #[cfg(feature = "orchestrator")]
-            Self::Orchestrator(p) => p.name(),
-        }
+        delegate_provider!(self, |p| p.name())
     }
 }
 
