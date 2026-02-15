@@ -404,7 +404,10 @@ mod tests {
         let mut map = counters.lock().await;
         map.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
 
-        assert!(!map.contains_key(&stale_ip), "stale entry should be evicted");
+        assert!(
+            !map.contains_key(&stale_ip),
+            "stale entry should be evicted"
+        );
         assert!(map.contains_key(&fresh_ip), "fresh entry should remain");
     }
 }
