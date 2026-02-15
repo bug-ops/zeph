@@ -7,7 +7,7 @@ pub use router::SubProvider;
 use std::collections::HashMap;
 
 use crate::error::LlmError;
-use crate::provider::{ChatStream, LlmProvider, Message, StatusTx};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
 #[derive(Debug, Clone)]
 pub struct ModelOrchestrator {
@@ -206,6 +206,24 @@ impl LlmProvider for ModelOrchestrator {
         self.providers
             .get(&self.embed_provider)
             .is_some_and(LlmProvider::supports_embeddings)
+    }
+
+    fn supports_tool_use(&self) -> bool {
+        self.providers
+            .get(&self.default_provider)
+            .is_some_and(LlmProvider::supports_tool_use)
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        let provider = self
+            .providers
+            .get(&self.default_provider)
+            .ok_or(LlmError::NoProviders)?;
+        provider.chat_with_tools(messages, tools).await
     }
 
     fn name(&self) -> &'static str {

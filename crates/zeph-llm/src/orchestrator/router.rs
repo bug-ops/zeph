@@ -6,7 +6,9 @@ use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
-use crate::provider::{ChatStream, LlmProvider, Message, StatusTx};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition,
+};
 
 /// Inner provider enum without the Orchestrator variant to break recursive type cycles.
 #[derive(Debug, Clone)]
@@ -89,6 +91,32 @@ impl LlmProvider for SubProvider {
             Self::OpenAi(p) => p.supports_embeddings(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_embeddings(),
+        }
+    }
+
+    fn supports_tool_use(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_tool_use(),
+            Self::Claude(p) => p.supports_tool_use(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.supports_tool_use(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.supports_tool_use(),
+        }
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        match self {
+            Self::Ollama(p) => p.chat_with_tools(messages, tools).await,
+            Self::Claude(p) => p.chat_with_tools(messages, tools).await,
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.chat_with_tools(messages, tools).await,
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.chat_with_tools(messages, tools).await,
         }
     }
 
