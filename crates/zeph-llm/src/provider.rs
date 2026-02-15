@@ -229,11 +229,9 @@ pub trait LlmProvider: Send + Sync {
     async fn chat_with_tools(
         &self,
         messages: &[Message],
-        tools: &[ToolDefinition],
+        _tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let _ = tools;
-        let text = self.chat(messages).await?;
-        Ok(ChatResponse::Text(text))
+        Ok(ChatResponse::Text(self.chat(messages).await?))
     }
 }
 
