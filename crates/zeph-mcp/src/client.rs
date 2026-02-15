@@ -191,7 +191,7 @@ fn is_private_ip(addr: IpAddr) -> bool {
                 || ip.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
                 || ip.is_link_local()     // 169.254.0.0/16
                 || ip.is_unspecified()    // 0.0.0.0
-                || ip.is_broadcast()      // 255.255.255.255
+                || ip.is_broadcast() // 255.255.255.255
         }
         IpAddr::V6(ip) => ip.is_loopback() || ip.is_unspecified(),
     }
@@ -212,10 +212,12 @@ fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let addr_str = format!("{host}:{port}");
 
     // DNS resolution to catch hostnames pointing to private IPs
-    let addrs = addr_str.to_socket_addrs().map_err(|e| McpError::InvalidUrl {
-        url: url.into(),
-        message: format!("DNS resolution failed: {e}"),
-    })?;
+    let addrs = addr_str
+        .to_socket_addrs()
+        .map_err(|e| McpError::InvalidUrl {
+            url: url.into(),
+            message: format!("DNS resolution failed: {e}"),
+        })?;
 
     for sock_addr in addrs {
         if is_private_ip(sock_addr.ip()) {

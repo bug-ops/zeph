@@ -8283,6 +8283,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeph-llm",
  "zeph-tools",
