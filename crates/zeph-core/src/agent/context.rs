@@ -36,7 +36,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         should
     }
 
-    pub(super) async fn compact_context(&mut self) -> anyhow::Result<()> {
+    pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
         let preserve_tail = self.context_state.compaction_preserve_tail;
 
         if self.messages.len() <= preserve_tail + 1 {
@@ -182,7 +182,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    pub(super) async fn maybe_compact(&mut self) -> anyhow::Result<()> {
+    pub(super) async fn maybe_compact(&mut self) -> Result<(), super::error::AgentError> {
         if !self.should_compact() {
             return Ok(());
         }
@@ -236,7 +236,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         query: &str,
         token_budget: usize,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         self.remove_recall_messages();
 
         let Some(memory) = &self.memory_state.memory else {
@@ -333,7 +333,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         query: &str,
         token_budget: usize,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         self.remove_cross_session_messages();
 
         let (Some(memory), Some(cid)) =
@@ -380,7 +380,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn inject_summaries(&mut self, token_budget: usize) -> anyhow::Result<()> {
+    async fn inject_summaries(
+        &mut self,
+        token_budget: usize,
+    ) -> Result<(), super::error::AgentError> {
         self.remove_summary_messages();
 
         let (Some(memory), Some(cid)) =
@@ -465,7 +468,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    pub(super) async fn prepare_context(&mut self, query: &str) -> anyhow::Result<()> {
+    pub(super) async fn prepare_context(
+        &mut self,
+        query: &str,
+    ) -> Result<(), super::error::AgentError> {
         let Some(ref budget) = self.context_state.budget else {
             return Ok(());
         };

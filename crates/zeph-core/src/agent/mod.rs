@@ -1,4 +1,5 @@
 mod context;
+pub mod error;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
@@ -536,7 +537,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn process_user_message(&mut self, text: String) -> anyhow::Result<()> {
+    async fn process_user_message(&mut self, text: String) -> Result<(), error::AgentError> {
         let trimmed = text.trim();
 
         if trimmed == "/skills" {
@@ -593,7 +594,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn handle_skills_command(&mut self) -> anyhow::Result<()> {
+    async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
 
         let mut output = String::from("Available skills:\n\n");
@@ -623,7 +624,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn handle_feedback(&mut self, input: &str) -> anyhow::Result<()> {
+    async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
         #[cfg(feature = "self-learning")]
         {
             let Some((name, rest)) = input.split_once(' ') else {

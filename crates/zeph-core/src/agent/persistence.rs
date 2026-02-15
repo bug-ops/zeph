@@ -12,7 +12,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     /// # Errors
     ///
     /// Returns an error if loading history from `SQLite` fails.
-    pub async fn load_history(&mut self) -> anyhow::Result<()> {
+    pub async fn load_history(&mut self) -> Result<(), super::error::AgentError> {
         let (Some(memory), Some(cid)) =
             (&self.memory_state.memory, self.memory_state.conversation_id)
         else {

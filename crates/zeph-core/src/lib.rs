@@ -11,5 +11,6 @@ pub mod redact;
 pub mod vault;
 
 pub use agent::Agent;
+pub use agent::error::AgentError;
 pub use channel::{Channel, ChannelError, ChannelMessage};
 pub use config::Config;

@@ -9,7 +9,7 @@ use zeph_memory::semantic::estimate_tokens;
 use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
-    pub(crate) async fn process_response(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         self.doom_loop_history.clear();
 
         for iteration in 0..self.max_tool_iterations {
@@ -95,7 +95,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    pub(crate) async fn call_llm_with_timeout(&mut self) -> anyhow::Result<Option<String>> {
+    pub(crate) async fn call_llm_with_timeout(
+        &mut self,
+    ) -> Result<Option<String>, super::error::AgentError> {
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
         let start = std::time::Instant::now();
         let prompt_estimate: u64 = self
@@ -213,7 +215,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         response: &str,
         result: Result<Option<ToolOutput>, ToolError>,
-    ) -> anyhow::Result<bool> {
+    ) -> Result<bool, super::error::AgentError> {
         match result {
             Ok(Some(output)) => {
                 if output.summary.trim().is_empty() {
@@ -314,7 +316,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    pub(crate) async fn process_response_streaming(&mut self) -> anyhow::Result<String> {
+    pub(crate) async fn process_response_streaming(
+        &mut self,
+    ) -> Result<String, super::error::AgentError> {
         let mut stream = self.provider.chat_stream(&self.messages).await?;
         let mut response = String::with_capacity(2048);
 

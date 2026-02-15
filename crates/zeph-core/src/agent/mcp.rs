@@ -1,7 +1,10 @@
 use super::{Agent, Channel, LlmProvider, ToolExecutor};
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
-    pub(super) async fn handle_mcp_command(&mut self, args: &str) -> anyhow::Result<()> {
+    pub(super) async fn handle_mcp_command(
+        &mut self,
+        args: &str,
+    ) -> Result<(), super::error::AgentError> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         match parts.first().copied() {
             Some("add") => self.handle_mcp_add(&parts[1..]).await,
@@ -17,7 +20,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    async fn handle_mcp_add(&mut self, args: &[&str]) -> anyhow::Result<()> {
+    async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<(), super::error::AgentError> {
         if args.len() < 2 {
             self.channel
                 .send("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>")
@@ -112,7 +115,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
-    async fn handle_mcp_list(&mut self) -> anyhow::Result<()> {
+    async fn handle_mcp_list(&mut self) -> Result<(), super::error::AgentError> {
         use std::fmt::Write;
 
         let Some(ref manager) = self.mcp.manager else {
@@ -139,7 +142,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn handle_mcp_tools(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
+    async fn handle_mcp_tools(
+        &mut self,
+        server_id: Option<&str>,
+    ) -> Result<(), super::error::AgentError> {
         use std::fmt::Write;
 
         let Some(server_id) = server_id else {
@@ -173,7 +179,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         Ok(())
     }
 
-    async fn handle_mcp_remove(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
+    async fn handle_mcp_remove(
+        &mut self,
+        server_id: Option<&str>,
+    ) -> Result<(), super::error::AgentError> {
         let Some(server_id) = server_id else {
             self.channel.send("Usage: /mcp remove <id>").await?;
             return Ok(());

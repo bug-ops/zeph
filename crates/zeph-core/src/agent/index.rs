@@ -5,7 +5,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         query: &str,
         token_budget: usize,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         let Some(retriever) = &self.index.retriever else {
             return Ok(());
         };
@@ -13,7 +13,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        let result = retriever.retrieve(query, token_budget).await?;
+        let result = retriever
+            .retrieve(query, token_budget)
+            .await
+            .map_err(|e| super::error::AgentError::Other(format!("{e:#}")))?;
         let context_text = zeph_index::retriever::format_as_context(&result);
 
         if !context_text.is_empty() {

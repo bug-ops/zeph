@@ -54,7 +54,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         error_context: &str,
         tool_output: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> Result<bool, super::error::AgentError> {
         if self.reflection_used || !self.is_learning_enabled() {
             return Ok(false);
         }
@@ -113,7 +113,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         error_context: &str,
         successful_response: &str,
         user_feedback: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         if !self.is_learning_enabled() {
             return Ok(());
         }
@@ -176,7 +176,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         config: &LearningConfig,
         skill_name: &str,
         user_feedback: Option<&str>,
-    ) -> anyhow::Result<bool> {
+    ) -> Result<bool, super::error::AgentError> {
         if let Some(last_time) = memory.sqlite().last_improvement_time(skill_name).await?
             && let Ok(last) = chrono_parse_sqlite(&last_time)
         {
@@ -221,7 +221,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         error_context: &str,
         successful_response: &str,
         user_feedback: Option<&str>,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, super::error::AgentError> {
         let prompt = zeph_skills::evolution::build_improvement_prompt(
             skill_name,
             original_body,
@@ -257,7 +257,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         generated_body: &str,
         description: &str,
         error_context: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         let active = memory.sqlite().active_skill_version(skill_name).await?;
         let predecessor_id = active.as_ref().map(|v| v.id);
 
@@ -364,7 +364,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(feature = "self-learning")]
-    pub(super) async fn handle_skill_command(&mut self, args: &str) -> anyhow::Result<()> {
+    pub(super) async fn handle_skill_command(
+        &mut self,
+        args: &str,
+    ) -> Result<(), super::error::AgentError> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         match parts.first().copied() {
             Some("stats") => self.handle_skill_stats().await,
@@ -385,7 +388,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(not(feature = "self-learning"))]
-    pub(super) async fn handle_skill_command(&mut self, _args: &str) -> anyhow::Result<()> {
+    pub(super) async fn handle_skill_command(
+        &mut self,
+        _args: &str,
+    ) -> Result<(), super::error::AgentError> {
         self.channel
             .send("Self-learning feature is not enabled.")
             .await?;
@@ -393,7 +399,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(feature = "self-learning")]
-    async fn handle_skill_stats(&mut self) -> anyhow::Result<()> {
+    async fn handle_skill_stats(&mut self) -> Result<(), super::error::AgentError> {
         use std::fmt::Write;
 
         let Some(memory) = &self.memory_state.memory else {
@@ -427,7 +433,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(feature = "self-learning")]
-    async fn handle_skill_versions(&mut self, name: Option<&str>) -> anyhow::Result<()> {
+    async fn handle_skill_versions(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<(), super::error::AgentError> {
         use std::fmt::Write;
 
         let Some(name) = name else {
@@ -466,7 +475,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         name: Option<&str>,
         version_str: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::error::AgentError> {
         let (Some(name), Some(ver_str)) = (name, version_str) else {
             self.channel
                 .send("Usage: /skill activate <name> <version>")
@@ -510,7 +519,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(feature = "self-learning")]
-    async fn handle_skill_approve(&mut self, name: Option<&str>) -> anyhow::Result<()> {
+    async fn handle_skill_approve(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<(), super::error::AgentError> {
         let Some(name) = name else {
             self.channel.send("Usage: /skill approve <name>").await?;
             return Ok(());
@@ -555,7 +567,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[cfg(feature = "self-learning")]
-    async fn handle_skill_reset(&mut self, name: Option<&str>) -> anyhow::Result<()> {
+    async fn handle_skill_reset(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<(), super::error::AgentError> {
         let Some(name) = name else {
             self.channel.send("Usage: /skill reset <name>").await?;
             return Ok(());
@@ -596,9 +611,11 @@ pub(super) async fn write_skill_file(
     skill_name: &str,
     description: &str,
     body: &str,
-) -> anyhow::Result<()> {
+) -> Result<(), super::error::AgentError> {
     if skill_name.contains('/') || skill_name.contains('\\') || skill_name.contains("..") {
-        anyhow::bail!("invalid skill name: {skill_name}");
+        return Err(super::error::AgentError::Other(format!(
+            "invalid skill name: {skill_name}"
+        )));
     }
     for base in skill_paths {
         let skill_dir = base.join(skill_name);
@@ -610,7 +627,9 @@ pub(super) async fn write_skill_file(
             return Ok(());
         }
     }
-    anyhow::bail!("skill directory not found for {skill_name}")
+    Err(super::error::AgentError::Other(format!(
+        "skill directory not found for {skill_name}"
+    )))
 }
 
 /// Naive parser for `SQLite` datetime strings (e.g. "2024-01-15 10:30:00") to Unix seconds.
