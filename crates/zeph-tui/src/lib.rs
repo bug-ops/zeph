@@ -82,7 +82,9 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, ChannelErro
     Ok(Terminal::new(backend)?)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), ChannelError> {
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<(), ChannelError> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
