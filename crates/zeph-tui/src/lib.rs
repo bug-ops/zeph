@@ -1,6 +1,5 @@
 pub mod app;
 pub mod channel;
-pub mod error;
 pub mod event;
 pub mod layout;
 pub mod metrics;
@@ -12,10 +11,10 @@ use std::io;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+use zeph_core::channel::ChannelError;
 
 pub use app::App;
 pub use channel::TuiChannel;
-pub use error::TuiError;
 pub use event::{AgentEvent, AppEvent, EventReader};
 pub use metrics::{MetricsCollector, MetricsSnapshot};
 
@@ -71,7 +70,7 @@ async fn tui_loop(
     Ok(())
 }
 
-fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, TuiError> {
+fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, ChannelError> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(
@@ -83,7 +82,9 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, TuiError> {
     Ok(Terminal::new(backend)?)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), TuiError> {
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<(), ChannelError> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
