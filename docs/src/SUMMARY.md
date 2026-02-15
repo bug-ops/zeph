@@ -36,6 +36,7 @@
 ---
 
 - [Security](security.md)
+  - [MCP Security](security/mcp.md)
 - [Feature Flags](feature-flags.md)
 - [Contributing](contributing.md)
 - [Changelog](changelog.md)

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::error::SkillError;
-use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta};
+use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};
 
 struct SkillEntry {
     meta: SkillMeta,
@@ -47,6 +47,10 @@ impl SkillRegistry {
             for entry in dir_entries.flatten() {
                 let skill_path = entry.path().join("SKILL.md");
                 if !skill_path.is_file() {
+                    continue;
+                }
+                if let Err(e) = validate_path_within(&skill_path, base) {
+                    tracing::warn!("skipping skill path traversal: {e:#}");
                     continue;
                 }
                 match load_skill_meta(&skill_path) {

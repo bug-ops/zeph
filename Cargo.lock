@@ -5776,8 +5776,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx-core",
- "sqlx-mysql",
- "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.115",
  "tokio",
@@ -5815,7 +5813,6 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.5",
  "rsa",
- "serde",
  "sha1",
  "sha2",
  "smallvec",
@@ -8283,8 +8280,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeph-llm",
+ "zeph-memory",
  "zeph-tools",
 ]
 
@@ -8311,6 +8310,7 @@ version = "0.9.6"
 dependencies = [
  "anyhow",
  "blake3",
+ "futures",
  "notify",
  "notify-debouncer-mini",
  "qdrant-client",
@@ -8321,6 +8321,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-llm",
+ "zeph-memory",
 ]
 
 [[package]]

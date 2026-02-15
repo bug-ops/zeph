@@ -1,12 +1,9 @@
-use qdrant_client::Qdrant;
 pub use qdrant_client::qdrant::Filter;
-use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder,
-    UpsertPointsBuilder, VectorParamsBuilder,
-};
+use qdrant_client::qdrant::{Condition, PointStruct};
 use sqlx::SqlitePool;
 
 use crate::error::MemoryError;
+use crate::qdrant_ops::QdrantOps;
 use crate::types::{ConversationId, MessageId};
 
 /// Distinguishes regular messages from summaries when storing embeddings.
@@ -33,29 +30,15 @@ const COLLECTION_NAME: &str = "zeph_conversations";
 ///
 /// Returns an error if Qdrant cannot be reached or collection creation fails.
 pub async fn ensure_qdrant_collection(
-    client: &Qdrant,
+    ops: &QdrantOps,
     collection: &str,
     vector_size: u64,
 ) -> Result<(), Box<qdrant_client::QdrantError>> {
-    if client
-        .collection_exists(collection)
-        .await
-        .map_err(Box::new)?
-    {
-        return Ok(());
-    }
-    client
-        .create_collection(
-            CreateCollectionBuilder::new(collection)
-                .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-        )
-        .await
-        .map_err(Box::new)?;
-    Ok(())
+    ops.ensure_collection(collection, vector_size).await
 }
 
 pub struct QdrantStore {
-    client: Qdrant,
+    ops: QdrantOps,
     collection: String,
     pool: SqlitePool,
 }
@@ -91,13 +74,19 @@ impl QdrantStore {
     ///
     /// Returns an error if the Qdrant client cannot be created.
     pub fn new(url: &str, pool: SqlitePool) -> Result<Self, MemoryError> {
-        let client = Qdrant::from_url(url).build().map_err(Box::new)?;
+        let ops = QdrantOps::new(url).map_err(MemoryError::Qdrant)?;
 
         Ok(Self {
-            client,
+            ops,
             collection: COLLECTION_NAME.into(),
             pool,
         })
+    }
+
+    /// Access the underlying `QdrantOps`.
+    #[must_use]
+    pub fn ops(&self) -> &QdrantOps {
+        &self.ops
     }
 
     /// Ensure the collection exists in Qdrant with the given vector size.
@@ -108,7 +97,9 @@ impl QdrantStore {
     ///
     /// Returns an error if Qdrant cannot be reached or collection creation fails.
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<(), MemoryError> {
-        ensure_qdrant_collection(&self.client, &self.collection, vector_size).await?;
+        self.ops
+            .ensure_collection(&self.collection, vector_size)
+            .await?;
         Ok(())
     }
 
@@ -131,21 +122,17 @@ impl QdrantStore {
         let point_id = uuid::Uuid::new_v4().to_string();
         let dimensions = i64::try_from(vector.len())?;
 
-        let payload: serde_json::Value = serde_json::json!({
+        let payload = serde_json::json!({
             "message_id": message_id.0,
             "conversation_id": conversation_id.0,
             "role": role,
             "is_summary": kind.is_summary(),
         });
-        let payload_map: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
-            serde_json::from_value(payload)?;
+        let payload_map = QdrantOps::json_to_payload(payload)?;
 
         let point = PointStruct::new(point_id.clone(), vector, payload_map);
 
-        self.client
-            .upsert_points(UpsertPointsBuilder::new(&self.collection, vec![point]))
-            .await
-            .map_err(Box::new)?;
+        self.ops.upsert(&self.collection, vec![point]).await?;
 
         sqlx::query(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
@@ -176,36 +163,37 @@ impl QdrantStore {
     ) -> Result<Vec<SearchResult>, MemoryError> {
         let limit_u64 = u64::try_from(limit)?;
 
-        let mut builder =
-            SearchPointsBuilder::new(&self.collection, query_vector.to_vec(), limit_u64)
-                .with_payload(true);
-
-        if let Some(ref f) = filter {
+        let qdrant_filter = filter.as_ref().and_then(|f| {
             let mut conditions = Vec::new();
-
             if let Some(cid) = f.conversation_id {
                 conditions.push(Condition::matches("conversation_id", cid.0));
             }
             if let Some(ref role) = f.role {
                 conditions.push(Condition::matches("role", role.clone()));
             }
-
-            if !conditions.is_empty() {
-                builder = builder.filter(Filter::must(conditions));
+            if conditions.is_empty() {
+                None
+            } else {
+                Some(Filter::must(conditions))
             }
-        }
+        });
 
-        let results = self.client.search_points(builder).await.map_err(Box::new)?;
+        let results = self
+            .ops
+            .search(
+                &self.collection,
+                query_vector.to_vec(),
+                limit_u64,
+                qdrant_filter,
+            )
+            .await?;
 
         let search_results = results
-            .result
             .into_iter()
             .filter_map(|point| {
                 let payload = &point.payload;
-
                 let message_id = MessageId(payload.get("message_id")?.as_integer()?);
                 let conversation_id = ConversationId(payload.get("conversation_id")?.as_integer()?);
-
                 Some(SearchResult {
                     message_id,
                     conversation_id,
@@ -227,7 +215,7 @@ impl QdrantStore {
         name: &str,
         vector_size: u64,
     ) -> Result<(), MemoryError> {
-        ensure_qdrant_collection(&self.client, name, vector_size).await?;
+        self.ops.ensure_collection(name, vector_size).await?;
         Ok(())
     }
 
@@ -245,17 +233,9 @@ impl QdrantStore {
         vector: Vec<f32>,
     ) -> Result<String, MemoryError> {
         let point_id = uuid::Uuid::new_v4().to_string();
-
-        let payload_map: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
-            serde_json::from_value(payload)?;
-
+        let payload_map = QdrantOps::json_to_payload(payload)?;
         let point = PointStruct::new(point_id.clone(), vector, payload_map);
-
-        self.client
-            .upsert_points(UpsertPointsBuilder::new(collection, vec![point]))
-            .await
-            .map_err(Box::new)?;
-
+        self.ops.upsert(collection, vec![point]).await?;
         Ok(point_id)
     }
 
@@ -272,17 +252,11 @@ impl QdrantStore {
         filter: Option<Filter>,
     ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>, MemoryError> {
         let limit_u64 = u64::try_from(limit)?;
-
-        let mut builder = SearchPointsBuilder::new(collection, query_vector.to_vec(), limit_u64)
-            .with_payload(true);
-
-        if let Some(f) = filter {
-            builder = builder.filter(f);
-        }
-
-        let results = self.client.search_points(builder).await.map_err(Box::new)?;
-
-        Ok(results.result)
+        let results = self
+            .ops
+            .search(collection, query_vector.to_vec(), limit_u64, filter)
+            .await?;
+        Ok(results)
     }
 
     /// Check whether an embedding already exists for the given message ID.

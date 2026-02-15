@@ -1,11 +1,10 @@
 //! `Qdrant` collection + `SQLite` metadata for code chunks.
 
-use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder, Distance,
-    FieldType, Filter, PointStruct, PointsIdsList, ScalarQuantizationBuilder, ScoredPoint,
-    SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
+    CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType, Filter,
+    PointStruct, ScalarQuantizationBuilder, ScoredPoint, VectorParamsBuilder,
 };
+use zeph_memory::QdrantOps;
 
 use crate::error::Result;
 
@@ -14,7 +13,7 @@ const CODE_COLLECTION: &str = "zeph_code_chunks";
 /// `Qdrant` + `SQLite` dual-write store for code chunks.
 #[derive(Clone)]
 pub struct CodeStore {
-    qdrant: Qdrant,
+    ops: QdrantOps,
     collection: String,
     pool: sqlx::SqlitePool,
 }
@@ -49,9 +48,9 @@ impl CodeStore {
     ///
     /// Returns an error if the `Qdrant` client fails to connect.
     pub fn new(qdrant_url: &str, pool: sqlx::SqlitePool) -> Result<Self> {
-        let qdrant = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
+        let ops = QdrantOps::new(qdrant_url).map_err(crate::error::IndexError::Qdrant)?;
         Ok(Self {
-            qdrant,
+            ops,
             collection: CODE_COLLECTION.into(),
             pool,
         })
@@ -73,16 +72,12 @@ impl CodeStore {
     ///
     /// Returns an error if `Qdrant` operations fail.
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<()> {
-        if self
-            .qdrant
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
+        if self.ops.collection_exists(&self.collection).await? {
             return Ok(());
         }
 
-        self.qdrant
+        self.ops
+            .client()
             .create_collection(
                 CreateCollectionBuilder::new(&self.collection)
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
@@ -91,30 +86,17 @@ impl CodeStore {
             .await
             .map_err(Box::new)?;
 
-        self.qdrant
-            .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                &self.collection,
-                "language",
-                FieldType::Keyword,
-            ))
-            .await
-            .map_err(Box::new)?;
-        self.qdrant
-            .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                &self.collection,
-                "file_path",
-                FieldType::Keyword,
-            ))
-            .await
-            .map_err(Box::new)?;
-        self.qdrant
-            .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                &self.collection,
-                "node_type",
-                FieldType::Keyword,
-            ))
-            .await
-            .map_err(Box::new)?;
+        for field in ["language", "file_path", "node_type"] {
+            self.ops
+                .client()
+                .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                    &self.collection,
+                    field,
+                    FieldType::Keyword,
+                ))
+                .await
+                .map_err(Box::new)?;
+        }
 
         Ok(())
     }
@@ -127,26 +109,24 @@ impl CodeStore {
     pub async fn upsert_chunk(&self, chunk: &ChunkInsert<'_>, vector: Vec<f32>) -> Result<String> {
         let point_id = uuid::Uuid::new_v4().to_string();
 
-        let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
-            serde_json::from_value(serde_json::json!({
-                "file_path": chunk.file_path,
-                "language": chunk.language,
-                "node_type": chunk.node_type,
-                "entity_name": chunk.entity_name,
-                "line_start": chunk.line_start,
-                "line_end": chunk.line_end,
-                "code": chunk.code,
-                "scope_chain": chunk.scope_chain,
-                "content_hash": chunk.content_hash,
-            }))?;
+        let payload = QdrantOps::json_to_payload(serde_json::json!({
+            "file_path": chunk.file_path,
+            "language": chunk.language,
+            "node_type": chunk.node_type,
+            "entity_name": chunk.entity_name,
+            "line_start": chunk.line_start,
+            "line_end": chunk.line_end,
+            "code": chunk.code,
+            "scope_chain": chunk.scope_chain,
+            "content_hash": chunk.content_hash,
+        }))?;
 
-        self.qdrant
-            .upsert_points(UpsertPointsBuilder::new(
+        self.ops
+            .upsert(
                 &self.collection,
                 vec![PointStruct::new(point_id.clone(), vector, payload)],
-            ))
-            .await
-            .map_err(Box::new)?;
+            )
+            .await?;
 
         let line_start = i64::try_from(chunk.line_start)?;
         let line_end = i64::try_from(chunk.line_end)?;
@@ -205,12 +185,7 @@ impl CodeStore {
             .map(|(id,)| id.clone().into())
             .collect::<Vec<_>>();
 
-        self.qdrant
-            .delete_points(
-                DeletePointsBuilder::new(&self.collection).points(PointsIdsList { ids: point_ids }),
-            )
-            .await
-            .map_err(Box::new)?;
+        self.ops.delete_by_ids(&self.collection, point_ids).await?;
 
         let count = ids.len();
         sqlx::query("DELETE FROM chunk_metadata WHERE file_path = ?")
@@ -232,17 +207,13 @@ impl CodeStore {
         limit: usize,
         filter: Option<Filter>,
     ) -> Result<Vec<SearchHit>> {
-        let mut builder = SearchPointsBuilder::new(&self.collection, query_vector, limit as u64)
-            .with_payload(true);
-
-        if let Some(f) = filter {
-            builder = builder.filter(f);
-        }
-
-        let results = self.qdrant.search_points(builder).await.map_err(Box::new)?;
+        let limit_u64 = u64::try_from(limit)?;
+        let results = self
+            .ops
+            .search(&self.collection, query_vector, limit_u64, filter)
+            .await?;
 
         Ok(results
-            .result
             .iter()
             .filter_map(SearchHit::from_scored_point)
             .collect())

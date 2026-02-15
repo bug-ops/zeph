@@ -506,11 +506,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         tracing::info!("shutting down");
                         break;
                     }
-                    Some(_) = recv_skill_event(&mut self.skill_state.skill_reload_rx) => {
+                    Some(_) = recv_optional(&mut self.skill_state.skill_reload_rx) => {
                         self.reload_skills().await;
                         continue;
                     }
-                    Some(_) = recv_config_event(&mut self.config_reload_rx) => {
+                    Some(_) = recv_optional(&mut self.config_reload_rx) => {
                         self.reload_config();
                         continue;
                     }
@@ -786,14 +786,7 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn recv_skill_event(rx: &mut Option<mpsc::Receiver<SkillEvent>>) -> Option<SkillEvent> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn recv_config_event(rx: &mut Option<mpsc::Receiver<ConfigEvent>>) -> Option<ConfigEvent> {
+async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -1387,21 +1380,21 @@ pub(super) mod agent_tests {
     }
 
     #[tokio::test]
-    async fn recv_skill_event_returns_none_when_no_receiver() {
+    async fn recv_optional_returns_pending_when_no_receiver() {
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(10),
-            recv_skill_event(&mut None),
+            recv_optional::<SkillEvent>(&mut None),
         )
         .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn recv_skill_event_receives_from_channel() {
+    async fn recv_optional_receives_from_channel() {
         let (tx, rx) = mpsc::channel(1);
         tx.send(SkillEvent::Changed).await.unwrap();
 
-        let result = recv_skill_event(&mut Some(rx)).await;
+        let result = recv_optional(&mut Some(rx)).await;
         assert!(result.is_some());
     }
 
