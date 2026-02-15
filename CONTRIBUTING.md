@@ -84,13 +84,14 @@ cargo llvm-cov --all-features --workspace
 ### Auto-merge
 
 Pull requests are automatically merged when:
-- All CI checks pass (lint, tests, integration tests, coverage, Docker build and security scan)
+- The CI Status gate passes (validates all CI checks: lint, tests, integration tests, coverage, Docker build and security scan)
 - The PR has been approved by at least one reviewer
 - The PR is not in draft mode
 
 Once these conditions are met, the auto-merge workflow will:
-1. Update the PR branch with the latest changes from the default branch (using merge commit)
-2. Enable GitHub's auto-merge feature with squash strategy
+1. Wait for the CI Status gate job to complete successfully
+2. Update the PR branch with the latest changes from the default branch (using merge commit)
+3. Enable GitHub's auto-merge feature with squash strategy
 
 The PR will be merged automatically when all branch protection requirements are satisfied.
 
