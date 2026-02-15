@@ -35,11 +35,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Wait for CI checks to complete
+      - name: Wait for CI Status gate
         if: steps.pr.outputs.number != ''
         uses: lewagon/wait-on-check-action@v1.5.0
         with:
           ref: ${{ steps.pr.outputs.sha }}
+          check-name: 'CI Status'
           running-workflow-name: 'Auto-merge PR when ready'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
