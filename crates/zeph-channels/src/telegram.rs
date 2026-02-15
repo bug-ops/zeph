@@ -47,7 +47,7 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
-    pub fn start(mut self) -> anyhow::Result<Self> {
+    pub fn start(mut self) -> Result<Self, ChannelError> {
         let (tx, rx) = mpsc::channel::<IncomingMessage>(64);
         self.rx = rx;
 
@@ -116,9 +116,9 @@ impl TelegramChannel {
         }
     }
 
-    async fn send_or_edit(&mut self) -> anyhow::Result<()> {
+    async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
-            return Err(ChannelError::Other("no active chat".into()).into());
+            return Err(ChannelError::Other("no active chat".into()));
         };
 
         let text = if self.accumulated.is_empty() {
@@ -143,7 +143,8 @@ impl TelegramChannel {
                     .bot
                     .send_message(chat_id, formatted_text)
                     .parse_mode(ParseMode::MarkdownV2)
-                    .await?;
+                    .await
+                    .map_err(|e| ChannelError::Other(e.to_string()))?;
                 self.message_id = Some(msg.id);
                 tracing::debug!("new message sent with id: {:?}", msg.id);
             }
@@ -178,10 +179,11 @@ impl TelegramChannel {
                             .bot
                             .send_message(chat_id, &formatted_text)
                             .parse_mode(ParseMode::MarkdownV2)
-                            .await?;
+                            .await
+                            .map_err(|e| ChannelError::Other(e.to_string()))?;
                         self.message_id = Some(msg.id);
                     } else {
-                        return Err(e.into());
+                        return Err(ChannelError::Other(e.to_string()));
                     }
                 } else {
                     tracing::debug!("message edited successfully");
@@ -286,9 +288,7 @@ impl Channel for TelegramChannel {
 
         if self.should_send_update() {
             tracing::debug!("sending update (should_send_update returned true)");
-            self.send_or_edit()
-                .await
-                .map_err(|e| ChannelError::Other(e.to_string()))?;
+            self.send_or_edit().await?;
         }
 
         Ok(())
@@ -303,9 +303,7 @@ impl Channel for TelegramChannel {
 
         // Final update with complete message
         if self.message_id.is_some() {
-            self.send_or_edit()
-                .await
-                .map_err(|e| ChannelError::Other(e.to_string()))?;
+            self.send_or_edit().await?;
         }
 
         // Clear state for next response

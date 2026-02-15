@@ -15,7 +15,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         clippy::cast_sign_loss
     )]
     pub(super) fn should_compact(&self) -> bool {
-        let Some(ref budget) = self.context_budget else {
+        let Some(ref budget) = self.context_state.budget else {
             return false;
         };
         let total_tokens: usize = self
@@ -23,7 +23,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .map(|m| estimate_tokens(&m.content))
             .sum();
-        let threshold = (budget.max_tokens() as f32 * self.compaction_threshold) as usize;
+        let threshold =
+            (budget.max_tokens() as f32 * self.context_state.compaction_threshold) as usize;
         let should = total_tokens > threshold;
         tracing::debug!(
             total_tokens,
@@ -36,7 +37,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     pub(super) async fn compact_context(&mut self) -> anyhow::Result<()> {
-        let preserve_tail = self.compaction_preserve_tail;
+        let preserve_tail = self.context_state.compaction_preserve_tail;
 
         if self.messages.len() <= preserve_tail + 1 {
             return Ok(());
@@ -107,7 +108,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             m.context_compactions += 1;
         });
 
-        if let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id)
+        if let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
             && let Err(e) = memory.store_session_summary(cid, &summary).await
         {
             tracing::warn!("failed to store session summary: {e:#}");
@@ -120,7 +122,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     /// Returns the number of tokens freed.
     #[allow(clippy::cast_precision_loss)]
     pub(super) fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
-        let protect = self.prune_protect_tokens;
+        let protect = self.context_state.prune_protect_tokens;
         let mut tail_tokens = 0usize;
         let mut protection_boundary = self.messages.len();
         if protect > 0 {
@@ -186,7 +188,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         let budget = self
-            .context_budget
+            .context_state
+            .budget
             .as_ref()
             .map_or(0, ContextBudget::max_tokens);
         let total_tokens: usize = self
@@ -194,7 +197,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .map(|m| estimate_tokens(&m.content))
             .sum();
-        let threshold = (budget as f32 * self.compaction_threshold) as usize;
+        let threshold = (budget as f32 * self.context_state.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
 
         let freed = self.prune_tool_outputs(min_to_free);
@@ -236,14 +239,16 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> anyhow::Result<()> {
         self.remove_recall_messages();
 
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             return Ok(());
         };
-        if self.recall_limit == 0 || token_budget == 0 {
+        if self.memory_state.recall_limit == 0 || token_budget == 0 {
             return Ok(());
         }
 
-        let recalled = memory.recall(query, self.recall_limit, None).await?;
+        let recalled = memory
+            .recall(query, self.memory_state.recall_limit, None)
+            .await?;
         if recalled.is_empty() {
             return Ok(());
         }
@@ -331,14 +336,16 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     ) -> anyhow::Result<()> {
         self.remove_cross_session_messages();
 
-        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
+        let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        else {
             return Ok(());
         };
         if token_budget == 0 {
             return Ok(());
         }
 
-        let threshold = self.cross_session_score_threshold;
+        let threshold = self.memory_state.cross_session_score_threshold;
         let results: Vec<_> = memory
             .search_session_summaries(query, 5, Some(cid))
             .await?
@@ -376,7 +383,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     async fn inject_summaries(&mut self, token_budget: usize) -> anyhow::Result<()> {
         self.remove_summary_messages();
 
-        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
+        let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        else {
             return Ok(());
         };
         if token_budget == 0 {
@@ -457,12 +466,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     pub(super) async fn prepare_context(&mut self, query: &str) -> anyhow::Result<()> {
-        let Some(ref budget) = self.context_budget else {
+        let Some(ref budget) = self.context_state.budget else {
             return Ok(());
         };
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
-        let alloc = budget.allocate(system_prompt, &self.last_skills_prompt);
+        let alloc = budget.allocate(system_prompt, &self.skill_state.last_skills_prompt);
 
         self.inject_summaries(alloc.summaries).await?;
 
@@ -482,61 +491,80 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[allow(clippy::too_many_lines)]
     pub(super) async fn rebuild_system_prompt(&mut self, query: &str) {
-        let all_meta = self.registry.all_meta();
-        let matched_indices: Vec<usize> = if let Some(matcher) = &self.matcher {
+        let all_meta = self.skill_state.registry.all_meta();
+        let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
             matcher
-                .match_skills(&all_meta, query, self.max_active_skills, |text| {
-                    let owned = text.to_owned();
-                    let p = provider.clone();
-                    Box::pin(async move { p.embed(&owned).await })
-                })
+                .match_skills(
+                    &all_meta,
+                    query,
+                    self.skill_state.max_active_skills,
+                    |text| {
+                        let owned = text.to_owned();
+                        let p = provider.clone();
+                        Box::pin(async move { p.embed(&owned).await })
+                    },
+                )
                 .await
         } else {
             (0..all_meta.len()).collect()
         };
 
-        self.active_skill_names = matched_indices
+        self.skill_state.active_skill_names = matched_indices
             .iter()
             .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
             .collect();
 
-        let skill_names = self.active_skill_names.clone();
+        let skill_names = self.skill_state.active_skill_names.clone();
         let total = all_meta.len();
         self.update_metrics(|m| {
             m.active_skills = skill_names;
             m.total_skills = total;
         });
 
-        if !self.active_skill_names.is_empty()
-            && let Some(memory) = &self.memory
+        if !self.skill_state.active_skill_names.is_empty()
+            && let Some(memory) = &self.memory_state.memory
         {
-            let names: Vec<&str> = self.active_skill_names.iter().map(String::as_str).collect();
+            let names: Vec<&str> = self
+                .skill_state
+                .active_skill_names
+                .iter()
+                .map(String::as_str)
+                .collect();
             if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
                 tracing::warn!("failed to record skill usage: {e:#}");
             }
         }
 
         let all_skills: Vec<Skill> = self
+            .skill_state
             .registry
             .all_meta()
             .iter()
-            .filter_map(|m| self.registry.get_skill(&m.name).ok())
+            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
         let active_skills: Vec<Skill> = self
+            .skill_state
             .active_skill_names
             .iter()
-            .filter_map(|name| self.registry.get_skill(name).ok())
+            .filter_map(|name| self.skill_state.registry.get_skill(name).ok())
             .collect();
         let remaining_skills: Vec<Skill> = all_skills
             .iter()
-            .filter(|s| !self.active_skill_names.contains(&s.name().to_string()))
+            .filter(|s| {
+                !self
+                    .skill_state
+                    .active_skill_names
+                    .contains(&s.name().to_string())
+            })
             .cloned()
             .collect();
 
         let skills_prompt = format_skills_prompt(&active_skills, std::env::consts::OS);
         let catalog_prompt = format_skills_catalog(&remaining_skills);
-        self.last_skills_prompt.clone_from(&skills_prompt);
+        self.skill_state
+            .last_skills_prompt
+            .clone_from(&skills_prompt);
         let env = EnvironmentContext::gather(&self.model_name);
         let tool_catalog = {
             let defs = self.tool_executor.tool_definitions();
@@ -568,16 +596,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         #[cfg(feature = "index")]
-        if self.code_retriever.is_some() && self.repo_map_tokens > 0 {
+        if self.index.retriever.is_some() && self.index.repo_map_tokens > 0 {
             let now = std::time::Instant::now();
-            let map = if let Some((ref cached, generated_at)) = self.cached_repo_map
-                && now.duration_since(generated_at) < self.repo_map_ttl
+            let map = if let Some((ref cached, generated_at)) = self.index.cached_repo_map
+                && now.duration_since(generated_at) < self.index.repo_map_ttl
             {
                 cached.clone()
             } else {
-                let fresh = zeph_index::repo_map::generate_repo_map(&cwd, self.repo_map_tokens)
-                    .unwrap_or_default();
-                self.cached_repo_map = Some((fresh.clone(), now));
+                let fresh =
+                    zeph_index::repo_map::generate_repo_map(&cwd, self.index.repo_map_tokens)
+                        .unwrap_or_default();
+                self.index.cached_repo_map = Some((fresh.clone(), now));
                 fresh
             };
             if !map.is_empty() {
@@ -588,7 +617,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         tracing::debug!(
             len = system_prompt.len(),
-            skills = ?self.active_skill_names,
+            skills = ?self.skill_state.active_skill_names,
             "system prompt rebuilt"
         );
         tracing::trace!(prompt = %system_prompt, "full system prompt");
@@ -729,7 +758,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(0, 0.20, 0.75, 4, 0);
-        assert!(agent.context_budget.is_none());
+        assert!(agent.context_state.budget.is_none());
     }
 
     #[test]
@@ -742,10 +771,13 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(4096, 0.20, 0.80, 6, 0);
 
-        assert!(agent.context_budget.is_some());
-        assert_eq!(agent.context_budget.as_ref().unwrap().max_tokens(), 4096);
-        assert!((agent.compaction_threshold - 0.80).abs() < f32::EPSILON);
-        assert_eq!(agent.compaction_preserve_tail, 6);
+        assert!(agent.context_state.budget.is_some());
+        assert_eq!(
+            agent.context_state.budget.as_ref().unwrap().max_tokens(),
+            4096
+        );
+        assert!((agent.context_state.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(agent.context_state.compaction_preserve_tail, 6);
     }
 
     #[tokio::test]

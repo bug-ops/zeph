@@ -49,62 +49,77 @@ struct QueuedMessage {
     received_at: Instant,
 }
 
+pub(super) struct MemoryState<P: LlmProvider + Clone + 'static> {
+    pub(super) memory: Option<SemanticMemory<P>>,
+    pub(super) conversation_id: Option<zeph_memory::ConversationId>,
+    pub(super) history_limit: u32,
+    pub(super) recall_limit: usize,
+    pub(super) summarization_threshold: usize,
+    pub(super) cross_session_score_threshold: f32,
+}
+
+pub(super) struct SkillState {
+    pub(super) registry: SkillRegistry,
+    pub(super) skill_paths: Vec<PathBuf>,
+    pub(super) matcher: Option<SkillMatcherBackend>,
+    pub(super) max_active_skills: usize,
+    pub(super) embedding_model: String,
+    pub(super) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
+    pub(super) active_skill_names: Vec<String>,
+    pub(super) last_skills_prompt: String,
+}
+
+pub(super) struct ContextState {
+    pub(super) budget: Option<ContextBudget>,
+    pub(super) compaction_threshold: f32,
+    pub(super) compaction_preserve_tail: usize,
+    pub(super) prune_protect_tokens: usize,
+}
+
+#[cfg(feature = "mcp")]
+pub(super) struct McpState {
+    pub(super) tools: Vec<zeph_mcp::McpTool>,
+    pub(super) registry: Option<zeph_mcp::McpToolRegistry>,
+    pub(super) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    pub(super) allowed_commands: Vec<String>,
+    pub(super) max_dynamic: usize,
+}
+
+#[cfg(feature = "index")]
+pub(super) struct IndexState<P: LlmProvider + Clone + 'static> {
+    pub(super) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
+    pub(super) repo_map_tokens: usize,
+    pub(super) cached_repo_map: Option<(String, std::time::Instant)>,
+    pub(super) repo_map_ttl: std::time::Duration,
+}
+
 pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
     provider: P,
     channel: C,
     tool_executor: T,
     messages: Vec<Message>,
-    registry: SkillRegistry,
-    skill_paths: Vec<PathBuf>,
-    matcher: Option<SkillMatcherBackend>,
-    max_active_skills: usize,
-    embedding_model: String,
-    skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
+    pub(super) memory_state: MemoryState<P>,
+    pub(super) skill_state: SkillState,
+    pub(super) context_state: ContextState,
     config_path: Option<PathBuf>,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
-    memory: Option<SemanticMemory<P>>,
-    conversation_id: Option<zeph_memory::ConversationId>,
-    history_limit: u32,
-    recall_limit: usize,
-    summarization_threshold: usize,
     shutdown: watch::Receiver<bool>,
-    active_skill_names: Vec<String>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     security: SecurityConfig,
     timeouts: TimeoutConfig,
-    context_budget: Option<ContextBudget>,
-    compaction_threshold: f32,
-    compaction_preserve_tail: usize,
-    last_skills_prompt: String,
     model_name: String,
     #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
     #[cfg(feature = "self-learning")]
     reflection_used: bool,
     #[cfg(feature = "mcp")]
-    mcp_tools: Vec<zeph_mcp::McpTool>,
-    #[cfg(feature = "mcp")]
-    mcp_registry: Option<zeph_mcp::McpToolRegistry>,
-    #[cfg(feature = "mcp")]
-    mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    pub(super) mcp: McpState,
+    #[cfg(feature = "index")]
+    pub(super) index: IndexState<P>,
     start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
-    prune_protect_tokens: usize,
-    cross_session_score_threshold: f32,
     summarize_tool_output_enabled: bool,
     permission_policy: zeph_tools::PermissionPolicy,
-    #[cfg(feature = "mcp")]
-    mcp_allowed_commands: Vec<String>,
-    #[cfg(feature = "mcp")]
-    mcp_max_dynamic: usize,
-    #[cfg(feature = "index")]
-    code_retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
-    #[cfg(feature = "index")]
-    repo_map_tokens: usize,
-    #[cfg(feature = "index")]
-    cached_repo_map: Option<(String, std::time::Instant)>,
-    #[cfg(feature = "index")]
-    repo_map_ttl: std::time::Duration,
     warmup_ready: Option<watch::Receiver<bool>>,
     max_tool_iterations: usize,
     doom_loop_history: Vec<String>,
@@ -140,57 +155,60 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 content: system_prompt,
                 parts: vec![],
             }],
-            registry,
-            skill_paths: Vec::new(),
-            matcher,
-            max_active_skills,
-            embedding_model: String::new(),
-            skill_reload_rx: None,
+            memory_state: MemoryState {
+                memory: None,
+                conversation_id: None,
+                history_limit: 50,
+                recall_limit: 5,
+                summarization_threshold: 50,
+                cross_session_score_threshold: 0.35,
+            },
+            skill_state: SkillState {
+                registry,
+                skill_paths: Vec::new(),
+                matcher,
+                max_active_skills,
+                embedding_model: String::new(),
+                skill_reload_rx: None,
+                active_skill_names: Vec::new(),
+                last_skills_prompt: skills_prompt,
+            },
+            context_state: ContextState {
+                budget: None,
+                compaction_threshold: 0.80,
+                compaction_preserve_tail: 6,
+                prune_protect_tokens: 40_000,
+            },
             config_path: None,
             config_reload_rx: None,
-            memory: None,
-            conversation_id: None,
-            history_limit: 50,
-            recall_limit: 5,
-            summarization_threshold: 50,
             shutdown: rx,
-            active_skill_names: Vec::new(),
             metrics_tx: None,
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
-            context_budget: None,
-            compaction_threshold: 0.80,
-            compaction_preserve_tail: 6,
-            last_skills_prompt: skills_prompt,
             model_name: String::new(),
             #[cfg(feature = "self-learning")]
             learning_config: None,
             #[cfg(feature = "self-learning")]
             reflection_used: false,
             #[cfg(feature = "mcp")]
-            mcp_tools: Vec::new(),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            #[cfg(feature = "mcp")]
-            mcp_manager: None,
+            mcp: McpState {
+                tools: Vec::new(),
+                registry: None,
+                manager: None,
+                allowed_commands: Vec::new(),
+                max_dynamic: 10,
+            },
+            #[cfg(feature = "index")]
+            index: IndexState {
+                retriever: None,
+                repo_map_tokens: 0,
+                cached_repo_map: None,
+                repo_map_ttl: std::time::Duration::from_secs(300),
+            },
             start_time: Instant::now(),
             message_queue: VecDeque::new(),
-            prune_protect_tokens: 40_000,
-            cross_session_score_threshold: 0.35,
             summarize_tool_output_enabled: false,
             permission_policy: zeph_tools::PermissionPolicy::default(),
-            #[cfg(feature = "mcp")]
-            mcp_allowed_commands: Vec::new(),
-            #[cfg(feature = "mcp")]
-            mcp_max_dynamic: 10,
-            #[cfg(feature = "index")]
-            code_retriever: None,
-            #[cfg(feature = "index")]
-            repo_map_tokens: 0,
-            #[cfg(feature = "index")]
-            cached_repo_map: None,
-            #[cfg(feature = "index")]
-            repo_map_ttl: std::time::Duration::from_secs(300),
             warmup_ready: None,
             max_tool_iterations: 10,
             doom_loop_history: Vec::new(),
@@ -213,11 +231,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         summarization_threshold: usize,
     ) -> Self {
         let has_qdrant = memory.has_qdrant();
-        self.memory = Some(memory);
-        self.conversation_id = Some(conversation_id);
-        self.history_limit = history_limit;
-        self.recall_limit = recall_limit;
-        self.summarization_threshold = summarization_threshold;
+        self.memory_state.memory = Some(memory);
+        self.memory_state.conversation_id = Some(conversation_id);
+        self.memory_state.history_limit = history_limit;
+        self.memory_state.recall_limit = recall_limit;
+        self.memory_state.summarization_threshold = summarization_threshold;
         self.update_metrics(|m| {
             m.qdrant_available = has_qdrant;
             m.sqlite_conversation_id = Some(conversation_id);
@@ -227,7 +245,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[must_use]
     pub fn with_embedding_model(mut self, model: String) -> Self {
-        self.embedding_model = model;
+        self.skill_state.embedding_model = model;
         self
     }
 
@@ -243,8 +261,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         paths: Vec<PathBuf>,
         rx: mpsc::Receiver<SkillEvent>,
     ) -> Self {
-        self.skill_paths = paths;
-        self.skill_reload_rx = Some(rx);
+        self.skill_state.skill_paths = paths;
+        self.skill_state.skill_reload_rx = Some(rx);
         self
     }
 
@@ -271,12 +289,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
         mcp_config: &crate::config::McpConfig,
     ) -> Self {
-        self.mcp_tools = tools;
-        self.mcp_registry = registry;
-        self.mcp_manager = manager;
-        self.mcp_allowed_commands
+        self.mcp.tools = tools;
+        self.mcp.registry = registry;
+        self.mcp.manager = manager;
+        self.mcp
+            .allowed_commands
             .clone_from(&mcp_config.allowed_commands);
-        self.mcp_max_dynamic = mcp_config.max_dynamic_servers;
+        self.mcp.max_dynamic = mcp_config.max_dynamic_servers;
         self
     }
 
@@ -309,11 +328,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         prune_protect_tokens: usize,
     ) -> Self {
         if budget_tokens > 0 {
-            self.context_budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
+            self.context_state.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
         }
-        self.compaction_threshold = compaction_threshold;
-        self.compaction_preserve_tail = compaction_preserve_tail;
-        self.prune_protect_tokens = prune_protect_tokens;
+        self.context_state.compaction_threshold = compaction_threshold;
+        self.context_state.compaction_preserve_tail = compaction_preserve_tail;
+        self.context_state.prune_protect_tokens = prune_protect_tokens;
         self
     }
 
@@ -337,9 +356,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         repo_map_tokens: usize,
         repo_map_ttl_secs: u64,
     ) -> Self {
-        self.code_retriever = Some(retriever);
-        self.repo_map_tokens = repo_map_tokens;
-        self.repo_map_ttl = std::time::Duration::from_secs(repo_map_ttl_secs);
+        self.index.retriever = Some(retriever);
+        self.index.repo_map_tokens = repo_map_tokens;
+        self.index.repo_map_ttl = std::time::Duration::from_secs(repo_map_ttl_secs);
         self
     }
 
@@ -347,21 +366,23 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
         let model_name = self.model_name.clone();
-        let total_skills = self.registry.all_meta().len();
+        let total_skills = self.skill_state.registry.all_meta().len();
         let qdrant_available = self
+            .memory_state
             .memory
             .as_ref()
             .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
-        let conversation_id = self.conversation_id;
+        let conversation_id = self.memory_state.conversation_id;
         let prompt_estimate = self
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
         #[cfg(feature = "mcp")]
-        let mcp_tool_count = self.mcp_tools.len();
+        let mcp_tool_count = self.mcp.tools.len();
         #[cfg(feature = "mcp")]
         let mcp_server_count = self
-            .mcp_tools
+            .mcp
+            .tools
             .iter()
             .map(|t| &t.server_id)
             .collect::<std::collections::HashSet<_>>()
@@ -484,7 +505,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         tracing::info!("shutting down");
                         break;
                     }
-                    Some(_) = recv_skill_event(&mut self.skill_reload_rx) => {
+                    Some(_) = recv_skill_event(&mut self.skill_state.skill_reload_rx) => {
                         self.reload_skills().await;
                         continue;
                     }
@@ -577,11 +598,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         let mut output = String::from("Available skills:\n\n");
 
-        for meta in self.registry.all_meta() {
+        for meta in self.skill_state.registry.all_meta() {
             let _ = writeln!(output, "- {} — {}", meta.name, meta.description);
         }
 
-        if let Some(memory) = &self.memory {
+        if let Some(memory) = &self.memory_state.memory {
             match memory.sqlite().load_skill_usage().await {
                 Ok(usage) if !usage.is_empty() => {
                     output.push_str("\nUsage statistics:\n\n");
@@ -620,7 +641,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 return Ok(());
             }
 
-            let Some(memory) = &self.memory else {
+            let Some(memory) = &self.memory_state.memory else {
                 self.channel.send("Memory not available.").await?;
                 return Ok(());
             };
@@ -630,7 +651,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 .record_skill_outcome(
                     skill_name,
                     None,
-                    self.conversation_id,
+                    self.memory_state.conversation_id,
                     "user_rejection",
                     Some(feedback),
                 )
@@ -659,13 +680,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn reload_skills(&mut self) {
-        let new_registry = SkillRegistry::load(&self.skill_paths);
-        if new_registry.fingerprint() == self.registry.fingerprint() {
+        let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
+        if new_registry.fingerprint() == self.skill_state.registry.fingerprint() {
             return;
         }
-        self.registry = new_registry;
+        self.skill_state.registry = new_registry;
 
-        let all_meta = self.registry.all_meta();
+        let all_meta = self.skill_state.registry.all_meta();
         let provider = self.provider.clone();
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
@@ -674,36 +695,43 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         };
 
         let needs_inmemory_rebuild = !self
+            .skill_state
             .matcher
             .as_ref()
             .is_some_and(SkillMatcherBackend::is_qdrant);
 
         if needs_inmemory_rebuild {
-            self.matcher = SkillMatcher::new(&all_meta, embed_fn)
+            self.skill_state.matcher = SkillMatcher::new(&all_meta, embed_fn)
                 .await
                 .map(SkillMatcherBackend::InMemory);
-        } else if let Some(ref mut backend) = self.matcher
+        } else if let Some(ref mut backend) = self.skill_state.matcher
             && let Err(e) = backend
-                .sync(&all_meta, &self.embedding_model, embed_fn)
+                .sync(&all_meta, &self.skill_state.embedding_model, embed_fn)
                 .await
         {
             tracing::warn!("failed to sync skill embeddings: {e:#}");
         }
 
         let all_skills: Vec<Skill> = self
+            .skill_state
             .registry
             .all_meta()
             .iter()
-            .filter_map(|m| self.registry.get_skill(&m.name).ok())
+            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
         let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
-        self.last_skills_prompt.clone_from(&skills_prompt);
+        self.skill_state
+            .last_skills_prompt
+            .clone_from(&skills_prompt);
         let system_prompt = build_system_prompt(&skills_prompt, None, None);
         if let Some(msg) = self.messages.first_mut() {
             msg.content = system_prompt;
         }
 
-        tracing::info!("reloaded {} skill(s)", self.registry.all_meta().len());
+        tracing::info!(
+            "reloaded {} skill(s)",
+            self.skill_state.registry.all_meta().len()
+        );
     }
 
     fn reload_config(&mut self) {
@@ -720,27 +748,29 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         self.security = config.security;
         self.timeouts = config.timeouts;
-        self.history_limit = config.memory.history_limit;
-        self.recall_limit = config.memory.semantic.recall_limit;
-        self.summarization_threshold = config.memory.summarization_threshold;
-        self.max_active_skills = config.skills.max_active_skills;
+        self.memory_state.history_limit = config.memory.history_limit;
+        self.memory_state.recall_limit = config.memory.semantic.recall_limit;
+        self.memory_state.summarization_threshold = config.memory.summarization_threshold;
+        self.skill_state.max_active_skills = config.skills.max_active_skills;
 
         if config.memory.context_budget_tokens > 0 {
-            self.context_budget = Some(ContextBudget::new(
+            self.context_state.budget = Some(ContextBudget::new(
                 config.memory.context_budget_tokens,
                 0.20,
             ));
         } else {
-            self.context_budget = None;
+            self.context_state.budget = None;
         }
-        self.compaction_threshold = config.memory.compaction_threshold;
-        self.compaction_preserve_tail = config.memory.compaction_preserve_tail;
-        self.prune_protect_tokens = config.memory.prune_protect_tokens;
-        self.cross_session_score_threshold = config.memory.cross_session_score_threshold;
+        self.context_state.compaction_threshold = config.memory.compaction_threshold;
+        self.context_state.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+        self.context_state.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.memory_state.cross_session_score_threshold =
+            config.memory.cross_session_score_threshold;
 
         #[cfg(feature = "index")]
         {
-            self.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
+            self.index.repo_map_ttl =
+                std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
         }
 
         tracing::info!("config reloaded");
@@ -986,7 +1016,7 @@ pub(super) mod agent_tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_embedding_model("test-embed-model".to_string());
 
-        assert_eq!(agent.embedding_model, "test-embed-model");
+        assert_eq!(agent.skill_state.embedding_model, "test-embed-model");
     }
 
     #[tokio::test]
@@ -1386,7 +1416,7 @@ pub(super) mod agent_tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_skill_reload(paths.clone(), rx);
 
-        assert_eq!(agent.skill_paths, paths);
+        assert_eq!(agent.skill_state.skill_paths, paths);
     }
 
     #[tokio::test]

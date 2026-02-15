@@ -18,15 +18,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[cfg(feature = "self-learning")]
     pub(super) async fn record_skill_outcomes(&self, outcome: &str, error_context: Option<&str>) {
-        if self.active_skill_names.is_empty() {
+        if self.skill_state.active_skill_names.is_empty() {
             return;
         }
-        let Some(memory) = &self.memory else { return };
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
         if let Err(e) = memory
             .sqlite()
             .record_skill_outcomes_batch(
-                &self.active_skill_names,
-                self.conversation_id,
+                &self.skill_state.active_skill_names,
+                self.memory_state.conversation_id,
                 outcome,
                 error_context,
             )
@@ -36,7 +38,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         if outcome != "success" {
-            for name in &self.active_skill_names {
+            for name in &self.skill_state.active_skill_names {
                 self.check_rollback(name).await;
             }
         }
@@ -58,13 +60,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         self.reflection_used = true;
 
-        let skill_name = self.active_skill_names.first().cloned();
+        let skill_name = self.skill_state.active_skill_names.first().cloned();
 
         let Some(name) = skill_name else {
             return Ok(false);
         };
 
-        let Ok(skill) = self.registry.get_skill(&name) else {
+        let Ok(skill) = self.skill_state.registry.get_skill(&name) else {
             return Ok(false);
         };
 
@@ -116,14 +118,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             return Ok(());
         };
         let Some(config) = self.learning_config.as_ref() else {
             return Ok(());
         };
 
-        let skill = self.registry.get_skill(skill_name)?;
+        let skill = self.skill_state.registry.get_skill(skill_name)?;
 
         memory
             .sqlite()
@@ -280,7 +282,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 .sqlite()
                 .activate_skill_version(skill_name, version_id)
                 .await?;
-            write_skill_file(&self.skill_paths, skill_name, description, generated_body).await?;
+            write_skill_file(
+                &self.skill_state.skill_paths,
+                skill_name,
+                description,
+                generated_body,
+            )
+            .await?;
             tracing::info!("auto-activated v{next_ver} for {skill_name}");
         }
 
@@ -298,7 +306,9 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if !self.is_learning_enabled() {
             return;
         }
-        let Some(memory) = &self.memory else { return };
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
         let Some(config) = &self.learning_config else {
             return;
         };
@@ -343,7 +353,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .is_ok()
         {
             write_skill_file(
-                &self.skill_paths,
+                &self.skill_state.skill_paths,
                 skill_name,
                 &predecessor.description,
                 &predecessor.body,
@@ -386,7 +396,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     async fn handle_skill_stats(&mut self) -> anyhow::Result<()> {
         use std::fmt::Write;
 
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -424,7 +434,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send("Usage: /skill versions <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -467,7 +477,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send("Invalid version number.").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -485,7 +495,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .activate_skill_version(name, target.id)
             .await?;
 
-        write_skill_file(&self.skill_paths, name, &target.description, &target.body).await?;
+        write_skill_file(
+            &self.skill_state.skill_paths,
+            name,
+            &target.description,
+            &target.body,
+        )
+        .await?;
 
         self.channel
             .send(&format!("Activated v{ver} for \"{name}\"."))
@@ -499,7 +515,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send("Usage: /skill approve <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -521,7 +537,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .activate_skill_version(name, target.id)
             .await?;
 
-        write_skill_file(&self.skill_paths, name, &target.description, &target.body).await?;
+        write_skill_file(
+            &self.skill_state.skill_paths,
+            name,
+            &target.description,
+            &target.body,
+        )
+        .await?;
 
         self.channel
             .send(&format!(
@@ -538,7 +560,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send("Usage: /skill reset <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory else {
+        let Some(memory) = &self.memory_state.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -553,7 +575,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         memory.sqlite().activate_skill_version(name, v1.id).await?;
 
-        write_skill_file(&self.skill_paths, name, &v1.description, &v1.body).await?;
+        write_skill_file(
+            &self.skill_state.skill_paths,
+            name,
+            &v1.description,
+            &v1.body,
+        )
+        .await?;
 
         self.channel
             .send(&format!("Reset \"{name}\" to original v1."))

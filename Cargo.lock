@@ -8183,7 +8183,6 @@ dependencies = [
 name = "zeph-channels"
 version = "0.9.5"
 dependencies = [
- "anyhow",
  "criterion",
  "pulldown-cmark",
  "teloxide",

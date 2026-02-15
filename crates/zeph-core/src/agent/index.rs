@@ -6,7 +6,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         query: &str,
         token_budget: usize,
     ) -> anyhow::Result<()> {
-        let Some(retriever) = &self.code_retriever else {
+        let Some(retriever) = &self.index.retriever else {
             return Ok(());
         };
         if token_budget == 0 {
@@ -47,22 +47,22 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.repo_map_ttl = Duration::from_secs(300);
+        agent.index.repo_map_ttl = Duration::from_secs(300);
 
         let now = Instant::now();
-        agent.cached_repo_map = Some(("cached map".into(), now));
+        agent.index.cached_repo_map = Some(("cached map".into(), now));
 
-        let (cached, generated_at) = agent.cached_repo_map.as_ref().unwrap();
+        let (cached, generated_at) = agent.index.cached_repo_map.as_ref().unwrap();
         assert_eq!(cached, "cached map");
 
         let elapsed = Instant::now().duration_since(*generated_at);
         assert!(
-            elapsed < agent.repo_map_ttl,
+            elapsed < agent.index.repo_map_ttl,
             "cache should still be valid within TTL"
         );
 
         let original_instant = *generated_at;
-        let (_, second_generated_at) = agent.cached_repo_map.as_ref().unwrap();
+        let (_, second_generated_at) = agent.index.cached_repo_map.as_ref().unwrap();
         assert_eq!(
             original_instant, *second_generated_at,
             "cached instant should not change on reuse"

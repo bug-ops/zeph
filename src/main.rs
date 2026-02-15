@@ -29,6 +29,7 @@ use zeph_llm::provider::LlmProvider;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+#[cfg(feature = "qdrant")]
 use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillWatcher;
@@ -661,6 +662,7 @@ async fn warmup_provider(provider: &AnyProvider) {
     }
 }
 
+#[allow(unused_variables)]
 async fn create_skill_matcher(
     config: &Config,
     provider: &AnyProvider,
@@ -675,6 +677,7 @@ async fn create_skill_matcher(
         Box::pin(async move { p.embed(&owned).await })
     };
 
+    #[cfg(feature = "qdrant")]
     if config.memory.semantic.enabled && memory.has_qdrant() {
         match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
             Ok(mut qm) => match qm.sync(meta, embedding_model, &embed_fn).await {

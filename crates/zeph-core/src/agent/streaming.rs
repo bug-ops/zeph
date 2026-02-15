@@ -16,7 +16,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.channel.send_typing().await?;
 
             // Context budget check at 80% threshold
-            if let Some(ref budget) = self.context_budget {
+            if let Some(ref budget) = self.context_state.budget {
                 let used: usize = self
                     .messages
                     .iter()

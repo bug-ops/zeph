@@ -25,7 +25,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         }
 
-        let Some(ref manager) = self.mcp_manager else {
+        let Some(ref manager) = self.mcp.manager else {
             self.channel.send("MCP is not enabled.").await?;
             return Ok(());
         };
@@ -35,13 +35,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         // SEC-MCP-01: validate command against allowlist (stdio only)
         if !is_url
-            && !self.mcp_allowed_commands.is_empty()
-            && !self.mcp_allowed_commands.iter().any(|c| c == target)
+            && !self.mcp.allowed_commands.is_empty()
+            && !self.mcp.allowed_commands.iter().any(|c| c == target)
         {
             self.channel
                 .send(&format!(
                     "Command '{target}' is not allowed. Permitted: {}",
-                    self.mcp_allowed_commands.join(", ")
+                    self.mcp.allowed_commands.join(", ")
                 ))
                 .await?;
             return Ok(());
@@ -49,11 +49,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         // SEC-MCP-03: enforce server limit
         let current_count = manager.list_servers().await.len();
-        if current_count >= self.mcp_max_dynamic {
+        if current_count >= self.mcp.max_dynamic {
             self.channel
                 .send(&format!(
                     "Server limit reached ({}/{}).",
-                    current_count, self.mcp_max_dynamic
+                    current_count, self.mcp.max_dynamic
                 ))
                 .await?;
             return Ok(());
@@ -80,11 +80,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         match manager.add_server(&entry).await {
             Ok(tools) => {
                 let count = tools.len();
-                self.mcp_tools.extend(tools);
+                self.mcp.tools.extend(tools);
                 self.sync_mcp_registry().await;
-                let mcp_total = self.mcp_tools.len();
+                let mcp_total = self.mcp.tools.len();
                 let mcp_servers = self
-                    .mcp_tools
+                    .mcp
+                    .tools
                     .iter()
                     .map(|t| &t.server_id)
                     .collect::<std::collections::HashSet<_>>()
@@ -114,7 +115,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     async fn handle_mcp_list(&mut self) -> anyhow::Result<()> {
         use std::fmt::Write;
 
-        let Some(ref manager) = self.mcp_manager else {
+        let Some(ref manager) = self.mcp.manager else {
             self.channel.send("MCP is not enabled.").await?;
             return Ok(());
         };
@@ -128,7 +129,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let mut output = String::from("Connected MCP servers:\n");
         let mut total = 0usize;
         for id in &server_ids {
-            let count = self.mcp_tools.iter().filter(|t| t.server_id == *id).count();
+            let count = self.mcp.tools.iter().filter(|t| t.server_id == *id).count();
             total += count;
             let _ = writeln!(output, "- {id} ({count} tools)");
         }
@@ -147,7 +148,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         };
 
         let tools: Vec<_> = self
-            .mcp_tools
+            .mcp
+            .tools
             .iter()
             .filter(|t| t.server_id == server_id)
             .collect();
@@ -177,20 +179,21 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(());
         };
 
-        let Some(ref manager) = self.mcp_manager else {
+        let Some(ref manager) = self.mcp.manager else {
             self.channel.send("MCP is not enabled.").await?;
             return Ok(());
         };
 
         match manager.remove_server(server_id).await {
             Ok(()) => {
-                let before = self.mcp_tools.len();
-                self.mcp_tools.retain(|t| t.server_id != server_id);
-                let removed = before - self.mcp_tools.len();
+                let before = self.mcp.tools.len();
+                self.mcp.tools.retain(|t| t.server_id != server_id);
+                let removed = before - self.mcp.tools.len();
                 self.sync_mcp_registry().await;
-                let mcp_total = self.mcp_tools.len();
+                let mcp_total = self.mcp.tools.len();
                 let mcp_servers = self
-                    .mcp_tools
+                    .mcp
+                    .tools
                     .iter()
                     .map(|t| &t.server_id)
                     .collect::<std::collections::HashSet<_>>()
@@ -224,9 +227,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .iter()
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
-        let mcp_total = self.mcp_tools.len();
+        let mcp_total = self.mcp.tools.len();
         let mcp_servers = self
-            .mcp_tools
+            .mcp
+            .tools
             .iter()
             .map(|t| &t.server_id)
             .collect::<std::collections::HashSet<_>>()
@@ -239,7 +243,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if !matched_tools.is_empty() {
             let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
             tracing::debug!(
-                skills = ?self.active_skill_names,
+                skills = ?self.skill_state.active_skill_names,
                 mcp_tools = ?tool_names,
                 "matched items"
             );
@@ -252,12 +256,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn match_mcp_tools(&self, query: &str) -> Vec<zeph_mcp::McpTool> {
-        let Some(ref registry) = self.mcp_registry else {
-            return self.mcp_tools.clone();
+        let Some(ref registry) = self.mcp.registry else {
+            return self.mcp.tools.clone();
         };
         let provider = self.provider.clone();
         registry
-            .search(query, self.max_active_skills, |text| {
+            .search(query, self.skill_state.max_active_skills, |text| {
                 let owned = text.to_owned();
                 let p = provider.clone();
                 Box::pin(async move { p.embed(&owned).await })
@@ -266,7 +270,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {
-        let Some(ref mut registry) = self.mcp_registry else {
+        let Some(ref mut registry) = self.mcp.registry else {
             return;
         };
         if !self.provider.supports_embeddings() {
@@ -279,7 +283,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             Box::pin(async move { p.embed(&owned).await })
         };
         if let Err(e) = registry
-            .sync(&self.mcp_tools, &self.embedding_model, embed_fn)
+            .sync(&self.mcp.tools, &self.skill_state.embedding_model, embed_fn)
             .await
         {
             tracing::warn!("failed to sync MCP tool registry: {e:#}");
