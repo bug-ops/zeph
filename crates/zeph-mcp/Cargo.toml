@@ -19,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "time", "rt"] }
 tracing.workspace = true
+url.workspace = true
 uuid = { workspace = true, optional = true, features = ["v5"] }
 zeph-llm.workspace = true
 zeph-tools.workspace = true

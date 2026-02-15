@@ -39,6 +39,12 @@ pub enum McpError {
     #[error("integer conversion: {0}")]
     IntConversion(#[from] std::num::TryFromIntError),
 
+    #[error("SSRF blocked: URL '{url}' resolves to private/reserved IP {addr}")]
+    SsrfBlocked { url: String, addr: String },
+
+    #[error("invalid URL '{url}': {message}")]
+    InvalidUrl { url: String, message: String },
+
     #[error("embedding error: {0}")]
     Embedding(String),
 }
