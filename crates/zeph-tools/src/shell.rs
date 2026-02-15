@@ -213,8 +213,19 @@ impl ShellExecutor {
     }
 
     fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
-        for token in extract_absolute_paths(code) {
-            let path = PathBuf::from(token);
+        for token in extract_paths(code) {
+            if has_traversal(token) {
+                return Err(ToolError::SandboxViolation {
+                    path: token.to_owned(),
+                });
+            }
+
+            let path = if token.starts_with('/') {
+                PathBuf::from(token)
+            } else {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                cwd.join(token)
+            };
             let canonical = path.canonicalize().unwrap_or(path);
             if !self
                 .allowed_paths
@@ -279,12 +290,21 @@ impl ToolExecutor for ShellExecutor {
     }
 }
 
-fn extract_absolute_paths(code: &str) -> Vec<&str> {
+fn extract_paths(code: &str) -> Vec<&str> {
     code.split_whitespace()
-        .filter(|token| token.starts_with('/'))
+        .filter(|token| {
+            token.starts_with('/')
+                || token.starts_with("./")
+                || token.starts_with("../")
+                || *token == ".."
+        })
         .map(|token| token.trim_end_matches([';', '&', '|']))
         .filter(|t| !t.is_empty())
         .collect()
+}
+
+fn has_traversal(path: &str) -> bool {
+    path.split('/').any(|seg| seg == "..")
 }
 
 fn extract_bash_blocks(text: &str) -> Vec<&str> {
@@ -804,21 +824,21 @@ mod tests {
     // --- Phase 1: sandbox tests ---
 
     #[test]
-    fn extract_absolute_paths_from_code() {
-        let paths = extract_absolute_paths("cat /etc/passwd && ls /var/log");
+    fn extract_paths_from_code() {
+        let paths = extract_paths("cat /etc/passwd && ls /var/log");
         assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
     }
 
     #[test]
-    fn extract_absolute_paths_handles_trailing_chars() {
-        let paths = extract_absolute_paths("cat /etc/passwd; echo /var/log|");
+    fn extract_paths_handles_trailing_chars() {
+        let paths = extract_paths("cat /etc/passwd; echo /var/log|");
         assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
     }
 
     #[test]
-    fn extract_absolute_paths_ignores_relative() {
-        let paths = extract_absolute_paths("cat ./file.txt ../other");
-        assert!(paths.is_empty());
+    fn extract_paths_detects_relative() {
+        let paths = extract_paths("cat ./file.txt ../other");
+        assert_eq!(paths, vec!["./file.txt", "../other"]);
     }
 
     #[test]
@@ -843,6 +863,55 @@ mod tests {
         let config = sandbox_config(vec!["/tmp".into()]);
         let executor = ShellExecutor::new(&config);
         assert!(executor.validate_sandbox("echo hello").is_ok());
+    }
+
+    #[test]
+    fn sandbox_rejects_dotdot_traversal() {
+        let config = sandbox_config(vec!["/tmp/sandbox".into()]);
+        let executor = ShellExecutor::new(&config);
+        let result = executor.validate_sandbox("cat ../../../etc/passwd");
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn sandbox_rejects_bare_dotdot() {
+        let config = sandbox_config(vec!["/tmp/sandbox".into()]);
+        let executor = ShellExecutor::new(&config);
+        let result = executor.validate_sandbox("cd ..");
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn sandbox_rejects_relative_dotslash_outside() {
+        let config = sandbox_config(vec!["/nonexistent/sandbox".into()]);
+        let executor = ShellExecutor::new(&config);
+        let result = executor.validate_sandbox("cat ./secret.txt");
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn sandbox_rejects_absolute_with_embedded_dotdot() {
+        let config = sandbox_config(vec!["/tmp/sandbox".into()]);
+        let executor = ShellExecutor::new(&config);
+        let result = executor.validate_sandbox("cat /tmp/sandbox/../../../etc/passwd");
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn has_traversal_detects_dotdot() {
+        assert!(has_traversal("../etc/passwd"));
+        assert!(has_traversal("./foo/../bar"));
+        assert!(has_traversal("/tmp/sandbox/../../etc"));
+        assert!(has_traversal(".."));
+        assert!(!has_traversal("./safe/path"));
+        assert!(!has_traversal("/absolute/path"));
+        assert!(!has_traversal("no-dots-here"));
+    }
+
+    #[test]
+    fn extract_paths_detects_dotdot_standalone() {
+        let paths = extract_paths("cd ..");
+        assert_eq!(paths, vec![".."]);
     }
 
     // --- Phase 1: allow_network tests ---
@@ -998,8 +1067,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_absolute_paths_empty() {
-        assert!(extract_absolute_paths("").is_empty());
+    fn extract_paths_empty() {
+        assert!(extract_paths("").is_empty());
     }
 
     #[tokio::test]
