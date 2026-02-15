@@ -193,7 +193,10 @@ mod tests {
         let policy = PermissionPolicy::from_legacy(&["sudo".to_owned()], &["rm ".to_owned()]);
         assert_eq!(policy.check("bash", "sudo apt"), PermissionAction::Deny);
         assert_eq!(policy.check("bash", "rm file"), PermissionAction::Ask);
-        assert_eq!(policy.check("bash", "find . -name foo"), PermissionAction::Allow);
+        assert_eq!(
+            policy.check("bash", "find . -name foo"),
+            PermissionAction::Allow
+        );
         assert_eq!(policy.check("bash", "ls -la"), PermissionAction::Allow);
     }
 
