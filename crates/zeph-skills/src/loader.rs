@@ -407,12 +407,10 @@ mod tests {
         let outside_file = outside.path().join("secret.txt");
         std::fs::write(&outside_file, "secret").unwrap();
 
-        let link_path = base.path().join("evil-link");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
-
         #[cfg(unix)]
         {
+            let link_path = base.path().join("evil-link");
+            std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
             let err = validate_path_within(&link_path, base.path()).unwrap_err();
             assert!(
                 format!("{err:#}").contains("escapes skills directory"),
