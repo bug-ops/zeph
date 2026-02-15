@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use zeph_channels::CliChannel;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
-use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::Config;
 use zeph_core::config_watcher::ConfigWatcher;
 #[cfg(feature = "vault-age")]
@@ -46,7 +46,7 @@ enum AnyChannel {
 }
 
 impl Channel for AnyChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         match self {
             Self::Cli(c) => c.recv().await,
             Self::Telegram(c) => c.recv().await,
@@ -55,7 +55,7 @@ impl Channel for AnyChannel {
         }
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         match self {
             Self::Cli(c) => c.send(text).await,
             Self::Telegram(c) => c.send(text).await,
@@ -64,7 +64,7 @@ impl Channel for AnyChannel {
         }
     }
 
-    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         match self {
             Self::Cli(c) => c.send_chunk(chunk).await,
             Self::Telegram(c) => c.send_chunk(chunk).await,
@@ -73,7 +73,7 @@ impl Channel for AnyChannel {
         }
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         match self {
             Self::Cli(c) => c.flush_chunks().await,
             Self::Telegram(c) => c.flush_chunks().await,
@@ -82,7 +82,7 @@ impl Channel for AnyChannel {
         }
     }
 
-    async fn send_typing(&mut self) -> anyhow::Result<()> {
+    async fn send_typing(&mut self) -> Result<(), ChannelError> {
         match self {
             Self::Cli(c) => c.send_typing().await,
             Self::Telegram(c) => c.send_typing().await,
@@ -91,12 +91,39 @@ impl Channel for AnyChannel {
         }
     }
 
-    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+    async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         match self {
             Self::Cli(c) => c.confirm(prompt).await,
             Self::Telegram(c) => c.confirm(prompt).await,
             #[cfg(feature = "tui")]
             Self::Tui(c) => c.confirm(prompt).await,
+        }
+    }
+
+    fn try_recv(&mut self) -> Option<ChannelMessage> {
+        match self {
+            Self::Cli(c) => c.try_recv(),
+            Self::Telegram(c) => c.try_recv(),
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.try_recv(),
+        }
+    }
+
+    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+        match self {
+            Self::Cli(c) => c.send_status(text).await,
+            Self::Telegram(c) => c.send_status(text).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send_status(text).await,
+        }
+    }
+
+    async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
+        match self {
+            Self::Cli(c) => c.send_queue_count(count).await,
+            Self::Telegram(c) => c.send_queue_count(count).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.send_queue_count(count).await,
         }
     }
 }

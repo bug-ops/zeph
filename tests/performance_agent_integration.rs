@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeph_core::agent::Agent;
-use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
 use zeph_skills::registry::SkillRegistry;
@@ -70,24 +70,24 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.output_sent.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    async fn send_typing(&mut self) -> anyhow::Result<()> {
+    async fn send_typing(&mut self) -> Result<(), ChannelError> {
         Ok(())
     }
 }

@@ -1,3 +1,23 @@
+/// Typed error for channel operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ChannelError {
+    /// Underlying I/O failure.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Channel closed (mpsc send/recv failure).
+    #[error("channel closed")]
+    ChannelClosed,
+
+    /// Confirmation dialog cancelled.
+    #[error("confirmation cancelled")]
+    ConfirmCancelled,
+
+    /// Catch-all for provider-specific errors.
+    #[error("{0}")]
+    Other(String),
+}
+
 /// Incoming message from a channel.
 #[derive(Debug, Clone)]
 pub struct ChannelMessage {
@@ -11,7 +31,8 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn recv(&mut self) -> impl Future<Output = anyhow::Result<Option<ChannelMessage>>> + Send;
+    fn recv(&mut self)
+    -> impl Future<Output = Result<Option<ChannelMessage>, ChannelError>> + Send;
 
     /// Non-blocking receive. Returns `None` if no message is immediately available.
     fn try_recv(&mut self) -> Option<ChannelMessage> {
@@ -23,28 +44,28 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn send(&mut self, text: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn send(&mut self, text: &str) -> impl Future<Output = Result<(), ChannelError>> + Send;
 
     /// Send a partial chunk of streaming response.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn send_chunk(&mut self, chunk: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn send_chunk(&mut self, chunk: &str) -> impl Future<Output = Result<(), ChannelError>> + Send;
 
     /// Flush any buffered chunks.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn flush_chunks(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn flush_chunks(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send;
 
     /// Send a typing indicator. No-op by default.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn send_typing(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+    fn send_typing(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
 
@@ -53,7 +74,10 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn send_status(&mut self, _text: &str) -> impl Future<Output = anyhow::Result<()>> + Send {
+    fn send_status(
+        &mut self,
+        _text: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
 
@@ -65,7 +89,7 @@ pub trait Channel: Send {
     fn send_queue_count(
         &mut self,
         _count: usize,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
 
@@ -75,7 +99,10 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    fn confirm(&mut self, _prompt: &str) -> impl Future<Output = anyhow::Result<bool>> + Send {
+    fn confirm(
+        &mut self,
+        _prompt: &str,
+    ) -> impl Future<Output = Result<bool, ChannelError>> + Send {
         async { Ok(true) }
     }
 }
@@ -95,19 +122,19 @@ mod tests {
     struct StubChannel;
 
     impl Channel for StubChannel {
-        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
             Ok(None)
         }
 
-        async fn send(&mut self, _text: &str) -> anyhow::Result<()> {
+        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
             Ok(())
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
             Ok(())
         }
 
-        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
             Ok(())
         }
     }

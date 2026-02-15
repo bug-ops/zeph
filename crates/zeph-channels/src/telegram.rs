@@ -1,12 +1,10 @@
 use std::time::{Duration, Instant};
 
+use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
 use teloxide::types::{ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelMessage};
-
-use crate::error::ChannelError;
-use crate::markdown::markdown_to_telegram;
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 
 const MAX_MESSAGE_LEN: usize = 4096;
 
@@ -120,7 +118,7 @@ impl TelegramChannel {
 
     async fn send_or_edit(&mut self) -> anyhow::Result<()> {
         let Some(chat_id) = self.chat_id else {
-            return Err(ChannelError::NoActiveChat.into());
+            return Err(ChannelError::Other("no active chat".into()).into());
         };
 
         let text = if self.accumulated.is_empty() {
@@ -206,7 +204,7 @@ impl Channel for TelegramChannel {
         })
     }
 
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         loop {
             let Some(incoming) = self.rx.recv().await else {
                 return Ok(None);
@@ -246,9 +244,9 @@ impl Channel for TelegramChannel {
         }
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
-            return Err(ChannelError::NoActiveChat.into());
+            return Err(ChannelError::Other("no active chat".into()));
         };
 
         let formatted_text = markdown_to_telegram(text);
@@ -262,21 +260,23 @@ impl Channel for TelegramChannel {
             self.bot
                 .send_message(chat_id, &formatted_text)
                 .parse_mode(ParseMode::MarkdownV2)
-                .await?;
+                .await
+                .map_err(|e| ChannelError::Other(e.to_string()))?;
         } else {
             let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
             for chunk in chunks {
                 self.bot
                     .send_message(chat_id, chunk)
                     .parse_mode(ParseMode::MarkdownV2)
-                    .await?;
+                    .await
+                    .map_err(|e| ChannelError::Other(e.to_string()))?;
             }
         }
 
         Ok(())
     }
 
-    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         tracing::debug!(
             "received chunk (size: {}, total: {})",
@@ -286,13 +286,15 @@ impl Channel for TelegramChannel {
 
         if self.should_send_update() {
             tracing::debug!("sending update (should_send_update returned true)");
-            self.send_or_edit().await?;
+            self.send_or_edit()
+                .await
+                .map_err(|e| ChannelError::Other(e.to_string()))?;
         }
 
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         tracing::debug!(
             "flushing chunks (message_id: {:?}, accumulated: {} bytes)",
             self.message_id,
@@ -301,7 +303,9 @@ impl Channel for TelegramChannel {
 
         // Final update with complete message
         if self.message_id.is_some() {
-            self.send_or_edit().await?;
+            self.send_or_edit()
+                .await
+                .map_err(|e| ChannelError::Other(e.to_string()))?;
         }
 
         // Clear state for next response
@@ -312,17 +316,18 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
-    async fn send_typing(&mut self) -> anyhow::Result<()> {
+    async fn send_typing(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Ok(());
         };
         self.bot
             .send_chat_action(chat_id, ChatAction::Typing)
-            .await?;
+            .await
+            .map_err(|e| ChannelError::Other(e.to_string()))?;
         Ok(())
     }
 
-    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+    async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!("{prompt}\nReply 'yes' to confirm."))
             .await?;
         let Some(incoming) = self.rx.recv().await else {

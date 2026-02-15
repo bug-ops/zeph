@@ -8,20 +8,26 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             Some("list") => self.handle_mcp_list().await,
             Some("tools") => self.handle_mcp_tools(parts.get(1).copied()).await,
             Some("remove") => self.handle_mcp_remove(parts.get(1).copied()).await,
-            _ => self.channel.send("Usage: /mcp add|list|tools|remove").await,
+            _ => {
+                self.channel
+                    .send("Usage: /mcp add|list|tools|remove")
+                    .await?;
+                Ok(())
+            }
         }
     }
 
     async fn handle_mcp_add(&mut self, args: &[&str]) -> anyhow::Result<()> {
         if args.len() < 2 {
-            return self
-                .channel
+            self.channel
                 .send("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>")
-                .await;
+                .await?;
+            return Ok(());
         }
 
         let Some(ref manager) = self.mcp_manager else {
-            return self.channel.send("MCP is not enabled.").await;
+            self.channel.send("MCP is not enabled.").await?;
+            return Ok(());
         };
 
         let target = args[1];
@@ -32,25 +38,25 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             && !self.mcp_allowed_commands.is_empty()
             && !self.mcp_allowed_commands.iter().any(|c| c == target)
         {
-            return self
-                .channel
+            self.channel
                 .send(&format!(
                     "Command '{target}' is not allowed. Permitted: {}",
                     self.mcp_allowed_commands.join(", ")
                 ))
-                .await;
+                .await?;
+            return Ok(());
         }
 
         // SEC-MCP-03: enforce server limit
         let current_count = manager.list_servers().await.len();
         if current_count >= self.mcp_max_dynamic {
-            return self
-                .channel
+            self.channel
                 .send(&format!(
                     "Server limit reached ({}/{}).",
                     current_count, self.mcp_max_dynamic
                 ))
-                .await;
+                .await?;
+            return Ok(());
         }
 
         let transport = if is_url {
@@ -92,13 +98,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         "Connected MCP server '{}' ({count} tool(s))",
                         entry.id
                     ))
-                    .await
+                    .await?;
+                Ok(())
             }
             Err(e) => {
                 tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
                 self.channel
                     .send(&format!("Failed to connect server '{}': {e}", entry.id))
-                    .await
+                    .await?;
+                Ok(())
             }
         }
     }
@@ -107,12 +115,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         use std::fmt::Write;
 
         let Some(ref manager) = self.mcp_manager else {
-            return self.channel.send("MCP is not enabled.").await;
+            self.channel.send("MCP is not enabled.").await?;
+            return Ok(());
         };
 
         let server_ids = manager.list_servers().await;
         if server_ids.is_empty() {
-            return self.channel.send("No MCP servers connected.").await;
+            self.channel.send("No MCP servers connected.").await?;
+            return Ok(());
         }
 
         let mut output = String::from("Connected MCP servers:\n");
@@ -124,14 +134,16 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
         let _ = write!(output, "Total: {total} tool(s)");
 
-        self.channel.send(&output).await
+        self.channel.send(&output).await?;
+        Ok(())
     }
 
     async fn handle_mcp_tools(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
         use std::fmt::Write;
 
         let Some(server_id) = server_id else {
-            return self.channel.send("Usage: /mcp tools <server_id>").await;
+            self.channel.send("Usage: /mcp tools <server_id>").await?;
+            return Ok(());
         };
 
         let tools: Vec<_> = self
@@ -141,10 +153,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .collect();
 
         if tools.is_empty() {
-            return self
-                .channel
+            self.channel
                 .send(&format!("No tools found for server '{server_id}'."))
-                .await;
+                .await?;
+            return Ok(());
         }
 
         let mut output = format!("Tools for '{server_id}' ({} total):\n", tools.len());
@@ -155,16 +167,19 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let _ = writeln!(output, "- {} — {}", t.name, t.description);
             }
         }
-        self.channel.send(&output).await
+        self.channel.send(&output).await?;
+        Ok(())
     }
 
     async fn handle_mcp_remove(&mut self, server_id: Option<&str>) -> anyhow::Result<()> {
         let Some(server_id) = server_id else {
-            return self.channel.send("Usage: /mcp remove <id>").await;
+            self.channel.send("Usage: /mcp remove <id>").await?;
+            return Ok(());
         };
 
         let Some(ref manager) = self.mcp_manager else {
-            return self.channel.send("MCP is not enabled.").await;
+            self.channel.send("MCP is not enabled.").await?;
+            return Ok(());
         };
 
         match manager.remove_server(server_id).await {
@@ -190,13 +205,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     .send(&format!(
                         "Disconnected MCP server '{server_id}' (removed {removed} tools)"
                     ))
-                    .await
+                    .await?;
+                Ok(())
             }
             Err(e) => {
                 tracing::warn!(server_id, "MCP remove failed: {e:#}");
                 self.channel
                     .send(&format!("Failed to remove server '{server_id}': {e}"))
-                    .await
+                    .await?;
+                Ok(())
             }
         }
     }

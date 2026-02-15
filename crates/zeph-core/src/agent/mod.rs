@@ -4,24 +4,24 @@ mod index;
 mod learning;
 #[cfg(feature = "mcp")]
 mod mcp;
+mod persistence;
+mod streaming;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
-use tokio_stream::StreamExt;
 use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 
 use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::sqlite::role_str;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
-use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt};
+use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
+use zeph_tools::executor::ToolExecutor;
 
 use crate::channel::Channel;
 use crate::config::Config;
@@ -30,8 +30,6 @@ use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
-use crate::redact::redact_secrets;
-use zeph_memory::semantic::estimate_tokens;
 
 const DOOM_LOOP_WINDOW: usize = 3;
 const MAX_QUEUE_SIZE: usize = 10;
@@ -419,50 +417,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &self.messages
     }
 
-    /// Load conversation history from memory and inject into messages.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if loading history from `SQLite` fails.
-    pub async fn load_history(&mut self) -> anyhow::Result<()> {
-        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
-            return Ok(());
-        };
-
-        let history = memory
-            .sqlite()
-            .load_history(cid, self.history_limit)
-            .await?;
-        if !history.is_empty() {
-            let mut loaded = 0;
-            let mut skipped = 0;
-
-            for msg in history {
-                if msg.content.trim().is_empty() {
-                    tracing::warn!("skipping empty message from history (role: {:?})", msg.role);
-                    skipped += 1;
-                    continue;
-                }
-                self.messages.push(msg);
-                loaded += 1;
-            }
-
-            tracing::info!("restored {loaded} message(s) from conversation {cid}");
-            if skipped > 0 {
-                tracing::warn!("skipped {skipped} empty message(s) from history");
-            }
-        }
-
-        if let Ok(count) = memory.message_count(cid).await {
-            let count_u64 = u64::try_from(count).unwrap_or(0);
-            self.update_metrics(|m| {
-                m.sqlite_message_count = count_u64;
-            });
-        }
-
-        Ok(())
-    }
-
     fn drain_channel(&mut self) {
         while self.message_queue.len() < MAX_QUEUE_SIZE {
             let Some(msg) = self.channel.try_recv() else {
@@ -644,31 +598,31 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             }
         }
 
-        self.channel.send(&output).await
+        self.channel.send(&output).await?;
+        Ok(())
     }
 
     async fn handle_feedback(&mut self, input: &str) -> anyhow::Result<()> {
         #[cfg(feature = "self-learning")]
         {
-            let (skill_name, feedback) = match input.split_once(' ') {
-                Some((name, rest)) => (name.trim(), rest.trim().trim_matches('"')),
-                None => {
-                    return self
-                        .channel
-                        .send("Usage: /feedback <skill_name> <message>")
-                        .await;
-                }
+            let Some((name, rest)) = input.split_once(' ') else {
+                self.channel
+                    .send("Usage: /feedback <skill_name> <message>")
+                    .await?;
+                return Ok(());
             };
+            let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
 
             if feedback.is_empty() {
-                return self
-                    .channel
+                self.channel
                     .send("Usage: /feedback <skill_name> <message>")
-                    .await;
+                    .await?;
+                return Ok(());
             }
 
             let Some(memory) = &self.memory else {
-                return self.channel.send("Memory not available.").await;
+                self.channel.send("Memory not available.").await?;
+                return Ok(());
             };
 
             memory
@@ -688,10 +642,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     .ok();
             }
 
-            return self
-                .channel
+            self.channel
                 .send(&format!("Feedback recorded for \"{skill_name}\"."))
-                .await;
+                .await?;
+            Ok(())
         }
 
         #[cfg(not(feature = "self-learning"))]
@@ -699,7 +653,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let _ = input;
             self.channel
                 .send("Self-learning feature is not enabled.")
-                .await
+                .await?;
+            Ok(())
         }
     }
 
@@ -790,416 +745,6 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         tracing::info!("config reloaded");
     }
-
-    async fn process_response(&mut self) -> anyhow::Result<()> {
-        self.doom_loop_history.clear();
-
-        for iteration in 0..self.max_tool_iterations {
-            self.channel.send_typing().await?;
-
-            // Context budget check at 80% threshold
-            if let Some(ref budget) = self.context_budget {
-                let used: usize = self
-                    .messages
-                    .iter()
-                    .map(|m| estimate_tokens(&m.content))
-                    .sum();
-                let threshold = budget.max_tokens() * 4 / 5;
-                if used >= threshold {
-                    tracing::warn!(
-                        iteration,
-                        used,
-                        threshold,
-                        "stopping tool loop: context budget nearing limit"
-                    );
-                    self.channel
-                        .send("Stopping: context window is nearly full.")
-                        .await?;
-                    break;
-                }
-            }
-
-            let Some(response) = self.call_llm_with_timeout().await? else {
-                return Ok(());
-            };
-
-            if response.trim().is_empty() {
-                tracing::warn!("received empty response from LLM, skipping");
-                self.record_skill_outcomes("empty_response", None).await;
-
-                #[cfg(feature = "self-learning")]
-                if !self.reflection_used
-                    && self
-                        .attempt_self_reflection("LLM returned empty response", "")
-                        .await?
-                {
-                    return Ok(());
-                }
-
-                self.channel
-                    .send("Received an empty response. Please try again.")
-                    .await?;
-                return Ok(());
-            }
-
-            self.messages.push(Message {
-                role: Role::Assistant,
-                content: response.clone(),
-                parts: vec![],
-            });
-            self.persist_message(Role::Assistant, &response).await;
-
-            let result = self.tool_executor.execute(&response).await;
-            if !self.handle_tool_result(&response, result).await? {
-                return Ok(());
-            }
-
-            // Doom-loop detection: compare last N outputs by string equality
-            if let Some(last_msg) = self.messages.last() {
-                self.doom_loop_history.push(last_msg.content.clone());
-                if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
-                    let recent =
-                        &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
-                    if recent.windows(2).all(|w| w[0] == w[1]) {
-                        tracing::warn!(
-                            iteration,
-                            "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
-                        );
-                        self.channel
-                            .send("Stopping: detected repeated identical tool outputs.")
-                            .await?;
-                        break;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn call_llm_with_timeout(&mut self) -> anyhow::Result<Option<String>> {
-        let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
-        let start = std::time::Instant::now();
-        let prompt_estimate: u64 = self
-            .messages
-            .iter()
-            .map(|m| u64::try_from(m.content.len()).unwrap_or(0) / 4)
-            .sum();
-
-        if self.provider.supports_streaming() {
-            if let Ok(r) =
-                tokio::time::timeout(llm_timeout, self.process_response_streaming()).await
-            {
-                let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                self.update_metrics(|m| {
-                    m.api_calls += 1;
-                    m.last_llm_latency_ms = latency;
-                    m.context_tokens = prompt_estimate;
-                    m.prompt_tokens += prompt_estimate;
-                    m.total_tokens = m.prompt_tokens + m.completion_tokens;
-                });
-                Ok(Some(r?))
-            } else {
-                self.channel
-                    .send("LLM request timed out. Please try again.")
-                    .await?;
-                Ok(None)
-            }
-        } else {
-            match tokio::time::timeout(llm_timeout, self.provider.chat(&self.messages)).await {
-                Ok(Ok(resp)) => {
-                    let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    let completion_estimate = u64::try_from(resp.len()).unwrap_or(0) / 4;
-                    self.update_metrics(|m| {
-                        m.api_calls += 1;
-                        m.last_llm_latency_ms = latency;
-                        m.context_tokens = prompt_estimate;
-                        m.prompt_tokens += prompt_estimate;
-                        m.completion_tokens += completion_estimate;
-                        m.total_tokens = m.prompt_tokens + m.completion_tokens;
-                    });
-                    let display = self.maybe_redact(&resp);
-                    self.channel.send(&display).await?;
-                    Ok(Some(resp))
-                }
-                Ok(Err(e)) => Err(e.into()),
-                Err(_) => {
-                    self.channel
-                        .send("LLM request timed out. Please try again.")
-                        .await?;
-                    Ok(None)
-                }
-            }
-        }
-    }
-
-    fn last_user_query(&self) -> &str {
-        self.messages
-            .iter()
-            .rev()
-            .find(|m| m.role == Role::User && !m.content.starts_with("[tool output"))
-            .map_or("", |m| m.content.as_str())
-    }
-
-    async fn summarize_tool_output(&self, output: &str) -> String {
-        let truncated = zeph_tools::truncate_tool_output(output);
-        let query = self.last_user_query();
-        let prompt = format!(
-            "The user asked: {query}\n\n\
-             A tool produced output ({len} chars, truncated to fit).\n\
-             Summarize the key information relevant to the user's question.\n\
-             Preserve exact: file paths, error messages, numeric values, exit codes.\n\n\
-             {truncated}",
-            len = output.len(),
-        );
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-        }];
-
-        match self.provider.chat(&messages).await {
-            Ok(summary) => format!("[tool output summary]\n```\n{summary}\n```"),
-            Err(e) => {
-                tracing::warn!(
-                    "tool output summarization failed, falling back to truncation: {e:#}"
-                );
-                truncated
-            }
-        }
-    }
-
-    async fn maybe_summarize_tool_output(&self, output: &str) -> String {
-        if output.len() <= zeph_tools::MAX_TOOL_OUTPUT_CHARS {
-            return output.to_string();
-        }
-        let overflow_notice = if let Some(path) = zeph_tools::save_overflow(output) {
-            format!(
-                "\n[full output saved to {}, use read tool to access]",
-                path.display()
-            )
-        } else {
-            String::new()
-        };
-        let truncated = if self.summarize_tool_output_enabled {
-            self.summarize_tool_output(output).await
-        } else {
-            zeph_tools::truncate_tool_output(output)
-        };
-        format!("{truncated}{overflow_notice}")
-    }
-
-    /// Returns `true` if the tool loop should continue.
-    async fn handle_tool_result(
-        &mut self,
-        response: &str,
-        result: Result<Option<ToolOutput>, ToolError>,
-    ) -> anyhow::Result<bool> {
-        match result {
-            Ok(Some(output)) => {
-                if output.summary.trim().is_empty() {
-                    tracing::warn!("tool execution returned empty output");
-                    self.record_skill_outcomes("success", None).await;
-                    return Ok(false);
-                }
-
-                if output.summary.contains("[error]") || output.summary.contains("[exit code") {
-                    self.record_skill_outcomes("tool_failure", Some(&output.summary))
-                        .await;
-
-                    #[cfg(feature = "self-learning")]
-                    if !self.reflection_used
-                        && self
-                            .attempt_self_reflection(&output.summary, &output.summary)
-                            .await?
-                    {
-                        return Ok(false);
-                    }
-                } else {
-                    self.record_skill_outcomes("success", None).await;
-                }
-
-                let processed = self.maybe_summarize_tool_output(&output.summary).await;
-                let formatted_output = format_tool_output(&output.tool_name, &processed);
-                let display = self.maybe_redact(&formatted_output);
-                self.channel.send(&display).await?;
-
-                self.messages.push(Message::from_parts(
-                    Role::User,
-                    vec![MessagePart::ToolOutput {
-                        tool_name: output.tool_name.clone(),
-                        body: processed,
-                        compacted_at: None,
-                    }],
-                ));
-                self.persist_message(Role::User, &formatted_output).await;
-                Ok(true)
-            }
-            Ok(None) => {
-                self.record_skill_outcomes("success", None).await;
-                Ok(false)
-            }
-            Err(ToolError::Blocked { command }) => {
-                tracing::warn!("blocked command: {command}");
-                self.channel
-                    .send("This command is blocked by security policy.")
-                    .await?;
-                Ok(false)
-            }
-            Err(ToolError::ConfirmationRequired { command }) => {
-                let prompt = format!("Allow command: {command}?");
-                if self.channel.confirm(&prompt).await? {
-                    if let Ok(Some(out)) = self.tool_executor.execute_confirmed(response).await {
-                        let processed = self.maybe_summarize_tool_output(&out.summary).await;
-                        let formatted = format_tool_output(&out.tool_name, &processed);
-                        let display = self.maybe_redact(&formatted);
-                        self.channel.send(&display).await?;
-                        self.messages.push(Message::from_parts(
-                            Role::User,
-                            vec![MessagePart::ToolOutput {
-                                tool_name: out.tool_name.clone(),
-                                body: processed,
-                                compacted_at: None,
-                            }],
-                        ));
-                        self.persist_message(Role::User, &formatted).await;
-                    }
-                } else {
-                    self.channel.send("Command cancelled.").await?;
-                }
-                Ok(false)
-            }
-            Err(ToolError::SandboxViolation { path }) => {
-                tracing::warn!("sandbox violation: {path}");
-                self.channel
-                    .send("Command targets a path outside the sandbox.")
-                    .await?;
-                Ok(false)
-            }
-            Err(e) => {
-                let err_str = format!("{e:#}");
-                tracing::error!("tool execution error: {err_str}");
-                self.record_skill_outcomes("tool_failure", Some(&err_str))
-                    .await;
-
-                #[cfg(feature = "self-learning")]
-                if !self.reflection_used && self.attempt_self_reflection(&err_str, "").await? {
-                    return Ok(false);
-                }
-
-                self.channel
-                    .send("Tool execution failed. Please try a different approach.")
-                    .await?;
-                Ok(false)
-            }
-        }
-    }
-
-    async fn process_response_streaming(&mut self) -> anyhow::Result<String> {
-        let mut stream = self.provider.chat_stream(&self.messages).await?;
-        let mut response = String::with_capacity(2048);
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk: String = chunk_result?;
-            response.push_str(&chunk);
-            let display = self.maybe_redact(&chunk);
-            self.channel.send_chunk(&display).await?;
-        }
-
-        self.channel.flush_chunks().await?;
-
-        let completion_estimate = u64::try_from(response.len()).unwrap_or(0) / 4;
-        self.update_metrics(|m| {
-            m.completion_tokens += completion_estimate;
-            m.total_tokens = m.prompt_tokens + m.completion_tokens;
-        });
-
-        Ok(response)
-    }
-
-    fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.security.redact_secrets {
-            redact_secrets(text)
-        } else {
-            std::borrow::Cow::Borrowed(text)
-        }
-    }
-
-    async fn persist_message(&mut self, role: Role, content: &str) {
-        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
-            return;
-        };
-
-        let parts_json = self
-            .messages
-            .last()
-            .filter(|m| !m.parts.is_empty())
-            .and_then(|m| serde_json::to_string(&m.parts).ok())
-            .unwrap_or_else(|| "[]".to_string());
-
-        let (_message_id, embedding_stored) = match memory
-            .remember_with_parts(cid, role_str(role), content, &parts_json)
-            .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!("failed to persist message: {e:#}");
-                return;
-            }
-        };
-
-        self.update_metrics(|m| {
-            m.sqlite_message_count += 1;
-            if embedding_stored {
-                m.embeddings_generated += 1;
-            }
-        });
-
-        self.check_summarization().await;
-    }
-
-    async fn check_summarization(&mut self) {
-        let (Some(memory), Some(cid)) = (&self.memory, self.conversation_id) else {
-            return;
-        };
-
-        let count = match memory.unsummarized_message_count(cid).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("failed to get unsummarized message count: {e:#}");
-                return;
-            }
-        };
-
-        let count_usize = match usize::try_from(count) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("message count overflow: {e:#}");
-                return;
-            }
-        };
-
-        if count_usize > self.summarization_threshold {
-            let _ = self.channel.send_status("summarizing...").await;
-            let batch_size = self.summarization_threshold / 2;
-            match memory.summarize(cid, batch_size).await {
-                Ok(Some(summary_id)) => {
-                    tracing::info!("created summary {summary_id} for conversation {cid}");
-                    self.update_metrics(|m| {
-                        m.summaries_count += 1;
-                    });
-                }
-                Ok(None) => {
-                    tracing::debug!("no summarization needed");
-                }
-                Err(e) => {
-                    tracing::error!("summarization failed: {e:#}");
-                }
-            }
-            let _ = self.channel.send_status("").await;
-        }
-    }
 }
 
 async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
@@ -1229,7 +774,8 @@ pub(super) mod agent_tests {
     pub(crate) use super::*;
     use crate::channel::ChannelMessage;
     use std::sync::{Arc, Mutex};
-    use zeph_llm::provider::ChatStream;
+    use zeph_llm::provider::{ChatStream, MessagePart};
+    use zeph_tools::executor::{ToolError, ToolOutput};
 
     #[derive(Clone)]
     pub(super) struct MockProvider {
@@ -1331,7 +877,7 @@ pub(super) mod agent_tests {
     }
 
     impl Channel for MockChannel {
-        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+        async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
             let mut msgs = self.messages.lock().unwrap();
             if msgs.is_empty() {
                 Ok(None)
@@ -1353,21 +899,21 @@ pub(super) mod agent_tests {
             }
         }
 
-        async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+        async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
             self.sent.lock().unwrap().push(text.to_string());
             Ok(())
         }
 
-        async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+        async fn send_chunk(&mut self, chunk: &str) -> Result<(), crate::channel::ChannelError> {
             self.chunks.lock().unwrap().push(chunk.to_string());
             Ok(())
         }
 
-        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
             Ok(())
         }
 
-        async fn confirm(&mut self, _prompt: &str) -> anyhow::Result<bool> {
+        async fn confirm(&mut self, _prompt: &str) -> Result<bool, crate::channel::ChannelError> {
             let mut confs = self.confirmations.lock().unwrap();
             Ok(if confs.is_empty() {
                 true

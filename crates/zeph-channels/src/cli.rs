@@ -1,4 +1,4 @@
-use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 
 /// CLI channel that reads from stdin and writes to stdout.
 #[derive(Debug)]
@@ -22,7 +22,7 @@ impl Default for CliChannel {
 }
 
 impl Channel for CliChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         use std::io::{BufRead, Write};
 
         let line = tokio::task::spawn_blocking(|| {
@@ -36,10 +36,11 @@ impl Channel for CliChannel {
             match reader.read_line(&mut buf) {
                 Ok(0) => Ok(None),
                 Ok(_) => Ok(Some(buf)),
-                Err(e) => Err(anyhow::anyhow!(e)),
+                Err(e) => Err(e),
             }
         })
-        .await??;
+        .await
+        .map_err(|e| ChannelError::Other(e.to_string()))??;
 
         let Some(raw) = line else {
             return Ok(None);
@@ -58,12 +59,12 @@ impl Channel for CliChannel {
         }))
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         println!("Zeph: {text}");
         Ok(())
     }
 
-    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         use std::io::{Write, stdout};
         print!("{chunk}");
         stdout().flush()?;
@@ -71,12 +72,12 @@ impl Channel for CliChannel {
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         println!();
         Ok(())
     }
 
-    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+    async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let prompt = prompt.to_owned();
         tokio::task::spawn_blocking(move || {
             use std::io::{BufRead, Write};
@@ -86,7 +87,8 @@ impl Channel for CliChannel {
             std::io::stdin().lock().read_line(&mut buf)?;
             Ok(buf.trim().eq_ignore_ascii_case("y"))
         })
-        .await?
+        .await
+        .map_err(|e| ChannelError::Other(e.to_string()))?
     }
 }
 

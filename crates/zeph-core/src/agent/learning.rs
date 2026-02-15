@@ -368,7 +368,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             _ => {
                 self.channel
                     .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset")
-                    .await
+                    .await?;
+                Ok(())
             }
         }
     }
@@ -377,7 +378,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     pub(super) async fn handle_skill_command(&mut self, _args: &str) -> anyhow::Result<()> {
         self.channel
             .send("Self-learning feature is not enabled.")
-            .await
+            .await?;
+        Ok(())
     }
 
     #[cfg(feature = "self-learning")]
@@ -385,12 +387,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         use std::fmt::Write;
 
         let Some(memory) = &self.memory else {
-            return self.channel.send("Memory not available.").await;
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
         };
 
         let stats = memory.sqlite().load_skill_outcome_stats().await?;
         if stats.is_empty() {
-            return self.channel.send("No skill outcome data yet.").await;
+            self.channel.send("No skill outcome data yet.").await?;
+            return Ok(());
         }
 
         let mut output = String::from("Skill outcome statistics:\n\n");
@@ -408,7 +412,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             );
         }
 
-        self.channel.send(&output).await
+        self.channel.send(&output).await?;
+        Ok(())
     }
 
     #[cfg(feature = "self-learning")]
@@ -416,18 +421,20 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         use std::fmt::Write;
 
         let Some(name) = name else {
-            return self.channel.send("Usage: /skill versions <name>").await;
+            self.channel.send("Usage: /skill versions <name>").await?;
+            return Ok(());
         };
         let Some(memory) = &self.memory else {
-            return self.channel.send("Memory not available.").await;
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
         };
 
         let versions = memory.sqlite().load_skill_versions(name).await?;
         if versions.is_empty() {
-            return self
-                .channel
+            self.channel
                 .send(&format!("No versions found for \"{name}\"."))
-                .await;
+                .await?;
+            return Ok(());
         }
 
         let mut output = format!("Versions for \"{name}\":\n\n");
@@ -440,7 +447,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             );
         }
 
-        self.channel.send(&output).await
+        self.channel.send(&output).await?;
+        Ok(())
     }
 
     #[cfg(feature = "self-learning")]
@@ -450,24 +458,26 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         version_str: Option<&str>,
     ) -> anyhow::Result<()> {
         let (Some(name), Some(ver_str)) = (name, version_str) else {
-            return self
-                .channel
+            self.channel
                 .send("Usage: /skill activate <name> <version>")
-                .await;
+                .await?;
+            return Ok(());
         };
         let Ok(ver) = ver_str.parse::<i64>() else {
-            return self.channel.send("Invalid version number.").await;
+            self.channel.send("Invalid version number.").await?;
+            return Ok(());
         };
         let Some(memory) = &self.memory else {
-            return self.channel.send("Memory not available.").await;
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
         };
 
         let versions = memory.sqlite().load_skill_versions(name).await?;
         let Some(target) = versions.iter().find(|v| v.version == ver) else {
-            return self
-                .channel
+            self.channel
                 .send(&format!("Version {ver} not found for \"{name}\"."))
-                .await;
+                .await?;
+            return Ok(());
         };
 
         memory
@@ -479,16 +489,19 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         self.channel
             .send(&format!("Activated v{ver} for \"{name}\"."))
-            .await
+            .await?;
+        Ok(())
     }
 
     #[cfg(feature = "self-learning")]
     async fn handle_skill_approve(&mut self, name: Option<&str>) -> anyhow::Result<()> {
         let Some(name) = name else {
-            return self.channel.send("Usage: /skill approve <name>").await;
+            self.channel.send("Usage: /skill approve <name>").await?;
+            return Ok(());
         };
         let Some(memory) = &self.memory else {
-            return self.channel.send("Memory not available.").await;
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
         };
 
         let versions = memory.sqlite().load_skill_versions(name).await?;
@@ -497,10 +510,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .rfind(|v| v.source == "auto" && !v.is_active);
 
         let Some(target) = pending else {
-            return self
-                .channel
+            self.channel
                 .send(&format!("No pending auto version for \"{name}\"."))
-                .await;
+                .await?;
+            return Ok(());
         };
 
         memory
@@ -515,24 +528,27 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 "Approved and activated v{} for \"{name}\".",
                 target.version
             ))
-            .await
+            .await?;
+        Ok(())
     }
 
     #[cfg(feature = "self-learning")]
     async fn handle_skill_reset(&mut self, name: Option<&str>) -> anyhow::Result<()> {
         let Some(name) = name else {
-            return self.channel.send("Usage: /skill reset <name>").await;
+            self.channel.send("Usage: /skill reset <name>").await?;
+            return Ok(());
         };
         let Some(memory) = &self.memory else {
-            return self.channel.send("Memory not available.").await;
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
         };
 
         let versions = memory.sqlite().load_skill_versions(name).await?;
         let Some(v1) = versions.iter().find(|v| v.version == 1) else {
-            return self
-                .channel
+            self.channel
                 .send(&format!("Original version not found for \"{name}\"."))
-                .await;
+                .await?;
+            return Ok(());
         };
 
         memory.sqlite().activate_skill_version(name, v1.id).await?;
@@ -541,7 +557,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         self.channel
             .send(&format!("Reset \"{name}\" to original v1."))
-            .await
+            .await?;
+        Ok(())
     }
 }
 

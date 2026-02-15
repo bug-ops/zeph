@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use zeph_core::agent::Agent;
-use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::{Config, SecurityConfig, TimeoutConfig};
 use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
@@ -217,20 +217,20 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         Ok(())
     }
 }
@@ -243,21 +243,21 @@ struct ChunkTrackingChannel {
 }
 
 impl Channel for ChunkTrackingChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.chunks.lock().unwrap().push(chunk.to_string());
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         self.flush_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -271,24 +271,24 @@ struct ConfirmMockChannel {
 }
 
 impl Channel for ConfirmMockChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    async fn confirm(&mut self, _prompt: &str) -> anyhow::Result<bool> {
+    async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         *self.confirm_called.lock().unwrap() = true;
         Ok(self.confirm_result)
     }
@@ -2323,7 +2323,7 @@ mod self_learning {
     use std::sync::{Arc, Mutex};
 
     use zeph_core::agent::Agent;
-    use zeph_core::channel::{Channel, ChannelMessage};
+    use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
     use zeph_core::config::LearningConfig;
     use zeph_llm::error::LlmError;
     use zeph_llm::provider::{LlmProvider, Message};
@@ -2430,20 +2430,20 @@ mod self_learning {
     }
 
     impl Channel for MockChannel {
-        async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
             Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
         }
 
-        async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+        async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
             self.outputs.lock().unwrap().push(text.to_string());
             Ok(())
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> anyhow::Result<()> {
+        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
             Ok(())
         }
 
-        async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
             Ok(())
         }
     }

@@ -1,7 +1,6 @@
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 
-use crate::error::TuiError;
 use crate::event::AgentEvent;
 
 #[derive(Debug)]
@@ -26,7 +25,7 @@ impl TuiChannel {
 }
 
 impl Channel for TuiChannel {
-    async fn recv(&mut self) -> anyhow::Result<Option<ChannelMessage>> {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         match self.user_input_rx.recv().await {
             Some(text) => {
                 self.accumulated.clear();
@@ -43,56 +42,56 @@ impl Channel for TuiChannel {
         })
     }
 
-    async fn send(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::FullMessage(text.to_owned()))
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn send_chunk(&mut self, chunk: &str) -> anyhow::Result<()> {
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         self.agent_event_tx
             .send(AgentEvent::Chunk(chunk.to_owned()))
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> anyhow::Result<()> {
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::Flush)
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn send_typing(&mut self) -> anyhow::Result<()> {
+    async fn send_typing(&mut self) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::Typing)
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn send_status(&mut self, text: &str) -> anyhow::Result<()> {
+    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::Status(text.to_owned()))
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn send_queue_count(&mut self, count: usize) -> anyhow::Result<()> {
+    async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::QueueCount(count))
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
+            .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
     }
 
-    async fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool> {
+    async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx
             .send(AgentEvent::ConfirmRequest {
@@ -100,8 +99,8 @@ impl Channel for TuiChannel {
                 response_tx: tx,
             })
             .await
-            .map_err(|_| TuiError::ChannelClosed)?;
-        rx.await.map_err(|_| TuiError::ConfirmCancelled.into())
+            .map_err(|_| ChannelError::ChannelClosed)?;
+        rx.await.map_err(|_| ChannelError::ConfirmCancelled)
     }
 }
 
