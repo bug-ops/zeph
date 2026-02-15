@@ -96,11 +96,6 @@ impl LlmProvider for AnyProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, crate::LlmError> {
-        tracing::warn!(
-            provider = self.name(),
-            tool_count = tools.len(),
-            "AnyProvider::chat_with_tools called"
-        );
         delegate_provider!(self, |p| p.chat_with_tools(messages, tools).await)
     }
 }

@@ -434,11 +434,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::error::AgentError> {
-        tracing::warn!(
+        tracing::debug!(
             tool_count = tool_defs.len(),
             provider_name = self.provider.name(),
-            supports = self.provider.supports_tool_use(),
-            "call_chat_with_tools ENTERED"
+            "call_chat_with_tools"
         );
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
         let start = std::time::Instant::now();
