@@ -118,6 +118,17 @@ impl LlmProvider for SubProvider {
         }
     }
 
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::Ollama(p) => p.last_cache_usage(),
+            Self::Claude(p) => p.last_cache_usage(),
+            #[cfg(feature = "openai")]
+            Self::OpenAi(p) => p.last_cache_usage(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.last_cache_usage(),
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Self::Ollama(p) => p.name(),

@@ -232,6 +232,12 @@ impl LlmProvider for ModelOrchestrator {
         provider.chat_with_tools(messages, tools).await
     }
 
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        self.providers
+            .get(&self.default_provider)
+            .and_then(LlmProvider::last_cache_usage)
+    }
+
     fn name(&self) -> &'static str {
         "orchestrator"
     }
