@@ -1,5 +1,6 @@
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
+use futures::stream::{self, StreamExt};
 
 pub use zeph_llm::provider::EmbedFuture;
 
@@ -16,14 +17,24 @@ impl SkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        let mut embeddings = Vec::with_capacity(skills.len());
-
-        for (i, skill) in skills.iter().enumerate() {
-            match embed_fn(&skill.description).await {
-                Ok(vec) => embeddings.push((i, vec)),
-                Err(e) => tracing::warn!("failed to embed skill '{}': {e:#}", skill.name),
-            }
-        }
+        let embeddings: Vec<(usize, Vec<f32>)> = stream::iter(skills.iter().enumerate())
+            .map(|(i, skill)| {
+                let fut = embed_fn(&skill.description);
+                let name = skill.name.clone();
+                async move {
+                    match fut.await {
+                        Ok(vec) => Some((i, vec)),
+                        Err(e) => {
+                            tracing::warn!("failed to embed skill '{name}': {e:#}");
+                            None
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(50)
+            .filter_map(|x| async { x })
+            .collect()
+            .await;
 
         if embeddings.is_empty() {
             return None;

@@ -8311,6 +8311,7 @@ version = "0.9.6"
 dependencies = [
  "anyhow",
  "blake3",
+ "futures",
  "notify",
  "notify-debouncer-mini",
  "qdrant-client",

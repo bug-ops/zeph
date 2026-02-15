@@ -17,6 +17,7 @@ notify.workspace = true
 notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, optional = true, features = ["serde"] }
 serde_json = { workspace = true, optional = true }
+futures.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
