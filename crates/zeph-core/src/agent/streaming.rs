@@ -364,6 +364,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .map(tool_def_to_definition)
             .collect();
 
+        tracing::debug!(
+            tool_count = tool_defs.len(),
+            tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
+            "native tool_use: collected tool definitions"
+        );
+
         for iteration in 0..self.max_tool_iterations {
             self.channel.send_typing().await?;
 
@@ -428,6 +434,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::error::AgentError> {
+        tracing::warn!(
+            tool_count = tool_defs.len(),
+            provider_name = self.provider.name(),
+            supports = self.provider.supports_tool_use(),
+            "call_chat_with_tools ENTERED"
+        );
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 

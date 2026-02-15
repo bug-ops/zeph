@@ -225,16 +225,15 @@ pub trait LlmProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the provider fails to communicate or the response is invalid.
-    fn chat_with_tools(
+    #[allow(async_fn_in_trait)]
+    async fn chat_with_tools(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> impl Future<Output = Result<ChatResponse, LlmError>> + Send {
-        async {
-            let _ = tools;
-            let text = self.chat(messages).await?;
-            Ok(ChatResponse::Text(text))
-        }
+    ) -> Result<ChatResponse, LlmError> {
+        let _ = tools;
+        let text = self.chat(messages).await?;
+        Ok(ChatResponse::Text(text))
     }
 }
 

@@ -223,6 +223,12 @@ impl LlmProvider for ModelOrchestrator {
             .providers
             .get(&self.default_provider)
             .ok_or(LlmError::NoProviders)?;
+        tracing::debug!(
+            default_provider = %self.default_provider,
+            tool_count = tools.len(),
+            provider_supports_tool_use = provider.supports_tool_use(),
+            "orchestrator delegating chat_with_tools"
+        );
         provider.chat_with_tools(messages, tools).await
     }
 
