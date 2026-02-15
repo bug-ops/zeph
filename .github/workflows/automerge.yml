@@ -28,18 +28,12 @@ jobs:
             echo "sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" = "status" ]; then
             # Find PR associated with this commit
-            PR_NUMBER=$(gh pr list --search "${{ github.sha }}" --json number --jq '.[0].number')
+            PR_NUMBER=$(gh pr list --search "${{ github.event.sha }}" --json number --jq '.[0].number')
             echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "sha=${{ github.event.sha }}" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Check if PR exists
-        if: steps.pr.outputs.number == ''
-        run: |
-          echo "No PR found for this event"
-          exit 0
 
       - name: Wait for CI checks to complete
         if: steps.pr.outputs.number != ''
