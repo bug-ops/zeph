@@ -98,6 +98,10 @@ impl LlmProvider for AnyProvider {
     ) -> Result<ChatResponse, crate::LlmError> {
         delegate_provider!(self, |p| p.chat_with_tools(messages, tools).await)
     }
+
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        delegate_provider!(self, |p| p.last_cache_usage())
+    }
 }
 
 #[cfg(test)]

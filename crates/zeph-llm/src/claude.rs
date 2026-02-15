@@ -27,6 +27,7 @@ pub struct ClaudeProvider {
     model: String,
     max_tokens: u32,
     pub(crate) status_tx: Option<StatusTx>,
+    last_cache: std::sync::Mutex<Option<(u64, u64)>>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -37,6 +38,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
             .field("status_tx", &self.status_tx.is_some())
+            .field("last_cache", &self.last_cache.lock().ok())
             .finish()
     }
 }
@@ -49,6 +51,7 @@ impl Clone for ClaudeProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             status_tx: self.status_tx.clone(),
+            last_cache: std::sync::Mutex::new(None),
         }
     }
 }
@@ -62,6 +65,7 @@ impl ClaudeProvider {
             model,
             max_tokens,
             status_tx: None,
+            last_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -69,6 +73,15 @@ impl ClaudeProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    fn store_cache_usage(&self, usage: &ApiUsage) {
+        if let Ok(mut guard) = self.last_cache.lock() {
+            *guard = Some((
+                usage.cache_creation_input_tokens,
+                usage.cache_read_input_tokens,
+            ));
+        }
     }
 
     fn emit_status(&self, msg: impl Into<String>) {
@@ -138,6 +151,7 @@ impl ClaudeProvider {
 
             if let Some(ref usage) = resp.usage {
                 log_cache_usage(usage);
+                self.store_cache_usage(usage);
             }
 
             return resp
@@ -244,6 +258,10 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        self.last_cache.lock().ok().and_then(|g| *g)
+    }
+
     async fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -311,6 +329,7 @@ impl LlmProvider for ClaudeProvider {
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
             if let Some(ref usage) = resp.usage {
                 log_cache_usage(usage);
+                self.store_cache_usage(usage);
             }
             let parsed = parse_tool_response(resp);
             tracing::debug!(?parsed, "parsed ChatResponse");

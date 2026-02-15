@@ -133,6 +133,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     m.prompt_tokens += prompt_estimate;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
+                self.record_cache_usage();
                 Ok(Some(r?))
             } else {
                 self.channel
@@ -153,6 +154,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         m.completion_tokens += completion_estimate;
                         m.total_tokens = m.prompt_tokens + m.completion_tokens;
                     });
+                    self.record_cache_usage();
                     let display = self.maybe_redact(&resp);
                     self.channel.send(&display).await?;
                     Ok(Some(resp))
@@ -473,6 +475,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             m.api_calls += 1;
             m.last_llm_latency_ms = latency;
         });
+        self.record_cache_usage();
 
         Ok(Some(result))
     }

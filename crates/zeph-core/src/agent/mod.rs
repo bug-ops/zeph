@@ -430,6 +430,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
     }
 
+    pub(crate) fn record_cache_usage(&self) {
+        if let Some((creation, read)) = self.provider.last_cache_usage() {
+            self.update_metrics(|m| {
+                m.cache_creation_tokens += creation;
+                m.cache_read_tokens += read;
+            });
+        }
+    }
+
     /// Inject pre-formatted code context into the message list.
     /// The caller is responsible for retrieving and formatting the text.
     pub fn inject_code_context(&mut self, text: &str) {

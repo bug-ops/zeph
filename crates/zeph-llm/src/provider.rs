@@ -233,6 +233,12 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<ChatResponse, LlmError> {
         Ok(ChatResponse::Text(self.chat(messages).await?))
     }
+
+    /// Return the cache usage from the last API call, if available.
+    /// Returns `(cache_creation_tokens, cache_read_tokens)`.
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 #[cfg(test)]
