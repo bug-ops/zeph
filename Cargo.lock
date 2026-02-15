@@ -8285,6 +8285,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-llm",
+ "zeph-memory",
  "zeph-tools",
 ]
 
@@ -8321,6 +8322,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-llm",
+ "zeph-memory",
 ]
 
 [[package]]

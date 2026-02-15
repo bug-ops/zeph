@@ -1,11 +1,7 @@
 use std::collections::HashMap;
 
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, PointStruct, PointsIdsList,
-    ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-    value::Kind,
-};
+use qdrant_client::qdrant::{PointStruct, value::Kind};
+use zeph_memory::QdrantOps;
 
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
@@ -29,7 +25,7 @@ pub struct SyncStats {
 }
 
 pub struct QdrantSkillMatcher {
-    client: Qdrant,
+    ops: QdrantOps,
     collection: String,
     hashes: HashMap<String, String>,
 }
@@ -58,10 +54,10 @@ impl QdrantSkillMatcher {
     ///
     /// Returns an error if the Qdrant client cannot be created.
     pub fn new(qdrant_url: &str) -> Result<Self, SkillError> {
-        let client = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
+        let ops = QdrantOps::new(qdrant_url)?;
 
         Ok(Self {
-            client,
+            ops,
             collection: COLLECTION_NAME.into(),
             hashes: HashMap::new(),
         })
@@ -85,7 +81,7 @@ impl QdrantSkillMatcher {
 
         self.ensure_collection(&embed_fn).await?;
 
-        let existing = self.scroll_all().await?;
+        let existing = self.ops.scroll_all(&self.collection, "skill_name").await?;
 
         let mut current: HashMap<String, (String, &SkillMeta)> = HashMap::with_capacity(meta.len());
         for m in meta {
@@ -126,14 +122,13 @@ impl QdrantSkillMatcher {
             };
 
             let point_id = skill_point_id(name);
-            let payload: serde_json::Value = serde_json::json!({
+            let payload = serde_json::json!({
                 "skill_name": name,
                 "description": m.description,
                 "content_hash": hash,
                 "embedding_model": embedding_model,
             });
-            let payload_map: HashMap<String, qdrant_client::qdrant::Value> =
-                serde_json::from_value(payload)?;
+            let payload_map = QdrantOps::json_to_payload(payload)?;
 
             points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
 
@@ -146,31 +141,18 @@ impl QdrantSkillMatcher {
         }
 
         if !points_to_upsert.is_empty() {
-            self.client
-                .upsert_points(UpsertPointsBuilder::new(&self.collection, points_to_upsert))
-                .await
-                .map_err(Box::new)?;
+            self.ops.upsert(&self.collection, points_to_upsert).await?;
         }
 
-        let orphan_ids: Vec<String> = existing
+        let orphan_ids: Vec<qdrant_client::qdrant::PointId> = existing
             .keys()
             .filter(|name| !current.contains_key(*name))
-            .map(|name| skill_point_id(name))
+            .map(|name| qdrant_client::qdrant::PointId::from(skill_point_id(name).as_str()))
             .collect();
 
         if !orphan_ids.is_empty() {
             stats.removed = orphan_ids.len();
-            let point_ids: Vec<qdrant_client::qdrant::PointId> = orphan_ids
-                .into_iter()
-                .map(|id| qdrant_client::qdrant::PointId::from(id.as_str()))
-                .collect();
-            self.client
-                .delete_points(
-                    DeletePointsBuilder::new(&self.collection)
-                        .points(PointsIdsList { ids: point_ids }),
-                )
-                .await
-                .map_err(Box::new)?;
+            self.ops.delete_by_ids(&self.collection, orphan_ids).await?;
         }
 
         tracing::info!(
@@ -209,10 +191,8 @@ impl QdrantSkillMatcher {
         };
 
         let results = match self
-            .client
-            .search_points(
-                SearchPointsBuilder::new(&self.collection, query_vec, limit_u64).with_payload(true),
-            )
+            .ops
+            .search(&self.collection, query_vec, limit_u64, None)
             .await
         {
             Ok(r) => r,
@@ -223,7 +203,6 @@ impl QdrantSkillMatcher {
         };
 
         results
-            .result
             .into_iter()
             .filter_map(|point| {
                 let name = point.payload.get("skill_name")?;
@@ -240,16 +219,8 @@ impl QdrantSkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self
-            .client
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
-            self.client
-                .delete_collection(&self.collection)
-                .await
-                .map_err(Box::new)?;
+        if self.ops.collection_exists(&self.collection).await? {
+            self.ops.delete_collection(&self.collection).await?;
             tracing::info!(
                 collection = &self.collection,
                 "deleted collection for recreation"
@@ -262,12 +233,7 @@ impl QdrantSkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self
-            .client
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
+        if self.ops.collection_exists(&self.collection).await? {
             return Ok(());
         }
 
@@ -276,13 +242,9 @@ impl QdrantSkillMatcher {
             .map_err(|e| SkillError::Other(format!("failed to probe embedding dimensions: {e}")))?;
         let vector_size = u64::try_from(probe.len())?;
 
-        self.client
-            .create_collection(
-                CreateCollectionBuilder::new(&self.collection)
-                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-            )
-            .await
-            .map_err(Box::new)?;
+        self.ops
+            .ensure_collection(&self.collection, vector_size)
+            .await?;
 
         tracing::info!(
             collection = &self.collection,
@@ -291,48 +253,6 @@ impl QdrantSkillMatcher {
         );
 
         Ok(())
-    }
-
-    async fn scroll_all(&self) -> Result<HashMap<String, HashMap<String, String>>, SkillError> {
-        let mut result = HashMap::new();
-        let mut offset: Option<qdrant_client::qdrant::PointId> = None;
-
-        loop {
-            let mut builder = ScrollPointsBuilder::new(&self.collection)
-                .with_payload(true)
-                .with_vectors(false)
-                .limit(100);
-
-            if let Some(ref off) = offset {
-                builder = builder.offset(off.clone());
-            }
-
-            let response = self.client.scroll(builder).await.map_err(Box::new)?;
-
-            for point in &response.result {
-                let Some(name_val) = point.payload.get("skill_name") else {
-                    continue;
-                };
-                let Some(Kind::StringValue(name)) = &name_val.kind else {
-                    continue;
-                };
-
-                let mut fields = HashMap::new();
-                for (key, val) in &point.payload {
-                    if let Some(Kind::StringValue(s)) = &val.kind {
-                        fields.insert(key.clone(), s.clone());
-                    }
-                }
-                result.insert(name.clone(), fields);
-            }
-
-            match response.next_page_offset {
-                Some(next) => offset = Some(next),
-                None => break,
-            }
-        }
-
-        Ok(result)
     }
 }
 
