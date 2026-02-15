@@ -64,6 +64,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Update branch from default
+        if: steps.pr.outputs.number != '' && steps.approval.outputs.approved == 'true'
+        run: |
+          PR_NUMBER=${{ steps.pr.outputs.number }}
+          echo "Updating PR #$PR_NUMBER from default branch"
+          gh pr update-branch $PR_NUMBER || echo "Branch is already up to date or cannot be updated"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Enable auto-merge
         if: steps.pr.outputs.number != '' && steps.approval.outputs.approved == 'true'
         run: |
