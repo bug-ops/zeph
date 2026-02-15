@@ -10,6 +10,7 @@ Zeph uses Cargo feature flags to control optional functionality. Default feature
 | `candle` | Enabled | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) |
 | `orchestrator` | Enabled | Multi-model routing with task-based classification and fallback chains |
 | `self-learning` | Enabled | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
+| `qdrant` | Enabled | Qdrant-backed vector storage for skill matching (`zeph-skills`) and MCP tool registry (`zeph-mcp`) |
 | `vault-age` | Enabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
 | `index` | Enabled | AST-based code indexing and semantic retrieval via tree-sitter ([guide](guide/code-indexing.md)) |
 | `tui` | Disabled | ratatui-based TUI dashboard with real-time agent metrics |

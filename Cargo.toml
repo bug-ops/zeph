@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-version = "0.9.5"
+version = "0.9.6"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
@@ -59,16 +59,16 @@ tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2.5"
 uuid = "1.20"
-zeph-a2a = { path = "crates/zeph-a2a", version = "0.9.4" }
-zeph-channels = { path = "crates/zeph-channels", version = "0.9.4" }
-zeph-core = { path = "crates/zeph-core", version = "0.9.4" }
-zeph-index = { path = "crates/zeph-index", version = "0.9.4" }
-zeph-llm = { path = "crates/zeph-llm", version = "0.9.4" }
-zeph-mcp = { path = "crates/zeph-mcp", version = "0.9.4" }
-zeph-memory = { path = "crates/zeph-memory", version = "0.9.4" }
-zeph-skills = { path = "crates/zeph-skills", version = "0.9.4" }
-zeph-tools = { path = "crates/zeph-tools", version = "0.9.4" }
-zeph-tui = { path = "crates/zeph-tui", version = "0.9.4" }
+zeph-a2a = { path = "crates/zeph-a2a", version = "0.9.6" }
+zeph-channels = { path = "crates/zeph-channels", version = "0.9.6" }
+zeph-core = { path = "crates/zeph-core", version = "0.9.6" }
+zeph-index = { path = "crates/zeph-index", version = "0.9.6" }
+zeph-llm = { path = "crates/zeph-llm", version = "0.9.6" }
+zeph-mcp = { path = "crates/zeph-mcp", version = "0.9.6" }
+zeph-memory = { path = "crates/zeph-memory", version = "0.9.6" }
+zeph-skills = { path = "crates/zeph-skills", version = "0.9.6" }
+zeph-tools = { path = "crates/zeph-tools", version = "0.9.6" }
+zeph-tui = { path = "crates/zeph-tui", version = "0.9.6" }
 
 [workspace.lints.clippy]
 all = "warn"

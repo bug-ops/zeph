@@ -6,13 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-02-15
+
 ### Changed
 - **BREAKING**: `ToolDef` schema field replaced `Vec<ParamDef>` with `schemars::Schema` auto-derived from Rust structs via `#[derive(JsonSchema)]`
 - **BREAKING**: `ParamDef` and `ParamType` removed from `zeph-tools` public API
 - **BREAKING**: `ToolRegistry::new()` replaced with `ToolRegistry::from_definitions()`; registry no longer hardcodes built-in tools — each executor owns its definitions via `tool_definitions()`
+- **BREAKING**: `Channel` trait now requires `ChannelError` enum with typed error handling replacing `anyhow::Result`
+- **BREAKING**: `Agent::new()` signature changed to accept new field grouping; agent struct refactored into 5 inner structs for improved organization
+- **BREAKING**: `AgentError` enum introduced with 7 typed variants replacing scattered `anyhow::Error` handling
 - `ToolDef` now includes `InvocationHint` (FencedBlock/ToolCall) so LLM prompt shows exact invocation format per tool
 - `web_scrape` tool definition includes all parameters (`url`, `select`, `extract`, `limit`) auto-derived from `ScrapeInstruction`
 - `ShellExecutor` and `WebScrapeExecutor` now implement `tool_definitions()` for single source of truth
+- Replaced `tokio` "full" feature with granular features in zeph-core (async-io, macros, rt, sync, time)
+- Removed `anyhow` dependency from zeph-channels
+- Message persistence now uses `MessageKind` enum instead of `is_summary` bool for qdrant storage
+
+### Added
+- `ChannelError` enum with typed variants for channel operation failures
+- `AgentError` enum with 7 typed variants for agent operation failures (streaming, persistence, configuration, etc.)
+- Workspace-level `qdrant` feature flag for optional semantic memory support
+- Type aliases consolidated into zeph-llm: `EmbedFuture` and `EmbedFn` with typed `LlmError`
+- `streaming.rs` and `persistence.rs` modules extracted from agent module for improved code organization
+- `MessageKind` enum for distinguishing summary and regular messages in storage
+
+### Removed
+- `anyhow::Result` from Channel trait (replaced with `ChannelError`)
+- Direct `anyhow::Error` usage in agent module (replaced with `AgentError`)
 
 ## [0.9.5] - 2026-02-14
 
@@ -699,3 +719,26 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses channel.recv()/send() instead of direct I/O
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
+
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/bug-ops/zeph/compare/v0.9.5...v0.9.6
+[0.9.5]: https://github.com/bug-ops/zeph/compare/v0.9.4...v0.9.5
+[0.9.4]: https://github.com/bug-ops/zeph/compare/v0.9.3...v0.9.4
+[0.9.3]: https://github.com/bug-ops/zeph/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/bug-ops/zeph/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/bug-ops/zeph/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/bug-ops/zeph/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/bug-ops/zeph/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/bug-ops/zeph/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/bug-ops/zeph/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/bug-ops/zeph/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/bug-ops/zeph/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/bug-ops/zeph/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/bug-ops/zeph/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/bug-ops/zeph/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/bug-ops/zeph/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/bug-ops/zeph/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/bug-ops/zeph/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/bug-ops/zeph/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/bug-ops/zeph/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/bug-ops/zeph/releases/tag/v0.1.0

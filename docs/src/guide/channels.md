@@ -1,6 +1,6 @@
 # Channels
 
-Zeph supports multiple I/O channels for interacting with the agent. Each channel implements the `Channel` trait and can be selected at runtime based on configuration or CLI flags.
+Zeph supports multiple I/O channels for interacting with the agent. Each channel implements the `Channel` trait (returning `Result<_, ChannelError>` with typed variants for I/O, closed-channel, and cancellation errors) and can be selected at runtime based on configuration or CLI flags.
 
 ## Available Channels
 

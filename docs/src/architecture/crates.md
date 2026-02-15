@@ -6,9 +6,10 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 
 Agent loop, configuration loading, and context builder.
 
-- `Agent<P, C, T>` — main agent loop with streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection, and context budget check (stops at 80% threshold)
+- `Agent<P, C, T>` — main agent loop with streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection, and context budget check (stops at 80% threshold). Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`); logic is decomposed into `streaming.rs` and `persistence.rs` submodules
+- `AgentError` — typed error enum covering LLM, memory, channel, tool, context, and I/O failures (replaces prior `anyhow` usage)
 - `Config` — TOML config loading with env var overrides
-- `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management
+- `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management. Returns `Result<_, ChannelError>` with typed variants (`Io`, `ChannelClosed`, `ConfirmationCancelled`)
 - Context builder — assembles system prompt from skills, memory, summaries, environment, and project config
 - Context engineering — proportional budget allocation, semantic recall injection, message trimming, runtime compaction
 - `EnvironmentContext` — runtime gathering of cwd, git branch, OS, model name
@@ -21,6 +22,7 @@ Agent loop, configuration loading, and context builder.
 LLM provider abstraction and backend implementations.
 
 - `LlmProvider` trait — `chat()`, `chat_stream()`, `embed()`, `supports_streaming()`, `supports_embeddings()`
+- `EmbedFuture` / `EmbedFn` — canonical type aliases for embedding closures, re-exported by downstream crates (`zeph-skills`, `zeph-mcp`)
 - `OllamaProvider` — local inference via ollama-rs
 - `ClaudeProvider` — Anthropic Messages API with SSE streaming
 - `OpenAiProvider` — OpenAI + compatible APIs (raw reqwest)
@@ -46,7 +48,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 SQLite-backed conversation persistence with Qdrant vector search.
 
 - `SqliteStore` — conversations, messages, summaries, skill usage, skill versions
-- `QdrantStore` — vector storage and cosine similarity search
+- `QdrantStore` — vector storage and cosine similarity search with `MessageKind` enum (`Regular` | `Summary`) for payload classification
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
 - Automatic collection creation, graceful degradation without Qdrant
 
@@ -54,6 +56,7 @@ SQLite-backed conversation persistence with Qdrant vector search.
 
 Channel implementations for the Zeph agent.
 
+- `ChannelError` — typed error enum (`Telegram`, `NoActiveChat`) replacing prior `anyhow` usage
 - `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
 - `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window
 

@@ -52,9 +52,9 @@ Queued messages are processed sequentially with full context rebuilding between 
 
 ## Key Design Decisions
 
-- **Generic Agent:** `Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor>` — fully generic over provider, channel, and tool executor
+- **Generic Agent:** `Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor>` — fully generic over provider, channel, and tool executor. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs` and `persistence.rs` submodules
 - **TLS:** rustls everywhere (no openssl-sys)
-- **Errors:** `thiserror` for library crates, `anyhow` for application code (`zeph-core`, `main.rs`)
+- **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `main.rs`
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
 - **Feature gates:** optional crates (`zeph-index`, `zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
