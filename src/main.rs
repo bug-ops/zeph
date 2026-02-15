@@ -551,7 +551,7 @@ async fn main() -> anyhow::Result<()> {
 
     warmup_provider(&warmup_provider_clone).await;
     tokio::spawn(forward_status_to_stderr(status_rx));
-    agent.run().await
+    Box::pin(agent.run()).await
 }
 
 async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {

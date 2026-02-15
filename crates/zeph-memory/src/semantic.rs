@@ -31,10 +31,10 @@ pub struct SessionSummaryResult {
     pub conversation_id: ConversationId,
 }
 
-/// Estimate token count using chars/4 heuristic.
+/// Estimate token count using bytes/3 heuristic.
 #[must_use]
 pub fn estimate_tokens(text: &str) -> usize {
-    text.chars().count() / 4
+    text.len() / 3
 }
 
 fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> String {
@@ -738,13 +738,13 @@ mod tests {
     #[test]
     fn estimate_tokens_ascii() {
         let text = "Hello, world!";
-        assert_eq!(estimate_tokens(text), 3);
+        assert_eq!(estimate_tokens(text), 4);
     }
 
     #[test]
     fn estimate_tokens_unicode() {
         let text = "Привет мир";
-        assert_eq!(estimate_tokens(text), 2);
+        assert_eq!(estimate_tokens(text), 6);
     }
 
     #[test]
@@ -1023,7 +1023,7 @@ mod tests {
     #[test]
     fn estimate_tokens_longer_text() {
         let text = "a".repeat(100);
-        assert_eq!(estimate_tokens(&text), 25);
+        assert_eq!(estimate_tokens(&text), 33);
     }
 
     #[tokio::test]

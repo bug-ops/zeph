@@ -1,16 +1,16 @@
 use super::{Agent, Channel, LlmProvider, ToolExecutor};
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
-    pub(super) async fn inject_code_rag(
-        &mut self,
+    pub(super) async fn fetch_code_rag(
+        index: &super::IndexState<P>,
         query: &str,
         token_budget: usize,
-    ) -> Result<(), super::error::AgentError> {
-        let Some(retriever) = &self.index.retriever else {
-            return Ok(());
+    ) -> Result<Option<String>, super::error::AgentError> {
+        let Some(retriever) = &index.retriever else {
+            return Ok(None);
         };
         if token_budget == 0 {
-            return Ok(());
+            return Ok(None);
         }
 
         let result = retriever
@@ -19,17 +19,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .map_err(|e| super::error::AgentError::Other(format!("{e:#}")))?;
         let context_text = zeph_index::retriever::format_as_context(&result);
 
-        if !context_text.is_empty() {
-            self.inject_code_context(&context_text);
+        if context_text.is_empty() {
+            Ok(None)
+        } else {
             tracing::debug!(
                 strategy = ?result.strategy,
                 chunks = result.chunks.len(),
                 tokens = result.total_tokens,
-                "code context injected"
+                "code context fetched"
             );
+            Ok(Some(context_text))
         }
-
-        Ok(())
     }
 }
 

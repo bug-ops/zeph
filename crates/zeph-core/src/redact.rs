@@ -10,6 +10,9 @@ const SECRET_PREFIXES: &[&str] = &[
     "-----BEGIN",
     "xoxb-",
     "xoxp-",
+    "AIza",
+    "ya29.",
+    "glpat-",
 ];
 
 /// Replace tokens containing known secret patterns with `[REDACTED]`.
@@ -174,6 +177,30 @@ mod tests {
             assert!(result.contains("[REDACTED]"), "Failed for prefix: {prefix}");
             assert!(!result.contains(prefix), "Prefix not redacted: {prefix}");
         }
+    }
+
+    #[test]
+    fn redacts_google_api_key() {
+        let text = "Google key: AIzaSyA1234567890abcdefghijklmnop";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("AIza"));
+    }
+
+    #[test]
+    fn redacts_google_oauth_token() {
+        let text = "OAuth token ya29.a0AfH6SMBx1234567890";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("ya29."));
+    }
+
+    #[test]
+    fn redacts_gitlab_pat() {
+        let text = "GitLab token: glpat-xxxxxxxxxxxxxxxxxxxx";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("glpat-"));
     }
 
     #[test]

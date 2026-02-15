@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn estimate_tokens_basic() {
-        assert_eq!(estimate_tokens("Hello world"), 2);
+        assert_eq!(estimate_tokens("Hello world"), 3);
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("test"), 1);
     }

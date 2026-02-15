@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use tokio::process::Command;
+use url::Url;
 
 use crate::error::McpError;
 use crate::tool::McpTool;
@@ -70,14 +72,21 @@ impl McpClient {
 
     /// Connect to a remote MCP server over Streamable HTTP.
     ///
+    /// Performs SSRF validation before connecting — blocks URLs that resolve
+    /// to private, loopback, or link-local IP ranges.
+    ///
     /// # Errors
     ///
-    /// Returns `McpError::Connection` if the HTTP connection or handshake fails.
+    /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP,
+    /// `McpError::InvalidUrl` if the URL cannot be parsed, or
+    /// `McpError::Connection` if the HTTP connection or handshake fails.
     pub async fn connect_url(
         server_id: &str,
         url: &str,
         timeout: Duration,
     ) -> Result<Self, McpError> {
+        validate_url_ssrf(url)?;
+
         let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
 
         let service =
@@ -172,5 +181,114 @@ impl McpClient {
                 );
             }
         }
+    }
+}
+
+fn is_private_ip(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(ip) => {
+            ip.is_loopback()              // 127.0.0.0/8
+                || ip.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                || ip.is_link_local()     // 169.254.0.0/16
+                || ip.is_unspecified()    // 0.0.0.0
+                || ip.is_broadcast() // 255.255.255.255
+        }
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unspecified(),
+    }
+}
+
+fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
+    let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
+        url: url.into(),
+        message: e.to_string(),
+    })?;
+
+    let host = parsed.host_str().ok_or_else(|| McpError::InvalidUrl {
+        url: url.into(),
+        message: "missing host".into(),
+    })?;
+
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addr_str = format!("{host}:{port}");
+
+    // DNS resolution to catch hostnames pointing to private IPs
+    let addrs = addr_str
+        .to_socket_addrs()
+        .map_err(|e| McpError::InvalidUrl {
+            url: url.into(),
+            message: format!("DNS resolution failed: {e}"),
+        })?;
+
+    for sock_addr in addrs {
+        if is_private_ip(sock_addr.ip()) {
+            return Err(McpError::SsrfBlocked {
+                url: url.into(),
+                addr: sock_addr.ip().to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssrf_blocks_localhost() {
+        let err = validate_url_ssrf("http://127.0.0.1:8080/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_private_10() {
+        let err = validate_url_ssrf("http://10.0.0.1/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_private_172() {
+        let err = validate_url_ssrf("http://172.16.0.1/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_private_192() {
+        let err = validate_url_ssrf("http://192.168.1.1/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_link_local() {
+        let err = validate_url_ssrf("http://169.254.1.1/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_zero() {
+        let err = validate_url_ssrf("http://0.0.0.0/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_blocks_ipv6_loopback() {
+        let err = validate_url_ssrf("http://[::1]:8080/mcp").unwrap_err();
+        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+    }
+
+    #[test]
+    fn ssrf_rejects_invalid_url() {
+        let err = validate_url_ssrf("not-a-url").unwrap_err();
+        assert!(matches!(err, McpError::InvalidUrl { .. }));
+    }
+
+    #[test]
+    fn ssrf_error_display() {
+        let err = McpError::SsrfBlocked {
+            url: "http://127.0.0.1/mcp".into(),
+            addr: "127.0.0.1".into(),
+        };
+        assert!(err.to_string().contains("SSRF blocked"));
     }
 }

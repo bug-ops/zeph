@@ -395,7 +395,10 @@ mod tests {
         let mgr = McpManager::new(vec![]);
         let entry = make_http_entry("http-test");
         let err = mgr.add_server(&entry).await.unwrap_err();
-        assert!(matches!(err, McpError::Connection { .. }));
+        assert!(matches!(
+            err,
+            McpError::SsrfBlocked { .. } | McpError::Connection { .. }
+        ));
     }
 
     #[test]

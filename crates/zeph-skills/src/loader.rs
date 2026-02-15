@@ -134,6 +134,37 @@ fn split_frontmatter(content: &str) -> Result<(&str, &str), SkillError> {
     Ok((yaml_str, body))
 }
 
+/// Verify that `path` resolves to a location inside `base_dir` after canonicalization.
+///
+/// Prevents symlink-based path traversal by ensuring the canonical path
+/// starts with the canonical base directory prefix.
+///
+/// # Errors
+///
+/// Returns `SkillError::Invalid` if the path escapes `base_dir`.
+pub fn validate_path_within(path: &Path, base_dir: &Path) -> Result<PathBuf, SkillError> {
+    let canonical_base = base_dir.canonicalize().map_err(|e| {
+        SkillError::Other(format!(
+            "failed to canonicalize base dir {}: {e}",
+            base_dir.display()
+        ))
+    })?;
+    let canonical_path = path.canonicalize().map_err(|e| {
+        SkillError::Other(format!(
+            "failed to canonicalize path {}: {e}",
+            path.display()
+        ))
+    })?;
+    if !canonical_path.starts_with(&canonical_base) {
+        return Err(SkillError::Invalid(format!(
+            "path {} escapes skills directory {}",
+            canonical_path.display(),
+            canonical_base.display()
+        )));
+    }
+    Ok(canonical_path)
+}
+
 /// Load only frontmatter metadata from a SKILL.md file.
 ///
 /// # Errors
@@ -366,6 +397,36 @@ mod tests {
         std::fs::write(&path, "---\nname: wrong-name\ndescription: d\n---\nb").unwrap();
 
         assert!(load_skill_meta(&path).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_path_within_rejects_symlink_escape() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let link_path = base.path().join("evil-link");
+        std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
+        let err = validate_path_within(&link_path, base.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("escapes skills directory"),
+            "expected path traversal error, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn validate_path_within_accepts_legitimate_path() {
+        let base = tempfile::tempdir().unwrap();
+        let inner = base.path().join("skill-dir");
+        std::fs::create_dir_all(&inner).unwrap();
+        let file = inner.join("SKILL.md");
+        std::fs::write(&file, "content").unwrap();
+
+        let result = validate_path_within(&file, base.path());
+        assert!(result.is_ok());
     }
 
     #[test]

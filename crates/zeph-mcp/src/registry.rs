@@ -1,11 +1,7 @@
 use std::collections::HashMap;
 
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, PointStruct, PointsIdsList,
-    ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-    value::Kind,
-};
+use qdrant_client::qdrant::{PointStruct, value::Kind};
+use zeph_memory::QdrantOps;
 
 use crate::error::McpError;
 use crate::tool::McpTool;
@@ -30,7 +26,7 @@ pub struct SyncStats {
 }
 
 pub struct McpToolRegistry {
-    client: Qdrant,
+    ops: QdrantOps,
     collection: String,
     hashes: HashMap<String, String>,
 }
@@ -61,10 +57,10 @@ impl McpToolRegistry {
     ///
     /// Returns an error if the Qdrant client cannot be created.
     pub fn new(qdrant_url: &str) -> Result<Self, McpError> {
-        let client = Qdrant::from_url(qdrant_url).build().map_err(Box::new)?;
+        let ops = QdrantOps::new(qdrant_url)?;
 
         Ok(Self {
-            client,
+            ops,
             collection: COLLECTION_NAME.into(),
             hashes: HashMap::new(),
         })
@@ -88,7 +84,7 @@ impl McpToolRegistry {
 
         self.ensure_collection(&embed_fn).await?;
 
-        let existing = self.scroll_all().await?;
+        let existing = self.ops.scroll_all(&self.collection, "tool_key").await?;
 
         let mut current: HashMap<String, (String, &McpTool)> = HashMap::with_capacity(tools.len());
         for tool in tools {
@@ -130,7 +126,7 @@ impl McpToolRegistry {
             };
 
             let point_id = tool_point_id(key);
-            let payload: serde_json::Value = serde_json::json!({
+            let payload = serde_json::json!({
                 "tool_key": key,
                 "server_id": tool.server_id,
                 "tool_name": tool.name,
@@ -138,8 +134,7 @@ impl McpToolRegistry {
                 "content_hash": hash,
                 "embedding_model": embedding_model,
             });
-            let payload_map: HashMap<String, qdrant_client::qdrant::Value> =
-                serde_json::from_value(payload)?;
+            let payload_map = QdrantOps::json_to_payload(payload)?;
 
             points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
 
@@ -152,31 +147,18 @@ impl McpToolRegistry {
         }
 
         if !points_to_upsert.is_empty() {
-            self.client
-                .upsert_points(UpsertPointsBuilder::new(&self.collection, points_to_upsert))
-                .await
-                .map_err(Box::new)?;
+            self.ops.upsert(&self.collection, points_to_upsert).await?;
         }
 
-        let orphan_ids: Vec<String> = existing
+        let orphan_ids: Vec<qdrant_client::qdrant::PointId> = existing
             .keys()
             .filter(|key| !current.contains_key(*key))
-            .map(|key| tool_point_id(key))
+            .map(|key| qdrant_client::qdrant::PointId::from(tool_point_id(key).as_str()))
             .collect();
 
         if !orphan_ids.is_empty() {
             stats.removed = orphan_ids.len();
-            let point_ids: Vec<qdrant_client::qdrant::PointId> = orphan_ids
-                .into_iter()
-                .map(|id| qdrant_client::qdrant::PointId::from(id.as_str()))
-                .collect();
-            self.client
-                .delete_points(
-                    DeletePointsBuilder::new(&self.collection)
-                        .points(PointsIdsList { ids: point_ids }),
-                )
-                .await
-                .map_err(Box::new)?;
+            self.ops.delete_by_ids(&self.collection, orphan_ids).await?;
         }
 
         tracing::info!(
@@ -208,10 +190,8 @@ impl McpToolRegistry {
         };
 
         let results = match self
-            .client
-            .search_points(
-                SearchPointsBuilder::new(&self.collection, query_vec, limit_u64).with_payload(true),
-            )
+            .ops
+            .search(&self.collection, query_vec, limit_u64, None)
             .await
         {
             Ok(r) => r,
@@ -222,7 +202,6 @@ impl McpToolRegistry {
         };
 
         results
-            .result
             .into_iter()
             .filter_map(|point| {
                 let server_id = extract_string(&point.payload, "server_id")?;
@@ -242,16 +221,8 @@ impl McpToolRegistry {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self
-            .client
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
-            self.client
-                .delete_collection(&self.collection)
-                .await
-                .map_err(Box::new)?;
+        if self.ops.collection_exists(&self.collection).await? {
+            self.ops.delete_collection(&self.collection).await?;
             tracing::info!(
                 collection = &self.collection,
                 "deleted MCP tools collection for recreation"
@@ -264,12 +235,7 @@ impl McpToolRegistry {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        if self
-            .client
-            .collection_exists(&self.collection)
-            .await
-            .map_err(Box::new)?
-        {
+        if self.ops.collection_exists(&self.collection).await? {
             return Ok(());
         }
 
@@ -278,13 +244,9 @@ impl McpToolRegistry {
             .map_err(|e| McpError::Embedding(e.to_string()))?;
         let vector_size = u64::try_from(probe.len())?;
 
-        self.client
-            .create_collection(
-                CreateCollectionBuilder::new(&self.collection)
-                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-            )
-            .await
-            .map_err(Box::new)?;
+        self.ops
+            .ensure_collection(&self.collection, vector_size)
+            .await?;
 
         tracing::info!(
             collection = &self.collection,
@@ -293,48 +255,6 @@ impl McpToolRegistry {
         );
 
         Ok(())
-    }
-
-    async fn scroll_all(&self) -> Result<HashMap<String, HashMap<String, String>>, McpError> {
-        let mut result = HashMap::new();
-        let mut offset: Option<qdrant_client::qdrant::PointId> = None;
-
-        loop {
-            let mut builder = ScrollPointsBuilder::new(&self.collection)
-                .with_payload(true)
-                .with_vectors(false)
-                .limit(100);
-
-            if let Some(ref off) = offset {
-                builder = builder.offset(off.clone());
-            }
-
-            let response = self.client.scroll(builder).await.map_err(Box::new)?;
-
-            for point in &response.result {
-                let Some(key_val) = point.payload.get("tool_key") else {
-                    continue;
-                };
-                let Some(Kind::StringValue(key)) = &key_val.kind else {
-                    continue;
-                };
-
-                let mut fields = HashMap::new();
-                for (k, val) in &point.payload {
-                    if let Some(Kind::StringValue(s)) = &val.kind {
-                        fields.insert(k.clone(), s.clone());
-                    }
-                }
-                result.insert(key.clone(), fields);
-            }
-
-            match response.next_page_offset {
-                Some(next) => offset = Some(next),
-                None => break,
-            }
-        }
-
-        Ok(result)
     }
 }
 
