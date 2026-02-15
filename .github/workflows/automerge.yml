@@ -51,10 +51,10 @@ jobs:
         id: approval
         run: |
           PR_NUMBER=${{ steps.pr.outputs.number }}
-          
+
           # Check for approvals
           APPROVALS=$(gh pr view $PR_NUMBER --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')
-          
+
           if [ "$APPROVALS" -gt 0 ]; then
             echo "approved=true" >> $GITHUB_OUTPUT
             echo "PR #$PR_NUMBER has $APPROVALS approval(s)"
