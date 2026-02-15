@@ -610,6 +610,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                 });
 
                 if has_tool_parts {
+                    let is_assistant = msg.role == Role::Assistant;
                     let mut blocks = Vec::new();
                     for part in &msg.parts {
                         match part {
@@ -629,22 +630,32 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                     text: format!("[tool output: {tool_name}]\n{body}"),
                                 });
                             }
-                            MessagePart::ToolUse { id, name, input } => {
+                            MessagePart::ToolUse { id, name, input } if is_assistant => {
                                 blocks.push(AnthropicContentBlock::ToolUse {
                                     id: id.clone(),
                                     name: name.clone(),
                                     input: input.clone(),
                                 });
                             }
+                            MessagePart::ToolUse { name, input, .. } => {
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: format!("[tool_use: {name}] {input}"),
+                                });
+                            }
                             MessagePart::ToolResult {
                                 tool_use_id,
                                 content,
                                 is_error,
-                            } => {
+                            } if !is_assistant => {
                                 blocks.push(AnthropicContentBlock::ToolResult {
                                     tool_use_id: tool_use_id.clone(),
                                     content: content.clone(),
                                     is_error: *is_error,
+                                });
+                            }
+                            MessagePart::ToolResult { content, .. } => {
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: content.clone(),
                                 });
                             }
                         }
