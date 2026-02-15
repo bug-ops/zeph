@@ -35,7 +35,7 @@ qdrant-client = { version = "1.16", default-features = false }
 ratatui = "0.30"
 regex = "1.12"
 reqwest = { version = "0.13", default-features = false }
-rmcp = "0.14"
+rmcp = "0.15"
 scrape-core = "0.2.2"
 subtle = "2.6"
 schemars = "1.2"
@@ -50,7 +50,7 @@ thiserror = "2.0"
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 tokio = "1"
 tokio-stream = "0.1"
-toml = "0.9"
+toml = "1.0"
 tower = "0.5"
 tower-http = "0.6"
 tracing = "0.1"
@@ -58,7 +58,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2.5"
-uuid = "1.20"
+uuid = "1.21"
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.9.6" }
 zeph-channels = { path = "crates/zeph-channels", version = "0.9.6" }
 zeph-core = { path = "crates/zeph-core", version = "0.9.6" }
