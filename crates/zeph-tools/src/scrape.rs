@@ -113,16 +113,18 @@ impl ToolExecutor for WebScrapeExecutor {
             return Ok(None);
         }
 
-        let instruction: ScrapeInstruction =
-            serde_json::from_value(serde_json::Value::Object(
-                call.params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        let instruction: ScrapeInstruction = serde_json::from_value(serde_json::Value::Object(
+            call.params
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        ))
+        .map_err(|e| {
+            ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
             ))
-            .map_err(|e| {
-                ToolError::Execution(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    e.to_string(),
-                ))
-            })?;
+        })?;
 
         let result = self.scrape_instruction(&instruction).await?;
 
