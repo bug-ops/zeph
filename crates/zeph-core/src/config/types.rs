@@ -30,6 +30,12 @@ pub struct Config {
     pub cost: CostConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub gateway: GatewayConfig,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -683,6 +689,103 @@ impl Default for ObservabilityConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct GatewayConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_gateway_bind")]
+    pub bind: String,
+    #[serde(default = "default_gateway_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    #[serde(default = "default_gateway_rate_limit")]
+    pub rate_limit: u32,
+    #[serde(default = "default_gateway_max_body")]
+    pub max_body_size: usize,
+}
+
+fn default_gateway_bind() -> String {
+    "127.0.0.1".into()
+}
+
+fn default_gateway_port() -> u16 {
+    8090
+}
+
+fn default_gateway_rate_limit() -> u32 {
+    120
+}
+
+fn default_gateway_max_body() -> usize {
+    1_048_576
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_gateway_bind(),
+            port: default_gateway_port(),
+            auth_token: None,
+            rate_limit: default_gateway_rate_limit(),
+            max_body_size: default_gateway_max_body(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_pid_file")]
+    pub pid_file: String,
+    #[serde(default = "default_health_interval")]
+    pub health_interval_secs: u64,
+    #[serde(default = "default_max_restart_backoff")]
+    pub max_restart_backoff_secs: u64,
+}
+
+fn default_pid_file() -> String {
+    "~/.zeph/zeph.pid".into()
+}
+
+fn default_health_interval() -> u64 {
+    30
+}
+
+fn default_max_restart_backoff() -> u64 {
+    60
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pid_file: default_pid_file(),
+            health_interval_secs: default_health_interval(),
+            max_restart_backoff_secs: default_max_restart_backoff(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SchedulerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub tasks: Vec<ScheduledTaskConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScheduledTaskConfig {
+    pub name: String,
+    pub cron: String,
+    pub kind: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
 #[derive(Debug, Default)]
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
@@ -738,6 +841,9 @@ impl Config {
             timeouts: TimeoutConfig::default(),
             cost: CostConfig::default(),
             observability: ObservabilityConfig::default(),
+            gateway: GatewayConfig::default(),
+            daemon: DaemonConfig::default(),
+            scheduler: SchedulerConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

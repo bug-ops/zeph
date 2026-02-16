@@ -235,6 +235,44 @@ enabled = false
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
 
+[gateway]
+# Enable HTTP gateway for webhook ingestion (feature-gated: --features gateway)
+enabled = false
+# Bind address (127.0.0.1 = localhost only, 0.0.0.0 = all interfaces)
+bind = "127.0.0.1"
+# HTTP port
+port = 8090
+# auth_token = "secret"  # optional, from vault ZEPH_GATEWAY_TOKEN
+# Rate limit: max requests per minute per IP
+rate_limit = 120
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
+
+[daemon]
+# Enable daemon supervisor (feature-gated: --features daemon)
+enabled = false
+# PID file location
+pid_file = "~/.zeph/zeph.pid"
+# Health check interval in seconds
+health_interval_secs = 30
+# Maximum restart backoff in seconds
+max_restart_backoff_secs = 60
+
+[scheduler]
+# Enable cron scheduler (feature-gated: --features scheduler)
+enabled = false
+# Example task definitions:
+# [[scheduler.tasks]]
+# name = "memory_cleanup"
+# cron = "0 0 0 * * *"
+# kind = "memory_cleanup"
+# config = { max_age_days = 90 }
+#
+# [[scheduler.tasks]]
+# name = "health_check"
+# cron = "0 */5 * * * *"
+# kind = "health_check"
+
 [security]
 # Redact secrets (API keys, tokens) from LLM responses before display
 redact_secrets = true

@@ -10,6 +10,7 @@ repository.workspace = true
 default = []
 index = ["dep:zeph-index"]
 mcp = ["dep:zeph-mcp"]
+daemon = []
 self-learning = ["zeph-skills/self-learning"]
 vault-age = ["dep:age"]
 

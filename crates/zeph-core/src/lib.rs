@@ -6,6 +6,8 @@ pub mod config;
 pub mod config_watcher;
 pub mod context;
 pub mod cost;
+#[cfg(feature = "daemon")]
+pub mod daemon;
 pub mod metrics;
 pub mod project;
 pub mod redact;

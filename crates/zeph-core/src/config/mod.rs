@@ -67,6 +67,9 @@ impl Config {
                 }
             }
         }
+        if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
+            self.gateway.auth_token = Some(val);
+        }
         Ok(())
     }
 }
