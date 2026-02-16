@@ -20,6 +20,7 @@ pub struct OpenAiProvider {
     embedding_model: Option<String>,
     reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
+    last_cache: std::sync::Mutex<Option<(u64, u64)>>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -33,6 +34,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("embedding_model", &self.embedding_model)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("status_tx", &self.status_tx.is_some())
+            .field("last_cache", &self.last_cache.lock().ok())
             .finish()
     }
 }
@@ -48,6 +50,7 @@ impl Clone for OpenAiProvider {
             embedding_model: self.embedding_model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             status_tx: self.status_tx.clone(),
+            last_cache: std::sync::Mutex::new(None),
         }
     }
 }
@@ -74,6 +77,7 @@ impl OpenAiProvider {
             embedding_model,
             reasoning_effort,
             status_tx: None,
+            last_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -81,6 +85,24 @@ impl OpenAiProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    fn store_cache_usage(&self, usage: &OpenAiUsage) {
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cached_tokens);
+        if cached > 0 {
+            if let Ok(mut guard) = self.last_cache.lock() {
+                *guard = Some((0, cached));
+            }
+            tracing::debug!(
+                prompt_tokens = usage.prompt_tokens,
+                cached_tokens = cached,
+                completion_tokens = usage.completion_tokens,
+                "OpenAI API usage"
+            );
+        }
     }
 
     fn emit_status(&self, msg: impl Into<String>) {
@@ -128,6 +150,10 @@ impl OpenAiProvider {
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
+
+        if let Some(ref usage) = resp.usage {
+            self.store_cache_usage(usage);
+        }
 
         resp.choices
             .first()
@@ -275,6 +301,10 @@ impl LlmProvider for OpenAiProvider {
         "openai"
     }
 
+    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        self.last_cache.lock().ok().and_then(|g| *g)
+    }
+
     fn supports_tool_use(&self) -> bool {
         true
     }
@@ -334,6 +364,10 @@ impl LlmProvider for OpenAiProvider {
         }
 
         let resp: ToolChatResponse = serde_json::from_str(&text)?;
+
+        if let Some(ref usage) = resp.usage {
+            self.store_cache_usage(usage);
+        }
 
         let choice = resp
             .choices
@@ -438,6 +472,24 @@ struct ApiMessage<'a> {
 #[derive(Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -515,6 +567,8 @@ struct OpenAiFunctionCall {
 #[derive(Deserialize)]
 struct ToolChatResponse {
     choices: Vec<ToolChatChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
@@ -1224,5 +1278,103 @@ mod tests {
         assert_eq!(result[0].role, "user");
         assert_eq!(result[0].content, "hello");
         assert!(result[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn parse_usage_with_cached_tokens() {
+        let json = r#"{
+            "prompt_tokens": 2006,
+            "completion_tokens": 300,
+            "prompt_tokens_details": {
+                "cached_tokens": 1920
+            }
+        }"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 2006);
+        assert_eq!(usage.completion_tokens, 300);
+        assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, 1920);
+    }
+
+    #[test]
+    fn parse_usage_without_cached_tokens() {
+        let json = r#"{"prompt_tokens": 100, "completion_tokens": 50}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        assert!(usage.prompt_tokens_details.is_none());
+    }
+
+    #[test]
+    fn parse_chat_response_with_usage() {
+        let json = r#"{
+            "choices": [{"message": {"content": "Hello!"}}],
+            "usage": {
+                "prompt_tokens": 500,
+                "completion_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 400}
+            }
+        }"#;
+        let resp: OpenAiChatResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 500);
+        assert_eq!(
+            usage.prompt_tokens_details.unwrap().cached_tokens,
+            400
+        );
+    }
+
+    #[test]
+    fn parse_chat_response_without_usage() {
+        let json = r#"{"choices":[{"message":{"content":"Hi"}}]}"#;
+        let resp: OpenAiChatResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.usage.is_none());
+    }
+
+    #[test]
+    fn last_cache_usage_initially_none() {
+        let p = test_provider();
+        assert!(p.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn store_and_retrieve_cache_usage() {
+        let p = test_provider();
+        let usage = OpenAiUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: 800,
+            }),
+        };
+        p.store_cache_usage(&usage);
+        let (creation, read) = p.last_cache_usage().unwrap();
+        assert_eq!(creation, 0);
+        assert_eq!(read, 800);
+    }
+
+    #[test]
+    fn store_cache_usage_zero_cached_tokens_not_stored() {
+        let p = test_provider();
+        let usage = OpenAiUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 0 }),
+        };
+        p.store_cache_usage(&usage);
+        assert!(p.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn clone_resets_last_cache() {
+        let p = test_provider();
+        let usage = OpenAiUsage {
+            prompt_tokens: 500,
+            completion_tokens: 100,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: 400,
+            }),
+        };
+        p.store_cache_usage(&usage);
+        assert!(p.last_cache_usage().is_some());
+        let cloned = p.clone();
+        assert!(cloned.last_cache_usage().is_none());
     }
 }

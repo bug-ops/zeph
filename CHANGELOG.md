@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- OpenAI prompt caching: parse and report cached token usage (#348)
 - Anthropic prompt caching with structured system content blocks (#337)
 - Configurable summary provider for tool output summarization via local model (#338)
 - Aggressive inline pruning of stale tool outputs in tool loops (#339)
