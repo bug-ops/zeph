@@ -252,7 +252,9 @@ impl SearchHit {
 mod tests {
     async fn setup_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        zeph_memory::sqlite::SqliteStore::run_migrations(&pool).await.unwrap();
+        zeph_memory::sqlite::SqliteStore::run_migrations(&pool)
+            .await
+            .unwrap();
         pool
     }
 
