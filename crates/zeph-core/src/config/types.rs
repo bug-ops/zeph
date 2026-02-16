@@ -54,6 +54,9 @@ pub struct LlmConfig {
     pub openai: Option<OpenAiConfig>,
     pub candle: Option<CandleConfig>,
     pub orchestrator: Option<OrchestratorConfig>,
+    #[serde(default)]
+    pub compatible: Option<Vec<CompatibleConfig>>,
+    pub router: Option<RouterConfig>,
 }
 
 fn default_embedding_model() -> String {
@@ -75,6 +78,21 @@ pub struct OpenAiConfig {
     pub embedding_model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompatibleConfig {
+    pub name: String,
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RouterConfig {
+    pub chain: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -606,6 +624,7 @@ fn default_vault_backend() -> String {
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
     pub openai_api_key: Option<Secret>,
+    pub compatible_api_keys: HashMap<String, Secret>,
 }
 
 impl Config {
@@ -625,6 +644,8 @@ impl Config {
                 openai: None,
                 candle: None,
                 orchestrator: None,
+                compatible: None,
+                router: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

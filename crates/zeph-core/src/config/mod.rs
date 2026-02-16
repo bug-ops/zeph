@@ -56,6 +56,16 @@ impl Config {
         if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
             self.a2a.auth_token = Some(val);
         }
+        if let Some(ref entries) = self.llm.compatible {
+            for entry in entries {
+                let env_key = format!("ZEPH_COMPATIBLE_{}_API_KEY", entry.name.to_uppercase());
+                if let Some(val) = vault.get_secret(&env_key).await? {
+                    self.secrets
+                        .compatible_api_keys
+                        .insert(entry.name.clone(), Secret::new(val));
+                }
+            }
+        }
         Ok(())
     }
 }

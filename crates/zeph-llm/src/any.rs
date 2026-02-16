@@ -1,12 +1,16 @@
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
+#[cfg(feature = "compatible")]
+use crate::compatible::CompatibleProvider;
 use crate::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
 #[cfg(feature = "orchestrator")]
 use crate::orchestrator::ModelOrchestrator;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+#[cfg(feature = "router")]
+use crate::router::RouterProvider;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
 /// and evaluating the given closure for each arm.
@@ -19,8 +23,12 @@ macro_rules! delegate_provider {
             AnyProvider::OpenAi($p) => $expr,
             #[cfg(feature = "candle")]
             AnyProvider::Candle($p) => $expr,
+            #[cfg(feature = "compatible")]
+            AnyProvider::Compatible($p) => $expr,
             #[cfg(feature = "orchestrator")]
             AnyProvider::Orchestrator($p) => $expr,
+            #[cfg(feature = "router")]
+            AnyProvider::Router($p) => $expr,
         }
     };
 }
@@ -33,8 +41,12 @@ pub enum AnyProvider {
     OpenAi(OpenAiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
+    #[cfg(feature = "compatible")]
+    Compatible(CompatibleProvider),
     #[cfg(feature = "orchestrator")]
     Orchestrator(Box<ModelOrchestrator>),
+    #[cfg(feature = "router")]
+    Router(Box<RouterProvider>),
 }
 
 impl AnyProvider {
@@ -47,8 +59,16 @@ impl AnyProvider {
             Self::OpenAi(p) => {
                 p.status_tx = Some(tx);
             }
+            #[cfg(feature = "compatible")]
+            Self::Compatible(p) => {
+                p.set_status_tx(tx);
+            }
             #[cfg(feature = "orchestrator")]
             Self::Orchestrator(p) => {
+                p.set_status_tx(tx);
+            }
+            #[cfg(feature = "router")]
+            Self::Router(p) => {
                 p.set_status_tx(tx);
             }
             Self::Ollama(_) => {}

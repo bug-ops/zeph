@@ -22,10 +22,14 @@ use zeph_index::{
 };
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
+#[cfg(feature = "compatible")]
+use zeph_llm::compatible::CompatibleProvider;
 use zeph_llm::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::provider::LlmProvider;
+#[cfg(feature = "router")]
+use zeph_llm::router::RouterProvider;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
@@ -756,11 +760,19 @@ fn effective_embedding_model(config: &Config) -> String {
                 }
             }
         }
-        _ => {}
+        other => {
+            if let Some(entries) = &config.llm.compatible
+                && let Some(entry) = entries.iter().find(|e| e.name == other)
+                && let Some(ref m) = entry.embedding_model
+            {
+                return m.clone();
+            }
+        }
     }
     config.llm.embedding_model.clone()
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
     match config.llm.provider.as_str() {
         "ollama" => {
@@ -862,7 +874,141 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             let orch = build_orchestrator(config)?;
             Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
-        other => bail!("unknown LLM provider: {other}"),
+        #[cfg(feature = "router")]
+        "router" => {
+            let router_cfg = config
+                .llm
+                .router
+                .as_ref()
+                .context("llm.router config section required for router provider")?;
+
+            let mut providers = Vec::new();
+            for name in &router_cfg.chain {
+                let p = create_named_provider(name, config)?;
+                providers.push(p);
+            }
+            if providers.is_empty() {
+                bail!("router chain is empty");
+            }
+            Ok(AnyProvider::Router(Box::new(RouterProvider::new(
+                providers,
+            ))))
+        }
+        other => {
+            #[cfg(feature = "compatible")]
+            if let Some(entries) = &config.llm.compatible
+                && let Some(entry) = entries.iter().find(|e| e.name == other)
+            {
+                let api_key = config
+                    .secrets
+                    .compatible_api_keys
+                    .get(&entry.name)
+                    .with_context(|| {
+                        format!(
+                            "ZEPH_COMPATIBLE_{}_API_KEY not found in vault",
+                            entry.name.to_uppercase()
+                        )
+                    })?
+                    .expose()
+                    .to_owned();
+
+                let provider = CompatibleProvider::new(
+                    entry.name.clone(),
+                    api_key,
+                    entry.base_url.clone(),
+                    entry.model.clone(),
+                    entry.max_tokens,
+                    entry.embedding_model.clone(),
+                );
+                return Ok(AnyProvider::Compatible(provider));
+            }
+            bail!("unknown LLM provider: {other}")
+        }
+    }
+}
+
+#[cfg(feature = "router")]
+fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvider> {
+    match name {
+        "ollama" => {
+            let provider = OllamaProvider::new(
+                &config.llm.base_url,
+                config.llm.model.clone(),
+                config.llm.embedding_model.clone(),
+            );
+            Ok(AnyProvider::Ollama(provider))
+        }
+        "claude" => {
+            let cloud = config
+                .llm
+                .cloud
+                .as_ref()
+                .context("llm.cloud config required for claude in router chain")?;
+            let api_key = config
+                .secrets
+                .claude_api_key
+                .as_ref()
+                .context("ZEPH_CLAUDE_API_KEY required for claude in router chain")?
+                .expose()
+                .to_owned();
+            Ok(AnyProvider::Claude(ClaudeProvider::new(
+                api_key,
+                cloud.model.clone(),
+                cloud.max_tokens,
+            )))
+        }
+        #[cfg(feature = "openai")]
+        "openai" => {
+            let openai_cfg = config
+                .llm
+                .openai
+                .as_ref()
+                .context("llm.openai config required for openai in router chain")?;
+            let api_key = config
+                .secrets
+                .openai_api_key
+                .as_ref()
+                .context("ZEPH_OPENAI_API_KEY required for openai in router chain")?
+                .expose()
+                .to_owned();
+            Ok(AnyProvider::OpenAi(OpenAiProvider::new(
+                api_key,
+                openai_cfg.base_url.clone(),
+                openai_cfg.model.clone(),
+                openai_cfg.max_tokens,
+                openai_cfg.embedding_model.clone(),
+                openai_cfg.reasoning_effort.clone(),
+            )))
+        }
+        other => {
+            #[cfg(feature = "compatible")]
+            if let Some(entries) = &config.llm.compatible
+                && let Some(entry) = entries.iter().find(|e| e.name == other)
+            {
+                let api_key = config
+                    .secrets
+                    .compatible_api_keys
+                    .get(&entry.name)
+                    .with_context(|| {
+                        format!(
+                            "ZEPH_COMPATIBLE_{}_API_KEY required for {} in router chain",
+                            entry.name.to_uppercase(),
+                            entry.name
+                        )
+                    })?
+                    .expose()
+                    .to_owned();
+                return Ok(AnyProvider::Compatible(CompatibleProvider::new(
+                    entry.name.clone(),
+                    api_key,
+                    entry.base_url.clone(),
+                    entry.model.clone(),
+                    entry.max_tokens,
+                    entry.embedding_model.clone(),
+                )));
+            }
+            bail!("unknown provider in router chain: {other}")
+        }
     }
 }
 

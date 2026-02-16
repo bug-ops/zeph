@@ -62,6 +62,20 @@ max_tokens = 4096
 # creative = ["claude", "ollama"]
 # general = ["ollama"]
 
+# OpenAI-compatible providers (Groq, Together, Mistral, local vLLM, etc.)
+# Set provider = "<name>" and ZEPH_COMPATIBLE_<NAME>_API_KEY env var to use.
+# [[llm.compatible]]
+# name = "groq"
+# base_url = "https://api.groq.com/openai/v1"
+# model = "llama-3.3-70b-versatile"
+# max_tokens = 4096
+# # embedding_model = "..."  # optional
+
+# Router provider: sequential fallback across multiple providers.
+# Set provider = "router" to use.
+# [llm.router]
+# chain = ["groq", "openai", "ollama"]
+
 [skills]
 # Directories to scan for SKILL.md files
 paths = ["./skills"]
