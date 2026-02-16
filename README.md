@@ -76,6 +76,16 @@ ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... ./target/release/zeph
 ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
 ```
 
+For Discord or Slack bot mode (requires respective feature):
+
+```bash
+cargo build --release --features discord
+ZEPH_DISCORD_TOKEN="..." ZEPH_DISCORD_APP_ID="..." ./target/release/zeph
+
+cargo build --release --features slack
+ZEPH_SLACK_BOT_TOKEN="xoxb-..." ZEPH_SLACK_SIGNING_SECRET="..." ./target/release/zeph
+```
+
 For TUI dashboard (requires `tui` feature):
 
 ```bash
@@ -104,7 +114,7 @@ cargo build --release --features tui
 | **Prompt Caching** | Automatic prompt caching for Anthropic and OpenAI providers, reducing latency and cost on repeated context | |
 | **Graceful Shutdown** | Ctrl-C triggers ordered teardown with MCP server cleanup and pending task draining | |
 | **TUI Dashboard** | ratatui terminal UI with tree-sitter syntax highlighting, markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
-| **Multi-Channel I/O** | CLI, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
+| **Multi-Channel I/O** | CLI, Discord, Slack, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
 | **Defense-in-Depth** | Shell sandbox with relative path traversal detection, file sandbox, command filter, secret redaction (Google/GitLab patterns), audit log, SSRF protection (agent + MCP), rate limiter TTL eviction, doom-loop detection | [Security](https://bug-ops.github.io/zeph/security.html) |
 
 ## Architecture
@@ -118,7 +128,7 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for t
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning, typed SkillError
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization, typed MemoryError
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
-├── zeph-channels   — Telegram adapter (teloxide) with streaming
+├── zeph-channels   — Discord, Slack, Telegram adapters with streaming
 ├── zeph-tools      — schemars-driven tool registry (shell, file ops, web scrape), composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
@@ -151,6 +161,8 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 | `self-learning` | On | Skill evolution system |
 | `vault-age` | On | Age-encrypted secret storage |
 | `index` | On | AST-based code indexing and semantic retrieval |
+| `discord` | Off | Discord bot with Gateway v10 WebSocket |
+| `slack` | Off | Slack bot with Events API webhook |
 | `gateway` | Off | HTTP gateway for webhook ingestion |
 | `daemon` | Off | Daemon supervisor for component lifecycle |
 | `scheduler` | Off | Cron-based periodic task scheduler |

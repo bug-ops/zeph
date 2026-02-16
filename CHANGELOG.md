@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-02-17
+
 ### Added
 - `zeph-gateway` crate: axum HTTP gateway with POST /webhook ingestion, bearer auth (blake3 + ct_eq), per-IP rate limiting, GET /health endpoint, feature-gated (`gateway`) (#379)
 - `zeph-core::daemon` module: component supervisor with health monitoring, PID file management, graceful shutdown, feature-gated (`daemon`) (#380)
@@ -800,7 +802,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/bug-ops/zeph/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/bug-ops/zeph/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/bug-ops/zeph/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/bug-ops/zeph/compare/v0.9.5...v0.9.6
