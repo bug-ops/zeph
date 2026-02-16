@@ -500,6 +500,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         count
     }
 
+    pub async fn shutdown(&mut self) {
+        self.channel.send("Shutting down...").await.ok();
+
+        #[cfg(feature = "mcp")]
+        if let Some(ref manager) = self.mcp.manager {
+            manager.shutdown_all_shared().await;
+        }
+
+        tracing::info!("agent shutdown complete");
+    }
+
     /// Run the chat loop, receiving messages via the channel until EOF or shutdown.
     ///
     /// # Errors

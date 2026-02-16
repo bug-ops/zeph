@@ -339,7 +339,17 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let mut stream = self.provider.chat_stream(&self.messages).await?;
         let mut response = String::with_capacity(2048);
 
-        while let Some(chunk_result) = stream.next().await {
+        loop {
+            let chunk_result = tokio::select! {
+                item = stream.next() => match item {
+                    Some(r) => r,
+                    None => break,
+                },
+                () = super::shutdown_signal(&mut self.shutdown) => {
+                    tracing::info!("streaming interrupted by shutdown");
+                    break;
+                }
+            };
             let chunk: String = chunk_result?;
             response.push_str(&chunk);
             let display = self.maybe_redact(&chunk);
@@ -382,6 +392,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         );
 
         for iteration in 0..self.max_tool_iterations {
+            if *self.shutdown.borrow() {
+                tracing::info!("native tool loop interrupted by shutdown");
+                break;
+            }
+
             self.channel.send_typing().await?;
 
             if let Some(ref budget) = self.context_state.budget {

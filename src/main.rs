@@ -565,9 +565,11 @@ async fn main() -> anyhow::Result<()> {
 
         tokio::select! {
             result = tui_task => {
+                agent.shutdown().await;
                 return result?;
             }
             result = agent_future => {
+                agent.shutdown().await;
                 return result;
             }
         }
@@ -576,7 +578,9 @@ async fn main() -> anyhow::Result<()> {
     warmup_provider(&warmup_provider_clone).await;
     tokio::spawn(forward_status_to_stderr(status_rx));
     // Box::pin avoids clippy::large_futures on non-TUI path
-    Box::pin(agent.run()).await
+    let result = Box::pin(agent.run()).await;
+    agent.shutdown().await;
+    result
 }
 
 async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {

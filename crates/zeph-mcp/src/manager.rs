@@ -187,13 +187,23 @@ impl McpManager {
         ids
     }
 
-    /// Graceful shutdown of all connections.
+    /// Graceful shutdown of all connections (takes ownership).
     pub async fn shutdown_all(self) {
+        self.shutdown_all_shared().await;
+    }
+
+    /// Graceful shutdown of all connections via shared reference.
+    pub async fn shutdown_all_shared(&self) {
         let mut clients = self.clients.write().await;
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
         for (id, client) in drained {
             tracing::info!(server_id = id, "shutting down MCP client");
-            client.shutdown().await;
+            if tokio::time::timeout(Duration::from_secs(5), client.shutdown())
+                .await
+                .is_err()
+            {
+                tracing::warn!(server_id = id, "MCP client shutdown timed out");
+            }
         }
     }
 }
