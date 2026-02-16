@@ -7,6 +7,7 @@ use crate::redact::redact_secrets;
 use zeph_memory::semantic::estimate_tokens;
 
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
+use tracing::Instrument;
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
@@ -79,7 +80,11 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             });
             self.persist_message(Role::Assistant, &response).await;
 
-            let result = self.tool_executor.execute(&response).await;
+            let result = self
+                .tool_executor
+                .execute(&response)
+                .instrument(tracing::info_span!("tool_exec"))
+                .await;
             if !self.handle_tool_result(&response, result).await? {
                 return Ok(());
             }
@@ -113,6 +118,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     pub(crate) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::error::AgentError> {
+        if let Some(ref tracker) = self.cost_tracker
+            && let Err(e) = tracker.check_budget()
+        {
+            self.channel
+                .send(&format!("Budget limit reached: {e}"))
+                .await?;
+            return Ok(None);
+        }
+
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
         let start = std::time::Instant::now();
         let prompt_estimate: u64 = self
@@ -121,11 +135,18 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .map(|m| u64::try_from(m.content.len()).unwrap_or(0) / 4)
             .sum();
 
+        let llm_span = tracing::info_span!("llm_call", model = %self.model_name);
         if self.provider.supports_streaming() {
-            if let Ok(r) =
-                tokio::time::timeout(llm_timeout, self.process_response_streaming()).await
+            if let Ok(r) = tokio::time::timeout(
+                llm_timeout,
+                self.process_response_streaming().instrument(llm_span),
+            )
+            .await
             {
                 let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let completion_estimate_for_cost = r
+                    .as_ref()
+                    .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4);
                 self.update_metrics(|m| {
                     m.api_calls += 1;
                     m.last_llm_latency_ms = latency;
@@ -134,6 +155,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
                 self.record_cache_usage();
+                self.record_cost(prompt_estimate, completion_estimate_for_cost);
                 Ok(Some(r?))
             } else {
                 self.channel
@@ -142,7 +164,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 Ok(None)
             }
         } else {
-            match tokio::time::timeout(llm_timeout, self.provider.chat(&self.messages)).await {
+            match tokio::time::timeout(
+                llm_timeout,
+                self.provider.chat(&self.messages).instrument(llm_span),
+            )
+            .await
+            {
                 Ok(Ok(resp)) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let completion_estimate = u64::try_from(resp.len()).unwrap_or(0) / 4;
@@ -155,6 +182,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         m.total_tokens = m.prompt_tokens + m.completion_tokens;
                     });
                     self.record_cache_usage();
+                    self.record_cost(prompt_estimate, completion_estimate);
                     let display = self.maybe_redact(&resp);
                     self.channel.send(&display).await?;
                     Ok(Some(resp))
@@ -463,6 +491,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         &mut self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::error::AgentError> {
+        if let Some(ref tracker) = self.cost_tracker
+            && let Err(e) = tracker.check_budget()
+        {
+            self.channel
+                .send(&format!("Budget limit reached: {e}"))
+                .await?;
+            return Ok(None);
+        }
+
         tracing::debug!(
             tool_count = tool_defs.len(),
             provider_name = self.provider.name(),
@@ -471,9 +508,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
+        let llm_span = tracing::info_span!("llm_call", model = %self.model_name);
         let result = if let Ok(result) = tokio::time::timeout(
             llm_timeout,
-            self.provider.chat_with_tools(&self.messages, tool_defs),
+            self.provider
+                .chat_with_tools(&self.messages, tool_defs)
+                .instrument(llm_span),
         )
         .await
         {
@@ -539,7 +579,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 params,
             };
 
-            let (output, is_error) = match self.tool_executor.execute_tool_call(&call).await {
+            let tool_result = self
+                .tool_executor
+                .execute_tool_call(&call)
+                .instrument(tracing::info_span!("tool_exec", tool_name = %tc.name))
+                .await;
+            let (output, is_error) = match tool_result {
                 Ok(Some(out)) => (out.summary, false),
                 Ok(None) => ("(no output)".to_owned(), false),
                 Err(e) => (format!("[error] {e}"), true),

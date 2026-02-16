@@ -169,6 +169,18 @@ max_dynamic_servers = 10
 # url = "http://localhost:3001/mcp"
 # timeout = 30
 
+[cost]
+# Track LLM API costs and enforce daily budget
+enabled = false
+# Maximum daily spend in cents (0 = unlimited)
+max_daily_cents = 500
+
+[observability]
+# Tracing exporter: "none" or "otlp" (requires otel feature)
+exporter = "none"
+# OTLP collector endpoint
+endpoint = "http://localhost:4317"
+
 [vault]
 # Secret retrieval backend: "env" reads from environment variables
 backend = "env"

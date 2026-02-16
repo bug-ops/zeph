@@ -54,7 +54,11 @@ tokio-util = "0.7"
 toml = "1.0"
 tower = "0.5"
 tower-http = "0.6"
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 tracing = "0.1"
+tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
@@ -109,12 +113,17 @@ self-learning = ["zeph-core/self-learning"]
 tui = ["dep:zeph-tui"]
 index = ["dep:zeph-index", "zeph-core/index"]
 vault-age = ["zeph-core/vault-age"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
 anyhow.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 zeph-a2a = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-index = { workspace = true, optional = true }

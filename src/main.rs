@@ -10,6 +10,7 @@ use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::Config;
 use zeph_core::config_watcher::ConfigWatcher;
+use zeph_core::cost::CostTracker;
 #[cfg(feature = "vault-age")]
 use zeph_core::vault::AgeVaultProvider;
 use zeph_core::vault::{EnvVaultProvider, VaultProvider};
@@ -156,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt::init();
     }
     #[cfg(not(feature = "tui"))]
-    tracing_subscriber::fmt::init();
+    init_subscriber(&resolve_config_path());
 
     let config_path = resolve_config_path();
     let mut config = Config::load(&config_path)?;
@@ -417,6 +418,13 @@ async fn main() -> anyhow::Result<()> {
     .with_tool_summarization(config.tools.summarize_output)
     .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path.clone(), config_reload_rx);
+
+    let agent = if config.cost.enabled {
+        let tracker = CostTracker::new(true, f64::from(config.cost.max_daily_cents));
+        agent.with_cost_tracker(tracker)
+    } else {
+        agent
+    };
 
     let agent = if let Some(sp) = summary_provider {
         agent.with_summary_provider(sp)
@@ -1441,6 +1449,73 @@ fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
     } else {
         Ok(AnyChannel::Cli(CliChannel::new()))
     }
+}
+
+#[cfg(not(feature = "tui"))]
+fn init_subscriber(config_path: &Path) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    #[cfg(feature = "otel")]
+    {
+        let config = Config::load(config_path).ok();
+        let use_otlp = config
+            .as_ref()
+            .is_some_and(|c| c.observability.exporter == "otlp");
+
+        if use_otlp {
+            let endpoint = config
+                .as_ref()
+                .map_or("http://localhost:4317", |c| &c.observability.endpoint);
+
+            match setup_otel_tracer(endpoint) {
+                Ok(tracer) => {
+                    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                    tracing_subscriber::registry()
+                        .with(filter)
+                        .with(fmt_layer)
+                        .with(otel_layer)
+                        .init();
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("OTel initialization failed, falling back to fmt: {e}");
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    let _ = config_path;
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt_layer)
+        .init();
+}
+
+#[cfg(feature = "otel")]
+fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace::SdkTracer> {
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()?;
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build();
+
+    let tracer = provider.tracer("zeph");
+    opentelemetry::global::set_tracer_provider(provider);
+
+    Ok(tracer)
 }
 
 #[cfg(test)]

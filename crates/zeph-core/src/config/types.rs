@@ -26,6 +26,10 @@ pub struct Config {
     pub security: SecurityConfig,
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+    #[serde(default)]
+    pub cost: CostConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -637,6 +641,48 @@ fn default_vault_backend() -> String {
     "env".into()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CostConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_max_daily_cents")]
+    pub max_daily_cents: u32,
+}
+
+fn default_max_daily_cents() -> u32 {
+    500
+}
+
+impl Default for CostConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_daily_cents: default_max_daily_cents(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ObservabilityConfig {
+    #[serde(default)]
+    pub exporter: String,
+    #[serde(default = "default_otlp_endpoint")]
+    pub endpoint: String,
+}
+
+fn default_otlp_endpoint() -> String {
+    "http://localhost:4317".into()
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            exporter: String::new(),
+            endpoint: default_otlp_endpoint(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
@@ -690,6 +736,8 @@ impl Config {
             vault: VaultConfig::default(),
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
+            cost: CostConfig::default(),
+            observability: ObservabilityConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

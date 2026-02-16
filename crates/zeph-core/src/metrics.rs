@@ -25,6 +25,7 @@ pub struct MetricsSnapshot {
     pub tool_output_prunes: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    pub cost_spent_cents: f64,
 }
 
 pub struct MetricsCollector {

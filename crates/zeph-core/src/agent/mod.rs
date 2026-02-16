@@ -31,6 +31,7 @@ use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
+use crate::cost::CostTracker;
 
 const DOOM_LOOP_WINDOW: usize = 3;
 const TOOL_LOOP_KEEP_RECENT: usize = 4;
@@ -126,6 +127,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     warmup_ready: Option<watch::Receiver<bool>>,
     max_tool_iterations: usize,
     doom_loop_history: Vec<String>,
+    cost_tracker: Option<CostTracker>,
 }
 
 impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
@@ -216,6 +218,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             warmup_ready: None,
             max_tool_iterations: 10,
             doom_loop_history: Vec::new(),
+            cost_tracker: None,
         }
     }
 
@@ -362,6 +365,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self
     }
 
+    #[must_use]
+    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
+        self.cost_tracker = Some(tracker);
+        self
+    }
+
     #[cfg(feature = "index")]
     #[must_use]
     pub fn with_code_retriever(
@@ -426,6 +435,15 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 f(m);
+            });
+        }
+    }
+
+    pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
+        if let Some(ref tracker) = self.cost_tracker {
+            tracker.record_usage(&self.model_name, prompt_tokens, completion_tokens);
+            self.update_metrics(|m| {
+                m.cost_spent_cents = tracker.current_spend();
             });
         }
     }
