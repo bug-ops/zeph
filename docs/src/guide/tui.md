@@ -24,7 +24,7 @@ ZEPH_TUI=true zeph
 
 ```text
 +-------------------------------------------------------------+
-| Zeph v0.9.5 | Provider: orchestrator | Model: claude-son... |
+| Zeph v0.9.8 | Provider: orchestrator | Model: claude-son... |
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |
@@ -96,7 +96,7 @@ Chat messages are rendered with full markdown support via `pulldown-cmark`:
 | `**bold**` | Bold modifier |
 | `*italic*` | Italic modifier |
 | `` `inline code` `` | Blue text with dark background glow |
-| Code blocks | Green text with dimmed language tag |
+| Code blocks | Syntax-highlighted via tree-sitter (language-aware coloring) with dimmed language tag |
 | `# Heading` | Bold + underlined |
 | `- list item` | Green bullet (•) prefix |
 | `> blockquote` | Dimmed vertical bar (│) prefix |

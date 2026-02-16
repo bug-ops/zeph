@@ -42,6 +42,8 @@ The native path uses the same tool executors and permission checks as the legacy
 
 Types involved: `ToolDefinition` (name + description + JSON Schema), `ChatResponse` (Text or ToolUse), `ToolUseRequest` (id + name + input), and `ToolUse`/`ToolResult` variants in `MessagePart`.
 
+Prompt caching is enabled automatically for Anthropic and OpenAI providers, reducing latency and cost when the system prompt and tool definitions remain stable across turns.
+
 ## Legacy Text Extraction
 
 Providers without native tool support (Ollama, Candle) use text-based tool invocation, distinguished by `InvocationHint` on each `ToolDef`:

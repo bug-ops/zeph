@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-02-16
+
 ### Added
+- Graceful shutdown on Ctrl-C with farewell message and MCP server cleanup (#355)
+- Cancel-aware LLM streaming via tokio::select on shutdown signal (#358)
+- `McpManager::shutdown_all_shared()` with per-client 5s timeout (#356)
+- Indexer progress logging with file count and per-file stats
+- Skip code index for providers with native tool_use (#357)
 - OpenAI prompt caching: parse and report cached token usage (#348)
 - Syntax highlighting for TUI code blocks via tree-sitter-highlight (#345, #346, #347)
 - Anthropic prompt caching with structured system content blocks (#337)
@@ -19,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ToolUse`/`ToolResult` variants in `MessagePart` for structured tool flow (#255)
 - Dual-mode agent loop: native structured path alongside legacy text extraction (#258)
 - Dual system prompt: native tool_use instructions for capable providers, fenced-block instructions for legacy providers
+
+### Changed
+- Consolidate all SQLite migrations into root `migrations/` directory (#354)
 
 ## [0.9.7] - 2026-02-15
 
@@ -762,7 +772,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/bug-ops/zeph/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/bug-ops/zeph/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/bug-ops/zeph/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/bug-ops/zeph/compare/v0.9.4...v0.9.5

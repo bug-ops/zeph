@@ -59,3 +59,4 @@ Queued messages are processed sequentially with full context rebuilding between 
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
 - **Feature gates:** optional crates (`zeph-index`, `zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
 - **Context engineering:** proportional budget allocation, semantic recall injection, message trimming, runtime compaction, environment context injection, progressive skill loading, ZEPH.md project config discovery
+- **Graceful shutdown:** Ctrl-C triggers ordered teardown — the agent loop exits cleanly, MCP server connections are closed, and pending async tasks are drained before process exit
