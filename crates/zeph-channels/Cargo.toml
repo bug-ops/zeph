@@ -6,11 +6,24 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+discord = ["dep:tokio-tungstenite", "dep:futures"]
+slack = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
+
 [dependencies]
+axum = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
 pulldown-cmark.workspace = true
+reqwest = { workspace = true, features = ["rustls", "json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2 = { version = "0.10", optional = true }
+subtle = { workspace = true, optional = true }
 teloxide.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-tungstenite = { workspace = true, optional = true, features = ["connect", "rustls-tls-native-roots"] }
 tracing.workspace = true
 zeph-core.workspace = true
 

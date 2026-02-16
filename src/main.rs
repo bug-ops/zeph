@@ -5,6 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tokio::sync::watch;
 use zeph_channels::CliChannel;
+#[cfg(feature = "discord")]
+use zeph_channels::discord::DiscordChannel;
+#[cfg(feature = "slack")]
+use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
@@ -47,90 +51,73 @@ use zeph_tui::{App, EventReader, TuiChannel};
 enum AnyChannel {
     Cli(CliChannel),
     Telegram(TelegramChannel),
+    #[cfg(feature = "discord")]
+    Discord(DiscordChannel),
+    #[cfg(feature = "slack")]
+    Slack(SlackChannel),
     #[cfg(feature = "tui")]
     Tui(TuiChannel),
 }
 
+macro_rules! dispatch_channel {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            Self::Cli(c) => c.$method($($arg),*).await,
+            Self::Telegram(c) => c.$method($($arg),*).await,
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.$method($($arg),*).await,
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.$method($($arg),*).await,
+            #[cfg(feature = "tui")]
+            Self::Tui(c) => c.$method($($arg),*).await,
+        }
+    };
+}
+
 impl Channel for AnyChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        match self {
-            Self::Cli(c) => c.recv().await,
-            Self::Telegram(c) => c.recv().await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.recv().await,
-        }
+        dispatch_channel!(self, recv)
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.send(text).await,
-            Self::Telegram(c) => c.send(text).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.send(text).await,
-        }
+        dispatch_channel!(self, send, text)
     }
 
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.send_chunk(chunk).await,
-            Self::Telegram(c) => c.send_chunk(chunk).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.send_chunk(chunk).await,
-        }
+        dispatch_channel!(self, send_chunk, chunk)
     }
 
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.flush_chunks().await,
-            Self::Telegram(c) => c.flush_chunks().await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.flush_chunks().await,
-        }
+        dispatch_channel!(self, flush_chunks)
     }
 
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.send_typing().await,
-            Self::Telegram(c) => c.send_typing().await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.send_typing().await,
-        }
+        dispatch_channel!(self, send_typing)
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        match self {
-            Self::Cli(c) => c.confirm(prompt).await,
-            Self::Telegram(c) => c.confirm(prompt).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.confirm(prompt).await,
-        }
+        dispatch_channel!(self, confirm, prompt)
     }
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         match self {
             Self::Cli(c) => c.try_recv(),
             Self::Telegram(c) => c.try_recv(),
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.try_recv(),
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.try_recv(),
             #[cfg(feature = "tui")]
             Self::Tui(c) => c.try_recv(),
         }
     }
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.send_status(text).await,
-            Self::Telegram(c) => c.send_status(text).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.send_status(text).await,
-        }
+        dispatch_channel!(self, send_status, text)
     }
 
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
-        match self {
-            Self::Cli(c) => c.send_queue_count(count).await,
-            Self::Telegram(c) => c.send_queue_count(count).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.send_queue_count(count).await,
-        }
+        dispatch_channel!(self, send_queue_count, count)
     }
 }
 
@@ -240,9 +227,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "tui")]
-    let (channel, tui_handle) = create_channel_with_tui(&config)?;
+    let (channel, tui_handle) = create_channel_with_tui(&config).await?;
     #[cfg(not(feature = "tui"))]
-    let channel = create_channel(&config)?;
+    let channel = create_channel(&config).await?;
 
     if matches!(channel, AnyChannel::Cli(_)) {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
@@ -1412,7 +1399,9 @@ fn is_tui_requested() -> bool {
 }
 
 #[cfg(feature = "tui")]
-fn create_channel_with_tui(config: &Config) -> anyhow::Result<(AnyChannel, Option<TuiHandle>)> {
+async fn create_channel_with_tui(
+    config: &Config,
+) -> anyhow::Result<(AnyChannel, Option<TuiHandle>)> {
     if is_tui_requested() {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
@@ -1425,30 +1414,65 @@ fn create_channel_with_tui(config: &Config) -> anyhow::Result<(AnyChannel, Optio
         };
         return Ok((AnyChannel::Tui(channel), Some(handle)));
     }
-    let channel = create_channel_inner(config)?;
+    let channel = create_channel_inner(config).await?;
     Ok((channel, None))
 }
 
 #[cfg_attr(feature = "tui", allow(dead_code))]
-fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
-    create_channel_inner(config)
+async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
+    create_channel_inner(config).await
 }
 
-fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
-    let token = config.telegram.as_ref().and_then(|t| t.token.clone());
+#[allow(clippy::unused_async)]
+async fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
+    #[cfg(feature = "discord")]
+    if let Some(dc) = &config.discord
+        && let Some(token) = &dc.token
+    {
+        let channel = DiscordChannel::new(
+            token.clone(),
+            dc.allowed_user_ids.clone(),
+            dc.allowed_role_ids.clone(),
+            dc.allowed_channel_ids.clone(),
+        );
+        tracing::info!("running in Discord mode");
+        return Ok(AnyChannel::Discord(channel));
+    }
 
-    if let Some(token) = token {
+    #[cfg(feature = "slack")]
+    if let Some(sl) = &config.slack
+        && let Some(bot_token) = &sl.bot_token
+    {
+        let signing_secret = sl.signing_secret.clone().unwrap_or_default();
+        let channel = SlackChannel::new(
+            bot_token.clone(),
+            signing_secret,
+            sl.webhook_host.clone(),
+            sl.port,
+            sl.allowed_user_ids.clone(),
+            sl.allowed_channel_ids.clone(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        tracing::info!(
+            "running in Slack mode (events on {}:{})",
+            sl.webhook_host,
+            sl.port
+        );
+        return Ok(AnyChannel::Slack(channel));
+    }
+
+    if let Some(token) = config.telegram.as_ref().and_then(|t| t.token.clone()) {
         let allowed = config
             .telegram
             .as_ref()
             .map_or_else(Vec::new, |t| t.allowed_users.clone());
-
         let tg = TelegramChannel::new(token, allowed).start()?;
         tracing::info!("running in Telegram mode");
-        Ok(AnyChannel::Telegram(tg))
-    } else {
-        Ok(AnyChannel::Cli(CliChannel::new()))
+        return Ok(AnyChannel::Telegram(tg));
     }
+
+    Ok(AnyChannel::Cli(CliChannel::new()))
 }
 
 #[cfg(not(feature = "tui"))]
@@ -1574,10 +1598,10 @@ mod tests {
         assert!(args.vault_path.is_none());
     }
 
-    #[test]
-    fn create_channel_returns_cli_when_no_telegram() {
+    #[tokio::test]
+    async fn create_channel_returns_cli_when_no_telegram() {
         let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
-        let channel = create_channel(&config).unwrap();
+        let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Cli(_)));
     }
 
@@ -1667,22 +1691,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn create_channel_no_telegram_config() {
+    #[tokio::test]
+    async fn create_channel_no_telegram_config() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.telegram = None;
-        let channel = create_channel(&config).unwrap();
+        let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Cli(_)));
     }
 
-    #[test]
-    fn create_channel_telegram_without_token() {
+    #[tokio::test]
+    async fn create_channel_telegram_without_token() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.telegram = Some(zeph_core::config::TelegramConfig {
             token: None,
             allowed_users: vec![],
         });
-        let channel = create_channel(&config).unwrap();
+        let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Cli(_)));
     }
 
@@ -2090,8 +2114,41 @@ mod tests {
             token: Some("test_token".to_string()),
             allowed_users: vec![],
         });
-        let channel = create_channel(&config).unwrap();
+        let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Telegram(_)));
+    }
+
+    #[cfg(feature = "discord")]
+    #[tokio::test]
+    async fn create_channel_discord_without_token_falls_through() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.discord = Some(zeph_core::config::DiscordConfig {
+            token: None,
+            application_id: None,
+            allowed_user_ids: vec![],
+            allowed_role_ids: vec![],
+            allowed_channel_ids: vec![],
+        });
+        config.telegram = None;
+        let channel = create_channel(&config).await.unwrap();
+        assert!(matches!(channel, AnyChannel::Cli(_)));
+    }
+
+    #[cfg(feature = "slack")]
+    #[tokio::test]
+    async fn create_channel_slack_without_token_falls_through() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.slack = Some(zeph_core::config::SlackConfig {
+            bot_token: None,
+            signing_secret: None,
+            webhook_host: "127.0.0.1".into(),
+            port: 3000,
+            allowed_user_ids: vec![],
+            allowed_channel_ids: vec![],
+        });
+        config.telegram = None;
+        let channel = create_channel(&config).await.unwrap();
+        assert!(matches!(channel, AnyChannel::Cli(_)));
     }
 
     #[tokio::test]
@@ -2101,7 +2158,7 @@ mod tests {
             token: Some("test_token2".to_string()),
             allowed_users: vec![],
         });
-        let channel = create_channel(&config).unwrap();
+        let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Telegram(_)));
     }
 

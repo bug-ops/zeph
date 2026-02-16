@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CostTracker` with per-model token pricing and configurable daily budget limits (#378)
 - `[cost]` config section with `enabled` and `max_daily_cents` options
 - `cost_spent_cents` field in `MetricsSnapshot` for TUI cost display
+- Discord channel adapter with Gateway v10 WebSocket, slash commands, edit-in-place streaming (#382)
+- Slack channel adapter with Events API webhook, HMAC-SHA256 signature verification, streaming (#383)
+- Feature flags: `discord` and `slack` (opt-in) in zeph-channels and root crate
+- `DiscordConfig` and `SlackConfig` with token redaction in Debug impls
+- Slack timestamp replay protection (reject requests >5min old)
+- Configurable Slack webhook bind address (`webhook_host`)
 
 ## [0.9.8] - 2026-02-16
 

@@ -12,6 +12,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     pub memory: MemoryConfig,
     pub telegram: Option<TelegramConfig>,
+    pub discord: Option<DiscordConfig>,
+    pub slack: Option<SlackConfig>,
     #[serde(default)]
     pub tools: ToolsConfig,
     #[serde(default)]
@@ -452,6 +454,68 @@ impl std::fmt::Debug for TelegramConfig {
     }
 }
 
+#[derive(Clone, Deserialize)]
+pub struct DiscordConfig {
+    pub token: Option<String>,
+    pub application_id: Option<String>,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_role_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for DiscordConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordConfig")
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("application_id", &self.application_id)
+            .field("allowed_user_ids", &self.allowed_user_ids)
+            .field("allowed_role_ids", &self.allowed_role_ids)
+            .field("allowed_channel_ids", &self.allowed_channel_ids)
+            .finish()
+    }
+}
+
+fn default_slack_port() -> u16 {
+    3000
+}
+
+fn default_slack_webhook_host() -> String {
+    "127.0.0.1".into()
+}
+
+#[derive(Clone, Deserialize)]
+pub struct SlackConfig {
+    pub bot_token: Option<String>,
+    pub signing_secret: Option<String>,
+    #[serde(default = "default_slack_webhook_host")]
+    pub webhook_host: String,
+    #[serde(default = "default_slack_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlackConfig")
+            .field("bot_token", &self.bot_token.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "signing_secret",
+                &self.signing_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("webhook_host", &self.webhook_host)
+            .field("port", &self.port)
+            .field("allowed_user_ids", &self.allowed_user_ids)
+            .field("allowed_channel_ids", &self.allowed_channel_ids)
+            .finish()
+    }
+}
+
 #[derive(Deserialize)]
 pub struct A2aServerConfig {
     #[serde(default)]
@@ -791,6 +855,9 @@ pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
     pub openai_api_key: Option<Secret>,
     pub compatible_api_keys: HashMap<String, Secret>,
+    pub discord_token: Option<Secret>,
+    pub slack_bot_token: Option<Secret>,
+    pub slack_signing_secret: Option<Secret>,
 }
 
 impl Config {
@@ -832,6 +899,8 @@ impl Config {
                 cross_session_score_threshold: default_cross_session_score_threshold(),
             },
             telegram: None,
+            discord: None,
+            slack: None,
             tools: ToolsConfig::default(),
             a2a: A2aServerConfig::default(),
             mcp: McpConfig::default(),

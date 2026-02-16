@@ -70,6 +70,37 @@ impl Config {
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
             self.gateway.auth_token = Some(val);
         }
+        if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await? {
+            let dc = self.discord.get_or_insert(DiscordConfig {
+                token: None,
+                application_id: None,
+                allowed_user_ids: Vec::new(),
+                allowed_role_ids: Vec::new(),
+                allowed_channel_ids: Vec::new(),
+            });
+            dc.token = Some(val);
+        }
+        if let Some(val) = vault.get_secret("ZEPH_DISCORD_APP_ID").await?
+            && let Some(dc) = self.discord.as_mut()
+        {
+            dc.application_id = Some(val);
+        }
+        if let Some(val) = vault.get_secret("ZEPH_SLACK_BOT_TOKEN").await? {
+            let sl = self.slack.get_or_insert(SlackConfig {
+                bot_token: None,
+                signing_secret: None,
+                webhook_host: "127.0.0.1".into(),
+                port: 3000,
+                allowed_user_ids: Vec::new(),
+                allowed_channel_ids: Vec::new(),
+            });
+            sl.bot_token = Some(val);
+        }
+        if let Some(val) = vault.get_secret("ZEPH_SLACK_SIGNING_SECRET").await?
+            && let Some(sl) = self.slack.as_mut()
+        {
+            sl.signing_secret = Some(val);
+        }
         Ok(())
     }
 }

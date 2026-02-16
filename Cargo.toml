@@ -50,6 +50,7 @@ testcontainers = "0.27"
 thiserror = "2.0"
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 tokio = "1"
+tokio-tungstenite = { version = "0.28", default-features = false }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 toml = "1.0"
@@ -115,6 +116,8 @@ orchestrator = ["zeph-llm/orchestrator"]
 router = ["zeph-llm/router"]
 self-learning = ["zeph-core/self-learning"]
 tui = ["dep:zeph-tui"]
+discord = ["zeph-channels/discord"]
+slack = ["zeph-channels/slack"]
 index = ["dep:zeph-index", "zeph-core/index"]
 gateway = ["dep:zeph-gateway"]
 daemon = ["zeph-core/daemon"]

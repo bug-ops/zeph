@@ -150,6 +150,21 @@ repo_map_tokens = 500
 # Cache TTL for repo map in seconds (avoids regeneration on every message)
 repo_map_ttl_secs = 300
 
+# [discord]
+# token = ""                    # or set ZEPH_DISCORD_TOKEN
+# application_id = ""           # for slash command registration
+# allowed_user_ids = []         # Discord user IDs (empty = allow all)
+# allowed_role_ids = []         # Discord role IDs
+# allowed_channel_ids = []      # restrict to specific channels
+
+# [slack]
+# bot_token = ""                # or set ZEPH_SLACK_BOT_TOKEN
+# signing_secret = ""           # or set ZEPH_SLACK_SIGNING_SECRET
+# port = 3000                   # Events API webhook port
+# webhook_host = "127.0.0.1"   # bind address for Events API webhook
+# allowed_user_ids = []         # Slack user IDs (empty = allow all)
+# allowed_channel_ids = []      # restrict to specific channels
+
 [mcp]
 # Allowlist of permitted commands for /mcp add (empty = allow all)
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]

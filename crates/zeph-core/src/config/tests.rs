@@ -2026,6 +2026,12 @@ fn security_config_default_autonomy_supervised() {
 }
 
 #[test]
+fn discord_config_defaults() {
+    let config = Config::default();
+    assert!(config.discord.is_none());
+}
+
+#[test]
 #[serial]
 fn parse_toml_with_autonomy_readonly() {
     let dir = tempfile::tempdir().unwrap();
@@ -2063,6 +2069,66 @@ autonomy_level = "readonly"
 
 #[test]
 #[serial]
+fn discord_config_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("discord.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[discord]
+token = "discord-bot-token"
+application_id = "12345"
+allowed_user_ids = ["u1", "u2"]
+allowed_role_ids = ["admin"]
+allowed_channel_ids = ["ch1"]
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let dc = config.discord.unwrap();
+    assert_eq!(dc.token.as_deref(), Some("discord-bot-token"));
+    assert_eq!(dc.application_id.as_deref(), Some("12345"));
+    assert_eq!(dc.allowed_user_ids, vec!["u1", "u2"]);
+    assert_eq!(dc.allowed_role_ids, vec!["admin"]);
+    assert_eq!(dc.allowed_channel_ids, vec!["ch1"]);
+}
+
+#[test]
+fn discord_debug_redacts_token() {
+    let dc = DiscordConfig {
+        token: Some("secret-discord-token".into()),
+        application_id: Some("app123".into()),
+        allowed_user_ids: vec![],
+        allowed_role_ids: vec![],
+        allowed_channel_ids: vec![],
+    };
+    let debug = format!("{dc:?}");
+    assert!(!debug.contains("secret-discord-token"));
+    assert!(debug.contains("[REDACTED]"));
+    assert!(debug.contains("app123"));
+}
+
+#[test]
+#[serial]
 fn parse_toml_with_autonomy_full() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("autonomy_full.toml");
@@ -2095,4 +2161,147 @@ autonomy_level = "full"
 
     let config = Config::load(&path).unwrap();
     assert_eq!(config.security.autonomy_level, AutonomyLevel::Full);
+}
+
+#[test]
+#[serial]
+fn discord_config_empty_allowlists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("discord_empty.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[discord]
+token = "tok"
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let dc = config.discord.unwrap();
+    assert!(dc.allowed_user_ids.is_empty());
+    assert!(dc.allowed_role_ids.is_empty());
+    assert!(dc.allowed_channel_ids.is_empty());
+}
+
+#[test]
+fn slack_config_defaults() {
+    let config = Config::default();
+    assert!(config.slack.is_none());
+}
+
+#[test]
+#[serial]
+fn slack_config_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("slack.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[slack]
+bot_token = "xoxb-slack-token"
+signing_secret = "slack-sign-secret"
+port = 4000
+allowed_user_ids = ["U1"]
+allowed_channel_ids = ["C1"]
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let sl = config.slack.unwrap();
+    assert_eq!(sl.bot_token.as_deref(), Some("xoxb-slack-token"));
+    assert_eq!(sl.signing_secret.as_deref(), Some("slack-sign-secret"));
+    assert_eq!(sl.port, 4000);
+    assert_eq!(sl.allowed_user_ids, vec!["U1"]);
+    assert_eq!(sl.allowed_channel_ids, vec!["C1"]);
+}
+
+#[test]
+fn slack_config_default_port() {
+    let sl = SlackConfig {
+        bot_token: None,
+        signing_secret: None,
+        webhook_host: "127.0.0.1".into(),
+        port: 3000,
+        allowed_user_ids: vec![],
+        allowed_channel_ids: vec![],
+    };
+    assert_eq!(sl.port, 3000);
+}
+
+#[test]
+fn slack_debug_redacts_tokens() {
+    let sl = SlackConfig {
+        bot_token: Some("xoxb-secret".into()),
+        signing_secret: Some("sign-secret".into()),
+        webhook_host: "127.0.0.1".into(),
+        port: 3000,
+        allowed_user_ids: vec![],
+        allowed_channel_ids: vec![],
+    };
+    let debug = format!("{sl:?}");
+    assert!(!debug.contains("xoxb-secret"));
+    assert!(!debug.contains("sign-secret"));
+    assert!(debug.contains("[REDACTED]"));
+    assert!(debug.contains("3000"));
+}
+
+#[tokio::test]
+async fn resolve_secrets_populates_discord_token() {
+    use crate::vault::MockVaultProvider;
+    let vault = MockVaultProvider::new().with_secret("ZEPH_DISCORD_TOKEN", "dc-vault-token");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    let dc = config.discord.unwrap();
+    assert_eq!(dc.token.as_deref(), Some("dc-vault-token"));
+}
+
+#[tokio::test]
+async fn resolve_secrets_populates_slack_tokens() {
+    use crate::vault::MockVaultProvider;
+    let vault = MockVaultProvider::new()
+        .with_secret("ZEPH_SLACK_BOT_TOKEN", "xoxb-vault")
+        .with_secret("ZEPH_SLACK_SIGNING_SECRET", "sign-vault");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    let sl = config.slack.unwrap();
+    assert_eq!(sl.bot_token.as_deref(), Some("xoxb-vault"));
+    assert_eq!(sl.signing_secret.as_deref(), Some("sign-vault"));
 }
