@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - OpenAI prompt caching: parse and report cached token usage (#348)
+- Syntax highlighting for TUI code blocks via tree-sitter-highlight (#345, #346, #347)
 - Anthropic prompt caching with structured system content blocks (#337)
 - Configurable summary provider for tool output summarization via local model (#338)
 - Aggressive inline pruning of stale tool outputs in tool loops (#339)

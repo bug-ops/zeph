@@ -7,7 +7,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
 
 use crate::app::{App, MessageRole};
-use crate::theme::Theme;
+use crate::highlight::SYNTAX_HIGHLIGHTER;
+use crate::theme::{SyntaxTheme, Theme};
 
 /// Returns the maximum scroll offset for the rendered content.
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
@@ -334,6 +335,7 @@ struct MdRenderer<'t> {
     base_style: Style,
     theme: &'t Theme,
     in_code_block: bool,
+    code_lang: Option<String>,
 }
 
 impl<'t> MdRenderer<'t> {
@@ -345,6 +347,7 @@ impl<'t> MdRenderer<'t> {
             base_style,
             theme,
             in_code_block: false,
+            code_lang: None,
         }
     }
 
@@ -377,6 +380,7 @@ impl<'t> MdRenderer<'t> {
                 if let CodeBlockKind::Fenced(lang) = kind {
                     let lang = lang.trim();
                     if !lang.is_empty() {
+                        self.code_lang = Some(lang.to_string());
                         self.current.push(Span::styled(
                             format!(" {lang} "),
                             self.base_style.add_modifier(Modifier::DIM),
@@ -387,6 +391,7 @@ impl<'t> MdRenderer<'t> {
             }
             Event::End(TagEnd::CodeBlock) => {
                 self.in_code_block = false;
+                self.code_lang = None;
                 self.newline();
             }
             Event::Code(text) => {
@@ -394,19 +399,17 @@ impl<'t> MdRenderer<'t> {
                     .push(Span::styled(text.to_string(), self.theme.code_inline));
             }
             Event::Text(text) => {
-                let style = if self.in_code_block {
-                    self.theme.code_block
+                if self.in_code_block {
+                    self.push_code_block_text(&text);
                 } else {
-                    self.current_style()
-                };
-                let prefix = if self.in_code_block { "  " } else { "" };
-                for (i, segment) in text.split('\n').enumerate() {
-                    if i > 0 {
-                        self.newline();
-                    }
-                    if !segment.is_empty() || !prefix.is_empty() {
-                        self.current
-                            .push(Span::styled(format!("{prefix}{segment}"), style));
+                    let style = self.current_style();
+                    for (i, segment) in text.split('\n').enumerate() {
+                        if i > 0 {
+                            self.newline();
+                        }
+                        if !segment.is_empty() {
+                            self.current.push(Span::styled(segment.to_string(), style));
+                        }
                     }
                 }
             }
@@ -431,6 +434,41 @@ impl<'t> MdRenderer<'t> {
                 ));
             }
             _ => {}
+        }
+    }
+
+    fn push_code_block_text(&mut self, text: &str) {
+        let syntax_theme = SyntaxTheme::default();
+        let highlighted = self
+            .code_lang
+            .as_deref()
+            .and_then(|lang| SYNTAX_HIGHLIGHTER.highlight(lang, text, &syntax_theme));
+
+        if let Some(spans) = highlighted {
+            let prefix = Span::styled("  ".to_string(), self.theme.code_block);
+            self.current.push(prefix.clone());
+            for span in spans {
+                let parts: Vec<&str> = span.content.split('\n').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        self.newline();
+                        self.current.push(prefix.clone());
+                    }
+                    if !part.is_empty() {
+                        self.current
+                            .push(Span::styled((*part).to_string(), span.style));
+                    }
+                }
+            }
+        } else {
+            let style = self.theme.code_block;
+            for (i, segment) in text.split('\n').enumerate() {
+                if i > 0 {
+                    self.newline();
+                }
+                self.current
+                    .push(Span::styled(format!("  {segment}"), style));
+            }
         }
     }
 
@@ -555,10 +593,10 @@ mod tests {
         assert!(lines.len() >= 2);
         // Language tag line
         assert!(lines[0][0].content.contains("rust"));
-        // Code content
+        // Code content — with syntax highlighting, spans are split by token
         let code_line = &lines[1];
-        assert!(code_line.iter().any(|s| s.content.contains("let x = 1")));
-        assert!(code_line.iter().any(|s| s.style == theme.code_block));
+        let full_text: String = code_line.iter().map(|s| s.content.as_ref()).collect();
+        assert!(full_text.contains("let x = 1"));
     }
 
     #[test]

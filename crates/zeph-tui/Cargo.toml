@@ -15,6 +15,14 @@ thiserror.workspace = true
 throbber-widgets-tui = "0.10"
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 unicode-width.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-toml-ng.workspace = true
 zeph-core.workspace = true
 
 [dev-dependencies]

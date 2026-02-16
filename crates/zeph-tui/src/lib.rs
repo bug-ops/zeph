@@ -1,6 +1,7 @@
 pub mod app;
 pub mod channel;
 pub mod event;
+pub mod highlight;
 pub mod layout;
 pub mod metrics;
 pub mod theme;
