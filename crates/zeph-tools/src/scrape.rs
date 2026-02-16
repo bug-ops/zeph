@@ -5,7 +5,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::config::ScrapeConfig;
-use crate::executor::{ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ScrapeInstruction {
@@ -98,21 +98,7 @@ impl ToolExecutor for WebScrapeExecutor {
                     e.to_string(),
                 ))
             })?;
-
-            validate_url(&instruction.url)?;
-
-            let html = self.fetch_html(&instruction.url).await?;
-            let selector = instruction.select.clone();
-            let extract = ExtractMode::parse(&instruction.extract);
-            let limit = instruction.limit.unwrap_or(10);
-
-            let result = tokio::task::spawn_blocking(move || {
-                parse_and_extract(&html, &selector, &extract, limit)
-            })
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
-
-            outputs.push(result);
+            outputs.push(self.scrape_instruction(&instruction).await?);
         }
 
         Ok(Some(ToolOutput {
@@ -121,9 +107,48 @@ impl ToolExecutor for WebScrapeExecutor {
             blocks_executed,
         }))
     }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        if call.tool_id != "web_scrape" {
+            return Ok(None);
+        }
+
+        let instruction: ScrapeInstruction =
+            serde_json::from_value(serde_json::Value::Object(
+                call.params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ))
+            .map_err(|e| {
+                ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ))
+            })?;
+
+        let result = self.scrape_instruction(&instruction).await?;
+
+        Ok(Some(ToolOutput {
+            tool_name: "web-scrape".to_owned(),
+            summary: result,
+            blocks_executed: 1,
+        }))
+    }
 }
 
 impl WebScrapeExecutor {
+    async fn scrape_instruction(
+        &self,
+        instruction: &ScrapeInstruction,
+    ) -> Result<String, ToolError> {
+        validate_url(&instruction.url)?;
+        let html = self.fetch_html(&instruction.url).await?;
+        let selector = instruction.select.clone();
+        let extract = ExtractMode::parse(&instruction.extract);
+        let limit = instruction.limit.unwrap_or(10);
+        tokio::task::spawn_blocking(move || parse_and_extract(&html, &selector, &extract, limit))
+            .await
+            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
+    }
+
     async fn fetch_html(&self, url: &str) -> Result<String, ToolError> {
         let resp = self
             .client
