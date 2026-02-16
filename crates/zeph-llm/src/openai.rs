@@ -1315,10 +1315,7 @@ mod tests {
         let resp: OpenAiChatResponse = serde_json::from_str(json).unwrap();
         let usage = resp.usage.unwrap();
         assert_eq!(usage.prompt_tokens, 500);
-        assert_eq!(
-            usage.prompt_tokens_details.unwrap().cached_tokens,
-            400
-        );
+        assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, 400);
     }
 
     #[test]
@@ -1340,9 +1337,7 @@ mod tests {
         let usage = OpenAiUsage {
             prompt_tokens: 1000,
             completion_tokens: 200,
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: 800,
-            }),
+            prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 800 }),
         };
         p.store_cache_usage(&usage);
         let (creation, read) = p.last_cache_usage().unwrap();
@@ -1368,9 +1363,7 @@ mod tests {
         let usage = OpenAiUsage {
             prompt_tokens: 500,
             completion_tokens: 100,
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: 400,
-            }),
+            prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 400 }),
         };
         p.store_cache_usage(&usage);
         assert!(p.last_cache_usage().is_some());
