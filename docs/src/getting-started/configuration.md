@@ -125,6 +125,14 @@ a2a_seconds = 30            # A2A remote call timeout
 [vault]
 backend = "env"  # "env" (default) or "age"; CLI --vault overrides this
 
+[observability]
+exporter = "none"           # "none" or "otlp" (requires `otel` feature)
+endpoint = "http://localhost:4317"
+
+[cost]
+enabled = false
+max_daily_cents = 500       # Daily budget in cents (USD), UTC midnight reset
+
 [a2a]
 enabled = false
 host = "0.0.0.0"
@@ -181,5 +189,9 @@ rate_limit = 60
 | `ZEPH_TIMEOUT_LLM` | LLM call timeout in seconds (default: 120) |
 | `ZEPH_TIMEOUT_EMBEDDING` | Embedding generation timeout in seconds (default: 30) |
 | `ZEPH_TIMEOUT_A2A` | A2A remote call timeout in seconds (default: 30) |
+| `ZEPH_OBSERVABILITY_EXPORTER` | Tracing exporter: `none` or `otlp` (default: `none`, requires `otel` feature) |
+| `ZEPH_OBSERVABILITY_ENDPOINT` | OTLP gRPC endpoint (default: `http://localhost:4317`) |
+| `ZEPH_COST_ENABLED` | Enable cost tracking (default: false) |
+| `ZEPH_COST_MAX_DAILY_CENTS` | Daily spending limit in cents (default: 500) |
 | `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
 | `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |

@@ -23,6 +23,8 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and Hugg
 
 **Production-ready security.** Shell sandboxing with path restrictions and relative path traversal detection, pattern-based permission policy per tool, destructive command confirmation, file operation sandbox with path traversal protection, tool output overflow-to-file (with LLM-accessible paths), secret redaction (AWS, OpenAI, Anthropic, Google, GitLab), audit logging, SSRF protection (including MCP client), rate limiter with TTL-based eviction, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
 
+**Observable.** Optional OpenTelemetry OTLP export (feature-gated behind `otel`) for Prometheus/Grafana integration, with per-model cost tracking and configurable daily budget limits.
+
 **Self-improving.** Skills evolve through failure detection, self-reflection, and LLM-generated improvements — with optional manual approval before activation.
 
 ## Installation

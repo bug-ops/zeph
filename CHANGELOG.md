@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Read-only mode restricts agent to file_read, file_glob, file_grep, web_scrape
 - Full mode allows all tools without confirmation prompts
 - Documented `[telegram].allowed_users` allowlist in default config (#371)
+- OpenTelemetry OTLP trace export with `tracing-opentelemetry` layer, feature-gated behind `otel` (#377)
+- `[observability]` config section with exporter selection and OTLP endpoint
+- Instrumentation spans for LLM calls (`llm_call`) and tool executions (`tool_exec`)
+- `CostTracker` with per-model token pricing and configurable daily budget limits (#378)
+- `[cost]` config section with `enabled` and `max_daily_cents` options
+- `cost_spent_cents` field in `MetricsSnapshot` for TUI cost display
 
 ## [0.9.8] - 2026-02-16
 

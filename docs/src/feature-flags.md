@@ -13,6 +13,7 @@ Zeph uses Cargo feature flags to control optional functionality. Default feature
 | `qdrant` | Enabled | Qdrant-backed vector storage for skill matching (`zeph-skills`) and MCP tool registry (`zeph-mcp`) |
 | `vault-age` | Enabled | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
 | `index` | Enabled | AST-based code indexing and semantic retrieval via tree-sitter ([guide](guide/code-indexing.md)) |
+| `otel` | Disabled | OpenTelemetry tracing export via OTLP/gRPC ([guide](guide/observability.md)) |
 | `tui` | Disabled | ratatui-based TUI dashboard with real-time agent metrics |
 | `metal` | Disabled | Metal GPU acceleration for candle on macOS (implies `candle`) |
 | `cuda` | Disabled | CUDA GPU acceleration for candle on Linux (implies `candle`) |

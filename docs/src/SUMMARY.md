@@ -25,6 +25,7 @@
 - [Channels (CLI, Telegram, TUI)](guide/channels.md)
 - [Tool System](guide/tools.md)
 - [TUI Dashboard](guide/tui.md)
+- [Observability & Cost](guide/observability.md)
 - [Code Indexing](guide/code-indexing.md)
 
 # Architecture
