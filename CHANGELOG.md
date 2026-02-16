@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `zeph-gateway` crate: axum HTTP gateway with POST /webhook ingestion, bearer auth (blake3 + ct_eq), per-IP rate limiting, GET /health endpoint, feature-gated (`gateway`) (#379)
+- `zeph-core::daemon` module: component supervisor with health monitoring, PID file management, graceful shutdown, feature-gated (`daemon`) (#380)
+- `zeph-scheduler` crate: cron-based periodic task scheduler with SQLite persistence, built-in tasks (memory_cleanup, skill_refresh, health_check), TaskHandler trait, feature-gated (`scheduler`) (#381)
+- New config sections: `[gateway]`, `[daemon]`, `[scheduler]` in config/default.toml (#367)
+- New optional feature flags: `gateway`, `daemon`, `scheduler`
 - Hybrid memory search: FTS5 keyword search combined with Qdrant vector similarity (#372, #373, #374)
 - SQLite FTS5 virtual table with auto-sync triggers for full-text keyword search
 - Configurable `vector_weight`/`keyword_weight` in `[memory.semantic]` for hybrid ranking

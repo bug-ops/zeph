@@ -112,7 +112,7 @@ cargo build --release --features tui
 ```
 zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for top-level errors)
 ├── zeph-core       — Agent split into 7 submodules (context, streaming, persistence,
-│                     learning, mcp, index), typed AgentError/ChannelError, config hot-reload
+│                     learning, mcp, index), daemon supervisor, typed AgentError/ChannelError, config hot-reload
 ├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, orchestrator,
 │                     native tool_use (Claude/OpenAI), typed LlmError
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning, typed SkillError
@@ -122,6 +122,8 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for t
 ├── zeph-tools      — schemars-driven tool registry (shell, file ops, web scrape), composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
+├── zeph-gateway    — HTTP gateway for webhook ingestion with bearer auth (optional)
+├── zeph-scheduler  — Cron-based periodic task scheduler with SQLite persistence (optional)
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)
 ```
 
@@ -149,6 +151,9 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 | `self-learning` | On | Skill evolution system |
 | `vault-age` | On | Age-encrypted secret storage |
 | `index` | On | AST-based code indexing and semantic retrieval |
+| `gateway` | Off | HTTP gateway for webhook ingestion |
+| `daemon` | Off | Daemon supervisor for component lifecycle |
+| `scheduler` | Off | Cron-based periodic task scheduler |
 | `metal` | Off | Metal GPU acceleration (macOS) |
 | `tui` | Off | ratatui TUI dashboard with real-time metrics |
 | `cuda` | Off | CUDA GPU acceleration (Linux) |

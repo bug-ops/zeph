@@ -85,17 +85,20 @@ impl GatewayServer {
         tracing::info!("gateway listening on {}", self.addr);
 
         let mut shutdown_rx = self.shutdown_rx;
-        axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async move {
-                while !*shutdown_rx.borrow_and_update() {
-                    if shutdown_rx.changed().await.is_err() {
-                        std::future::pending::<()>().await;
-                    }
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            while !*shutdown_rx.borrow_and_update() {
+                if shutdown_rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
                 }
-                tracing::info!("gateway shutting down");
-            })
-            .await
-            .map_err(|e| GatewayError::Server(format!("{e}")))?;
+            }
+            tracing::info!("gateway shutting down");
+        })
+        .await
+        .map_err(|e| GatewayError::Server(format!("{e}")))?;
 
         Ok(())
     }

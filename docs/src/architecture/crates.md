@@ -16,6 +16,7 @@ Agent loop, configuration loading, and context builder.
 - `project.rs` — ZEPH.md config discovery (walk up directory tree)
 - `VaultProvider` trait — pluggable secret resolution
 - `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
+- `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking (feature-gated: `daemon`)
 
 ## zeph-llm
 
@@ -86,6 +87,29 @@ AST-based code indexing, semantic retrieval, and repo map generation (optional, 
 - `CodeIndexer<P>` — project indexer orchestrator: walk, chunk, embed, store with incremental skip of unchanged chunks
 - `CodeRetriever<P>` — hybrid retrieval with query classification (Semantic / Grep / Hybrid), budget-aware chunk packing
 - `generate_repo_map()` — compact structural view via tree-sitter signature extraction, budget-constrained
+
+## zeph-gateway
+
+HTTP gateway for webhook ingestion (optional, feature-gated).
+
+- `GatewayServer` -- axum-based HTTP server with fluent builder API
+- `POST /webhook` -- accepts JSON payloads (`channel`, `sender`, `body`), forwards to agent loop via `mpsc::Sender<String>`
+- `GET /health` -- unauthenticated health endpoint returning uptime
+- Bearer token auth middleware with constant-time comparison (blake3 + `subtle`)
+- Per-IP rate limiting with 60s sliding window and automatic eviction at 10K entries
+- Body size limit via `tower_http::limit::RequestBodyLimitLayer`
+- Graceful shutdown via `watch::Receiver<bool>`
+
+## zeph-scheduler
+
+Cron-based periodic task scheduler with SQLite persistence (optional, feature-gated).
+
+- `Scheduler` -- tick loop checking due tasks every 60 seconds
+- `ScheduledTask` -- task definition with 6-field cron expression (via `cron` crate)
+- `TaskKind` -- built-in kinds (`memory_cleanup`, `skill_refresh`, `health_check`) and `Custom(String)`
+- `TaskHandler` trait -- async execution interface receiving `serde_json::Value` config
+- `JobStore` -- SQLite-backed persistence tracking `last_run` timestamps and status
+- Graceful shutdown via `watch::Receiver<bool>`
 
 ## zeph-mcp
 

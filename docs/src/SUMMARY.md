@@ -27,6 +27,9 @@
 - [TUI Dashboard](guide/tui.md)
 - [Observability & Cost](guide/observability.md)
 - [Code Indexing](guide/code-indexing.md)
+- [HTTP Gateway](guide/gateway.md)
+- [Daemon Supervisor](guide/daemon.md)
+- [Cron Scheduler](guide/scheduler.md)
 
 # Architecture
 
