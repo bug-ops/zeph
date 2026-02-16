@@ -351,11 +351,7 @@ impl<'t> MdRenderer<'t> {
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {
-                self.push_style(
-                    self.theme
-                        .highlight
-                        .add_modifier(Modifier::BOLD),
-                );
+                self.push_style(self.theme.highlight.add_modifier(Modifier::BOLD));
             }
             Event::End(TagEnd::Heading { .. }) => {
                 self.pop_style();
