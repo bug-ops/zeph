@@ -24,10 +24,25 @@ Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claud
 
 ## How It Works
 
+- **Hybrid search:** Recall uses both Qdrant vector similarity and SQLite FTS5 keyword search, merging results with configurable weights. This improves recall quality especially for exact term matches.
 - **Automatic embedding:** Messages are embedded asynchronously using the configured `embedding_model` and stored in Qdrant alongside SQLite.
-- **Semantic recall:** Context builder injects semantically relevant messages from full history, not just recent messages.
-- **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to SQLite-only mode (recency-based history).
-- **Startup backfill:** On startup, if Qdrant is available, Zeph calls `embed_missing()` to backfill embeddings for any messages stored while Qdrant was offline. This ensures the vector index stays in sync with SQLite without manual intervention.
+- **FTS5 index:** All messages are automatically indexed in an SQLite FTS5 virtual table via triggers, enabling BM25-ranked keyword search with zero configuration.
+- **Graceful degradation:** If Qdrant is unavailable, Zeph falls back to FTS5-only keyword search instead of returning empty results.
+- **Startup backfill:** On startup, if Qdrant is available, Zeph calls `embed_missing()` to backfill embeddings for any messages stored while Qdrant was offline.
+
+## Hybrid Search Weights
+
+Configure the balance between vector (semantic) and keyword (BM25) search:
+
+```toml
+[memory.semantic]
+enabled = true
+recall_limit = 5
+vector_weight = 0.7   # Weight for Qdrant vector similarity
+keyword_weight = 0.3  # Weight for FTS5 keyword relevance
+```
+
+When Qdrant is unavailable, only keyword search runs (effectively `keyword_weight = 1.0`).
 
 ## Storage Architecture
 

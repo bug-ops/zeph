@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use zeph_tools::ToolsConfig;
+use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::vault::Secret;
 
@@ -393,6 +393,10 @@ pub struct SemanticConfig {
     pub enabled: bool,
     #[serde(default = "default_recall_limit")]
     pub recall_limit: usize,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_keyword_weight")]
+    pub keyword_weight: f64,
 }
 
 impl Default for SemanticConfig {
@@ -400,6 +404,8 @@ impl Default for SemanticConfig {
         Self {
             enabled: default_semantic_enabled(),
             recall_limit: default_recall_limit(),
+            vector_weight: default_vector_weight(),
+            keyword_weight: default_keyword_weight(),
         }
     }
 }
@@ -410,6 +416,14 @@ fn default_semantic_enabled() -> bool {
 
 fn default_recall_limit() -> usize {
     5
+}
+
+fn default_vector_weight() -> f64 {
+    0.7
+}
+
+fn default_keyword_weight() -> f64 {
+    0.3
 }
 
 #[derive(Clone, Deserialize)]
@@ -521,12 +535,15 @@ fn default_a2a_timeout() -> u64 {
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
+    #[serde(default)]
+    pub autonomy_level: AutonomyLevel,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             redact_secrets: true,
+            autonomy_level: AutonomyLevel::default(),
         }
     }
 }

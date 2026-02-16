@@ -251,6 +251,53 @@ impl SqliteStore {
         Ok(row.0)
     }
 
+    /// Full-text keyword search over messages using FTS5.
+    ///
+    /// Returns message IDs with BM25 relevance scores (lower = more relevant,
+    /// negated to positive for consistency with vector scores).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn keyword_search(
+        &self,
+        query: &str,
+        limit: usize,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
+        let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+
+        let rows: Vec<(MessageId, f64)> = if let Some(cid) = conversation_id {
+            sqlx::query_as(
+                "SELECT m.id, -rank AS score \
+                 FROM messages_fts f \
+                 JOIN messages m ON m.id = f.rowid \
+                 WHERE messages_fts MATCH ? AND m.conversation_id = ? \
+                 ORDER BY rank \
+                 LIMIT ?",
+            )
+            .bind(query)
+            .bind(cid)
+            .bind(effective_limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT f.rowid, -rank AS score \
+                 FROM messages_fts f \
+                 WHERE messages_fts MATCH ? \
+                 ORDER BY rank \
+                 LIMIT ?",
+            )
+            .bind(query)
+            .bind(effective_limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        Ok(rows)
+    }
+
     /// Load a range of messages after a given message ID.
     ///
     /// # Errors
@@ -602,5 +649,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(msgs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_basic() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid, "user", "rust programming language")
+            .await
+            .unwrap();
+        store
+            .save_message(cid, "assistant", "python is great too")
+            .await
+            .unwrap();
+        store
+            .save_message(cid, "user", "I love rust and cargo")
+            .await
+            .unwrap();
+
+        let results = store.keyword_search("rust", 10, None).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|(_, score)| *score > 0.0));
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_conversation_filter() {
+        let store = test_store().await;
+        let cid1 = store.create_conversation().await.unwrap();
+        let cid2 = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid1, "user", "hello world")
+            .await
+            .unwrap();
+        store
+            .save_message(cid2, "user", "hello universe")
+            .await
+            .unwrap();
+
+        let results = store.keyword_search("hello", 10, Some(cid1)).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_no_match() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid, "user", "hello world")
+            .await
+            .unwrap();
+
+        let results = store.keyword_search("nonexistent", 10, None).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn keyword_search_respects_limit() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        for i in 0..10 {
+            store
+                .save_message(cid, "user", &format!("test message {i}"))
+                .await
+                .unwrap();
+        }
+
+        let results = store.keyword_search("test", 3, None).await.unwrap();
+        assert_eq!(results.len(), 3);
     }
 }

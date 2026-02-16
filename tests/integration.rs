@@ -1217,6 +1217,7 @@ async fn agent_redaction_enabled() {
 
     let security = SecurityConfig {
         redact_secrets: true,
+        autonomy_level: Default::default(),
     };
 
     let mut agent = Agent::new(
@@ -1247,6 +1248,7 @@ async fn agent_redaction_disabled() {
 
     let security = SecurityConfig {
         redact_secrets: false,
+        autonomy_level: Default::default(),
     };
 
     let mut agent = Agent::new(
@@ -1415,6 +1417,7 @@ async fn agent_with_security_config() {
 
     let security = SecurityConfig {
         redact_secrets: true,
+        autonomy_level: Default::default(),
     };
     let timeouts = TimeoutConfig {
         llm_seconds: 60,
@@ -1679,6 +1682,7 @@ async fn agent_streaming_redaction() {
 
     let security = SecurityConfig {
         redact_secrets: true,
+        autonomy_level: Default::default(),
     };
 
     let mut agent = Agent::new(
@@ -1712,6 +1716,7 @@ async fn agent_redaction_in_tool_output() {
 
     let security = SecurityConfig {
         redact_secrets: true,
+        autonomy_level: Default::default(),
     };
 
     let mut agent = Agent::new(

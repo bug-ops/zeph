@@ -210,11 +210,13 @@ async fn main() -> anyhow::Result<()> {
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
 
-    let memory = SemanticMemory::new(
+    let memory = SemanticMemory::with_weights(
         &config.memory.sqlite_path,
         &config.memory.qdrant_url,
         provider.clone(),
         &embed_model,
+        config.memory.semantic.vector_weight,
+        config.memory.semantic.keyword_weight,
     )
     .await?;
 
@@ -267,7 +269,9 @@ async fn main() -> anyhow::Result<()> {
         zeph_tools::cleanup_overflow_files(std::time::Duration::from_secs(86_400));
     });
 
-    let permission_policy = config.tools.permission_policy();
+    let permission_policy = config
+        .tools
+        .permission_policy(config.security.autonomy_level);
     let mut shell_executor =
         ShellExecutor::new(&config.tools.shell).with_permissions(permission_policy.clone());
     if config.tools.audit.enabled

@@ -60,10 +60,12 @@ pub struct SemanticMemory<P: LlmProvider> {
     qdrant: Option<QdrantStore>,
     provider: P,
     embedding_model: String,
+    vector_weight: f64,
+    keyword_weight: f64,
 }
 
 impl<P: LlmProvider> SemanticMemory<P> {
-    /// Create a new `SemanticMemory` instance.
+    /// Create a new `SemanticMemory` instance with default hybrid search weights (0.7/0.3).
     ///
     /// Qdrant connection is best-effort: if unavailable, semantic search is disabled.
     ///
@@ -75,6 +77,22 @@ impl<P: LlmProvider> SemanticMemory<P> {
         qdrant_url: &str,
         provider: P,
         embedding_model: &str,
+    ) -> Result<Self, MemoryError> {
+        Self::with_weights(sqlite_path, qdrant_url, provider, embedding_model, 0.7, 0.3).await
+    }
+
+    /// Create a new `SemanticMemory` with custom vector/keyword weights for hybrid search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized.
+    pub async fn with_weights(
+        sqlite_path: &str,
+        qdrant_url: &str,
+        provider: P,
+        embedding_model: &str,
+        vector_weight: f64,
+        keyword_weight: f64,
     ) -> Result<Self, MemoryError> {
         let sqlite = SqliteStore::new(sqlite_path).await?;
         let pool = sqlite.pool().clone();
@@ -92,6 +110,8 @@ impl<P: LlmProvider> SemanticMemory<P> {
             qdrant,
             provider,
             embedding_model: embedding_model.into(),
+            vector_weight,
+            keyword_weight,
         })
     }
 
@@ -201,43 +221,96 @@ impl<P: LlmProvider> SemanticMemory<P> {
         Ok((message_id, embedding_stored))
     }
 
-    /// Recall semantically relevant messages based on a query string.
+    /// Recall relevant messages using hybrid search (vector + FTS5 keyword).
+    ///
+    /// When Qdrant is available, runs both vector and keyword searches, then merges
+    /// results using weighted scoring. When Qdrant is unavailable, falls back to
+    /// FTS5-only keyword search.
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding generation or Qdrant search fails.
-    /// Returns empty vector if Qdrant unavailable or embeddings not supported.
+    /// Returns an error if embedding generation, Qdrant search, or FTS5 query fails.
     pub async fn recall(
         &self,
         query: &str,
         limit: usize,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
-        let Some(qdrant) = &self.qdrant else {
-            return Ok(Vec::new());
+        let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
+
+        // FTS5 keyword search (always available)
+        let keyword_results = match self
+            .sqlite
+            .keyword_search(query, limit * 2, conversation_id)
+            .await
+        {
+            Ok(results) => results,
+            Err(e) => {
+                tracing::warn!("FTS5 keyword search failed: {e:#}");
+                Vec::new()
+            }
         };
-        if !self.provider.supports_embeddings() {
+
+        // Vector search (only when Qdrant available)
+        let vector_results = if let Some(qdrant) = &self.qdrant
+            && self.provider.supports_embeddings()
+        {
+            let query_vector = self.provider.embed(query).await?;
+            let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
+            qdrant.ensure_collection(vector_size).await?;
+            qdrant.search(&query_vector, limit * 2, filter).await?
+        } else {
+            Vec::new()
+        };
+
+        // Merge results with weighted scoring
+        let mut scores: std::collections::HashMap<MessageId, f64> =
+            std::collections::HashMap::new();
+
+        if !vector_results.is_empty() {
+            let max_vs = vector_results
+                .iter()
+                .map(|r| r.score)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let norm = if max_vs > 0.0 { max_vs } else { 1.0 };
+            for r in &vector_results {
+                let normalized = f64::from(r.score / norm);
+                *scores.entry(r.message_id).or_default() += normalized * self.vector_weight;
+            }
+        }
+
+        if !keyword_results.is_empty() {
+            let max_ks = keyword_results
+                .iter()
+                .map(|r| r.1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let norm = if max_ks > 0.0 { max_ks } else { 1.0 };
+            for &(msg_id, score) in &keyword_results {
+                let normalized = score / norm;
+                *scores.entry(msg_id).or_default() += normalized * self.keyword_weight;
+            }
+        }
+
+        if scores.is_empty() {
             return Ok(Vec::new());
         }
 
-        let query_vector = self.provider.embed(query).await?;
+        // Sort by combined score descending, take top `limit`
+        let mut ranked: Vec<(MessageId, f64)> = scores.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(limit);
 
-        // Ensure collection exists before searching
-        let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
-        qdrant.ensure_collection(vector_size).await?;
-
-        let results = qdrant.search(&query_vector, limit, filter).await?;
-
-        let ids: Vec<MessageId> = results.iter().map(|r| r.message_id).collect();
+        let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
         let messages = self.sqlite.messages_by_ids(&ids).await?;
         let msg_map: std::collections::HashMap<MessageId, _> = messages.into_iter().collect();
 
-        let recalled = results
+        let recalled = ranked
             .iter()
-            .filter_map(|r| {
-                msg_map.get(&r.message_id).map(|msg| RecalledMessage {
+            .filter_map(|(msg_id, score)| {
+                msg_map.get(msg_id).map(|msg| RecalledMessage {
                     message: msg.clone(),
-                    score: r.score,
+                    #[expect(clippy::cast_possible_truncation)]
+                    score: *score as f32,
                 })
             })
             .collect();
@@ -620,6 +693,8 @@ mod tests {
             qdrant: None,
             provider,
             embedding_model: "test-model".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
         }
     }
 
@@ -1184,6 +1259,8 @@ mod tests {
             qdrant: None,
             provider: FailChatProvider,
             embedding_model: "test".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -1353,5 +1430,75 @@ mod tests {
         let cloned = result.clone();
         assert_eq!(result.summary_text, cloned.summary_text);
         assert_eq!(result.conversation_id, cloned.conversation_id);
+    }
+
+    #[tokio::test]
+    async fn recall_fts5_fallback_without_qdrant() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory
+            .remember(cid, "user", "rust programming guide")
+            .await
+            .unwrap();
+        memory
+            .remember(cid, "assistant", "python tutorial")
+            .await
+            .unwrap();
+        memory
+            .remember(cid, "user", "advanced rust patterns")
+            .await
+            .unwrap();
+
+        let recalled = memory.recall("rust", 5, None).await.unwrap();
+        assert_eq!(recalled.len(), 2);
+        assert!(recalled[0].score >= recalled[1].score);
+    }
+
+    #[tokio::test]
+    async fn recall_fts5_fallback_with_filter() {
+        let memory = test_semantic_memory(false).await;
+        let cid1 = memory.sqlite.create_conversation().await.unwrap();
+        let cid2 = memory.sqlite.create_conversation().await.unwrap();
+
+        memory.remember(cid1, "user", "hello world").await.unwrap();
+        memory
+            .remember(cid2, "user", "hello universe")
+            .await
+            .unwrap();
+
+        let filter = SearchFilter {
+            conversation_id: Some(cid1),
+            role: None,
+        };
+        let recalled = memory.recall("hello", 5, Some(filter)).await.unwrap();
+        assert_eq!(recalled.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recall_fts5_no_matches_returns_empty() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory.remember(cid, "user", "hello world").await.unwrap();
+
+        let recalled = memory.recall("nonexistent", 5, None).await.unwrap();
+        assert!(recalled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recall_fts5_respects_limit() {
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        for i in 0..10 {
+            memory
+                .remember(cid, "user", &format!("test message number {i}"))
+                .await
+                .unwrap();
+        }
+
+        let recalled = memory.recall("test", 3, None).await.unwrap();
+        assert_eq!(recalled.len(), 3);
     }
 }
