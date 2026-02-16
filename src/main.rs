@@ -361,6 +361,8 @@ async fn main() -> anyhow::Result<()> {
     let index_pool = memory.sqlite().pool().clone();
     #[cfg(feature = "index")]
     let index_provider = provider.clone();
+    #[cfg(feature = "index")]
+    let provider_has_tools = provider.supports_tool_use();
     let warmup_provider_clone = provider.clone();
 
     let summary_provider = config.agent.summary_model.as_ref().and_then(|model_spec| {
@@ -417,7 +419,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "index")]
     let mut _index_watcher: Option<IndexWatcher> = None;
     #[cfg(feature = "index")]
-    let agent = if config.index.enabled {
+    let agent = if config.index.enabled && !provider_has_tools {
         let init = async {
             let store = CodeStore::new(&config.memory.qdrant_url, index_pool)?;
             let provider_arc = std::sync::Arc::new(index_provider);
@@ -477,6 +479,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else {
+        if config.index.enabled && provider_has_tools {
+            tracing::info!("code index skipped: provider supports native tool_use");
+        }
         agent
     };
 

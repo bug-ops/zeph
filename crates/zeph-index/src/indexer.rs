@@ -59,21 +59,20 @@ impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
         let vector_size = u64::try_from(probe.len())?;
         self.store.ensure_collection(vector_size).await?;
 
-        let walker = ignore::WalkBuilder::new(root)
+        let entries: Vec<_> = ignore::WalkBuilder::new(root)
             .hidden(true)
             .git_ignore(true)
-            .build();
+            .build()
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()) && is_indexable(e.path()))
+            .collect();
+
+        let total = entries.len();
+        tracing::info!(total, "indexing started");
 
         let mut current_files: HashSet<String> = HashSet::new();
 
-        for entry in walker.flatten() {
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-            if !is_indexable(entry.path()) {
-                continue;
-            }
-
+        for (i, entry) in entries.iter().enumerate() {
             report.files_scanned += 1;
             let rel_path = entry
                 .path()
@@ -90,6 +89,12 @@ impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
                     }
                     report.chunks_created += created;
                     report.chunks_skipped += skipped;
+                    tracing::info!(
+                        file = %rel_path,
+                        progress = format_args!("{}/{total}", i + 1),
+                        created,
+                        skipped,
+                    );
                 }
                 Err(e) => {
                     report.errors.push(format!("{rel_path}: {e:#}"));
