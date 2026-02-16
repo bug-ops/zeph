@@ -1,5 +1,20 @@
 use ratatui::style::{Color, Modifier, Style};
 
+pub struct SyntaxTheme {
+    pub keyword: Style,
+    pub string: Style,
+    pub comment: Style,
+    pub function: Style,
+    pub r#type: Style,
+    pub number: Style,
+    pub operator: Style,
+    pub variable: Style,
+    pub attribute: Style,
+    pub punctuation: Style,
+    pub constant: Style,
+    pub default: Style,
+}
+
 pub struct Theme {
     pub user_message: Style,
     pub assistant_message: Style,

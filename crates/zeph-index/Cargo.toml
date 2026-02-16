@@ -31,15 +31,15 @@ uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 
-tree-sitter-bash = { version = "0.25", optional = true }
-tree-sitter-go = { version = "0.25", optional = true }
-tree-sitter-javascript = { version = "0.25", optional = true }
-tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-md = { version = "0.5", optional = true }
-tree-sitter-python = { version = "0.25", optional = true }
-tree-sitter-rust = { version = "0.24", optional = true }
-tree-sitter-toml-ng = { version = "0.7", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-bash = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-json = { workspace = true, optional = true }
+tree-sitter-md = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-toml-ng = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
