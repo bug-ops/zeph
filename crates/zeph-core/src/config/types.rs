@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use zeph_tools::ToolsConfig;
+use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::vault::Secret;
 
@@ -503,12 +503,15 @@ fn default_a2a_timeout() -> u64 {
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
+    #[serde(default)]
+    pub autonomy_level: AutonomyLevel,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             redact_secrets: true,
+            autonomy_level: AutonomyLevel::default(),
         }
     }
 }

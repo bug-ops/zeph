@@ -3,6 +3,19 @@ use std::collections::HashMap;
 use glob::Pattern;
 use serde::Deserialize;
 
+/// Tool access level controlling agent autonomy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutonomyLevel {
+    /// Read-only tools: `file_read`, `file_glob`, `file_grep`, `web_scrape`
+    ReadOnly,
+    /// Default: rule-based permissions with confirmations
+    #[default]
+    Supervised,
+    /// All tools allowed, no confirmations
+    Full,
+}
+
 /// Action a permission rule resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,6 +32,9 @@ pub struct PermissionRule {
     pub action: PermissionAction,
 }
 
+/// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
+const READONLY_TOOLS: &[&str] = &["file_read", "file_glob", "file_grep", "web_scrape"];
+
 /// Tool permission policy: maps `tool_id` → ordered list of rules.
 /// First matching rule wins; default is `Ask`.
 ///
@@ -27,29 +43,52 @@ pub struct PermissionRule {
 #[derive(Debug, Clone, Default)]
 pub struct PermissionPolicy {
     rules: HashMap<String, Vec<PermissionRule>>,
+    autonomy_level: AutonomyLevel,
 }
 
 impl PermissionPolicy {
     #[must_use]
     pub fn new(rules: HashMap<String, Vec<PermissionRule>>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            autonomy_level: AutonomyLevel::default(),
+        }
+    }
+
+    /// Set autonomy level (builder pattern).
+    #[must_use]
+    pub fn with_autonomy(mut self, level: AutonomyLevel) -> Self {
+        self.autonomy_level = level;
+        self
     }
 
     /// Check permission for a tool invocation. First matching glob wins.
     #[must_use]
     pub fn check(&self, tool_id: &str, input: &str) -> PermissionAction {
-        let Some(rules) = self.rules.get(tool_id) else {
-            return PermissionAction::Ask;
-        };
-        let normalized = input.to_lowercase();
-        for rule in rules {
-            if let Ok(pat) = Pattern::new(&rule.pattern.to_lowercase())
-                && pat.matches(&normalized)
-            {
-                return rule.action;
+        match self.autonomy_level {
+            AutonomyLevel::ReadOnly => {
+                if READONLY_TOOLS.contains(&tool_id) {
+                    PermissionAction::Allow
+                } else {
+                    PermissionAction::Deny
+                }
+            }
+            AutonomyLevel::Full => PermissionAction::Allow,
+            AutonomyLevel::Supervised => {
+                let Some(rules) = self.rules.get(tool_id) else {
+                    return PermissionAction::Ask;
+                };
+                let normalized = input.to_lowercase();
+                for rule in rules {
+                    if let Ok(pat) = Pattern::new(&rule.pattern.to_lowercase())
+                        && pat.matches(&normalized)
+                    {
+                        return rule.action;
+                    }
+                }
+                PermissionAction::Ask
             }
         }
-        PermissionAction::Ask
     }
 
     /// Build policy from legacy `blocked_commands` / `confirm_patterns` for "bash" tool.
@@ -75,7 +114,10 @@ impl PermissionPolicy {
         });
         let mut map = HashMap::new();
         map.insert("bash".to_owned(), rules);
-        Self { rules: map }
+        Self {
+            rules: map,
+            autonomy_level: AutonomyLevel::default(),
+        }
     }
 
     /// Returns true if all rules for a `tool_id` are Deny.
@@ -102,7 +144,10 @@ pub struct PermissionsConfig {
 
 impl From<PermissionsConfig> for PermissionPolicy {
     fn from(config: PermissionsConfig) -> Self {
-        Self::new(config.tools)
+        Self {
+            rules: config.tools,
+            autonomy_level: AutonomyLevel::default(),
+        }
     }
 }
 
@@ -247,5 +292,81 @@ mod tests {
         let policy = PermissionPolicy::from(config);
         assert_eq!(policy.check("bash", "sudo rm"), PermissionAction::Deny);
         assert_eq!(policy.check("bash", "echo hi"), PermissionAction::Ask);
+    }
+
+    #[test]
+    fn autonomy_level_deserialize() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            level: AutonomyLevel,
+        }
+        let w: Wrapper = toml::from_str(r#"level = "readonly""#).unwrap();
+        assert_eq!(w.level, AutonomyLevel::ReadOnly);
+        let w: Wrapper = toml::from_str(r#"level = "supervised""#).unwrap();
+        assert_eq!(w.level, AutonomyLevel::Supervised);
+        let w: Wrapper = toml::from_str(r#"level = "full""#).unwrap();
+        assert_eq!(w.level, AutonomyLevel::Full);
+    }
+
+    #[test]
+    fn autonomy_level_default_is_supervised() {
+        assert_eq!(AutonomyLevel::default(), AutonomyLevel::Supervised);
+    }
+
+    #[test]
+    fn readonly_allows_readonly_tools() {
+        let policy = PermissionPolicy::default().with_autonomy(AutonomyLevel::ReadOnly);
+        assert_eq!(
+            policy.check("file_read", "any input"),
+            PermissionAction::Allow
+        );
+        assert_eq!(
+            policy.check("file_glob", "any input"),
+            PermissionAction::Allow
+        );
+        assert_eq!(
+            policy.check("file_grep", "any input"),
+            PermissionAction::Allow
+        );
+        assert_eq!(
+            policy.check("web_scrape", "any input"),
+            PermissionAction::Allow
+        );
+    }
+
+    #[test]
+    fn readonly_denies_write_tools() {
+        let policy = PermissionPolicy::default().with_autonomy(AutonomyLevel::ReadOnly);
+        assert_eq!(policy.check("bash", "rm -rf /"), PermissionAction::Deny);
+        assert_eq!(
+            policy.check("file_write", "foo.txt"),
+            PermissionAction::Deny
+        );
+    }
+
+    #[test]
+    fn full_allows_everything() {
+        let policy = PermissionPolicy::default().with_autonomy(AutonomyLevel::Full);
+        assert_eq!(policy.check("bash", "rm -rf /"), PermissionAction::Allow);
+        assert_eq!(
+            policy.check("file_write", "foo.txt"),
+            PermissionAction::Allow
+        );
+    }
+
+    #[test]
+    fn supervised_uses_rules() {
+        let policy = policy_with_rules("bash", vec![("*sudo*", PermissionAction::Deny)])
+            .with_autonomy(AutonomyLevel::Supervised);
+        assert_eq!(policy.check("bash", "sudo rm"), PermissionAction::Deny);
+        assert_eq!(policy.check("bash", "echo hi"), PermissionAction::Ask);
+    }
+
+    #[test]
+    fn from_legacy_preserves_supervised_behavior() {
+        let policy = PermissionPolicy::from_legacy(&["sudo".to_owned()], &["rm ".to_owned()]);
+        assert_eq!(policy.check("bash", "sudo apt"), PermissionAction::Deny);
+        assert_eq!(policy.check("bash", "rm file"), PermissionAction::Ask);
+        assert_eq!(policy.check("bash", "echo hello"), PermissionAction::Allow);
     }
 }

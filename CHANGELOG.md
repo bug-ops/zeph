@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `AutonomyLevel` enum (ReadOnly/Supervised/Full) for controlling tool access (#370)
+- `autonomy_level` config key in `[security]` section (default: supervised)
+- Read-only mode restricts agent to file_read, file_glob, file_grep, web_scrape
+- Full mode allows all tools without confirmation prompts
+- Documented `[telegram].allowed_users` allowlist in default config (#371)
+
 ## [0.9.8] - 2026-02-16
 
 ### Added

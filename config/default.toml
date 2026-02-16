@@ -209,6 +209,13 @@ destination = "stdout"
 [security]
 # Redact secrets (API keys, tokens) from LLM responses before display
 redact_secrets = true
+# Tool access level: "readonly" (observe only), "supervised" (default, with confirmations), "full" (all tools, no confirmations)
+autonomy_level = "supervised"
+
+# [telegram]
+# token = "your-bot-token"
+# Allowed usernames (empty = allow all except for /start command)
+# allowed_users = ["username1", "username2"]
 
 [timeouts]
 # LLM chat completion timeout in seconds

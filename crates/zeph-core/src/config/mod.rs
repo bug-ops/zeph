@@ -5,6 +5,7 @@ mod types;
 mod tests;
 
 pub use types::*;
+pub use zeph_tools::AutonomyLevel;
 
 use std::path::Path;
 

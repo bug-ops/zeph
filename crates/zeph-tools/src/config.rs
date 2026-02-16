@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::permissions::{PermissionPolicy, PermissionsConfig};
+use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
 
 fn default_true() -> bool {
     true
@@ -45,15 +45,16 @@ pub struct ToolsConfig {
 impl ToolsConfig {
     /// Build a `PermissionPolicy` from explicit config or legacy shell fields.
     #[must_use]
-    pub fn permission_policy(&self) -> PermissionPolicy {
-        if let Some(ref perms) = self.permissions {
+    pub fn permission_policy(&self, autonomy_level: AutonomyLevel) -> PermissionPolicy {
+        let policy = if let Some(ref perms) = self.permissions {
             PermissionPolicy::from(perms.clone())
         } else {
             PermissionPolicy::from_legacy(
                 &self.shell.blocked_commands,
                 &self.shell.confirm_patterns,
             )
-        }
+        };
+        policy.with_autonomy(autonomy_level)
     }
 }
 
@@ -320,7 +321,7 @@ mod tests {
             },
             ..ToolsConfig::default()
         };
-        let policy = config.permission_policy();
+        let policy = config.permission_policy(AutonomyLevel::Supervised);
         assert_eq!(
             policy.check("bash", "sudo apt"),
             crate::permissions::PermissionAction::Deny
@@ -340,7 +341,7 @@ mod tests {
             action = "deny"
         "#;
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
-        let policy = config.permission_policy();
+        let policy = config.permission_policy(AutonomyLevel::Supervised);
         assert_eq!(
             policy.check("bash", "sudo rm"),
             crate::permissions::PermissionAction::Deny
@@ -351,7 +352,7 @@ mod tests {
     fn permission_policy_default_uses_legacy() {
         let config = ToolsConfig::default();
         assert!(config.permissions.is_none());
-        let policy = config.permission_policy();
+        let policy = config.permission_policy(AutonomyLevel::Supervised);
         // Default ShellConfig has confirm_patterns, so legacy rules are generated
         assert!(!config.shell.confirm_patterns.is_empty());
         assert!(policy.rules().contains_key("bash"));

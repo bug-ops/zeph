@@ -263,7 +263,9 @@ async fn main() -> anyhow::Result<()> {
         zeph_tools::cleanup_overflow_files(std::time::Duration::from_secs(86_400));
     });
 
-    let permission_policy = config.tools.permission_policy();
+    let permission_policy = config
+        .tools
+        .permission_policy(config.security.autonomy_level);
     let mut shell_executor =
         ShellExecutor::new(&config.tools.shell).with_permissions(permission_policy.clone());
     if config.tools.audit.enabled

@@ -67,6 +67,23 @@ Commands matching `confirm_patterns` trigger an interactive confirmation before 
 allowed_paths = ["/home/user/workspace"]  # Empty = cwd only
 ```
 
+## Autonomy Levels
+
+The `security.autonomy_level` setting controls the agent's tool access scope:
+
+| Level | Tools Available | Confirmations |
+|-------|----------------|---------------|
+| `readonly` | `file_read`, `file_glob`, `file_grep`, `web_scrape` | N/A (write tools hidden) |
+| `supervised` | All tools per permission policy | Yes, for destructive patterns |
+| `full` | All tools | No confirmations |
+
+Default is `supervised`. In `readonly` mode, write-capable tools are excluded from the LLM system prompt and rejected at execution time (defense-in-depth).
+
+```toml
+[security]
+autonomy_level = "supervised"  # readonly, supervised, full
+```
+
 ## Permission Policy
 
 The `[tools.permissions]` config section provides fine-grained, pattern-based access control for each tool. Rules are evaluated in order (first match wins) using case-insensitive glob patterns against the tool input. See [Tool System — Permissions](guide/tools.md#permissions) for configuration details.
