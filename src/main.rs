@@ -206,11 +206,13 @@ async fn main() -> anyhow::Result<()> {
     let skill_paths: Vec<PathBuf> = config.skills.paths.iter().map(PathBuf::from).collect();
     let registry = SkillRegistry::load(&skill_paths);
 
-    let memory = SemanticMemory::new(
+    let memory = SemanticMemory::with_weights(
         &config.memory.sqlite_path,
         &config.memory.qdrant_url,
         provider.clone(),
         &embed_model,
+        config.memory.semantic.vector_weight,
+        config.memory.semantic.keyword_weight,
     )
     .await?;
 

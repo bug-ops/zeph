@@ -113,6 +113,9 @@ cross_session_score_threshold = 0.35
 enabled = true
 # Maximum number of semantically relevant messages to recall
 recall_limit = 5
+# Hybrid search weights (vector + FTS5 keyword). Must sum to 1.0.
+vector_weight = 0.7
+keyword_weight = 0.3
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant and tree-sitter grammars (feature "index", not enabled by default)
