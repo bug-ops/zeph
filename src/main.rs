@@ -420,7 +420,6 @@ async fn main() -> anyhow::Result<()> {
     let agent = if config.index.enabled {
         let init = async {
             let store = CodeStore::new(&config.memory.qdrant_url, index_pool)?;
-            store.migrate().await?;
             let provider_arc = std::sync::Arc::new(index_provider);
             let retrieval_config = RetrievalConfig {
                 max_chunks: config.index.max_chunks,

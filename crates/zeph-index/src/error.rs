@@ -13,10 +13,6 @@ pub enum IndexError {
     #[error("database error: {0}")]
     Sqlite(#[from] sqlx::Error),
 
-    /// `SQLite` migration error.
-    #[error("migration failed: {0}")]
-    Migration(#[from] sqlx::migrate::MigrateError),
-
     /// Qdrant vector store error.
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),

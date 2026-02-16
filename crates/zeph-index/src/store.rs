@@ -56,16 +56,6 @@ impl CodeStore {
         })
     }
 
-    /// Run `SQLite` migrations for chunk metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if migration execution fails.
-    pub async fn migrate(&self) -> Result<()> {
-        sqlx::migrate!().run(&self.pool).await?;
-        Ok(())
-    }
-
     /// Create collection with INT8 scalar quantization if it doesn't exist.
     ///
     /// # Errors
@@ -262,7 +252,7 @@ impl SearchHit {
 mod tests {
     async fn setup_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
+        zeph_memory::sqlite::SqliteStore::run_migrations(&pool).await.unwrap();
         pool
     }
 

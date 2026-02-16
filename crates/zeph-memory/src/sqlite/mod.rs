@@ -41,7 +41,7 @@ impl SqliteStore {
             .connect_with(opts)
             .await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        sqlx::migrate!("../../migrations").run(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -50,5 +50,15 @@ impl SqliteStore {
     #[must_use]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Run all migrations on the given pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any migration fails.
+    pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MemoryError> {
+        sqlx::migrate!("../../migrations").run(pool).await?;
+        Ok(())
     }
 }
