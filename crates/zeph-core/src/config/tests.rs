@@ -2018,3 +2018,81 @@ fn index_config_env_override_invalid_ignored() {
     assert!(!config.index.enabled);
     assert_eq!(config.index.max_chunks, 12);
 }
+
+#[test]
+fn security_config_default_autonomy_supervised() {
+    let config = Config::default();
+    assert_eq!(config.security.autonomy_level, AutonomyLevel::Supervised);
+}
+
+#[test]
+#[serial]
+fn parse_toml_with_autonomy_readonly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("autonomy_readonly.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[security]
+autonomy_level = "readonly"
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.security.autonomy_level, AutonomyLevel::ReadOnly);
+}
+
+#[test]
+#[serial]
+fn parse_toml_with_autonomy_full() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("autonomy_full.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "mistral:7b"
+
+[skills]
+paths = ["./skills"]
+
+[memory]
+sqlite_path = "./data/zeph.db"
+history_limit = 50
+
+[security]
+autonomy_level = "full"
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.security.autonomy_level, AutonomyLevel::Full);
+}

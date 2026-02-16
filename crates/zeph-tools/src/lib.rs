@@ -20,7 +20,9 @@ pub use executor::{
 };
 pub use file::FileExecutor;
 pub use overflow::{cleanup_overflow_files, save_overflow};
-pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig};
+pub use permissions::{
+    AutonomyLevel, PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig,
+};
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
 pub use shell::ShellExecutor;
