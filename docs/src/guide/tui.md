@@ -62,6 +62,7 @@ ZEPH_TUI=true zeph
 | `Page Up/Down` | Scroll chat one page |
 | `Home` / `End` | Scroll to top / bottom |
 | `Mouse wheel` | Scroll chat up/down (3 lines per tick) |
+| `e` | Toggle expanded/compact view for tool output and diffs |
 | `d` | Toggle side panels on/off |
 | `Tab` | Cycle side panel focus |
 
@@ -102,6 +103,25 @@ Chat messages are rendered with full markdown support via `pulldown-cmark`:
 | `> blockquote` | Dimmed vertical bar (│) prefix |
 | `~~strikethrough~~` | Crossed-out modifier |
 | `---` | Horizontal rule (─) |
+
+## Diff View
+
+When the agent uses write or edit tools, the TUI renders file changes as syntax-highlighted diffs directly in the chat panel. Diffs are computed using the `similar` crate (line-level) and displayed with visual indicators:
+
+| Element | Rendering |
+|---------|-----------|
+| Added lines | Green `+` gutter, green background |
+| Removed lines | Red `-` gutter, red background |
+| Context lines | No gutter marker, default background |
+| Header | File path with `+N -M` change summary |
+
+Syntax highlighting (via tree-sitter) is preserved within diff lines for supported languages (Rust, Python, JavaScript, JSON, TOML, Bash).
+
+### Compact and Expanded Modes
+
+Diffs default to **compact mode**, showing a single-line summary (file path with added/removed line counts). Press `e` to toggle **expanded mode**, which renders the full line-by-line diff with syntax highlighting and colored backgrounds.
+
+The same `e` key toggles between compact and expanded for tool output blocks as well.
 
 ## Thinking Blocks
 

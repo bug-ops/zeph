@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Syntax-highlighted diff view for write/edit tool output in TUI (#451)
+  - Diff rendering with green/red backgrounds for added/removed lines
+  - Word-level change highlighting within modified lines
+  - Syntax highlighting via tree-sitter
+  - Compact/expanded toggle with existing 'e' key binding
+  - New dependency: `similar` 2.7.0
 - Per-tool inline filter stats in CLI chat: `[shell] cargo test (342 lines -> 28 lines, 91.8% filtered)` (#449)
 - Filter metrics in TUI Resources panel: confidence distribution, command hit rate, token savings (#448)
 - Periodic 250ms tick in TUI event loop for real-time metrics refresh (#447)
