@@ -38,6 +38,8 @@ pub struct FilterResult {
     pub output: String,
     pub raw_chars: usize,
     pub filtered_chars: usize,
+    pub raw_lines: usize,
+    pub filtered_lines: usize,
     pub confidence: FilterConfidence,
 }
 
@@ -131,6 +133,8 @@ impl<'a> FilterPipeline<'a> {
         FilterResult {
             raw_chars: initial_len,
             filtered_chars: current.len(),
+            raw_lines: count_lines(output),
+            filtered_lines: count_lines(&current),
             output: current,
             confidence: worst,
         }
@@ -531,9 +535,15 @@ pub fn sanitize_output(raw: &str) -> String {
     result
 }
 
+fn count_lines(s: &str) -> usize {
+    if s.is_empty() { 0 } else { s.lines().count() }
+}
+
 fn make_result(raw: &str, output: String, confidence: FilterConfidence) -> FilterResult {
     let filtered_chars = output.len();
     FilterResult {
+        raw_lines: count_lines(raw),
+        filtered_lines: count_lines(&output),
         output,
         raw_chars: raw.len(),
         filtered_chars,
@@ -577,6 +587,8 @@ mod tests {
             output: String::new(),
             raw_chars: 1000,
             filtered_chars: 200,
+            raw_lines: 0,
+            filtered_lines: 0,
             confidence: FilterConfidence::Full,
         };
         assert!((r.savings_pct() - 80.0).abs() < 0.01);
@@ -588,9 +600,28 @@ mod tests {
             output: String::new(),
             raw_chars: 0,
             filtered_chars: 0,
+            raw_lines: 0,
+            filtered_lines: 0,
             confidence: FilterConfidence::Full,
         };
         assert!((r.savings_pct()).abs() < 0.01);
+    }
+
+    #[test]
+    fn count_lines_helper() {
+        assert_eq!(count_lines(""), 0);
+        assert_eq!(count_lines("one"), 1);
+        assert_eq!(count_lines("one\ntwo\nthree"), 3);
+        assert_eq!(count_lines("trailing\n"), 1);
+    }
+
+    #[test]
+    fn make_result_counts_lines() {
+        let raw = "line1\nline2\nline3\nline4\nline5";
+        let filtered = "line1\nline3".to_owned();
+        let r = make_result(raw, filtered, FilterConfidence::Full);
+        assert_eq!(r.raw_lines, 5);
+        assert_eq!(r.filtered_lines, 2);
     }
 
     #[test]
@@ -751,6 +782,8 @@ extra_patterns = ["TODO: security review"]
             output: "short".into(),
             raw_chars: 100,
             filtered_chars: 5,
+            raw_lines: 10,
+            filtered_lines: 1,
             confidence: FilterConfidence::Full,
         };
         m.record(&r);

@@ -13,6 +13,8 @@ pub struct ToolCall {
 pub struct FilterStats {
     pub raw_chars: usize,
     pub filtered_chars: usize,
+    pub raw_lines: usize,
+    pub filtered_lines: usize,
     pub confidence: Option<crate::FilterConfidence>,
 }
 
@@ -29,6 +31,16 @@ impl FilterStats {
     #[must_use]
     pub fn estimated_tokens_saved(&self) -> usize {
         self.raw_chars.saturating_sub(self.filtered_chars) / 4
+    }
+
+    #[must_use]
+    pub fn format_inline(&self, tool_name: &str) -> String {
+        format!(
+            "[{tool_name}] {} lines -> {} lines, {:.1}% filtered",
+            self.raw_lines,
+            self.filtered_lines,
+            self.savings_pct()
+        )
     }
 }
 
@@ -85,6 +97,7 @@ pub enum ToolEvent {
         command: String,
         output: String,
         success: bool,
+        filter_stats: Option<FilterStats>,
     },
 }
 
@@ -292,5 +305,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(fs.estimated_tokens_saved(), 200); // (1000 - 200) / 4
+    }
+
+    #[test]
+    fn filter_stats_format_inline() {
+        let fs = FilterStats {
+            raw_chars: 1000,
+            filtered_chars: 200,
+            raw_lines: 342,
+            filtered_lines: 28,
+            ..Default::default()
+        };
+        let line = fs.format_inline("shell");
+        assert_eq!(line, "[shell] 342 lines -> 28 lines, 80.0% filtered");
+    }
+
+    #[test]
+    fn filter_stats_format_inline_zero() {
+        let fs = FilterStats::default();
+        let line = fs.format_inline("bash");
+        assert_eq!(line, "[bash] 0 lines -> 0 lines, 0.0% filtered");
     }
 }

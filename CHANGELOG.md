@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Per-tool inline filter stats in CLI chat: `[shell] cargo test (342 lines -> 28 lines, 91.8% filtered)` (#449)
+- Filter metrics in TUI Resources panel: confidence distribution, command hit rate, token savings (#448)
+- Periodic 250ms tick in TUI event loop for real-time metrics refresh (#447)
+- Output filter architecture improvements (M26.1): `CommandMatcher` enum, `FilterConfidence`, `FilterPipeline`, `SecurityPatterns`, per-filter TOML config (#452)
+- Token savings tracking and metrics for output filtering (#445)
 - Smart tool output filtering: command-aware filters that compress tool output before context insertion
 - `OutputFilter` trait and `OutputFilterRegistry` with first-match-wins dispatch
 - `sanitize_output()` ANSI escape and progress bar stripping (runs on all tool output)
@@ -37,7 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Extract bootstrap logic from main.rs into `zeph-core::bootstrap::AppBuilder` (#393): main.rs reduced from 2313 to 978 lines
 - `SecurityConfig` and `TimeoutConfig` gain `Clone + Copy`
 - `AnyChannel` moved from main.rs to zeph-channels crate
-- Default features reduced to minimal set (qdrant, self-learning, vault-age, compatible, index)
+- Remove 8 lightweight feature gates, make always-on: openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp (#438)
+- Default features reduced to minimal set (empty after M26)
 - Skill matcher concurrency reduced from 50 to 20
 - `String::with_capacity` in context building loops
 - CI updated to use `--features full`

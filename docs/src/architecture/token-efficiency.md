@@ -55,6 +55,30 @@ MCP tools follow the same pipeline:
 
 Prompt size stays constant as you add more capabilities. The only cost of more skills is a slightly larger embedding index in Qdrant or memory.
 
+### Output Filter Pipeline
+
+Tool output is compressed before it enters the LLM context. A command-aware filter pipeline matches each shell command against a set of built-in filters (test runner output, Clippy diagnostics, git log/diff, directory listings, log deduplication) and strips noise while preserving signal. The pipeline runs synchronously inside the tool executor, so the LLM never sees raw output.
+
+Typical savings by command type:
+
+| Command | Raw lines | Filtered lines | Savings |
+|---------|-----------|----------------|---------|
+| `cargo test` (100 passing, 2 failing) | ~340 | ~30 | ~91% |
+| `cargo clippy` (many warnings) | ~200 | ~50 | ~75% |
+| `git log --oneline -50` | 50 | 20 | 60% |
+
+After each filtered execution, CLI mode prints a one-line stats summary and TUI mode accumulates the savings in the Resources panel. See [Tool System — Output Filter Pipeline](../guide/tools.md#output-filter-pipeline) for configuration details.
+
+### Token Savings Tracking
+
+`MetricsSnapshot` tracks cumulative filter metrics across the session:
+
+- `filter_raw_tokens` / `filter_saved_tokens` — aggregate volume before and after filtering
+- `filter_total_commands` / `filter_filtered_commands` — hit rate denominator/numerator
+- `filter_confidence_full/partial/fallback` — distribution of filter confidence levels
+
+These feed into the [TUI filter metrics display](../guide/tui.md#filter-metrics) and are emitted as `tracing::debug!` every 50 commands.
+
 ### Two-Tier Context Pruning
 
 Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to full LLM compaction only when Tier 1 is insufficient. See [Context Engineering](../guide/context.md) for details.

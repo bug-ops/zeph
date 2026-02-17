@@ -313,6 +313,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
+                if let Some(ref fs) = output.filter_stats
+                    && fs.filtered_lines < fs.raw_lines
+                {
+                    let stats_line = fs.format_inline(&output.tool_name);
+                    self.channel.send(&stats_line).await?;
+                }
+
                 self.push_message(Message::from_parts(
                     Role::User,
                     vec![MessagePart::ToolOutput {

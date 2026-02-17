@@ -150,13 +150,13 @@ The TUI adapts to terminal width:
 
 ## Live Metrics
 
-The TUI dashboard displays real-time metrics collected from the agent loop via `tokio::sync::watch` channel:
+The TUI dashboard displays real-time metrics collected from the agent loop via `tokio::sync::watch` channel. The render loop polls the watch receiver before every frame at 250 ms intervals, so the display updates continuously even without user input.
 
 | Panel | Metrics |
 |-------|---------|
 | **Skills** | Active/total skill count, matched skill names per query |
 | **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count, tool output prunes |
-| **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name |
+| **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name, prompt cache read/write tokens, filter stats |
 
 Metrics are updated at key instrumentation points in the agent loop:
 - After each LLM call (api_calls, latency, prompt tokens)
@@ -164,8 +164,29 @@ Metrics are updated at key instrumentation points in the agent loop:
 - After skill matching (active skills, total skills)
 - After message persistence (sqlite message count)
 - After summarization (summaries count)
+- After each tool execution with filter applied (filter metrics)
 
 Token counts use a `chars/4` estimation (sufficient for dashboard display).
+
+### Filter Metrics
+
+When the output filter pipeline has processed at least one command, the Resources panel shows:
+
+```
+Filter: 8/10 commands (80% hit rate)
+Filter saved: 1240 tok (72%)
+Confidence: F/6 P/2 B/0
+```
+
+| Field | Meaning |
+|-------|---------|
+| `N/M commands` | Filtered / total commands through the pipeline |
+| `hit rate` | Percentage of commands where output was actually reduced |
+| `saved tokens` | Cumulative estimated tokens saved (`chars_saved / 4`) |
+| `%` | Token savings as a fraction of raw token volume |
+| `F/P/B` | Confidence distribution: Full / Partial / Fallback counts |
+
+The filter section only appears when `filter_applications > 0` — it is hidden when no commands have been filtered.
 
 ## Deferred Model Warmup
 

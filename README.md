@@ -15,7 +15,7 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, HuggingF
 
 ## Why Zeph
 
-**Token-efficient by design.** Most agent frameworks inject every tool and instruction into every prompt. Zeph embeds skills and MCP tools as vectors (with concurrent embedding via `buffer_unordered`), then selects only the top-K relevant ones per query via cosine similarity. Prompt size stays O(K) -- not O(N) -- regardless of how many capabilities are installed.
+**Token-efficient by design.** Most agent frameworks inject every tool and instruction into every prompt. Zeph embeds skills and MCP tools as vectors (with concurrent embedding via `buffer_unordered`), then selects only the top-K relevant ones per query via cosine similarity. Prompt size stays O(K) -- not O(N) -- regardless of how many capabilities are installed. Smart output filtering further reduces token consumption by 70-99% for common tool outputs (test results, git logs, clippy diagnostics, directory listings, log deduplication) — per-command filter stats are shown inline in CLI chat and aggregated in the TUI dashboard.
 
 **Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Parallel context preparation via `try_join!` and optimized byte-length token estimation. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. Doom-loop detection breaks runaway tool cycles after 3 identical consecutive outputs, with configurable iteration limits (default 10). ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
 
@@ -118,7 +118,7 @@ cargo build --release --features tui
 | **Skill Trust & Quarantine** | 4-tier trust model (Trusted/Verified/Quarantined/Blocked) with blake3 integrity verification, anomaly detection with automatic blocking, and restricted tool access for untrusted skills | |
 | **Prompt Caching** | Automatic prompt caching for Anthropic and OpenAI providers, reducing latency and cost on repeated context | |
 | **Graceful Shutdown** | Ctrl-C triggers ordered teardown with MCP server cleanup and pending task draining | |
-| **TUI Dashboard** | ratatui terminal UI with tree-sitter syntax highlighting, markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
+| **TUI Dashboard** | ratatui terminal UI with tree-sitter syntax highlighting, markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics (including filter savings), message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
 | **Multi-Channel I/O** | CLI, Discord, Slack, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
 | **Defense-in-Depth** | Shell sandbox with relative path traversal detection, file sandbox, command filter, secret redaction (Google/GitLab patterns), audit log, SSRF protection (agent + MCP), rate limiter TTL eviction, doom-loop detection, skill trust quarantine | [Security](https://bug-ops.github.io/zeph/security.html) |
 
@@ -155,34 +155,27 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 
 ## Feature Flags
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `compatible` | On | OpenAI-compatible provider (Together AI, Groq, Fireworks, etc.) |
-| `openai` | On | OpenAI provider |
-| `qdrant` | On | Qdrant vector search for skills and MCP tools |
-| `self-learning` | On | Skill evolution system |
-| `vault-age` | On | Age-encrypted secret storage |
-| `a2a` | Off | A2A protocol client and server |
-| `candle` | Off | Local HuggingFace inference (GGUF) |
-| `index` | Off | AST-based code indexing and semantic retrieval |
-| `mcp` | Off | MCP client for external tool servers |
-| `orchestrator` | Off | Multi-model routing with fallback |
-| `router` | Off | Prompt-based model selection via RouterProvider |
-| `discord` | Off | Discord bot with Gateway v10 WebSocket |
-| `slack` | Off | Slack bot with Events API webhook |
-| `gateway` | Off | HTTP gateway for webhook ingestion |
-| `daemon` | Off | Daemon supervisor for component lifecycle |
-| `scheduler` | Off | Cron-based periodic task scheduler |
-| `otel` | Off | OpenTelemetry OTLP export for Prometheus/Grafana |
-| `metal` | Off | Metal GPU acceleration (macOS) |
-| `tui` | Off | ratatui TUI dashboard with real-time metrics |
-| `cuda` | Off | CUDA GPU acceleration (Linux) |
+The following features are always compiled in (no flag needed): `openai`, `compatible`, `orchestrator`, `router`, `self-learning`, `qdrant`, `vault-age`, `mcp`.
+
+| Feature | Description |
+|---------|-------------|
+| `a2a` | A2A protocol client and server |
+| `candle` | Local HuggingFace inference (GGUF) |
+| `index` | AST-based code indexing and semantic retrieval |
+| `discord` | Discord bot with Gateway v10 WebSocket |
+| `slack` | Slack bot with Events API webhook |
+| `gateway` | HTTP gateway for webhook ingestion |
+| `daemon` | Daemon supervisor for component lifecycle |
+| `scheduler` | Cron-based periodic task scheduler |
+| `otel` | OpenTelemetry OTLP export for Prometheus/Grafana |
+| `metal` | Metal GPU acceleration (macOS) |
+| `tui` | ratatui TUI dashboard with real-time metrics |
+| `cuda` | CUDA GPU acceleration (Linux) |
 
 ```bash
-cargo build --release                        # default features only
-cargo build --release --features full        # all non-platform features
+cargo build --release                        # default build (all always-on features included)
+cargo build --release --features full        # all optional features
 cargo build --release --features metal       # macOS Metal GPU
-cargo build --release --no-default-features  # minimal binary (Ollama + Claude only)
 cargo build --release --features tui         # with TUI dashboard
 ```
 

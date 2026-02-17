@@ -207,16 +207,8 @@ impl ShellExecutor {
             };
             self.log_audit(block, result, duration_ms).await;
 
-            if let Some(ref tx) = self.tool_event_tx {
-                let _ = tx.send(ToolEvent::Completed {
-                    tool_name: "bash".to_owned(),
-                    command: (*block).to_owned(),
-                    output: out.clone(),
-                    success: !out.contains("[error]"),
-                });
-            }
-
             let sanitized = sanitize_output(&out);
+            let mut per_block_stats: Option<FilterStats> = None;
             let filtered = if let Some(ref registry) = self.output_filter_registry {
                 match registry.apply(block, &sanitized, exit_code) {
                     Some(fr) => {
@@ -227,14 +219,24 @@ impl ShellExecutor {
                             savings_pct = fr.savings_pct(),
                             "output filter applied"
                         );
+                        let block_fs = FilterStats {
+                            raw_chars: fr.raw_chars,
+                            filtered_chars: fr.filtered_chars,
+                            raw_lines: fr.raw_lines,
+                            filtered_lines: fr.filtered_lines,
+                            confidence: Some(fr.confidence),
+                        };
                         let stats =
                             cumulative_filter_stats.get_or_insert_with(FilterStats::default);
                         stats.raw_chars += fr.raw_chars;
                         stats.filtered_chars += fr.filtered_chars;
+                        stats.raw_lines += fr.raw_lines;
+                        stats.filtered_lines += fr.filtered_lines;
                         stats.confidence = Some(match (stats.confidence, fr.confidence) {
                             (Some(prev), cur) => crate::filter::worse_confidence(prev, cur),
                             (None, cur) => cur,
                         });
+                        per_block_stats = Some(block_fs);
                         fr.output
                     }
                     None => sanitized,
@@ -242,6 +244,16 @@ impl ShellExecutor {
             } else {
                 sanitized
             };
+
+            if let Some(ref tx) = self.tool_event_tx {
+                let _ = tx.send(ToolEvent::Completed {
+                    tool_name: "bash".to_owned(),
+                    command: (*block).to_owned(),
+                    output: out.clone(),
+                    success: !out.contains("[error]"),
+                    filter_stats: per_block_stats,
+                });
+            }
             outputs.push(format!("$ {block}\n{filtered}"));
         }
 

@@ -111,6 +111,80 @@ Tool output exceeding 30 000 characters is truncated (head + tail split) before 
 
 Stale overflow files older than 24 hours are cleaned up automatically on startup.
 
+## Output Filter Pipeline
+
+Before tool output reaches the LLM context, it passes through a command-aware filter pipeline that strips noise and reduces token consumption. Filters are matched by command pattern and composed in sequence.
+
+### Built-in Filters
+
+| Filter | Matches | What it removes |
+|--------|---------|----------------|
+| `TestOutputFilter` | `cargo test`, `cargo nextest`, `pytest`, `go test` | Passing test lines, verbose output; keeps failures and summary |
+| `ClippyFilter` | `cargo clippy` | Duplicate diagnostic paths, redundant `help:` lines |
+| `GitFilter` | `git log`, `git diff` | Limits log entries (default: 20), diff line count (default: 500) |
+| `DirListingFilter` | `ls`, `find`, `tree` | Collapses redundant whitespace and deduplicates paths |
+| `LogDedupFilter` | any command with repetitive log output | Deduplicates consecutive identical lines |
+
+All filters also strip ANSI escape sequences, carriage-return progress bars, and collapse consecutive blank lines (`sanitize_output`).
+
+### Security Pass
+
+After filtering, a security scan runs over the **raw** (pre-filter) output. If credential-shaped patterns are found (API keys, tokens, passwords), a warning is appended to the filtered output so the LLM is aware without exposing the value. Additional regex patterns can be configured via `[tools.filters.security] extra_patterns`.
+
+### FilterConfidence
+
+Each filter reports a confidence level:
+
+| Level | Meaning |
+|-------|---------|
+| `Full` | Filter is certain it handled this output correctly |
+| `Partial` | Heuristic match; some content may have been over-filtered |
+| `Fallback` | Pattern matched but output structure was unexpected |
+
+When multiple filters compose in a pipeline, the worst confidence across stages is propagated. Confidence distribution is tracked in [TUI filter metrics](tui.md#filter-metrics).
+
+### Inline Filter Stats (CLI)
+
+In CLI mode, after each filtered tool execution a one-line summary is printed to the conversation:
+
+```
+[shell] 342 lines -> 28 lines, 91.8% filtered
+```
+
+This appears only when lines were actually removed. It lets you verify the filter is working and estimate token savings without opening the TUI.
+
+### Configuration
+
+```toml
+[tools.filters]
+enabled = true            # Master switch (default: true)
+
+[tools.filters.test]
+enabled = true
+max_failures = 10         # Max failing tests to show (default: 10)
+truncate_stack_trace = 50 # Stack trace line limit (default: 50)
+
+[tools.filters.git]
+enabled = true
+max_log_entries = 20      # Max git log entries (default: 20)
+max_diff_lines = 500      # Max diff lines (default: 500)
+
+[tools.filters.clippy]
+enabled = true
+
+[tools.filters.dir_listing]
+enabled = true
+
+[tools.filters.log_dedup]
+enabled = true
+
+[tools.filters.security]
+enabled = true
+extra_patterns = []       # Additional regex patterns to flag as credentials
+```
+
+Individual filters can be disabled without affecting others.
+
 ## Configuration
 
 ```toml
