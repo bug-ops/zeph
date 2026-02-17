@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Filter metrics not appearing in TUI Resources panel when using native tool_use providers (#480)
+- Output filter matchers not matching compound shell commands like `cd /path && cargo test 2>&1 | tail` (#481)
+- Duplicate `ToolEvent::Completed` emission in shell executor before filtering was applied (#480)
+
 ### Added
 - Syntax-highlighted diff view for write/edit tool output in TUI (#451)
   - Diff rendering with green/red backgrounds for added/removed lines

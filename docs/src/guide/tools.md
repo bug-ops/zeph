@@ -115,6 +115,10 @@ Stale overflow files older than 24 hours are cleaned up automatically on startup
 
 Before tool output reaches the LLM context, it passes through a command-aware filter pipeline that strips noise and reduces token consumption. Filters are matched by command pattern and composed in sequence.
 
+### Compound Command Matching
+
+LLMs often generate compound shell expressions like `cd /path && cargo test 2>&1 | tail -80`. Filter matchers automatically extract the last command segment after `&&` or `;` separators and strip trailing pipes and redirections before matching. This means `cd /Users/me/project && cargo clippy --workspace -- -D warnings 2>&1` correctly matches the `ClippyFilter` — no special configuration needed.
+
 ### Built-in Filters
 
 | Filter | Matches | What it removes |
