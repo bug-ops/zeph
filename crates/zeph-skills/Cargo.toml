@@ -8,23 +8,21 @@ repository.workspace = true
 
 [features]
 default = []
-qdrant = ["dep:qdrant-client", "dep:uuid", "dep:zeph-memory"]
-self-learning = []
 
 [dependencies]
 blake3.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
-qdrant-client = { workspace = true, optional = true, features = ["serde"] }
+qdrant-client = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
-uuid = { workspace = true, optional = true, features = ["v5"] }
+uuid = { workspace = true, features = ["v5"] }
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, optional = true }
+zeph-memory.workspace = true
 
 [[bench]]
 name = "matcher"

@@ -2,11 +2,10 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
-#[cfg(feature = "vault-age")]
 use std::collections::HashMap;
-#[cfg(feature = "vault-age")]
+
 use std::io::Read as _;
-#[cfg(feature = "vault-age")]
+
 use std::path::Path;
 
 use serde::Deserialize;
@@ -60,7 +59,6 @@ impl VaultProvider for EnvVaultProvider {
     }
 }
 
-#[cfg(feature = "vault-age")]
 #[derive(Debug, thiserror::Error)]
 pub enum AgeVaultError {
     #[error("failed to read key file: {0}")]
@@ -77,12 +75,10 @@ pub enum AgeVaultError {
     Json(serde_json::Error),
 }
 
-#[cfg(feature = "vault-age")]
 pub struct AgeVaultProvider {
     secrets: HashMap<String, String>,
 }
 
-#[cfg(feature = "vault-age")]
 impl fmt::Debug for AgeVaultProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgeVaultProvider")
@@ -91,7 +87,6 @@ impl fmt::Debug for AgeVaultProvider {
     }
 }
 
-#[cfg(feature = "vault-age")]
 impl AgeVaultProvider {
     /// Decrypt an age-encrypted JSON secrets file.
     ///
@@ -126,7 +121,6 @@ impl AgeVaultProvider {
     }
 }
 
-#[cfg(feature = "vault-age")]
 impl VaultProvider for AgeVaultProvider {
     fn get_secret(
         &self,
@@ -247,7 +241,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "vault-age"))]
+#[cfg(test)]
 mod age_tests {
     use std::io::Write as _;
 

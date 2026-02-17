@@ -3,11 +3,9 @@ pub enum SkillError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[cfg(feature = "qdrant")]
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),
 
-    #[cfg(feature = "qdrant")]
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 

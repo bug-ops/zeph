@@ -9,21 +9,13 @@ repository.workspace = true
 [features]
 default = []
 candle = ["zeph-llm/candle"]
-compatible = ["zeph-llm/compatible"]
 cuda = ["zeph-llm/cuda"]
 daemon = []
 index = ["dep:zeph-index"]
-mcp = ["dep:zeph-mcp"]
 metal = ["zeph-llm/metal"]
-openai = ["zeph-llm/openai"]
-orchestrator = ["zeph-llm/orchestrator"]
-qdrant = ["zeph-skills/qdrant", "zeph-mcp?/qdrant"]
-router = ["zeph-llm/router"]
-self-learning = ["zeph-skills/self-learning"]
-vault-age = ["dep:age"]
 
 [dependencies]
-age = { workspace = true, optional = true }
+age.workspace = true
 anyhow.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
@@ -36,9 +28,9 @@ toml.workspace = true
 tracing.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
-zeph-mcp = { workspace = true, optional = true, features = ["qdrant"] }
+zeph-mcp.workspace = true
 zeph-memory.workspace = true
-zeph-skills = { workspace = true, features = ["qdrant"] }
+zeph-skills.workspace = true
 zeph-tools.workspace = true
 
 [[bench]]

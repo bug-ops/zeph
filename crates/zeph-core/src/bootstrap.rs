@@ -17,15 +17,11 @@ use zeph_tools::{CompositeExecutor, FileExecutor, ShellExecutor, WebScrapeExecut
 
 use crate::config::{Config, ProviderKind};
 use crate::config_watcher::{ConfigEvent, ConfigWatcher};
-#[cfg(feature = "vault-age")]
 use crate::vault::AgeVaultProvider;
 use crate::vault::{EnvVaultProvider, VaultProvider};
 
-#[cfg(feature = "compatible")]
 use zeph_llm::compatible::CompatibleProvider;
-#[cfg(feature = "openai")]
 use zeph_llm::openai::OpenAiProvider;
-#[cfg(feature = "qdrant")]
 use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 
 pub struct AppBuilder {
@@ -34,7 +30,6 @@ pub struct AppBuilder {
     vault: Box<dyn VaultProvider>,
 }
 
-#[cfg_attr(not(feature = "vault-age"), allow(dead_code))]
 pub struct VaultArgs {
     pub backend: String,
     pub key_path: Option<String>,
@@ -48,7 +43,6 @@ pub struct WatcherBundle {
     pub config_reload_rx: mpsc::Receiver<ConfigEvent>,
 }
 
-#[cfg(feature = "mcp")]
 pub struct ToolExecutorBundle {
     pub executor: CompositeExecutor<
         CompositeExecutor<FileExecutor, CompositeExecutor<ShellExecutor, WebScrapeExecutor>>,
@@ -56,12 +50,6 @@ pub struct ToolExecutorBundle {
     >,
     pub mcp_tools: Vec<zeph_mcp::McpTool>,
     pub mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
-}
-
-#[cfg(not(feature = "mcp"))]
-pub struct ToolExecutorBundleNoMcp {
-    pub executor:
-        CompositeExecutor<FileExecutor, CompositeExecutor<ShellExecutor, WebScrapeExecutor>>,
 }
 
 impl AppBuilder {
@@ -74,7 +62,6 @@ impl AppBuilder {
         let vault_args = parse_vault_args(&config);
         let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
             "env" => Box::new(EnvVaultProvider),
-            #[cfg(feature = "vault-age")]
             "age" => {
                 let key = vault_args
                     .key_path
@@ -191,7 +178,6 @@ impl AppBuilder {
         self.config.skills.paths.iter().map(PathBuf::from).collect()
     }
 
-    #[cfg(feature = "mcp")]
     pub async fn build_tool_executor(&self) -> anyhow::Result<ToolExecutorBundle> {
         let permission_policy = self
             .config
@@ -232,39 +218,6 @@ impl AppBuilder {
             mcp_tools,
             mcp_manager,
         })
-    }
-
-    #[cfg(not(feature = "mcp"))]
-    pub async fn build_tool_executor(&self) -> anyhow::Result<ToolExecutorBundleNoMcp> {
-        let permission_policy = self
-            .config
-            .tools
-            .permission_policy(self.config.security.autonomy_level);
-        let mut shell_executor =
-            ShellExecutor::new(&self.config.tools.shell).with_permissions(permission_policy);
-        if self.config.tools.audit.enabled
-            && let Ok(logger) = zeph_tools::AuditLogger::from_config(&self.config.tools.audit).await
-        {
-            shell_executor = shell_executor.with_audit(logger);
-        }
-
-        let scrape_executor = WebScrapeExecutor::new(&self.config.tools.scrape);
-        let file_executor = FileExecutor::new(
-            self.config
-                .tools
-                .shell
-                .allowed_paths
-                .iter()
-                .map(PathBuf::from)
-                .collect(),
-        );
-
-        let executor = CompositeExecutor::new(
-            file_executor,
-            CompositeExecutor::new(shell_executor, scrape_executor),
-        );
-
-        Ok(ToolExecutorBundleNoMcp { executor })
     }
 
     pub fn build_watchers(&self) -> WatcherBundle {
@@ -374,7 +327,6 @@ pub async fn health_check(provider: &AnyProvider) {
         AnyProvider::Candle(candle) => {
             tracing::info!("candle provider loaded, device: {}", candle.device_name());
         }
-        #[cfg(feature = "orchestrator")]
         AnyProvider::Orchestrator(orch) => {
             for (name, p) in orch.providers() {
                 tracing::info!(
@@ -398,7 +350,6 @@ pub async fn warmup_provider(provider: &AnyProvider) {
                 Err(e) => tracing::warn!("ollama warmup failed: {e:#}"),
             }
         }
-        #[cfg(feature = "orchestrator")]
         AnyProvider::Orchestrator(orch) => {
             for (name, p) in orch.providers() {
                 if let zeph_llm::orchestrator::SubProvider::Ollama(ollama) = p {
@@ -427,7 +378,6 @@ pub async fn create_skill_matcher(
 ) -> Option<SkillMatcherBackend> {
     let embed_fn = provider.embed_fn();
 
-    #[cfg(feature = "qdrant")]
     if config.memory.semantic.enabled && memory.has_qdrant() {
         match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
             Ok(mut qm) => match qm.sync(meta, embedding_model, &embed_fn).await {
@@ -449,7 +399,6 @@ pub async fn create_skill_matcher(
 
 pub fn effective_embedding_model(config: &Config) -> String {
     match config.llm.provider {
-        #[cfg(feature = "openai")]
         ProviderKind::OpenAi => {
             if let Some(m) = config
                 .llm
@@ -460,21 +409,17 @@ pub fn effective_embedding_model(config: &Config) -> String {
                 return m;
             }
         }
-        #[cfg(feature = "orchestrator")]
         ProviderKind::Orchestrator => {
             if let Some(orch) = &config.llm.orchestrator
                 && let Some(pcfg) = orch.providers.get(&orch.embed)
+                && pcfg.provider_type == "openai"
+                && let Some(m) = config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .and_then(|o| o.embedding_model.clone())
             {
-                #[cfg(feature = "openai")]
-                if pcfg.provider_type == "openai"
-                    && let Some(m) = config
-                        .llm
-                        .openai
-                        .as_ref()
-                        .and_then(|o| o.embedding_model.clone())
-                {
-                    return m;
-                }
+                return m;
             }
         }
         ProviderKind::Compatible => {
@@ -496,9 +441,7 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
         ProviderKind::Ollama | ProviderKind::Claude => {
             create_named_provider(config.llm.provider.as_str(), config)
         }
-        #[cfg(feature = "openai")]
         ProviderKind::OpenAi => create_named_provider("openai", config),
-        #[cfg(feature = "compatible")]
         ProviderKind::Compatible => create_named_provider("compatible", config),
         #[cfg(feature = "candle")]
         ProviderKind::Candle => {
@@ -542,12 +485,10 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             )?;
             Ok(AnyProvider::Candle(provider))
         }
-        #[cfg(feature = "orchestrator")]
         ProviderKind::Orchestrator => {
             let orch = build_orchestrator(config)?;
             Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
-        #[cfg(feature = "router")]
         ProviderKind::Router => {
             use zeph_llm::router::RouterProvider;
 
@@ -569,8 +510,7 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 providers,
             ))))
         }
-        #[allow(unreachable_patterns)]
-        other => bail!("LLM provider {other} not available (feature not enabled)"),
+        other => bail!("LLM provider {other} not available"),
     }
 }
 
@@ -603,7 +543,6 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 cloud.max_tokens,
             )))
         }
-        #[cfg(feature = "openai")]
         "openai" => {
             let openai_cfg = config
                 .llm
@@ -627,7 +566,6 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
             )))
         }
         other => {
-            #[cfg(feature = "compatible")]
             if let Some(entries) = &config.llm.compatible {
                 let entry = if other == "compatible" {
                     entries.first()
@@ -703,7 +641,6 @@ pub fn select_device(preference: &str) -> anyhow::Result<zeph_llm::candle_provid
     }
 }
 
-#[cfg(feature = "orchestrator")]
 #[allow(clippy::too_many_lines)]
 pub fn build_orchestrator(
     config: &Config,
@@ -748,7 +685,6 @@ pub fn build_orchestrator(
                     cloud.max_tokens,
                 ))
             }
-            #[cfg(feature = "openai")]
             "openai" => {
                 let openai_cfg = config
                     .llm
@@ -833,7 +769,6 @@ pub fn build_orchestrator(
     )?)
 }
 
-#[cfg(feature = "mcp")]
 pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
     let entries: Vec<zeph_mcp::ServerEntry> = config
         .mcp
@@ -859,7 +794,6 @@ pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
     zeph_mcp::McpManager::new(entries)
 }
 
-#[cfg(feature = "mcp")]
 pub async fn create_mcp_registry(
     config: &Config,
     provider: &AnyProvider,
@@ -1004,7 +938,6 @@ mod tests {
         assert_eq!(effective_embedding_model(&config), "qwen3-embedding");
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn effective_embedding_model_uses_openai_when_set() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1019,7 +952,6 @@ mod tests {
         assert_eq!(effective_embedding_model(&config), "text-embedding-3-small");
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn effective_embedding_model_falls_back_when_openai_embed_missing() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1034,7 +966,6 @@ mod tests {
         assert_eq!(effective_embedding_model(&config), "qwen3-embedding");
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn create_provider_openai_missing_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1050,7 +981,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn create_provider_openai_missing_api_key_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1131,7 +1061,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn create_provider_orchestrator_without_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1147,7 +1076,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn build_orchestrator_with_unknown_provider_errors() {
         use crate::config::OrchestratorProviderConfig;
@@ -1184,7 +1112,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn build_orchestrator_claude_without_cloud_config_errors() {
         use crate::config::OrchestratorProviderConfig;
@@ -1222,7 +1149,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn build_orchestrator_claude_sub_without_api_key_errors() {
         use crate::config::OrchestratorProviderConfig;
@@ -1264,7 +1190,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "orchestrator", feature = "candle"))]
+    #[cfg(feature = "candle")]
     #[test]
     fn build_orchestrator_candle_without_config_errors() {
         use crate::config::OrchestratorProviderConfig;
@@ -1302,7 +1228,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn build_orchestrator_with_ollama_sub_provider() {
         use crate::config::OrchestratorProviderConfig;
@@ -1333,7 +1258,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(feature = "orchestrator")]
     #[test]
     fn build_orchestrator_routes_parsing() {
         use crate::config::OrchestratorProviderConfig;
@@ -1368,7 +1292,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(all(feature = "orchestrator", feature = "candle"))]
+    #[cfg(feature = "candle")]
     #[test]
     fn build_orchestrator_with_candle_local_source() {
         use crate::config::OrchestratorProviderConfig;
@@ -1448,7 +1372,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "orchestrator")]
     #[tokio::test]
     async fn health_check_orchestrator_logs_providers() {
         use std::collections::HashMap;
@@ -1477,7 +1400,6 @@ mod tests {
         health_check(&provider).await;
     }
 
-    #[cfg(feature = "mcp")]
     #[test]
     fn create_mcp_manager_with_http_transport() {
         use std::collections::HashMap;
@@ -1497,7 +1419,6 @@ mod tests {
         assert!(debug.contains("server_count: 1"));
     }
 
-    #[cfg(feature = "mcp")]
     #[test]
     fn create_mcp_manager_with_stdio_transport() {
         use std::collections::HashMap;
@@ -1517,7 +1438,6 @@ mod tests {
         assert!(debug.contains("server_count: 1"));
     }
 
-    #[cfg(feature = "mcp")]
     #[test]
     fn create_mcp_manager_empty_servers() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -1528,7 +1448,6 @@ mod tests {
         assert!(debug.contains("server_count: 0"));
     }
 
-    #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn create_mcp_registry_when_semantic_disabled() {
         let config_path = Path::new("/nonexistent");

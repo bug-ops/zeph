@@ -1195,7 +1195,7 @@ async fn agent_skills_command_with_usage_stats() {
     assert!(skills_output.is_some());
 }
 
-// -- /skill command disabled (non-self-learning) --
+// -- /skill command --
 
 #[tokio::test]
 async fn agent_skill_command_disabled() {
@@ -1215,11 +1215,11 @@ async fn agent_skill_command_disabled() {
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
-    // In self-learning builds, this shows stats; in non-self-learning, it says "not enabled"
+    // Shows skill stats
     assert!(!collected.is_empty());
 }
 
-// -- /feedback command disabled (non-self-learning) --
+// -- /feedback command --
 
 #[tokio::test]
 async fn agent_feedback_disabled() {
@@ -2083,7 +2083,6 @@ async fn agent_no_tool_output_stops_loop() {
 
 // --- Self-learning agent tests ---
 
-#[cfg(feature = "self-learning")]
 mod self_learning {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
