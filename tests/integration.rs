@@ -166,6 +166,7 @@ impl ToolExecutor for OutputToolExecutor {
             summary: self.output.clone(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
@@ -179,6 +180,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             summary: String::new(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
@@ -192,6 +194,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             summary: "[error] command failed".into(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
@@ -221,6 +224,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             summary: "confirmed output".into(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
@@ -255,6 +259,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
@@ -2160,6 +2165,7 @@ mod self_learning {
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
                 filter_stats: None,
+                diff: None,
             }))
         }
     }

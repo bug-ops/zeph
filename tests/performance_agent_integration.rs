@@ -101,6 +101,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
                 summary: "$ echo test\ntest".to_string(),
                 blocks_executed: 1,
                 filter_stats: None,
+                diff: None,
             }))
         } else {
             Ok(None)
