@@ -165,6 +165,7 @@ impl ToolExecutor for OutputToolExecutor {
             tool_name: "bash".to_string(),
             summary: self.output.clone(),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }
@@ -177,6 +178,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             tool_name: "bash".to_string(),
             summary: String::new(),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }
@@ -189,6 +191,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             tool_name: "bash".to_string(),
             summary: "[error] command failed".into(),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }
@@ -217,6 +220,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             tool_name: "bash".to_string(),
             summary: "confirmed output".into(),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }
@@ -250,6 +254,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             tool_name: "bash".to_string(),
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }
@@ -2154,6 +2159,7 @@ mod self_learning {
                 tool_name: "bash".to_string(),
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
+                filter_stats: None,
             }))
         }
     }

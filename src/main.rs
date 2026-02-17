@@ -781,6 +781,7 @@ mod tests {
     use std::path::Path;
     use zeph_core::channel::Channel;
     use zeph_core::config::ProviderKind;
+    #[cfg(feature = "a2a")]
     use zeph_llm::ollama::OllamaProvider;
 
     #[tokio::test]

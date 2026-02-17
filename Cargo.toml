@@ -104,7 +104,7 @@ repository.workspace = true
 
 [features]
 default = []
-full = ["a2a", "discord", "gateway", "index", "slack", "tui"]
+full = ["a2a", "discord", "gateway", "index", "mock", "slack", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 metal = ["zeph-llm/metal", "zeph-core/metal"]

@@ -100,6 +100,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
                 tool_name: "bash".to_string(),
                 summary: "$ echo test\ntest".to_string(),
                 blocks_executed: 1,
+                filter_stats: None,
             }))
         } else {
             Ok(None)
