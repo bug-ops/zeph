@@ -641,24 +641,20 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 .iter()
                 .zip(tool_calls.iter())
                 .map(|(call, tc)| {
-                    self.tool_executor
-                        .execute_tool_call(call)
-                        .instrument(tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id))
+                    self.tool_executor.execute_tool_call(call).instrument(
+                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
+                    )
                 })
                 .collect();
             futures::future::join_all(futs).await
         } else {
             use futures::StreamExt;
-            let stream = futures::stream::iter(
-                calls
-                    .iter()
-                    .zip(tool_calls.iter())
-                    .map(|(call, tc)| {
-                        self.tool_executor
-                            .execute_tool_call(call)
-                            .instrument(tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id))
-                    }),
-            );
+            let stream =
+                futures::stream::iter(calls.iter().zip(tool_calls.iter()).map(|(call, tc)| {
+                    self.tool_executor.execute_tool_call(call).instrument(
+                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
+                    )
+                }));
             futures::StreamExt::collect::<Vec<_>>(stream.buffered(max_parallel)).await
         };
 
@@ -768,8 +764,8 @@ fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use futures::future::join_all;
@@ -865,7 +861,10 @@ mod tests {
         };
         let calls = make_calls(5);
 
-        let futs: Vec<_> = calls.iter().map(|c| executor.execute_tool_call(c)).collect();
+        let futs: Vec<_> = calls
+            .iter()
+            .map(|c| executor.execute_tool_call(c))
+            .collect();
         let results = join_all(futs).await;
 
         for (i, r) in results.iter().enumerate() {
@@ -883,7 +882,10 @@ mod tests {
         let calls = make_calls(4);
 
         let start = Instant::now();
-        let futs: Vec<_> = calls.iter().map(|c| executor.execute_tool_call(c)).collect();
+        let futs: Vec<_> = calls
+            .iter()
+            .map(|c| executor.execute_tool_call(c))
+            .collect();
         let _results = join_all(futs).await;
         let parallel_time = start.elapsed();
 
@@ -902,7 +904,10 @@ mod tests {
         };
         let calls = make_calls(3);
 
-        let futs: Vec<_> = calls.iter().map(|c| executor.execute_tool_call(c)).collect();
+        let futs: Vec<_> = calls
+            .iter()
+            .map(|c| executor.execute_tool_call(c))
+            .collect();
         let results = join_all(futs).await;
 
         assert!(results[0].is_ok());
@@ -921,8 +926,7 @@ mod tests {
         let calls = make_calls(6);
         let max_parallel = 2;
 
-        let stream =
-            futures::stream::iter(calls.iter().map(|c| executor.execute_tool_call(c)));
+        let stream = futures::stream::iter(calls.iter().map(|c| executor.execute_tool_call(c)));
         let results: Vec<_> =
             futures::StreamExt::collect::<Vec<_>>(stream.buffered(max_parallel)).await;
 
