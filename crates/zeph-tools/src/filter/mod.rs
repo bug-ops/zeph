@@ -217,7 +217,14 @@ mod tests {
     #[test]
     fn registry_default_has_filters() {
         let r = OutputFilterRegistry::default_filters();
-        assert!(r.apply("cargo test", "test result: ok. 5 passed; 0 failed; 0 ignored; 0 filtered out", 0).is_some());
+        assert!(
+            r.apply(
+                "cargo test",
+                "test result: ok. 5 passed; 0 failed; 0 ignored; 0 filtered out",
+                0
+            )
+            .is_some()
+        );
     }
 
     #[test]

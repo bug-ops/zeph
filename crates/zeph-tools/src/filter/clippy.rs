@@ -11,8 +11,7 @@ pub struct ClippyFilter;
 static LINT_RULE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#\[warn\(([^)]+)\)\]").unwrap());
 
-static LOCATION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*-->\s*(.+:\d+)").unwrap());
+static LOCATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-->\s*(.+:\d+)").unwrap());
 
 impl OutputFilter for ClippyFilter {
     fn matches(&self, command: &str) -> bool {
@@ -101,10 +100,18 @@ warning: unused import
 warning: `my-crate` (lib) generated 3 warnings
 ";
         let result = f.filter("cargo clippy", raw, 0);
-        assert!(result.output.contains("clippy::needless_pass_by_value (2 warnings):"));
+        assert!(
+            result
+                .output
+                .contains("clippy::needless_pass_by_value (2 warnings):")
+        );
         assert!(result.output.contains("src/foo.rs:12"));
         assert!(result.output.contains("src/bar.rs:45"));
-        assert!(result.output.contains("clippy::unused_imports (1 warning):"));
+        assert!(
+            result
+                .output
+                .contains("clippy::unused_imports (1 warning):")
+        );
         assert!(result.output.contains("3 warnings total (2 rules)"));
     }
 

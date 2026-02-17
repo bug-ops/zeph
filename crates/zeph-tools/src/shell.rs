@@ -367,7 +367,11 @@ fn chrono_now() -> String {
     format!("{secs}")
 }
 
-async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEventTx>) -> (String, i32) {
+async fn execute_bash(
+    code: &str,
+    timeout: Duration,
+    event_tx: Option<&ToolEventTx>,
+) -> (String, i32) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -437,10 +441,7 @@ async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEvent
     }
 
     let status = child.wait().await;
-    let exit_code = status
-        .ok()
-        .and_then(|s| s.code())
-        .unwrap_or(1);
+    let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(1);
 
     if combined.is_empty() {
         ("(no output)".to_string(), exit_code)
@@ -525,7 +526,8 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stdout_and_stderr_combined() {
-        let (result, _) = execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
+        let (result, _) =
+            execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
         assert!(result.contains("out"));
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
@@ -1116,7 +1118,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_command_not_found() {
-        let (result, _) = execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
+        let (result, _) =
+            execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
         assert!(result.contains("[stderr]") || result.contains("[error]"));
     }
 

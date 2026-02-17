@@ -73,7 +73,11 @@ mod tests {
         assert!(result.output.contains("src"));
         assert!(result.output.contains("README.md"));
         assert!(!result.output.contains("\ntarget\n"));
-        assert!(result.output.contains("(+ 3 hidden: target, node_modules, .git)"));
+        assert!(
+            result
+                .output
+                .contains("(+ 3 hidden: target, node_modules, .git)")
+        );
     }
 
     #[test]
