@@ -12,6 +12,8 @@ pub struct MockProvider {
     pub supports_embeddings: bool,
     pub streaming: bool,
     pub fail_chat: bool,
+    /// Milliseconds to sleep before returning a response.
+    pub delay_ms: u64,
 }
 
 impl Default for MockProvider {
@@ -23,6 +25,7 @@ impl Default for MockProvider {
             supports_embeddings: false,
             streaming: false,
             fail_chat: false,
+            delay_ms: 0,
         }
     }
 }
@@ -49,6 +52,12 @@ impl MockProvider {
         self.streaming = true;
         self
     }
+
+    #[must_use]
+    pub fn with_delay(mut self, ms: u64) -> Self {
+        self.delay_ms = ms;
+        self
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -57,6 +66,9 @@ impl LlmProvider for MockProvider {
     }
 
     async fn chat(&self, _messages: &[Message]) -> Result<String, crate::LlmError> {
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
         if self.fail_chat {
             return Err(crate::LlmError::Other("mock LLM error".into()));
         }

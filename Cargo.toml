@@ -125,6 +125,7 @@ daemon = ["zeph-core/daemon"]
 scheduler = ["dep:zeph-scheduler"]
 vault-age = ["zeph-core/vault-age"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+mock = ["zeph-llm/mock"]
 
 [dependencies]
 anyhow.workspace = true

@@ -5,53 +5,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
-use zeph_llm::error::LlmError;
-use zeph_llm::provider::{LlmProvider, Message};
+use zeph_llm::any::AnyProvider;
+use zeph_llm::mock::MockProvider;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
-// Mock Provider for performance testing
-#[derive(Clone)]
-struct MockProvider {
-    response: String,
-}
-
-impl MockProvider {
-    fn new(response: &str) -> Self {
-        Self {
-            response: response.to_string(),
-        }
-    }
-}
-
-impl LlmProvider for MockProvider {
-    async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-        Ok(self.response.clone())
-    }
-
-    async fn chat_stream(
-        &self,
-        messages: &[Message],
-    ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
-        let response = self.chat(messages).await?;
-        Ok(Box::pin(tokio_stream::once(Ok(response))))
-    }
-
-    fn supports_streaming(&self) -> bool {
-        false
-    }
-
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.1, 0.2, 0.3])
-    }
-
-    fn supports_embeddings(&self) -> bool {
-        false
-    }
-
-    fn name(&self) -> &'static str {
-        "mock"
-    }
+fn mock_provider(response: &str) -> AnyProvider {
+    let mut p = MockProvider::default();
+    p.default_response = response.to_string();
+    AnyProvider::Mock(p)
 }
 
 // Mock Channel for performance testing
@@ -151,7 +113,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
 
 #[tokio::test]
 async fn agent_integration_no_bash_blocks() {
-    let provider = MockProvider::new("Just a plain response without bash blocks");
+    let provider = mock_provider("Just a plain response without bash blocks");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["hello"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
@@ -189,7 +151,7 @@ async fn agent_integration_with_safe_bash_blocks() {
     // Note: Agent runs the process_response loop up to MAX_SHELL_ITERATIONS (3) times
     // Each iteration calls execute() once. When no bash blocks in next iteration,
     // the loop exits. So total calls = # of messages processed.
-    let provider = MockProvider::new("Here's a command:\n```bash\necho hello\n```\nDone.");
+    let provider = mock_provider("Here's a command:\n```bash\necho hello\n```\nDone.");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["run echo"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
@@ -219,7 +181,7 @@ async fn agent_integration_with_safe_bash_blocks() {
 
 #[tokio::test]
 async fn tool_executor_overhead_is_minimal() {
-    let provider = MockProvider::new("response");
+    let provider = mock_provider("response");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
@@ -361,7 +323,7 @@ async fn integration_agent_tool_executor_types() {
     use zeph_tools::config::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
-    let provider = MockProvider::new("test");
+    let provider = mock_provider("test");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec![], output_sent.clone());
     let shell_config = ShellConfig {
@@ -373,7 +335,7 @@ async fn integration_agent_tool_executor_types() {
     let executor = ShellExecutor::new(&shell_config);
 
     // Should compile and construct successfully
-    let _agent: Agent<MockProvider, MockChannel, ShellExecutor> = Agent::new(
+    let _agent: Agent<MockChannel, ShellExecutor> = Agent::new(
         provider,
         channel,
         SkillRegistry::default(),
@@ -390,7 +352,7 @@ async fn integration_agent_tool_executor_types() {
 #[tokio::test]
 async fn agent_throughput_multiple_responses() {
     // Test throughput: how many responses can be processed
-    let provider = MockProvider::new("plain response without bash");
+    let provider = mock_provider("plain response without bash");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(
         vec!["msg1", "msg2", "msg3", "msg4", "msg5"],
@@ -479,7 +441,7 @@ async fn agent_no_regression_in_error_handling() {
     };
     let executor = ShellExecutor::new(&shell_config);
 
-    let provider = MockProvider::new("Try this:\n```bash\ndangerous command\n```");
+    let provider = mock_provider("Try this:\n```bash\ndangerous command\n```");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
 
@@ -511,7 +473,7 @@ async fn agent_no_regression_in_error_handling() {
 async fn agent_no_memory_leaks_in_loop() {
     // Test that repeated message processing doesn't leak memory
     // (This is a sanity check; actual memory profiling would need valgrind/heaptrack)
-    let provider = MockProvider::new("response");
+    let provider = mock_provider("response");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(
         vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
@@ -548,7 +510,7 @@ async fn agent_tool_executor_error_recovery() {
     };
     let executor = ShellExecutor::new(&shell_config);
 
-    let provider = MockProvider::new("```bash\nforbidden action\n```");
+    let provider = mock_provider("```bash\nforbidden action\n```");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["user input"], output_sent.clone());
 
