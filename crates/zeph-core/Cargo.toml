@@ -8,9 +8,17 @@ repository.workspace = true
 
 [features]
 default = []
+candle = ["zeph-llm/candle"]
+compatible = ["zeph-llm/compatible"]
+cuda = ["zeph-llm/cuda"]
+daemon = []
 index = ["dep:zeph-index"]
 mcp = ["dep:zeph-mcp"]
-daemon = []
+metal = ["zeph-llm/metal"]
+openai = ["zeph-llm/openai"]
+orchestrator = ["zeph-llm/orchestrator"]
+qdrant = ["zeph-skills/qdrant", "zeph-mcp?/qdrant"]
+router = ["zeph-llm/router"]
 self-learning = ["zeph-skills/self-learning"]
 vault-age = ["dep:age"]
 

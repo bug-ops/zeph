@@ -674,7 +674,7 @@ fn default_a2a_timeout() -> u64 {
     30
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
@@ -691,7 +691,7 @@ impl Default for SecurityConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct TimeoutConfig {
     #[serde(default = "default_llm_timeout")]
     pub llm_seconds: u64,

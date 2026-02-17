@@ -1,6 +1,8 @@
 //! Agent loop, configuration loading, and context builder.
 
 pub mod agent;
+#[allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
+pub mod bootstrap;
 pub mod channel;
 pub mod config;
 pub mod config_watcher;
