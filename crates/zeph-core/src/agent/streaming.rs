@@ -619,7 +619,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 .instrument(tracing::info_span!("tool_exec", tool_name = %tc.name))
                 .await;
             let (output, is_error) = match tool_result {
-                Ok(Some(out)) => (out.summary, false),
+                Ok(Some(out)) => {
+                    if let Some(diff) = out.diff {
+                        let _ = self.channel.send_diff(diff).await;
+                    }
+                    (out.summary, false)
+                }
                 Ok(None) => ("(no output)".to_owned(), false),
                 Err(e) => (format!("[error] {e}"), true),
             };

@@ -15,7 +15,10 @@ pub mod project;
 pub mod redact;
 pub mod vault;
 
+pub mod diff;
+
 pub use agent::Agent;
 pub use agent::error::AgentError;
 pub use channel::{Channel, ChannelError, ChannelMessage};
 pub use config::Config;
+pub use diff::DiffData;

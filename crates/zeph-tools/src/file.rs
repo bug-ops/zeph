@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 
-use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::{InvocationHint, ToolDef};
 
 // Schema-only: fields are read by schemars derive, not by Rust code directly.
@@ -144,6 +144,7 @@ impl FileExecutor {
             summary: selected.join("\n"),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 
@@ -155,6 +156,8 @@ impl FileExecutor {
         let content = param_str(params, "content")?;
         let path = self.validate_path(Path::new(&path_str))?;
 
+        let old_content = std::fs::read_to_string(&path).unwrap_or_default();
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -165,6 +168,11 @@ impl FileExecutor {
             summary: format!("Wrote {} bytes to {path_str}", content.len()),
             blocks_executed: 1,
             filter_stats: None,
+            diff: Some(DiffData {
+                file_path: path_str,
+                old_content,
+                new_content: content,
+            }),
         }))
     }
 
@@ -193,6 +201,11 @@ impl FileExecutor {
             summary: format!("Edited {path_str}"),
             blocks_executed: 1,
             filter_stats: None,
+            diff: Some(DiffData {
+                file_path: path_str,
+                old_content: content,
+                new_content,
+            }),
         }))
     }
 
@@ -225,6 +238,7 @@ impl FileExecutor {
             },
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 
@@ -267,6 +281,7 @@ impl FileExecutor {
             },
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }

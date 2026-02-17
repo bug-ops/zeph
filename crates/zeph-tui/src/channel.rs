@@ -91,6 +91,14 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
+        self.agent_event_tx
+            .send(AgentEvent::DiffReady(diff))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)?;
+        Ok(())
+    }
+
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx

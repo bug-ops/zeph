@@ -12,6 +12,7 @@ crossterm.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
 thiserror.workspace = true
+similar.workspace = true
 throbber-widgets-tui = "0.10"
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 unicode-width.workspace = true

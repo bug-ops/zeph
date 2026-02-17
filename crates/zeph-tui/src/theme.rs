@@ -33,6 +33,13 @@ pub struct Theme {
     pub tool_command: Style,
     pub assistant_accent: Style,
     pub tool_accent: Style,
+    pub diff_added_bg: Color,
+    pub diff_removed_bg: Color,
+    pub diff_word_added_bg: Color,
+    pub diff_word_removed_bg: Color,
+    pub diff_gutter_add: Style,
+    pub diff_gutter_remove: Style,
+    pub diff_header: Style,
 }
 
 impl Default for Theme {
@@ -69,6 +76,13 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             assistant_accent: Style::default().fg(Color::Rgb(185, 85, 25)),
             tool_accent: Style::default().fg(Color::Rgb(140, 120, 50)),
+            diff_added_bg: Color::Rgb(0, 40, 0),
+            diff_removed_bg: Color::Rgb(40, 0, 0),
+            diff_word_added_bg: Color::Rgb(0, 80, 0),
+            diff_word_removed_bg: Color::Rgb(80, 0, 0),
+            diff_gutter_add: Style::default().fg(Color::Green),
+            diff_gutter_remove: Style::default().fg(Color::Red),
+            diff_header: Style::default().fg(Color::DarkGray),
         }
     }
 }

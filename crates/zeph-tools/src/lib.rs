@@ -19,8 +19,8 @@ pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
 pub use config::{AuditConfig, ScrapeConfig, ShellConfig, ToolsConfig};
 pub use executor::{
-    FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor,
-    ToolOutput, truncate_tool_output,
+    DiffData, FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall, ToolError, ToolEvent, ToolEventTx,
+    ToolExecutor, ToolOutput, truncate_tool_output,
 };
 pub use file::FileExecutor;
 pub use filter::{

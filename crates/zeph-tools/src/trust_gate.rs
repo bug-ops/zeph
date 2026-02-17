@@ -119,6 +119,7 @@ mod tests {
                 summary: "ok".into(),
                 blocks_executed: 1,
                 filter_stats: None,
+                diff: None,
             }))
         }
     }

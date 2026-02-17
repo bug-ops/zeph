@@ -248,6 +248,24 @@ fn render_tool_message(
     ];
     lines.extend(wrap_spans(cmd_spans, wrap_width));
 
+    // Diff rendering for write/edit tools
+    if let Some(ref diff_data) = msg.diff_data {
+        let diff_lines = super::diff::compute_diff(&diff_data.old_content, &diff_data.new_content);
+        if app.tool_expanded() {
+            let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
+            for line in rendered {
+                let mut prefixed_spans = vec![Span::styled(indent.clone(), Style::default())];
+                prefixed_spans.extend(line.spans);
+                lines.push(Line::from(prefixed_spans));
+            }
+        } else {
+            let compact =
+                super::diff::render_diff_compact(&diff_data.file_path, &diff_lines, theme);
+            lines.push(compact);
+        }
+        return;
+    }
+
     // Output lines (everything after the command)
     if content_lines.len() > 1 {
         let output_lines = &content_lines[1..];

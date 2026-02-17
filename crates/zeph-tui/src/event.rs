@@ -33,12 +33,14 @@ pub enum AgentEvent {
         command: String,
         output: String,
         success: bool,
+        diff: Option<zeph_core::DiffData>,
     },
     ConfirmRequest {
         prompt: String,
         response_tx: oneshot::Sender<bool>,
     },
     QueueCount(usize),
+    DiffReady(zeph_core::DiffData),
 }
 
 pub struct EventReader {

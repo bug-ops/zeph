@@ -93,6 +93,18 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send diff data for a tool result. No-op by default (TUI overrides).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_diff(
+        &mut self,
+        _diff: crate::DiffData,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Request user confirmation for a destructive action. Returns `true` if confirmed.
     /// Default: auto-confirm (for headless/test scenarios).
     ///

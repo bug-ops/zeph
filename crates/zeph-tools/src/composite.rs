@@ -60,6 +60,7 @@ mod tests {
                 summary: "matched".to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
+                diff: None,
             }))
         }
     }
@@ -91,6 +92,7 @@ mod tests {
                 summary: "second".to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
+                diff: None,
             }))
         }
     }
@@ -167,6 +169,7 @@ mod tests {
                     summary: "file_handler".to_owned(),
                     blocks_executed: 1,
                     filter_stats: None,
+                    diff: None,
                 }))
             } else {
                 Ok(None)
@@ -190,6 +193,7 @@ mod tests {
                     summary: "shell_handler".to_owned(),
                     blocks_executed: 1,
                     filter_stats: None,
+                    diff: None,
                 }))
             } else {
                 Ok(None)

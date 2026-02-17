@@ -106,6 +106,7 @@ impl ToolExecutor for WebScrapeExecutor {
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
+            diff: None,
         }))
     }
 
@@ -134,6 +135,7 @@ impl ToolExecutor for WebScrapeExecutor {
             summary: result,
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         }))
     }
 }

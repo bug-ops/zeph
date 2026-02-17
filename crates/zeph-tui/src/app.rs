@@ -27,6 +27,7 @@ pub struct ChatMessage {
     pub content: String,
     pub streaming: bool,
     pub tool_name: Option<String>,
+    pub diff_data: Option<zeph_core::DiffData>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +121,7 @@ impl App {
                     content: body,
                     streaming: false,
                     tool_name: Some(tool_name),
+                    diff_data: None,
                 });
                 continue;
             }
@@ -134,6 +136,7 @@ impl App {
                 content: content.to_owned(),
                 streaming: false,
                 tool_name: None,
+                diff_data: None,
             });
         }
         if !self.messages.is_empty() {
@@ -239,6 +242,7 @@ impl App {
         self.agent_event_rx.recv()
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
@@ -254,6 +258,7 @@ impl App {
                         content: text,
                         streaming: true,
                         tool_name: None,
+                        diff_data: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -266,6 +271,7 @@ impl App {
                         content: text,
                         streaming: false,
                         tool_name: None,
+                        diff_data: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -291,6 +297,7 @@ impl App {
                     content: format!("$ {command}\n"),
                     streaming: true,
                     tool_name: Some(tool_name),
+                    diff_data: None,
                 });
                 self.scroll_offset = 0;
             }
@@ -305,7 +312,7 @@ impl App {
                 }
                 self.scroll_offset = 0;
             }
-            AgentEvent::ToolOutput { .. } => {
+            AgentEvent::ToolOutput { diff, .. } => {
                 if let Some(msg) = self
                     .messages
                     .iter_mut()
@@ -313,6 +320,7 @@ impl App {
                     .find(|m| m.role == MessageRole::Tool && m.streaming)
                 {
                     msg.streaming = false;
+                    msg.diff_data = diff;
                 }
                 self.scroll_offset = 0;
             }
@@ -327,6 +335,16 @@ impl App {
             }
             AgentEvent::QueueCount(count) => {
                 self.queued_count = count;
+            }
+            AgentEvent::DiffReady(diff) => {
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Tool)
+                {
+                    msg.diff_data = Some(diff);
+                }
             }
         }
     }
@@ -568,6 +586,7 @@ impl App {
             content: text.clone(),
             streaming: false,
             tool_name: None,
+            diff_data: None,
         });
         self.input.clear();
         self.cursor_position = 0;

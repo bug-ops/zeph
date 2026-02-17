@@ -82,6 +82,9 @@ impl Channel for AppChannel {
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_queue_count, count)
     }
+    async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_diff, diff)
+    }
 }
 
 #[tokio::main]
@@ -501,12 +504,14 @@ async fn forward_tool_events_to_tui(
                 command,
                 output,
                 success,
+                diff,
                 ..
             } => zeph_tui::AgentEvent::ToolOutput {
                 tool_name,
                 command,
                 output,
                 success,
+                diff,
             },
         };
         if tx.send(agent_event).await.is_err() {

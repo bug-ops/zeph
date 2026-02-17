@@ -1,6 +1,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
+/// Data for rendering file diffs in the TUI.
+#[derive(Debug, Clone)]
+pub struct DiffData {
+    pub file_path: String,
+    pub old_content: String,
+    pub new_content: String,
+}
+
 /// Structured tool invocation from LLM.
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -51,6 +59,7 @@ pub struct ToolOutput {
     pub summary: String,
     pub blocks_executed: u32,
     pub filter_stats: Option<FilterStats>,
+    pub diff: Option<DiffData>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -98,6 +107,7 @@ pub enum ToolEvent {
         output: String,
         success: bool,
         filter_stats: Option<FilterStats>,
+        diff: Option<DiffData>,
     },
 }
 
@@ -189,6 +199,7 @@ mod tests {
             summary: "$ echo hello\nhello".to_owned(),
             blocks_executed: 1,
             filter_stats: None,
+            diff: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }

@@ -68,6 +68,7 @@ impl ToolExecutor for McpToolExecutor {
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
+            diff: None,
         }))
     }
 }
