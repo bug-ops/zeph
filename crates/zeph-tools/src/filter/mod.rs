@@ -68,12 +68,40 @@ pub enum CommandMatcher {
 impl CommandMatcher {
     #[must_use]
     pub fn matches(&self, command: &str) -> bool {
+        self.matches_single(command)
+            || extract_last_command(command).is_some_and(|last| self.matches_single(last))
+    }
+
+    fn matches_single(&self, command: &str) -> bool {
         match self {
             Self::Exact(s) => command == *s,
             Self::Prefix(s) => command.starts_with(s),
             Self::Regex(re) => re.is_match(command),
             Self::Custom(f) => f(command),
         }
+    }
+}
+
+/// Extract the last command segment from compound shell expressions
+/// like `cd /path && cargo test` or `cmd1 ; cmd2`. Strips trailing
+/// redirections and pipes (e.g. `2>&1 | tail -50`).
+fn extract_last_command(command: &str) -> Option<&str> {
+    let last = command
+        .rsplit("&&")
+        .next()
+        .or_else(|| command.rsplit(';').next())?;
+    let last = last.trim();
+    if last == command.trim() {
+        return None;
+    }
+    // Strip trailing pipe chain and redirections: take content before first `|` or `2>`
+    let last = last.split('|').next().unwrap_or(last);
+    let last = last.split("2>").next().unwrap_or(last);
+    let trimmed = last.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
     }
 }
 
@@ -752,6 +780,38 @@ extra_patterns = ["TODO: security review"]
         let m = CommandMatcher::Custom(Box::new(|cmd| cmd.contains("hello")));
         assert!(m.matches("say hello world"));
         assert!(!m.matches("goodbye"));
+    }
+
+    #[test]
+    fn command_matcher_compound_cd_and() {
+        let m = CommandMatcher::Prefix("cargo ");
+        assert!(m.matches("cd /some/path && cargo test --workspace --lib"));
+        assert!(m.matches("cd /path && cargo clippy --workspace -- -D warnings 2>&1"));
+    }
+
+    #[test]
+    fn command_matcher_compound_with_pipe() {
+        let m = CommandMatcher::Custom(Box::new(|cmd| cmd.split_whitespace().any(|t| t == "test")));
+        assert!(m.matches("cd /path && cargo test --workspace --lib 2>&1 | tail -80"));
+    }
+
+    #[test]
+    fn command_matcher_compound_no_false_positive() {
+        let m = CommandMatcher::Exact("ls");
+        assert!(!m.matches("cd /path && cargo test"));
+    }
+
+    #[test]
+    fn extract_last_command_basic() {
+        assert_eq!(
+            extract_last_command("cd /path && cargo test --lib"),
+            Some("cargo test --lib")
+        );
+        assert_eq!(
+            extract_last_command("cd /p && cargo clippy 2>&1 | tail -20"),
+            Some("cargo clippy")
+        );
+        assert!(extract_last_command("cargo test").is_none());
     }
 
     // FilterConfidence derives
