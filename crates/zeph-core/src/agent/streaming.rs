@@ -309,14 +309,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 }
 
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
-                if let Some(ref fs) = output.filter_stats {
-                    tracing::debug!(
-                        tool = %output.tool_name,
-                        raw_chars = fs.raw_chars,
-                        filtered_chars = fs.filtered_chars,
-                        "inline filter stats check (text-mode)"
-                    );
-                }
                 let body = if let Some(ref fs) = output.filter_stats
                     && fs.filtered_chars < fs.raw_chars
                 {
@@ -678,16 +670,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                         let _ = self.channel.send_diff(diff).await;
                     }
                     let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                        tracing::debug!(
-                            tool = %tc.name,
-                            raw_chars = fs.raw_chars,
-                            filtered_chars = fs.filtered_chars,
-                            raw_lines = fs.raw_lines,
-                            filtered_lines = fs.filtered_lines,
-                            "inline filter stats check"
-                        );
-                        (fs.filtered_chars < fs.raw_chars)
-                            .then(|| fs.format_inline(&tc.name))
+                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
                     });
                     (out.summary, false, inline_stats)
                 }

@@ -34,6 +34,7 @@ pub enum AgentEvent {
         output: String,
         success: bool,
         diff: Option<zeph_core::DiffData>,
+        filter_stats: Option<String>,
     },
     ConfirmRequest {
         prompt: String,

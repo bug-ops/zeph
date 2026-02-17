@@ -1,6 +1,6 @@
 //! Command-aware output filtering pipeline.
 
-mod cargo_build;
+pub(crate) mod cargo_build;
 mod clippy;
 mod dir_listing;
 mod git;
@@ -472,9 +472,7 @@ impl OutputFilterRegistry {
             r.register(Box::new(ClippyFilter::new(config.clippy.clone())));
         }
         if config.cargo_build.enabled {
-            r.register(Box::new(CargoBuildFilter::new(
-                config.cargo_build.clone(),
-            )));
+            r.register(Box::new(CargoBuildFilter::new(config.cargo_build.clone())));
         }
         if config.git.enabled {
             r.register(Box::new(GitFilter::new(config.git.clone())));
@@ -521,7 +519,6 @@ impl OutputFilterRegistry {
                 raw_output,
                 &self.extra_security_patterns,
             );
-            result.filtered_chars = result.output.len();
         }
 
         self.record_metrics(&result);
@@ -555,7 +552,14 @@ impl OutputFilterRegistry {
 // Helpers
 // ---------------------------------------------------------------------------
 
-static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
+static ANSI_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][A-B0-2]").unwrap());
+
+/// Strip only ANSI escape sequences, preserving newlines and whitespace.
+#[must_use]
+pub fn strip_ansi(raw: &str) -> String {
+    ANSI_RE.replace_all(raw, "").into_owned()
+}
 
 /// Strip ANSI escape sequences, carriage-return progress bars, and collapse blank lines.
 #[must_use]

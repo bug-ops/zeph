@@ -5,7 +5,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::{
-    ClippyFilterConfig, CommandMatcher, FilterConfidence, FilterResult, OutputFilter, make_result,
+    ClippyFilterConfig, CommandMatcher, FilterConfidence, FilterResult, OutputFilter,
+    cargo_build::is_cargo_noise, make_result,
 };
 
 static CLIPPY_MATCHER: LazyLock<CommandMatcher> = LazyLock::new(|| {
@@ -66,6 +67,11 @@ impl OutputFilter for ClippyFilter {
         }
 
         if warnings.is_empty() {
+            let kept: Vec<&str> = raw_output.lines().filter(|l| !is_cargo_noise(l)).collect();
+            if kept.len() < raw_output.lines().count() {
+                let output = kept.join("\n");
+                return make_result(raw_output, output, FilterConfidence::Partial);
+            }
             return make_result(
                 raw_output,
                 raw_output.to_owned(),
@@ -160,11 +166,11 @@ warning: `my-crate` (lib) generated 3 warnings
     }
 
     #[test]
-    fn filter_no_warnings_passthrough() {
+    fn filter_no_warnings_strips_noise() {
         let f = make_filter();
         let raw = "Checking my-crate v0.1.0\n    Finished dev [unoptimized] target(s)";
         let result = f.filter("cargo clippy", raw, 0);
-        assert_eq!(result.output, raw);
-        assert_eq!(result.confidence, FilterConfidence::Fallback);
+        assert!(result.output.is_empty());
+        assert_eq!(result.confidence, FilterConfidence::Partial);
     }
 }

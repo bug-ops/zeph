@@ -296,11 +296,18 @@ fn render_tool_message(
             } else {
                 lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
                 let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
-                let hint = format!("{indent}... ({remaining} more lines, press 'e' to expand)");
-                lines.push(Line::from(Span::styled(
-                    hint,
-                    Style::default().add_modifier(Modifier::DIM),
-                )));
+                let dim = Style::default().add_modifier(Modifier::DIM);
+                let stats_style = Style::default().fg(ratatui::style::Color::Indexed(243));
+                let mut spans = vec![Span::styled(
+                    format!(
+                        "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
+                    ),
+                    dim,
+                )];
+                if let Some(ref stats) = msg.filter_stats {
+                    spans.push(Span::styled(format!(" | {stats}"), stats_style));
+                }
+                lines.push(Line::from(spans));
             }
         }
     }

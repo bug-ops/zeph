@@ -28,6 +28,7 @@ pub struct ChatMessage {
     pub streaming: bool,
     pub tool_name: Option<String>,
     pub diff_data: Option<zeph_core::DiffData>,
+    pub filter_stats: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,7 @@ impl App {
                     streaming: false,
                     tool_name: Some(tool_name),
                     diff_data: None,
+                    filter_stats: None,
                 });
                 continue;
             }
@@ -139,6 +141,7 @@ impl App {
                 streaming: false,
                 tool_name: None,
                 diff_data: None,
+                filter_stats: None,
             });
         }
         if !self.messages.is_empty() {
@@ -266,6 +269,7 @@ impl App {
                         streaming: true,
                         tool_name: None,
                         diff_data: None,
+                        filter_stats: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -279,6 +283,7 @@ impl App {
                         streaming: false,
                         tool_name: None,
                         diff_data: None,
+                        filter_stats: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -305,6 +310,7 @@ impl App {
                     streaming: true,
                     tool_name: Some(tool_name),
                     diff_data: None,
+                    filter_stats: None,
                 });
                 self.scroll_offset = 0;
             }
@@ -319,7 +325,9 @@ impl App {
                 }
                 self.scroll_offset = 0;
             }
-            AgentEvent::ToolOutput { diff, .. } => {
+            AgentEvent::ToolOutput {
+                diff, filter_stats, ..
+            } => {
                 if let Some(msg) = self
                     .messages
                     .iter_mut()
@@ -328,6 +336,15 @@ impl App {
                 {
                     msg.streaming = false;
                     msg.diff_data = diff;
+                    msg.filter_stats = filter_stats;
+                } else if filter_stats.is_some()
+                    && let Some(msg) = self
+                        .messages
+                        .iter_mut()
+                        .rev()
+                        .find(|m| m.role == MessageRole::Tool)
+                {
+                    msg.filter_stats = filter_stats;
                 }
                 self.scroll_offset = 0;
             }
@@ -597,6 +614,7 @@ impl App {
             streaming: false,
             tool_name: None,
             diff_data: None,
+            filter_stats: None,
         });
         self.input.clear();
         self.cursor_position = 0;

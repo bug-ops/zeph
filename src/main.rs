@@ -497,7 +497,7 @@ async fn forward_tool_events_to_tui(
             } => zeph_tui::AgentEvent::ToolOutputChunk {
                 tool_name,
                 command,
-                chunk,
+                chunk: zeph_tools::strip_ansi(&chunk),
             },
             zeph_tools::ToolEvent::Completed {
                 tool_name,
@@ -505,14 +505,21 @@ async fn forward_tool_events_to_tui(
                 output,
                 success,
                 diff,
-                ..
-            } => zeph_tui::AgentEvent::ToolOutput {
-                tool_name,
-                command,
-                output,
-                success,
-                diff,
-            },
+                filter_stats,
+            } => {
+                let stats_line = filter_stats.as_ref().and_then(|fs| {
+                    (fs.filtered_chars < fs.raw_chars)
+                        .then(|| format!("{:.1}% filtered", fs.savings_pct()))
+                });
+                zeph_tui::AgentEvent::ToolOutput {
+                    tool_name,
+                    command,
+                    output,
+                    success,
+                    diff,
+                    filter_stats: stats_line,
+                }
+            }
         };
         if tx.send(agent_event).await.is_err() {
             break;
