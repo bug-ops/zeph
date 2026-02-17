@@ -309,15 +309,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 }
 
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
-                let formatted_output = format_tool_output(&output.tool_name, &processed);
-                let display = self.maybe_redact(&formatted_output);
-                let display = if let Some(ref fs) = output.filter_stats
+                let body = if let Some(ref fs) = output.filter_stats
                     && fs.filtered_chars < fs.raw_chars
                 {
-                    format!("{}\n{display}", fs.format_inline(&output.tool_name))
+                    format!("{}\n{processed}", fs.format_inline(&output.tool_name))
                 } else {
-                    display.into_owned()
+                    processed.clone()
                 };
+                let formatted_output = format_tool_output(&output.tool_name, &body);
+                let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
                 self.push_message(Message::from_parts(
@@ -681,13 +681,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
-            let formatted = format_tool_output(&tc.name, &processed);
-            let display = self.maybe_redact(&formatted);
-            let display = if let Some(stats) = inline_stats {
-                format!("{stats}\n{display}")
+            let body = if let Some(stats) = inline_stats {
+                format!("{stats}\n{processed}")
             } else {
-                display.into_owned()
+                processed.clone()
             };
+            let formatted = format_tool_output(&tc.name, &body);
+            let display = self.maybe_redact(&formatted);
             self.channel.send(&display).await?;
 
             result_parts.push(MessagePart::ToolResult {
