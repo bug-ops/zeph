@@ -646,6 +646,12 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
         };
         return Some((name.to_owned(), body.to_owned()));
     }
+    // Native tool_use format: [tool_result: id]\ncontent
+    if let Some(rest) = content.strip_prefix("[tool_result: ") {
+        let body = rest.find("]\n").map_or("", |i| &rest[i + 2..]);
+        let name = if body.contains("$ ") { "bash" } else { "tool" };
+        return Some((name.to_owned(), body.to_owned()));
+    }
     None
 }
 
@@ -1120,5 +1126,15 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(app.messages()[0].tool_name.as_deref(), Some("tool"));
+    }
+
+    #[test]
+    fn load_history_recognizes_tool_result_format() {
+        let (mut app, _rx, _tx) = make_app();
+        app.load_history(&[("user", "[tool_result: toolu_abc]\n$ echo hello\nhello")]);
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages()[0].role, MessageRole::Tool);
+        assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(app.messages()[0].content, "$ echo hello\nhello");
     }
 }
