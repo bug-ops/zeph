@@ -105,6 +105,7 @@ impl ToolExecutor for WebScrapeExecutor {
             tool_name: "web-scrape".to_owned(),
             summary: outputs.join("\n\n"),
             blocks_executed,
+            filter_stats: None,
         }))
     }
 
@@ -132,6 +133,7 @@ impl ToolExecutor for WebScrapeExecutor {
             tool_name: "web-scrape".to_owned(),
             summary: result,
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }

@@ -26,6 +26,9 @@ pub struct MetricsSnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,
+    pub filter_raw_tokens: u64,
+    pub filter_saved_tokens: u64,
+    pub filter_applications: u64,
 }
 
 pub struct MetricsCollector {
@@ -87,6 +90,25 @@ mod tests {
         m.provider_name = "ollama".into();
         let cloned = m.clone();
         assert_eq!(cloned.provider_name, "ollama");
+    }
+
+    #[test]
+    fn filter_metrics_tracking() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.filter_raw_tokens += 250;
+            m.filter_saved_tokens += 200;
+            m.filter_applications += 1;
+        });
+        collector.update(|m| {
+            m.filter_raw_tokens += 100;
+            m.filter_saved_tokens += 80;
+            m.filter_applications += 1;
+        });
+        let s = rx.borrow();
+        assert_eq!(s.filter_raw_tokens, 350);
+        assert_eq!(s.filter_saved_tokens, 280);
+        assert_eq!(s.filter_applications, 2);
     }
 
     #[test]

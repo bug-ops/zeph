@@ -8,12 +8,36 @@ pub struct ToolCall {
     pub params: HashMap<String, serde_json::Value>,
 }
 
+/// Cumulative filter statistics for a single tool execution.
+#[derive(Debug, Clone, Default)]
+pub struct FilterStats {
+    pub raw_chars: usize,
+    pub filtered_chars: usize,
+}
+
+impl FilterStats {
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn savings_pct(&self) -> f64 {
+        if self.raw_chars == 0 {
+            return 0.0;
+        }
+        (1.0 - self.filtered_chars as f64 / self.raw_chars as f64) * 100.0
+    }
+
+    #[must_use]
+    pub fn estimated_tokens_saved(&self) -> usize {
+        self.raw_chars.saturating_sub(self.filtered_chars) / 4
+    }
+}
+
 /// Structured result from tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub tool_name: String,
     pub summary: String,
     pub blocks_executed: u32,
+    pub filter_stats: Option<FilterStats>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -150,6 +174,7 @@ mod tests {
             tool_name: "bash".to_owned(),
             summary: "$ echo hello\nhello".to_owned(),
             blocks_executed: 1,
+            filter_stats: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }
@@ -240,5 +265,29 @@ mod tests {
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn filter_stats_savings_pct() {
+        let fs = FilterStats {
+            raw_chars: 1000,
+            filtered_chars: 200,
+        };
+        assert!((fs.savings_pct() - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn filter_stats_savings_pct_zero() {
+        let fs = FilterStats::default();
+        assert!((fs.savings_pct()).abs() < 0.01);
+    }
+
+    #[test]
+    fn filter_stats_estimated_tokens_saved() {
+        let fs = FilterStats {
+            raw_chars: 1000,
+            filtered_chars: 200,
+        };
+        assert_eq!(fs.estimated_tokens_saved(), 200); // (1000 - 200) / 4
     }
 }

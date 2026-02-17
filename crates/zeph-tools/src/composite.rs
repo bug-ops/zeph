@@ -59,6 +59,7 @@ mod tests {
                 tool_name: "test".to_owned(),
                 summary: "matched".to_owned(),
                 blocks_executed: 1,
+                filter_stats: None,
             }))
         }
     }
@@ -89,6 +90,7 @@ mod tests {
                 tool_name: "test".to_owned(),
                 summary: "second".to_owned(),
                 blocks_executed: 1,
+                filter_stats: None,
             }))
         }
     }
@@ -164,6 +166,7 @@ mod tests {
                     tool_name: call.tool_id.clone(),
                     summary: "file_handler".to_owned(),
                     blocks_executed: 1,
+                    filter_stats: None,
                 }))
             } else {
                 Ok(None)
@@ -186,6 +189,7 @@ mod tests {
                     tool_name: "bash".to_owned(),
                     summary: "shell_handler".to_owned(),
                     blocks_executed: 1,
+                    filter_stats: None,
                 }))
             } else {
                 Ok(None)

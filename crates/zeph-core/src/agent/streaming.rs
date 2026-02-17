@@ -252,6 +252,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     }
 
     /// Returns `true` if the tool loop should continue.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_tool_result(
         &mut self,
         response: &str,
@@ -259,6 +260,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     ) -> Result<bool, super::error::AgentError> {
         match result {
             Ok(Some(output)) => {
+                if let Some(ref fs) = output.filter_stats {
+                    let saved = fs.estimated_tokens_saved() as u64;
+                    let raw = (fs.raw_chars / 4) as u64;
+                    self.update_metrics(|m| {
+                        m.filter_raw_tokens += raw;
+                        m.filter_saved_tokens += saved;
+                        m.filter_applications += 1;
+                    });
+                }
                 if output.summary.trim().is_empty() {
                     tracing::warn!("tool execution returned empty output");
                     self.record_skill_outcomes("success", None).await;

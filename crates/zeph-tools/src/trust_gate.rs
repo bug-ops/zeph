@@ -118,6 +118,7 @@ mod tests {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
+                filter_stats: None,
             }))
         }
     }

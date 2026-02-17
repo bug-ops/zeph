@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
-use crate::executor::{ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
+use crate::executor::{
+    FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
+};
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
 
@@ -130,6 +132,7 @@ impl ShellExecutor {
         }
 
         let mut outputs = Vec::with_capacity(blocks.len());
+        let mut cumulative_filter_stats: Option<FilterStats> = None;
         #[allow(clippy::cast_possible_truncation)]
         let blocks_executed = blocks.len() as u32;
 
@@ -224,6 +227,10 @@ impl ShellExecutor {
                             savings_pct = fr.savings_pct(),
                             "output filter applied"
                         );
+                        let stats =
+                            cumulative_filter_stats.get_or_insert_with(FilterStats::default);
+                        stats.raw_chars += fr.raw_chars;
+                        stats.filtered_chars += fr.filtered_chars;
                         fr.output
                     }
                     None => sanitized,
@@ -238,6 +245,7 @@ impl ShellExecutor {
             tool_name: "bash".to_owned(),
             summary: outputs.join("\n\n"),
             blocks_executed,
+            filter_stats: cumulative_filter_stats,
         }))
     }
 

@@ -143,6 +143,7 @@ impl FileExecutor {
             tool_name: "read".to_owned(),
             summary: selected.join("\n"),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 
@@ -163,6 +164,7 @@ impl FileExecutor {
             tool_name: "write".to_owned(),
             summary: format!("Wrote {} bytes to {path_str}", content.len()),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 
@@ -190,6 +192,7 @@ impl FileExecutor {
             tool_name: "edit".to_owned(),
             summary: format!("Edited {path_str}"),
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 
@@ -221,6 +224,7 @@ impl FileExecutor {
                 matches.join("\n")
             },
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 
@@ -262,6 +266,7 @@ impl FileExecutor {
                 results.join("\n")
             },
             blocks_executed: 1,
+            filter_stats: None,
         }))
     }
 }

@@ -27,6 +27,18 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             metrics.cache_read_tokens
         )));
     }
+    if metrics.filter_applications > 0 {
+        #[allow(clippy::cast_precision_loss)]
+        let pct = if metrics.filter_raw_tokens > 0 {
+            metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
+        } else {
+            0.0
+        };
+        res_lines.push(Line::from(format!(
+            "  Filter saved: {} tok ({pct:.0}%)",
+            metrics.filter_saved_tokens,
+        )));
+    }
     let resources = Paragraph::new(res_lines).block(
         Block::default()
             .borders(Borders::ALL)
