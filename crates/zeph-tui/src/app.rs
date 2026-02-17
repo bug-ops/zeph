@@ -648,7 +648,7 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
     }
     // Native tool_use format: [tool_result: id]\ncontent
     if let Some(rest) = content.strip_prefix("[tool_result: ") {
-        let body = rest.find("]\n").map(|i| &rest[i + 2..]).unwrap_or("");
+        let body = rest.find("]\n").map_or("", |i| &rest[i + 2..]);
         let name = if body.contains("$ ") { "bash" } else { "tool" };
         return Some((name.to_owned(), body.to_owned()));
     }
