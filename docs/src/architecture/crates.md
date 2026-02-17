@@ -58,6 +58,7 @@ SQLite-backed conversation persistence with Qdrant vector search.
 
 Channel implementations for the Zeph agent.
 
+- `AnyChannel` — enum dispatch over all channel variants (Cli, Telegram, Discord, Slack, Tui), used by the binary for runtime channel selection
 - `ChannelError` — typed error enum (`Telegram`, `NoActiveChat`) replacing prior `anyhow` usage
 - `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
 - `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window

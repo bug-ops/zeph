@@ -113,6 +113,18 @@ LLM responses are scanned for common secret patterns before display:
 - Secrets replaced with `[REDACTED]` preserving original whitespace formatting
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
 
+## Config Validation
+
+`Config::validate()` enforces upper bounds at startup to catch configuration errors early:
+
+- `memory.history_limit` <= 10,000
+- `memory.context_budget_tokens` <= 1,000,000 (when non-zero)
+- `agent.max_tool_iterations` <= 100
+- `a2a.rate_limit` > 0
+- `gateway.rate_limit` > 0
+
+The agent exits with an error message if any bound is violated.
+
 ## Timeout Policies
 
 Configurable per-operation timeouts prevent hung connections:
@@ -133,7 +145,7 @@ a2a_seconds = 30        # A2A remote calls
 **Safe execution model:**
 - Commands parsed for blocked patterns, then sandbox-validated, then confirmation-checked
 - Timeout enforcement (default: 30s, configurable)
-- Full errors logged to system, sanitized messages shown to users
+- Full errors logged to system; user-facing messages pass through `sanitize_paths()` which replaces absolute filesystem paths (`/home/`, `/Users/`, `/root/`, `/tmp/`, `/var/`) with `[PATH]` to prevent information disclosure
 - Audit trail for all tool executions (when enabled)
 
 ## Container Security

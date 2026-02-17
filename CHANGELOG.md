@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `ProviderKind` enum for type-safe provider selection in config
+- `RuntimeConfig` struct grouping agent runtime fields
+- `AnyProvider::embed_fn()` shared embedding closure helper
+- `Config::validate()` with bounds checking for critical config values
+- `sanitize_paths()` for stripping absolute paths from error messages
+- 10-second timeout wrapper for embedding API calls
+- `full` feature flag enabling all optional features
+
+### Changed
+- `AnyChannel` moved from main.rs to zeph-channels crate
+- Default features reduced to minimal set (qdrant, self-learning, vault-age, compatible, index)
+- Skill matcher concurrency reduced from 50 to 20
+- `String::with_capacity` in context building loops
+- CI updated to use `--features full`
+
+### Breaking
+- `LlmConfig.provider` changed from `String` to `ProviderKind` enum
+- Default features reduced -- users needing a2a, candle, mcp, openai, orchestrator, router, tui must enable explicitly or use `--features full`
+- Telegram channel rejects empty `allowed_users` at startup
+- Config with extreme values now rejected by `Config::validate()`
+
+### Deprecated
+- `ToolExecutor::execute()` string-based dispatch (use `execute_tool_call()` instead)
+
+### Fixed
+- Closed #410 (clap dropped atty), #411 (rmcp updated quinn-udp), #413 (A2A body limit already present)
+
 ## [0.9.9] - 2026-02-17
 
 ### Added

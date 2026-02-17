@@ -64,7 +64,7 @@ Restrict bot access to specific Telegram usernames:
 allowed_users = ["alice", "bob"]
 ```
 
-When `allowed_users` is empty, the bot accepts messages from all users. Messages from unauthorized users are silently rejected with a warning log.
+The `allowed_users` list **must not be empty**. The Telegram channel refuses to start without at least one allowed username to prevent accidentally exposing the bot to all users. Messages from unauthorized users are silently rejected with a warning log.
 
 ### Bot Commands
 

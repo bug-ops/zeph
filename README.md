@@ -7,7 +7,7 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and HuggingFace** models — with semantic skill matching, vector memory, MCP tooling, and agent-to-agent communication. Ships as a single binary for Linux, macOS, and Windows.
+Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, HuggingFace, and OpenAI-compatible endpoints** (Together AI, Groq, etc.) — with semantic skill matching, vector memory, MCP tooling, and agent-to-agent communication. Ships as a single binary for Linux, macOS, and Windows.
 
 <div align="center">
   <img src="asset/zeph-logo.png" alt="Zeph" width="600">
@@ -19,7 +19,7 @@ Lightweight AI agent that routes tasks across **Ollama, Claude, OpenAI, and Hugg
 
 **Intelligent context management.** Two-tier context pruning: Tier 1 selectively removes old tool outputs (clearing bodies from memory after persisting to SQLite) before falling back to Tier 2 LLM-based compaction, reducing unnecessary LLM calls. A token-based protection zone preserves recent context from pruning. Parallel context preparation via `try_join!` and optimized byte-length token estimation. Cross-session memory transfers knowledge between conversations with relevance filtering. Proportional budget allocation (8% summaries, 8% semantic recall, 4% cross-session, 30% code context, 50% recent history) keeps conversations efficient. Tool outputs are truncated at 30K chars with optional LLM-based summarization for large outputs. Doom-loop detection breaks runaway tool cycles after 3 identical consecutive outputs, with configurable iteration limits (default 10). ZEPH.md project config discovery walks up the directory tree and injects project-specific context when available. Config hot-reload applies runtime-safe fields (timeouts, security, memory limits) on file change without restart.
 
-**Run anywhere.** Local models via Ollama or Candle (GGUF with Metal/CUDA), cloud APIs (Claude, OpenAI, GPT-compatible endpoints like Together AI and Groq), or all of them at once through the multi-model orchestrator with automatic fallback chains.
+**Run anywhere.** Local models via Ollama or Candle (GGUF with Metal/CUDA), cloud APIs (Claude, OpenAI), OpenAI-compatible endpoints (Together AI, Groq, Fireworks) via `CompatibleProvider`, or all of them at once through the multi-model orchestrator with automatic fallback chains and `RouterProvider` for prompt-based model selection.
 
 **Production-ready security.** Shell sandboxing with path restrictions and relative path traversal detection, pattern-based permission policy per tool, destructive command confirmation, file operation sandbox with path traversal protection, tool output overflow-to-file (with LLM-accessible paths), secret redaction (AWS, OpenAI, Anthropic, Google, GitLab), audit logging, SSRF protection (including MCP client), rate limiter with TTL-based eviction, and Trivy-scanned container images with 0 HIGH/CRITICAL CVEs.
 
@@ -72,8 +72,12 @@ For cloud providers:
 # Claude
 ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... ./target/release/zeph
 
-# OpenAI (or any compatible API)
+# OpenAI
 ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
+
+# OpenAI-compatible endpoint (Together AI, Groq, Fireworks, etc.)
+ZEPH_LLM_PROVIDER=compatible ZEPH_COMPATIBLE_BASE_URL=https://api.together.xyz/v1 \
+  ZEPH_COMPATIBLE_API_KEY=... ./target/release/zeph
 ```
 
 For Discord or Slack bot mode (requires respective feature):
@@ -101,7 +105,7 @@ cargo build --release --features tui
 | Feature | Description | Docs |
 |---------|-------------|------|
 | **Native Tool Use** | Structured tool calling via Claude tool_use and OpenAI function calling APIs; automatic fallback to text extraction for local models | [Tools](https://bug-ops.github.io/zeph/guide/tools.html) |
-| **Hybrid Inference** | Ollama, Claude, OpenAI, Candle (GGUF) — local, cloud, or both | [OpenAI](https://bug-ops.github.io/zeph/guide/openai.html) · [Candle](https://bug-ops.github.io/zeph/guide/candle.html) |
+| **Hybrid Inference** | Ollama, Claude, OpenAI, Candle (GGUF), Compatible (any OpenAI-compatible API) — local, cloud, or both | [OpenAI](https://bug-ops.github.io/zeph/guide/openai.html) · [Candle](https://bug-ops.github.io/zeph/guide/candle.html) |
 | **Skills-First Architecture** | Embedding-based top-K matching, progressive loading, hot-reload | [Skills](https://bug-ops.github.io/zeph/guide/skills.html) |
 | **Code Indexing** | AST-based chunking (tree-sitter), semantic retrieval, repo map generation, incremental indexing | [Code Indexing](https://bug-ops.github.io/zeph/guide/code-indexing.html) |
 | **Context Engineering** | Two-tier context pruning (selective tool-output pruning before LLM compaction), semantic recall injection, proportional budget allocation, token-based protection zone for recent context, config hot-reload | [Context](https://bug-ops.github.io/zeph/guide/context.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) |
@@ -120,15 +124,15 @@ cargo build --release --features tui
 ## Architecture
 
 ```
-zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for top-level errors)
+zeph (binary) — bootstrap, vault resolution (anyhow for top-level errors)
 ├── zeph-core       — Agent split into 7 submodules (context, streaming, persistence,
 │                     learning, mcp, index), daemon supervisor, typed AgentError/ChannelError, config hot-reload
-├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, orchestrator,
-│                     native tool_use (Claude/OpenAI), typed LlmError
+├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, Compatible, orchestrator,
+│                     RouterProvider, native tool_use (Claude/OpenAI), typed LlmError
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning, typed SkillError
 ├── zeph-memory     — SQLite + Qdrant, semantic recall, summarization, typed MemoryError
 ├── zeph-index      — AST-based code indexing, semantic retrieval, repo map (optional)
-├── zeph-channels   — Discord, Slack, Telegram adapters with streaming
+├── zeph-channels   — AnyChannel dispatch, Discord, Slack, Telegram adapters with streaming
 ├── zeph-tools      — schemars-driven tool registry (shell, file ops, web scrape), composite dispatch
 ├── zeph-mcp        — MCP client, multi-server lifecycle, unified tool matching
 ├── zeph-a2a        — A2A client + server, agent discovery, JSON-RPC 2.0
@@ -137,7 +141,7 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution (anyhow for t
 └── zeph-tui        — ratatui TUI dashboard with live agent metrics (optional)
 ```
 
-**Error handling:** Typed errors throughout all library crates -- `AgentError` (7 variants), `ChannelError` (4 variants), `LlmError`, `MemoryError`, `SkillError`. `anyhow` is used only in `main.rs` for top-level orchestration. Shared Qdrant operations consolidated via `QdrantOps` helper. `AnyProvider` dispatch deduplicated via `delegate_provider!` macro.
+**Error handling:** Typed errors throughout all library crates -- `AgentError` (7 variants), `ChannelError` (4 variants), `LlmError`, `MemoryError`, `SkillError`. `anyhow` is used only in `main.rs` for top-level orchestration. Shared Qdrant operations consolidated via `QdrantOps` helper. `AnyProvider` dispatch deduplicated via `delegate_provider!` macro. `AnyChannel` enum dispatch lives in `zeph-channels` for reuse across binaries.
 
 **Agent decomposition:** The agent module in `zeph-core` is split into 7 submodules (`mod.rs`, `context.rs`, `streaming.rs`, `persistence.rs`, `learning.rs`, `mcp.rs`, `index.rs`) with 5 inner field-grouping structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`).
 
@@ -152,29 +156,32 @@ Deep dive: [Architecture overview](https://bug-ops.github.io/zeph/architecture/o
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `a2a` | On | A2A protocol client and server |
-| `openai` | On | OpenAI-compatible provider |
-| `mcp` | On | MCP client for external tool servers |
-| `candle` | On | Local HuggingFace inference (GGUF) |
-| `orchestrator` | On | Multi-model routing with fallback |
-| `qdrant` | On | Qdrant vector search for skills and MCP tools (opt-out) |
+| `compatible` | On | OpenAI-compatible provider (Together AI, Groq, Fireworks, etc.) |
+| `openai` | On | OpenAI provider |
+| `qdrant` | On | Qdrant vector search for skills and MCP tools |
 | `self-learning` | On | Skill evolution system |
 | `vault-age` | On | Age-encrypted secret storage |
-| `index` | On | AST-based code indexing and semantic retrieval |
+| `a2a` | Off | A2A protocol client and server |
+| `candle` | Off | Local HuggingFace inference (GGUF) |
+| `index` | Off | AST-based code indexing and semantic retrieval |
+| `mcp` | Off | MCP client for external tool servers |
+| `orchestrator` | Off | Multi-model routing with fallback |
+| `router` | Off | Prompt-based model selection via RouterProvider |
 | `discord` | Off | Discord bot with Gateway v10 WebSocket |
 | `slack` | Off | Slack bot with Events API webhook |
 | `gateway` | Off | HTTP gateway for webhook ingestion |
 | `daemon` | Off | Daemon supervisor for component lifecycle |
 | `scheduler` | Off | Cron-based periodic task scheduler |
+| `otel` | Off | OpenTelemetry OTLP export for Prometheus/Grafana |
 | `metal` | Off | Metal GPU acceleration (macOS) |
 | `tui` | Off | ratatui TUI dashboard with real-time metrics |
 | `cuda` | Off | CUDA GPU acceleration (Linux) |
 
 ```bash
-cargo build --release                        # all defaults
+cargo build --release                        # default features only
+cargo build --release --features full        # all non-platform features
 cargo build --release --features metal       # macOS Metal GPU
-cargo build --release --no-default-features  # minimal binary
-cargo build --release --features index       # with code indexing
+cargo build --release --no-default-features  # minimal binary (Ollama + Claude only)
 cargo build --release --features tui         # with TUI dashboard
 ```
 

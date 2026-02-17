@@ -17,6 +17,18 @@ ZEPH_CONFIG=/path/to/custom.toml zeph
 
 Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 
+## Validation
+
+`Config::validate()` runs at startup and rejects out-of-range values:
+
+| Field | Constraint |
+|-------|-----------|
+| `memory.history_limit` | <= 10,000 |
+| `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
+| `agent.max_tool_iterations` | <= 100 |
+| `a2a.rate_limit` | > 0 |
+| `gateway.rate_limit` | > 0 |
+
 ## Hot-Reload
 
 Zeph watches the config file for changes and applies runtime-safe fields without restart. The file watcher uses 500ms debounce to avoid redundant reloads.
@@ -45,7 +57,7 @@ name = "Zeph"
 max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
 
 [llm]
-provider = "ollama"
+provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator, router
 base_url = "http://localhost:11434"
 model = "mistral:7b"
 embedding_model = "qwen3-embedding"  # Model for text embeddings
@@ -148,7 +160,7 @@ rate_limit = 60
 
 | Variable | Description |
 |----------|-------------|
-| `ZEPH_LLM_PROVIDER` | `ollama`, `claude`, `openai`, `candle`, or `orchestrator` |
+| `ZEPH_LLM_PROVIDER` | `ollama`, `claude`, `openai`, `candle`, `compatible`, `orchestrator`, or `router` |
 | `ZEPH_LLM_BASE_URL` | Ollama API endpoint |
 | `ZEPH_LLM_MODEL` | Model name for Ollama |
 | `ZEPH_LLM_EMBEDDING_MODEL` | Embedding model for Ollama (default: `qwen3-embedding`) |
