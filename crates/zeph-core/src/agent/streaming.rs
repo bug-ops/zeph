@@ -314,7 +314,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 let display = if let Some(ref fs) = output.filter_stats
                     && fs.filtered_chars < fs.raw_chars
                 {
-                    format!("{display}\n{}", fs.format_inline(&output.tool_name))
+                    format!("{}\n{display}", fs.format_inline(&output.tool_name))
                 } else {
                     display.into_owned()
                 };
@@ -684,7 +684,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             let formatted = format_tool_output(&tc.name, &processed);
             let display = self.maybe_redact(&formatted);
             let display = if let Some(stats) = inline_stats {
-                format!("{display}\n{stats}")
+                format!("{stats}\n{display}")
             } else {
                 display.into_owned()
             };
