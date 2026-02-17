@@ -14,9 +14,9 @@ use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 #[cfg(feature = "mcp")]
 use zeph_core::bootstrap::create_mcp_registry;
-use zeph_core::bootstrap::{AppBuilder, warmup_provider};
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::resolve_config_path;
+use zeph_core::bootstrap::{AppBuilder, warmup_provider};
 #[cfg(feature = "tui")]
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::Config;
@@ -197,8 +197,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect(),
         );
 
-        let mcp_manager =
-            std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+        let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
         let mcp_tools = mcp_manager.connect_all().await;
         tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 
