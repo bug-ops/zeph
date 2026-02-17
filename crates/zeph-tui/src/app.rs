@@ -326,7 +326,11 @@ impl App {
                 self.scroll_offset = 0;
             }
             AgentEvent::ToolOutput {
-                diff, filter_stats, ..
+                tool_name,
+                output,
+                diff,
+                filter_stats,
+                ..
             } => {
                 if let Some(msg) = self
                     .messages
@@ -334,15 +338,25 @@ impl App {
                     .rev()
                     .find(|m| m.role == MessageRole::Tool && m.streaming)
                 {
+                    // Shell streaming path: finalize existing streaming tool message.
                     msg.streaming = false;
                     msg.diff_data = diff;
                     msg.filter_stats = filter_stats;
-                } else if filter_stats.is_some()
-                    && let Some(msg) = self
-                        .messages
-                        .iter_mut()
-                        .rev()
-                        .find(|m| m.role == MessageRole::Tool)
+                } else if diff.is_some() || filter_stats.is_some() {
+                    // Native tool_use path: no prior ToolStart, create the message now.
+                    self.messages.push(ChatMessage {
+                        role: MessageRole::Tool,
+                        content: output,
+                        streaming: false,
+                        tool_name: Some(tool_name),
+                        diff_data: diff,
+                        filter_stats,
+                    });
+                } else if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Tool)
                 {
                     msg.filter_stats = filter_stats;
                 }
@@ -1136,5 +1150,45 @@ mod tests {
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(app.messages()[0].content, "$ echo hello\nhello");
+    }
+
+    #[test]
+    fn tool_output_without_prior_tool_start_creates_tool_message_with_diff() {
+        let (mut app, _rx, _tx) = make_app();
+        let diff = zeph_core::DiffData {
+            file_path: "src/lib.rs".into(),
+            old_content: "fn old() {}".into(),
+            new_content: "fn new() {}".into(),
+        };
+        app.handle_agent_event(AgentEvent::ToolOutput {
+            tool_name: "edit".into(),
+            command: "[tool output: edit]\n```\nok\n```".into(),
+            output: "[tool output: edit]\n```\nok\n```".into(),
+            success: true,
+            diff: Some(diff),
+            filter_stats: None,
+        });
+
+        assert_eq!(app.messages().len(), 1);
+        let msg = &app.messages()[0];
+        assert_eq!(msg.role, MessageRole::Tool);
+        assert!(!msg.streaming);
+        assert!(msg.diff_data.is_some());
+    }
+
+    #[test]
+    fn tool_output_without_diff_does_not_create_spurious_message() {
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_agent_event(AgentEvent::ToolOutput {
+            tool_name: "read".into(),
+            command: "[tool output: read]\n```\ncontent\n```".into(),
+            output: "[tool output: read]\n```\ncontent\n```".into(),
+            success: true,
+            diff: None,
+            filter_stats: None,
+        });
+
+        // No prior ToolStart and no diff/filter_stats: nothing to display.
+        assert!(app.messages().is_empty());
     }
 }

@@ -105,6 +105,25 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send a complete tool output with optional diff and filter stats atomically.
+    ///
+    /// The default implementation calls [`Self::send`] with the pre-formatted display text.
+    /// TUI overrides this to emit a single event that creates the Tool message and attaches
+    /// diff/filter data without a race between separate sends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_tool_output(
+        &mut self,
+        _tool_name: &str,
+        display: &str,
+        _diff: Option<crate::DiffData>,
+        _filter_stats: Option<String>,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        self.send(display)
+    }
+
     /// Request user confirmation for a destructive action. Returns `true` if confirmed.
     /// Default: auto-confirm (for headless/test scenarios).
     ///

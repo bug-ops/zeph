@@ -99,6 +99,27 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    async fn send_tool_output(
+        &mut self,
+        tool_name: &str,
+        display: &str,
+        diff: Option<zeph_core::DiffData>,
+        filter_stats: Option<String>,
+    ) -> Result<(), ChannelError> {
+        self.agent_event_tx
+            .send(AgentEvent::ToolOutput {
+                tool_name: tool_name.to_owned(),
+                command: display.to_owned(),
+                output: display.to_owned(),
+                success: true,
+                diff,
+                filter_stats,
+            })
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)?;
+        Ok(())
+    }
+
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx
@@ -272,5 +293,38 @@ mod tests {
         let (ch, _user_tx, _agent_rx) = make_channel();
         let debug = format!("{ch:?}");
         assert!(debug.contains("TuiChannel"));
+    }
+
+    #[tokio::test]
+    async fn send_tool_output_bundles_diff_atomically() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        let diff = zeph_core::DiffData {
+            file_path: "src/main.rs".into(),
+            old_content: "old".into(),
+            new_content: "new".into(),
+        };
+        ch.send_tool_output("bash", "[tool output: bash]\n```\nok\n```", Some(diff), None)
+            .await
+            .unwrap();
+
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ToolOutput { ref tool_name, ref diff, .. } if tool_name == "bash" && diff.is_some()),
+            "expected ToolOutput with diff"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tool_output_without_diff_sends_tool_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_tool_output("read", "[tool output: read]\n```\ncontent\n```", None, None)
+            .await
+            .unwrap();
+
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ToolOutput { ref tool_name, .. } if tool_name == "read"),
+            "expected ToolOutput"
+        );
     }
 }

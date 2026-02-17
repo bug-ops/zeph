@@ -661,7 +661,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
         for (tc, tool_result) in tool_calls.iter().zip(tool_results) {
-            let (output, is_error, inline_stats) = match tool_result {
+            let (output, is_error, diff, inline_stats) = match tool_result {
                 Ok(Some(out)) => {
                     if let Some(ref fs) = out.filter_stats {
                         let saved = fs.estimated_tokens_saved() as u64;
@@ -691,27 +691,28 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                             }
                         });
                     }
-                    if let Some(diff) = out.diff {
-                        let _ = self.channel.send_diff(diff).await;
-                    }
                     let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
                         (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
                     });
-                    (out.summary, false, inline_stats)
+                    (out.summary, false, out.diff, inline_stats)
                 }
-                Ok(None) => ("(no output)".to_owned(), false, None),
-                Err(e) => (format!("[error] {e}"), true, None),
+                Ok(None) => ("(no output)".to_owned(), false, None, None),
+                Err(e) => (format!("[error] {e}"), true, None, None),
             };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
-            let body = if let Some(stats) = inline_stats {
+            let body = if let Some(ref stats) = inline_stats {
                 format!("{stats}\n{processed}")
             } else {
                 processed.clone()
             };
             let formatted = format_tool_output(&tc.name, &body);
             let display = self.maybe_redact(&formatted);
-            self.channel.send(&display).await?;
+            // Bundle diff and filter stats into a single atomic send so TUI can attach
+            // them to the tool message without a race between DiffReady and FullMessage.
+            self.channel
+                .send_tool_output(&tc.name, &display, diff, inline_stats)
+                .await?;
 
             result_parts.push(MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
