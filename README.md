@@ -125,9 +125,9 @@ cargo build --release --features tui
 ## Architecture
 
 ```
-zeph (binary) — bootstrap, vault resolution (anyhow for top-level errors)
-├── zeph-core       — Agent split into 7 submodules (context, streaming, persistence,
-│                     learning, mcp, index), daemon supervisor, typed AgentError/ChannelError, config hot-reload
+zeph (binary) — thin CLI/channel dispatch (anyhow for top-level errors)
+├── zeph-core       — bootstrap/AppBuilder, Agent split into 7 submodules (context, streaming,
+│                     persistence, learning, mcp, index), daemon supervisor, typed AgentError/ChannelError, config hot-reload
 ├── zeph-llm        — LlmProvider: Ollama, Claude, OpenAI, Candle, Compatible, orchestrator,
 │                     RouterProvider, native tool_use (Claude/OpenAI), typed LlmError
 ├── zeph-skills     — SKILL.md parser, embedding matcher, hot-reload, self-learning, typed SkillError

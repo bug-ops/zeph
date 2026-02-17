@@ -7,8 +7,8 @@ Requires Rust 1.88+. Native async traits are used throughout — no `async-trait
 ## Workspace Layout
 
 ```text
-zeph (binary) — thin bootstrap glue
-├── zeph-core       Agent loop, config, config hot-reload, channel trait, context builder
+zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
+├── zeph-core       Agent loop, bootstrap/AppBuilder, config, config hot-reload, channel trait, context builder
 ├── zeph-llm        LlmProvider trait, Ollama + Claude + OpenAI + Candle backends, orchestrator, embeddings
 ├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
@@ -54,6 +54,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 
 - **Generic Agent:** `Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor>` — fully generic over provider, channel, and tool executor. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs` and `persistence.rs` submodules
 - **TLS:** rustls everywhere (no openssl-sys)
+- **Bootstrap:** `AppBuilder` in `zeph-core::bootstrap` handles config/vault resolution, provider creation, memory setup, skill matching, tool executor composition, and graceful shutdown wiring. `main.rs` is a thin dispatcher over `AnyChannel`
 - **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `main.rs`
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`

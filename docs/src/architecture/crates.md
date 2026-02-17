@@ -4,8 +4,9 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 
 ## zeph-core
 
-Agent loop, configuration loading, and context builder.
+Agent loop, bootstrap orchestration, configuration loading, and context builder.
 
+- `AppBuilder` — bootstrap orchestrator in `zeph-core::bootstrap`: `from_env()` config/vault resolution, `build_provider()` with health check, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
 - `Agent<P, C, T>` — main agent loop with streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection, and context budget check (stops at 80% threshold). Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`); logic is decomposed into `streaming.rs` and `persistence.rs` submodules
 - `AgentError` — typed error enum covering LLM, memory, channel, tool, context, and I/O failures (replaces prior `anyhow` usage)
 - `Config` — TOML config loading with env var overrides

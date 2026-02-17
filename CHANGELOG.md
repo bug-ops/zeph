@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `full` feature flag enabling all optional features
 
 ### Changed
+- Extract bootstrap logic from main.rs into `zeph-core::bootstrap::AppBuilder` (#393): main.rs reduced from 2313 to 978 lines
+- `SecurityConfig` and `TimeoutConfig` gain `Clone + Copy`
 - `AnyChannel` moved from main.rs to zeph-channels crate
 - Default features reduced to minimal set (qdrant, self-learning, vault-age, compatible, index)
 - Skill matcher concurrency reduced from 50 to 20
