@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
-use zeph_core::config::{Config, SecurityConfig, TimeoutConfig};
+use zeph_core::config::{Config, ProviderKind, SecurityConfig, TimeoutConfig};
 use zeph_llm::error::LlmError;
 use zeph_llm::provider::{LlmProvider, Message};
 use zeph_memory::semantic::SemanticMemory;
@@ -425,7 +425,7 @@ fn config_defaults_and_env_overrides() {
     clear_env();
 
     let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
-    assert_eq!(config.llm.provider, "ollama");
+    assert_eq!(config.llm.provider, ProviderKind::Ollama);
     assert_eq!(config.llm.base_url, "http://localhost:11434");
     assert_eq!(config.llm.model, "mistral:7b");
     assert_eq!(config.agent.name, "Zeph");
