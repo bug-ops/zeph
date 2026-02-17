@@ -103,7 +103,8 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["a2a", "candle", "compatible", "index", "mcp", "openai", "orchestrator", "qdrant", "router", "self-learning", "vault-age"]
+default = ["compatible", "openai", "qdrant", "self-learning", "vault-age"]
+full = ["a2a", "compatible", "discord", "gateway", "index", "mcp", "openai", "orchestrator", "qdrant", "router", "self-learning", "slack", "tui", "vault-age"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 compatible = ["zeph-llm/compatible"]
 mcp = ["dep:zeph-mcp", "zeph-core/mcp"]

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
 use futures::stream::{self, StreamExt};
@@ -22,16 +24,20 @@ impl SkillMatcher {
                 let fut = embed_fn(&skill.description);
                 let name = skill.name.clone();
                 async move {
-                    match fut.await {
-                        Ok(vec) => Some((i, vec)),
-                        Err(e) => {
+                    match tokio::time::timeout(Duration::from_secs(10), fut).await {
+                        Ok(Ok(vec)) => Some((i, vec)),
+                        Ok(Err(e)) => {
                             tracing::warn!("failed to embed skill '{name}': {e:#}");
+                            None
+                        }
+                        Err(_) => {
+                            tracing::warn!("embedding timed out for skill '{name}'");
                             None
                         }
                     }
                 }
             })
-            .buffer_unordered(50)
+            .buffer_unordered(20)
             .filter_map(|x| async { x })
             .collect()
             .await;
@@ -58,10 +64,14 @@ impl SkillMatcher {
         F: Fn(&str) -> EmbedFuture,
     {
         let _ = count; // total skill count, unused for in-memory matcher
-        let query_vec = match embed_fn(query).await {
-            Ok(v) => v,
-            Err(e) => {
+        let query_vec = match tokio::time::timeout(Duration::from_secs(10), embed_fn(query)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
                 tracing::warn!("failed to embed query: {e:#}");
+                return Vec::new();
+            }
+            Err(_) => {
+                tracing::warn!("embedding timed out for query");
                 return Vec::new();
             }
         };
@@ -142,6 +152,7 @@ impl SkillMatcherBackend {
     }
 }
 
+#[inline]
 #[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {

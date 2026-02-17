@@ -96,6 +96,15 @@ pub(super) struct IndexState<P: LlmProvider + Clone + 'static> {
     pub(super) repo_map_ttl: std::time::Duration,
 }
 
+pub(super) struct RuntimeConfig {
+    pub(super) security: SecurityConfig,
+    pub(super) timeouts: TimeoutConfig,
+    pub(super) model_name: String,
+    pub(super) max_tool_iterations: usize,
+    pub(super) summarize_tool_output_enabled: bool,
+    pub(super) permission_policy: zeph_tools::PermissionPolicy,
+}
+
 pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
     provider: P,
     channel: C,
@@ -108,9 +117,7 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
-    security: SecurityConfig,
-    timeouts: TimeoutConfig,
-    model_name: String,
+    pub(super) runtime: RuntimeConfig,
     #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
     #[cfg(feature = "self-learning")]
@@ -121,11 +128,8 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     pub(super) index: IndexState<P>,
     start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
-    summarize_tool_output_enabled: bool,
     summary_provider: Option<P>,
-    permission_policy: zeph_tools::PermissionPolicy,
     warmup_ready: Option<watch::Receiver<bool>>,
-    max_tool_iterations: usize,
     doom_loop_history: Vec<String>,
     cost_tracker: Option<CostTracker>,
 }
@@ -188,9 +192,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             config_reload_rx: None,
             shutdown: rx,
             metrics_tx: None,
-            security: SecurityConfig::default(),
-            timeouts: TimeoutConfig::default(),
-            model_name: String::new(),
+            runtime: RuntimeConfig {
+                security: SecurityConfig::default(),
+                timeouts: TimeoutConfig::default(),
+                model_name: String::new(),
+                max_tool_iterations: 10,
+                summarize_tool_output_enabled: false,
+                permission_policy: zeph_tools::PermissionPolicy::default(),
+            },
             #[cfg(feature = "self-learning")]
             learning_config: None,
             #[cfg(feature = "self-learning")]
@@ -212,11 +221,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             },
             start_time: Instant::now(),
             message_queue: VecDeque::new(),
-            summarize_tool_output_enabled: false,
             summary_provider: None,
-            permission_policy: zeph_tools::PermissionPolicy::default(),
             warmup_ready: None,
-            max_tool_iterations: 10,
             doom_loop_history: Vec::new(),
             cost_tracker: None,
         }
@@ -224,7 +230,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[must_use]
     pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
-        self.max_tool_iterations = max;
+        self.runtime.max_tool_iterations = max;
         self
     }
 
@@ -308,14 +314,14 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
-        self.security = security;
-        self.timeouts = timeouts;
+        self.runtime.security = security;
+        self.runtime.timeouts = timeouts;
         self
     }
 
     #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
-        self.summarize_tool_output_enabled = enabled;
+        self.runtime.summarize_tool_output_enabled = enabled;
         self
     }
 
@@ -331,7 +337,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[must_use]
     pub fn with_permission_policy(mut self, policy: zeph_tools::PermissionPolicy) -> Self {
-        self.permission_policy = policy;
+        self.runtime.permission_policy = policy;
         self
     }
 
@@ -355,7 +361,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     #[must_use]
     pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
-        self.model_name = name.into();
+        self.runtime.model_name = name.into();
         self
     }
 
@@ -388,7 +394,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
-        let model_name = self.model_name.clone();
+        let model_name = self.runtime.model_name.clone();
         let total_skills = self.skill_state.registry.all_meta().len();
         let qdrant_available = self
             .memory_state
@@ -441,7 +447,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
     pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
         if let Some(ref tracker) = self.cost_tracker {
-            tracker.record_usage(&self.model_name, prompt_tokens, completion_tokens);
+            tracker.record_usage(&self.runtime.model_name, prompt_tokens, completion_tokens);
             self.update_metrics(|m| {
                 m.cost_spent_cents = tracker.current_spend();
             });
@@ -798,8 +804,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             }
         };
 
-        self.security = config.security;
-        self.timeouts = config.timeouts;
+        self.runtime.security = config.security;
+        self.runtime.timeouts = config.timeouts;
         self.memory_state.history_limit = config.memory.history_limit;
         self.memory_state.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
@@ -1094,8 +1100,8 @@ pub(super) mod agent_tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_security(security, timeouts);
 
-        assert!(agent.security.redact_secrets);
-        assert_eq!(agent.timeouts.llm_seconds, 60);
+        assert!(agent.runtime.security.redact_secrets);
+        assert_eq!(agent.runtime.timeouts.llm_seconds, 60);
     }
 
     #[tokio::test]
@@ -1782,7 +1788,7 @@ pub(super) mod agent_tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_tool_summarization(true);
-        assert!(agent.summarize_tool_output_enabled);
+        assert!(agent.runtime.summarize_tool_output_enabled);
 
         let provider2 = MockProvider::new(vec![]);
         let channel2 = MockChannel::new(vec![]);
@@ -1791,7 +1797,7 @@ pub(super) mod agent_tests {
 
         let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
             .with_tool_summarization(false);
-        assert!(!agent2.summarize_tool_output_enabled);
+        assert!(!agent2.runtime.summarize_tool_output_enabled);
     }
 
     #[test]

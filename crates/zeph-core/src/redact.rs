@@ -51,6 +51,41 @@ pub fn redact_secrets(text: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
+/// Replace absolute filesystem paths with `[PATH]` to prevent information disclosure.
+#[must_use]
+pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
+    const PATH_PREFIXES: &[&str] = &["/home/", "/Users/", "/root/", "/tmp/", "/var/"];
+
+    if !PATH_PREFIXES.iter().any(|p| text.contains(p)) {
+        return Cow::Borrowed(text);
+    }
+
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut result = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i].is_ascii_whitespace() {
+            result.push(bytes[i] as char);
+            i += 1;
+        } else {
+            let start = i;
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let token = &text[start..i];
+            if PATH_PREFIXES.iter().any(|prefix| token.contains(prefix)) {
+                result.push_str("[PATH]");
+            } else {
+                result.push_str(token);
+            }
+        }
+    }
+
+    Cow::Owned(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +248,27 @@ mod tests {
         let text = "token: sk-abc123";
         let result = redact_secrets(text);
         assert_eq!(result, "token: [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_home_path() {
+        let text = "error at /home/user/project/src/main.rs:42";
+        let result = sanitize_paths(text);
+        assert_eq!(result, "error at [PATH]");
+    }
+
+    #[test]
+    fn sanitize_users_path() {
+        let text = "failed: /Users/dev/code/lib.rs not found";
+        let result = sanitize_paths(text);
+        assert!(result.contains("[PATH]"));
+        assert!(!result.contains("/Users/"));
+    }
+
+    #[test]
+    fn sanitize_no_paths() {
+        let text = "normal error message";
+        let result = sanitize_paths(text);
+        assert!(matches!(result, Cow::Borrowed(_)));
     }
 }

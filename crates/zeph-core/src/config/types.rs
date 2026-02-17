@@ -55,9 +55,43 @@ pub struct AgentConfig {
     pub summary_model: Option<String>,
 }
 
+/// LLM provider backend selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    Ollama,
+    Claude,
+    OpenAi,
+    Candle,
+    Orchestrator,
+    Compatible,
+    Router,
+}
+
+impl ProviderKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::Claude => "claude",
+            Self::OpenAi => "openai",
+            Self::Candle => "candle",
+            Self::Orchestrator => "orchestrator",
+            Self::Compatible => "compatible",
+            Self::Router => "router",
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LlmConfig {
-    pub provider: String,
+    pub provider: ProviderKind,
     pub base_url: String,
     pub model: String,
     #[serde(default = "default_embedding_model")]
@@ -869,7 +903,7 @@ impl Config {
                 summary_model: None,
             },
             llm: LlmConfig {
-                provider: "ollama".into(),
+                provider: ProviderKind::Ollama,
                 base_url: "http://localhost:11434".into(),
                 model: "mistral:7b".into(),
                 embedding_model: default_embedding_model(),

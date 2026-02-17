@@ -329,7 +329,8 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(None);
         }
 
-        let mut recall_text = String::from(RECALL_PREFIX);
+        let mut recall_text = String::with_capacity(token_budget * 3);
+        recall_text.push_str(RECALL_PREFIX);
         let mut tokens_used = estimate_tokens(&recall_text);
 
         for item in &recalled {
@@ -700,7 +701,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        let env = EnvironmentContext::gather(&self.model_name);
+        let env = EnvironmentContext::gather(&self.runtime.model_name);
         let tool_catalog = if self.provider.supports_tool_use() {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
@@ -710,7 +711,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 None
             } else {
                 let reg = zeph_tools::ToolRegistry::from_definitions(defs);
-                Some(reg.format_for_prompt_filtered(&self.permission_policy))
+                Some(reg.format_for_prompt_filtered(&self.runtime.permission_policy))
             }
         };
         #[allow(unused_mut)]

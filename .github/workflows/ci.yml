@@ -44,7 +44,7 @@ jobs:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --features full -- -D warnings
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -67,7 +67,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run --workspace --lib --bins
+        run: cargo nextest run --workspace --features full --lib --bins
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -86,7 +86,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run integration tests (testcontainers)
-        run: cargo nextest run --workspace --profile ci --test '*integration*'
+        run: cargo nextest run --workspace --features full --profile ci --test '*integration*'
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -106,7 +106,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Generate coverage
-        run: cargo llvm-cov nextest --workspace --lib --bins --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --workspace --features full --lib --bins --lcov --output-path lcov.info
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"

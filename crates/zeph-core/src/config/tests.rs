@@ -64,7 +64,7 @@ fn clear_env() {
 #[test]
 fn defaults_when_file_missing() {
     let config = Config::default();
-    assert_eq!(config.llm.provider, "ollama");
+    assert_eq!(config.llm.provider, super::ProviderKind::Ollama);
     assert_eq!(config.llm.base_url, "http://localhost:11434");
     assert_eq!(config.llm.model, "mistral:7b");
     assert_eq!(config.llm.embedding_model, "qwen3-embedding");
@@ -149,7 +149,7 @@ history_limit = 50
     clear_env();
 
     let config = Config::load(&path).unwrap();
-    assert_eq!(config.llm.provider, "claude");
+    assert_eq!(config.llm.provider, super::ProviderKind::Claude);
     let cloud = config.llm.cloud.unwrap();
     assert_eq!(cloud.model, "claude-sonnet-4-5-20250929");
     assert_eq!(cloud.max_tokens, 4096);
@@ -1441,7 +1441,7 @@ fn config_load_nonexistent_file_uses_defaults() {
     let path = std::path::Path::new("/nonexistent/config.toml");
     let config = Config::load(path).unwrap();
     assert_eq!(config.agent.name, "Zeph");
-    assert_eq!(config.llm.provider, "ollama");
+    assert_eq!(config.llm.provider, super::ProviderKind::Ollama);
 }
 
 #[test]
@@ -1573,7 +1573,7 @@ a2a_seconds = 15
 
     let config = Config::load(&path).unwrap();
     assert_eq!(config.agent.name, "FullBot");
-    assert_eq!(config.llm.provider, "claude");
+    assert_eq!(config.llm.provider, super::ProviderKind::Claude);
     assert_eq!(config.llm.embedding_model, "nomic");
     assert!(config.llm.cloud.is_some());
     assert_eq!(config.skills.paths.len(), 2);
@@ -1628,7 +1628,7 @@ history_limit = 50
     clear_env();
 
     let config = Config::load(&path).unwrap();
-    assert_eq!(config.llm.provider, "openai");
+    assert_eq!(config.llm.provider, super::ProviderKind::OpenAi);
     let openai = config.llm.openai.unwrap();
     assert_eq!(openai.base_url, "https://api.openai.com/v1");
     assert_eq!(openai.model, "gpt-4o");

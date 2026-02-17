@@ -25,7 +25,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         );
         self.doom_loop_history.clear();
 
-        for iteration in 0..self.max_tool_iterations {
+        for iteration in 0..self.runtime.max_tool_iterations {
             self.channel.send_typing().await?;
 
             // Context budget check at 80% threshold
@@ -127,7 +127,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             return Ok(None);
         }
 
-        let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
         let prompt_estimate: u64 = self
             .messages
@@ -135,7 +135,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             .map(|m| u64::try_from(m.content.len()).unwrap_or(0) / 4)
             .sum();
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.model_name);
+        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
             if let Ok(r) = tokio::time::timeout(
                 llm_timeout,
@@ -247,7 +247,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         } else {
             String::new()
         };
-        let truncated = if self.summarize_tool_output_enabled {
+        let truncated = if self.runtime.summarize_tool_output_enabled {
             self.summarize_tool_output(output).await
         } else {
             zeph_tools::truncate_tool_output(output)
@@ -396,8 +396,13 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     pub(crate) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.security.redact_secrets {
-            redact_secrets(text)
+        if self.runtime.security.redact_secrets {
+            let redacted = redact_secrets(text);
+            let sanitized = crate::redact::sanitize_paths(&redacted);
+            match sanitized {
+                std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
+                std::borrow::Cow::Borrowed(_) => redacted,
+            }
         } else {
             std::borrow::Cow::Borrowed(text)
         }
@@ -419,7 +424,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             "native tool_use: collected tool definitions"
         );
 
-        for iteration in 0..self.max_tool_iterations {
+        for iteration in 0..self.runtime.max_tool_iterations {
             if *self.shutdown.borrow() {
                 tracing::info!("native tool loop interrupted by shutdown");
                 break;
@@ -505,10 +510,10 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             provider_name = self.provider.name(),
             "call_chat_with_tools"
         );
-        let llm_timeout = std::time::Duration::from_secs(self.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.model_name);
+        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let result = if let Ok(result) = tokio::time::timeout(
             llm_timeout,
             self.provider

@@ -9,7 +9,11 @@ impl Config {
     #[allow(clippy::too_many_lines)]
     fn apply_env_overrides_core(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
-            self.llm.provider = v;
+            if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
+                self.llm.provider = kind;
+            } else {
+                tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
+            }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_BASE_URL") {
             self.llm.base_url = v;

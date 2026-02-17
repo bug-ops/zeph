@@ -33,6 +33,37 @@ impl Config {
         Ok(config)
     }
 
+    /// Validate configuration values are within sane bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any value is out of range.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.memory.history_limit <= 10_000,
+            "history_limit must be <= 10000, got {}",
+            self.memory.history_limit
+        );
+        if self.memory.context_budget_tokens > 0 {
+            anyhow::ensure!(
+                self.memory.context_budget_tokens <= 1_000_000,
+                "context_budget_tokens must be <= 1000000, got {}",
+                self.memory.context_budget_tokens
+            );
+        }
+        anyhow::ensure!(
+            self.agent.max_tool_iterations <= 100,
+            "max_tool_iterations must be <= 100, got {}",
+            self.agent.max_tool_iterations
+        );
+        anyhow::ensure!(self.a2a.rate_limit > 0, "a2a.rate_limit must be > 0");
+        anyhow::ensure!(
+            self.gateway.rate_limit > 0,
+            "gateway.rate_limit must be > 0"
+        );
+        Ok(())
+    }
+
     /// Resolve sensitive configuration values through the vault.
     ///
     /// # Errors

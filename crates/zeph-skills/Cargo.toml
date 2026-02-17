@@ -19,7 +19,7 @@ qdrant-client = { workspace = true, optional = true, features = ["serde"] }
 serde_json = { workspace = true, optional = true }
 futures.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
 uuid = { workspace = true, optional = true, features = ["v5"] }
 zeph-llm.workspace = true

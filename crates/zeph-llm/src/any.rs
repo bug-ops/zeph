@@ -50,6 +50,17 @@ pub enum AnyProvider {
 }
 
 impl AnyProvider {
+    /// Return a cloneable closure that calls `embed()` on this provider.
+    pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture {
+        let provider = self.clone();
+        move |text: &str| -> crate::provider::EmbedFuture {
+            let owned = text.to_owned();
+            let p = provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        }
+    }
+
+    /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {
             Self::Claude(p) => {

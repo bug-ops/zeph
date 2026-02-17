@@ -48,6 +48,13 @@ impl TelegramChannel {
     ///
     /// Returns an error if the bot cannot be initialized.
     pub fn start(mut self) -> Result<Self, ChannelError> {
+        if self.allowed_users.is_empty() {
+            tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
+            return Err(ChannelError::Other(
+                "telegram.allowed_users must not be empty".into(),
+            ));
+        }
+
         let (tx, rx) = mpsc::channel::<IncomingMessage>(64);
         self.rx = rx;
 

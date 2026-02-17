@@ -11,8 +11,9 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
+#[cfg(feature = "tui")]
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
-use zeph_core::config::Config;
+use zeph_core::config::{Config, ProviderKind};
 use zeph_core::config_watcher::ConfigWatcher;
 use zeph_core::cost::CostTracker;
 #[cfg(feature = "vault-age")]
@@ -46,78 +47,56 @@ use zeph_tools::{CompositeExecutor, FileExecutor, ShellExecutor, WebScrapeExecut
 #[cfg(feature = "tui")]
 use zeph_tui::{App, EventReader, TuiChannel};
 
-/// Enum dispatch for runtime channel selection, following the `AnyProvider` pattern.
+use zeph_channels::AnyChannel;
+
+#[cfg(feature = "tui")]
 #[derive(Debug)]
-enum AnyChannel {
-    Cli(CliChannel),
-    Telegram(TelegramChannel),
-    #[cfg(feature = "discord")]
-    Discord(DiscordChannel),
-    #[cfg(feature = "slack")]
-    Slack(SlackChannel),
-    #[cfg(feature = "tui")]
+enum AppChannel {
+    Standard(AnyChannel),
     Tui(TuiChannel),
 }
 
-macro_rules! dispatch_channel {
+#[cfg(feature = "tui")]
+macro_rules! dispatch_app_channel {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
         match $self {
-            Self::Cli(c) => c.$method($($arg),*).await,
-            Self::Telegram(c) => c.$method($($arg),*).await,
-            #[cfg(feature = "discord")]
-            Self::Discord(c) => c.$method($($arg),*).await,
-            #[cfg(feature = "slack")]
-            Self::Slack(c) => c.$method($($arg),*).await,
-            #[cfg(feature = "tui")]
-            Self::Tui(c) => c.$method($($arg),*).await,
+            AppChannel::Standard(c) => c.$method($($arg),*).await,
+            AppChannel::Tui(c) => c.$method($($arg),*).await,
         }
     };
 }
 
-impl Channel for AnyChannel {
+#[cfg(feature = "tui")]
+impl Channel for AppChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        dispatch_channel!(self, recv)
+        dispatch_app_channel!(self, recv)
     }
-
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send, text)
+        dispatch_app_channel!(self, send, text)
     }
-
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_chunk, chunk)
+        dispatch_app_channel!(self, send_chunk, chunk)
     }
-
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        dispatch_channel!(self, flush_chunks)
+        dispatch_app_channel!(self, flush_chunks)
     }
-
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_typing)
+        dispatch_app_channel!(self, send_typing)
     }
-
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        dispatch_channel!(self, confirm, prompt)
+        dispatch_app_channel!(self, confirm, prompt)
     }
-
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         match self {
-            Self::Cli(c) => c.try_recv(),
-            Self::Telegram(c) => c.try_recv(),
-            #[cfg(feature = "discord")]
-            Self::Discord(c) => c.try_recv(),
-            #[cfg(feature = "slack")]
-            Self::Slack(c) => c.try_recv(),
-            #[cfg(feature = "tui")]
+            Self::Standard(c) => c.try_recv(),
             Self::Tui(c) => c.try_recv(),
         }
     }
-
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_status, text)
+        dispatch_app_channel!(self, send_status, text)
     }
-
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_queue_count, count)
+        dispatch_app_channel!(self, send_queue_count, count)
     }
 }
 
@@ -148,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config_path = resolve_config_path();
     let mut config = Config::load(&config_path)?;
+    config.validate()?;
 
     let vault_args = parse_vault_args(&config);
     let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
@@ -231,7 +211,11 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let channel = create_channel(&config).await?;
 
-    if matches!(channel, AnyChannel::Cli(_)) {
+    #[cfg(feature = "tui")]
+    let is_cli = matches!(channel, AppChannel::Standard(AnyChannel::Cli(_)));
+    #[cfg(not(feature = "tui"))]
+    let is_cli = matches!(channel, AnyChannel::Cli(_));
+    if is_cli {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
     }
 
@@ -702,12 +686,7 @@ async fn create_skill_matcher(
     memory: &SemanticMemory<AnyProvider>,
     embedding_model: &str,
 ) -> Option<SkillMatcherBackend> {
-    let p = provider.clone();
-    let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
-        let owned = text.to_owned();
-        let p = p.clone();
-        Box::pin(async move { p.embed(&owned).await })
-    };
+    let embed_fn = provider.embed_fn();
 
     #[cfg(feature = "qdrant")]
     if config.memory.semantic.enabled && memory.has_qdrant() {
@@ -730,9 +709,9 @@ async fn create_skill_matcher(
 }
 
 fn effective_embedding_model(config: &Config) -> String {
-    match config.llm.provider.as_str() {
+    match config.llm.provider {
         #[cfg(feature = "openai")]
-        "openai" => {
+        ProviderKind::OpenAi => {
             if let Some(m) = config
                 .llm
                 .openai
@@ -743,7 +722,7 @@ fn effective_embedding_model(config: &Config) -> String {
             }
         }
         #[cfg(feature = "orchestrator")]
-        "orchestrator" => {
+        ProviderKind::Orchestrator => {
             if let Some(orch) = &config.llm.orchestrator
                 && let Some(pcfg) = orch.providers.get(&orch.embed)
             {
@@ -759,75 +738,31 @@ fn effective_embedding_model(config: &Config) -> String {
                 }
             }
         }
-        other => {
+        ProviderKind::Compatible => {
             if let Some(entries) = &config.llm.compatible
-                && let Some(entry) = entries.iter().find(|e| e.name == other)
+                && let Some(entry) = entries.first()
                 && let Some(ref m) = entry.embedding_model
             {
                 return m.clone();
             }
         }
+        _ => {}
     }
     config.llm.embedding_model.clone()
 }
 
 #[allow(clippy::too_many_lines)]
 fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
-    match config.llm.provider.as_str() {
-        "ollama" => {
-            let provider = OllamaProvider::new(
-                &config.llm.base_url,
-                config.llm.model.clone(),
-                config.llm.embedding_model.clone(),
-            );
-            Ok(AnyProvider::Ollama(provider))
-        }
-        "claude" => {
-            let cloud = config
-                .llm
-                .cloud
-                .as_ref()
-                .context("llm.cloud config section required for Claude provider")?;
-
-            let api_key = config
-                .secrets
-                .claude_api_key
-                .as_ref()
-                .context("ZEPH_CLAUDE_API_KEY not found in vault")?
-                .expose()
-                .to_owned();
-
-            let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens);
-            Ok(AnyProvider::Claude(provider))
+    match config.llm.provider {
+        ProviderKind::Ollama | ProviderKind::Claude => {
+            create_named_provider(config.llm.provider.as_str(), config)
         }
         #[cfg(feature = "openai")]
-        "openai" => {
-            let openai_cfg = config
-                .llm
-                .openai
-                .as_ref()
-                .context("llm.openai config section required for OpenAI provider")?;
-
-            let api_key = config
-                .secrets
-                .openai_api_key
-                .as_ref()
-                .context("ZEPH_OPENAI_API_KEY not found in vault")?
-                .expose()
-                .to_owned();
-
-            let provider = OpenAiProvider::new(
-                api_key,
-                openai_cfg.base_url.clone(),
-                openai_cfg.model.clone(),
-                openai_cfg.max_tokens,
-                openai_cfg.embedding_model.clone(),
-                openai_cfg.reasoning_effort.clone(),
-            );
-            Ok(AnyProvider::OpenAi(provider))
-        }
+        ProviderKind::OpenAi => create_named_provider("openai", config),
+        #[cfg(feature = "compatible")]
+        ProviderKind::Compatible => create_named_provider("compatible", config),
         #[cfg(feature = "candle")]
-        "candle" => {
+        ProviderKind::Candle => {
             let candle_cfg = config
                 .llm
                 .candle
@@ -869,12 +804,12 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             Ok(AnyProvider::Candle(provider))
         }
         #[cfg(feature = "orchestrator")]
-        "orchestrator" => {
+        ProviderKind::Orchestrator => {
             let orch = build_orchestrator(config)?;
             Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
         #[cfg(feature = "router")]
-        "router" => {
+        ProviderKind::Router => {
             let router_cfg = config
                 .llm
                 .router
@@ -893,40 +828,11 @@ fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 providers,
             ))))
         }
-        other => {
-            #[cfg(feature = "compatible")]
-            if let Some(entries) = &config.llm.compatible
-                && let Some(entry) = entries.iter().find(|e| e.name == other)
-            {
-                let api_key = config
-                    .secrets
-                    .compatible_api_keys
-                    .get(&entry.name)
-                    .with_context(|| {
-                        format!(
-                            "ZEPH_COMPATIBLE_{}_API_KEY not found in vault",
-                            entry.name.to_uppercase()
-                        )
-                    })?
-                    .expose()
-                    .to_owned();
-
-                let provider = CompatibleProvider::new(
-                    entry.name.clone(),
-                    api_key,
-                    entry.base_url.clone(),
-                    entry.model.clone(),
-                    entry.max_tokens,
-                    entry.embedding_model.clone(),
-                );
-                return Ok(AnyProvider::Compatible(provider));
-            }
-            bail!("unknown LLM provider: {other}")
-        }
+        #[allow(unreachable_patterns)]
+        other => bail!("LLM provider {other} not available (feature not enabled)"),
     }
 }
 
-#[cfg(feature = "router")]
 fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvider> {
     match name {
         "ollama" => {
@@ -942,12 +848,12 @@ fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvi
                 .llm
                 .cloud
                 .as_ref()
-                .context("llm.cloud config required for claude in router chain")?;
+                .context("llm.cloud config section required for Claude provider")?;
             let api_key = config
                 .secrets
                 .claude_api_key
                 .as_ref()
-                .context("ZEPH_CLAUDE_API_KEY required for claude in router chain")?
+                .context("ZEPH_CLAUDE_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
             Ok(AnyProvider::Claude(ClaudeProvider::new(
@@ -962,12 +868,12 @@ fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvi
                 .llm
                 .openai
                 .as_ref()
-                .context("llm.openai config required for openai in router chain")?;
+                .context("llm.openai config section required for OpenAI provider")?;
             let api_key = config
                 .secrets
                 .openai_api_key
                 .as_ref()
-                .context("ZEPH_OPENAI_API_KEY required for openai in router chain")?
+                .context("ZEPH_OPENAI_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
             Ok(AnyProvider::OpenAi(OpenAiProvider::new(
@@ -981,32 +887,37 @@ fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvi
         }
         other => {
             #[cfg(feature = "compatible")]
-            if let Some(entries) = &config.llm.compatible
-                && let Some(entry) = entries.iter().find(|e| e.name == other)
-            {
-                let api_key = config
-                    .secrets
-                    .compatible_api_keys
-                    .get(&entry.name)
-                    .with_context(|| {
-                        format!(
-                            "ZEPH_COMPATIBLE_{}_API_KEY required for {} in router chain",
-                            entry.name.to_uppercase(),
-                            entry.name
-                        )
-                    })?
-                    .expose()
-                    .to_owned();
-                return Ok(AnyProvider::Compatible(CompatibleProvider::new(
-                    entry.name.clone(),
-                    api_key,
-                    entry.base_url.clone(),
-                    entry.model.clone(),
-                    entry.max_tokens,
-                    entry.embedding_model.clone(),
-                )));
+            if let Some(entries) = &config.llm.compatible {
+                let entry = if other == "compatible" {
+                    entries.first()
+                } else {
+                    entries.iter().find(|e| e.name == other)
+                };
+                if let Some(entry) = entry {
+                    let api_key = config
+                        .secrets
+                        .compatible_api_keys
+                        .get(&entry.name)
+                        .with_context(|| {
+                            format!(
+                                "ZEPH_COMPATIBLE_{}_API_KEY required for {}",
+                                entry.name.to_uppercase(),
+                                entry.name
+                            )
+                        })?
+                        .expose()
+                        .to_owned();
+                    return Ok(AnyProvider::Compatible(CompatibleProvider::new(
+                        entry.name.clone(),
+                        api_key,
+                        entry.base_url.clone(),
+                        entry.model.clone(),
+                        entry.max_tokens,
+                        entry.embedding_model.clone(),
+                    )));
+                }
             }
-            bail!("unknown provider in router chain: {other}")
+            bail!("unknown provider: {other}")
         }
     }
 }
@@ -1161,12 +1072,7 @@ async fn create_mcp_registry(
     }
     match zeph_mcp::McpToolRegistry::new(&config.memory.qdrant_url) {
         Ok(mut reg) => {
-            let p = provider.clone();
-            let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
-                let owned = text.to_owned();
-                let p = p.clone();
-                Box::pin(async move { p.embed(&owned).await })
-            };
+            let embed_fn = provider.embed_fn();
             if let Err(e) = reg.sync(mcp_tools, embedding_model, &embed_fn).await {
                 tracing::warn!("MCP tool embedding sync failed: {e:#}");
             }
@@ -1401,7 +1307,7 @@ fn is_tui_requested() -> bool {
 #[cfg(feature = "tui")]
 async fn create_channel_with_tui(
     config: &Config,
-) -> anyhow::Result<(AnyChannel, Option<TuiHandle>)> {
+) -> anyhow::Result<(AppChannel, Option<TuiHandle>)> {
     if is_tui_requested() {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
@@ -1412,10 +1318,10 @@ async fn create_channel_with_tui(
             agent_tx: agent_tx_clone,
             agent_rx,
         };
-        return Ok((AnyChannel::Tui(channel), Some(handle)));
+        return Ok((AppChannel::Tui(channel), Some(handle)));
     }
     let channel = create_channel_inner(config).await?;
-    Ok((channel, None))
+    Ok((AppChannel::Standard(channel), None))
 }
 
 #[cfg_attr(feature = "tui", allow(dead_code))]
@@ -1650,7 +1556,7 @@ mod tests {
     #[test]
     fn config_loading_nonexistent_uses_defaults() {
         let config = Config::load(Path::new("/does/not/exist.toml")).unwrap();
-        assert_eq!(config.llm.provider, "ollama");
+        assert_eq!(config.llm.provider, ProviderKind::Ollama);
         assert_eq!(config.agent.name, "Zeph");
     }
 
@@ -1663,23 +1569,9 @@ mod tests {
     }
 
     #[test]
-    fn create_provider_unknown_errors() {
-        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "unknown_provider".into();
-        let result = create_provider(&config);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("unknown LLM provider")
-        );
-    }
-
-    #[test]
     fn create_provider_claude_without_cloud_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "claude".into();
+        config.llm.provider = ProviderKind::Claude;
         config.llm.cloud = None;
         let result = create_provider(&config);
         assert!(result.is_err());
@@ -1772,7 +1664,7 @@ mod tests {
     #[test]
     fn create_provider_candle_without_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "candle".into();
+        config.llm.provider = ProviderKind::Candle;
         config.llm.candle = None;
         let result = create_provider(&config);
         assert!(result.is_err());
@@ -1788,7 +1680,7 @@ mod tests {
     #[test]
     fn create_provider_orchestrator_without_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
         config.llm.orchestrator = None;
         let result = create_provider(&config);
         assert!(result.is_err());
@@ -1807,7 +1699,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
 
         let mut providers = HashMap::new();
         providers.insert(
@@ -1844,7 +1736,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
         config.llm.cloud = None;
 
         let mut providers = HashMap::new();
@@ -1882,7 +1774,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
         config.llm.candle = None;
 
         let mut providers = HashMap::new();
@@ -2000,7 +1892,7 @@ mod tests {
     #[test]
     fn create_provider_claude_without_api_key_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "claude".into();
+        config.llm.provider = ProviderKind::Claude;
         config.llm.cloud = Some(zeph_core::config::CloudLlmConfig {
             model: "claude-3-opus".into(),
             max_tokens: 4096,
@@ -2024,7 +1916,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
         config.llm.cloud = Some(zeph_core::config::CloudLlmConfig {
             model: "claude-3".into(),
             max_tokens: 4096,
@@ -2112,7 +2004,7 @@ mod tests {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.telegram = Some(zeph_core::config::TelegramConfig {
             token: Some("test_token".to_string()),
-            allowed_users: vec![],
+            allowed_users: vec!["testuser".to_string()],
         });
         let channel = create_channel(&config).await.unwrap();
         assert!(matches!(channel, AnyChannel::Telegram(_)));
@@ -2152,14 +2044,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_channel_telegram_with_empty_allowed_users() {
+    async fn create_channel_telegram_with_empty_allowed_users_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.telegram = Some(zeph_core::config::TelegramConfig {
             token: Some("test_token2".to_string()),
             allowed_users: vec![],
         });
-        let channel = create_channel(&config).await.unwrap();
-        assert!(matches!(channel, AnyChannel::Telegram(_)));
+        let result = create_channel(&config).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("allowed_users must not be empty")
+        );
     }
 
     #[cfg(feature = "candle")]
@@ -2230,7 +2128,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
         config.llm.candle = Some(zeph_core::config::CandleConfig {
             source: "local".into(),
             local_path: "/tmp/model.gguf".into(),
@@ -2278,7 +2176,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
 
         let mut providers = HashMap::new();
         providers.insert(
@@ -2309,7 +2207,7 @@ mod tests {
         use zeph_core::config::OrchestratorProviderConfig;
 
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "orchestrator".into();
+        config.llm.provider = ProviderKind::Orchestrator;
 
         let mut providers = HashMap::new();
         providers.insert(
@@ -2341,7 +2239,7 @@ mod tests {
     #[test]
     fn create_provider_openai_missing_config_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "openai".into();
+        config.llm.provider = ProviderKind::OpenAi;
         config.llm.openai = None;
         let result = create_provider(&config);
         assert!(result.is_err());
@@ -2363,7 +2261,7 @@ mod tests {
     #[test]
     fn effective_embedding_model_uses_openai_when_set() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "openai".into();
+        config.llm.provider = ProviderKind::OpenAi;
         config.llm.openai = Some(zeph_core::config::OpenAiConfig {
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-5.2".into(),
@@ -2378,7 +2276,7 @@ mod tests {
     #[test]
     fn effective_embedding_model_falls_back_when_openai_embed_missing() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "openai".into();
+        config.llm.provider = ProviderKind::OpenAi;
         config.llm.openai = Some(zeph_core::config::OpenAiConfig {
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-5.2".into(),
@@ -2393,7 +2291,7 @@ mod tests {
     #[test]
     fn create_provider_openai_missing_api_key_errors() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-        config.llm.provider = "openai".into();
+        config.llm.provider = ProviderKind::OpenAi;
         config.llm.openai = Some(zeph_core::config::OpenAiConfig {
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4o".into(),
