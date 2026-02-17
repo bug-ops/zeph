@@ -560,11 +560,28 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         };
 
         let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let prompt_estimate = self.cached_prompt_tokens;
+        let completion_estimate = match &result {
+            ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
+            ChatResponse::ToolUse { text, tool_calls } => {
+                let text_len = text.as_deref().map_or(0, str::len);
+                let calls_len: usize = tool_calls
+                    .iter()
+                    .map(|c| c.name.len() + c.input.to_string().len())
+                    .sum();
+                u64::try_from(text_len + calls_len).unwrap_or(0) / 4
+            }
+        };
         self.update_metrics(|m| {
             m.api_calls += 1;
             m.last_llm_latency_ms = latency;
+            m.context_tokens = prompt_estimate;
+            m.prompt_tokens += prompt_estimate;
+            m.completion_tokens += completion_estimate;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
         });
         self.record_cache_usage();
+        self.record_cost(prompt_estimate, completion_estimate);
 
         Ok(Some(result))
     }
