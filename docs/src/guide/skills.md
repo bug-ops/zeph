@@ -132,8 +132,12 @@ Only metadata (~100 tokens per skill) is loaded at startup for embedding and mat
 
 With 50+ skills installed, a typical prompt still contains only 5 — saving thousands of tokens per request compared to naive full-injection approaches.
 
+## Trust Levels
+
+Every skill is assigned a trust level (`trusted`, `verified`, `quarantined`, `blocked`) that controls which tools it can invoke. Local skills default to `trusted`; newly imported or hash-mismatch skills start as `quarantined` with restricted tool access. See [Skill Trust Levels](skill-trust.md) for details.
+
 ## Hot Reload
 
-SKILL.md file changes are detected via filesystem watcher (500ms debounce) and re-embedded without restart. Cached bodies are invalidated on reload.
+SKILL.md file changes are detected via filesystem watcher (500ms debounce) and re-embedded without restart. Cached bodies are invalidated on reload. If the BLAKE3 content hash changes, the skill's trust level may be downgraded according to the `hash_mismatch_level` configuration.
 
 With the Qdrant backend, hot-reload triggers a delta sync — only modified skills are re-embedded and updated in the collection.

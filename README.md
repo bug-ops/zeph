@@ -115,11 +115,12 @@ cargo build --release --features tui
 | **A2A Protocol** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming, delegated task inference through agent pipeline | [A2A](https://bug-ops.github.io/zeph/guide/a2a.html) |
 | **Model Orchestrator** | Route tasks to different providers with fallback chains | [Orchestrator](https://bug-ops.github.io/zeph/guide/orchestrator.html) |
 | **Self-Learning** | Skills evolve via failure detection and LLM-generated improvements | [Self-Learning](https://bug-ops.github.io/zeph/guide/self-learning.html) |
+| **Skill Trust & Quarantine** | 4-tier trust model (Trusted/Verified/Quarantined/Blocked) with blake3 integrity verification, anomaly detection with automatic blocking, and restricted tool access for untrusted skills | |
 | **Prompt Caching** | Automatic prompt caching for Anthropic and OpenAI providers, reducing latency and cost on repeated context | |
 | **Graceful Shutdown** | Ctrl-C triggers ordered teardown with MCP server cleanup and pending task draining | |
 | **TUI Dashboard** | ratatui terminal UI with tree-sitter syntax highlighting, markdown rendering, deferred model warmup, scrollbar, mouse scroll, thinking blocks, conversation history, splash screen, live metrics, message queueing (max 10, FIFO with Ctrl+K clear) | [TUI](https://bug-ops.github.io/zeph/guide/tui.html) |
 | **Multi-Channel I/O** | CLI, Discord, Slack, Telegram, and TUI with streaming support | [Channels](https://bug-ops.github.io/zeph/guide/channels.html) |
-| **Defense-in-Depth** | Shell sandbox with relative path traversal detection, file sandbox, command filter, secret redaction (Google/GitLab patterns), audit log, SSRF protection (agent + MCP), rate limiter TTL eviction, doom-loop detection | [Security](https://bug-ops.github.io/zeph/security.html) |
+| **Defense-in-Depth** | Shell sandbox with relative path traversal detection, file sandbox, command filter, secret redaction (Google/GitLab patterns), audit log, SSRF protection (agent + MCP), rate limiter TTL eviction, doom-loop detection, skill trust quarantine | [Security](https://bug-ops.github.io/zeph/security.html) |
 
 ## Architecture
 

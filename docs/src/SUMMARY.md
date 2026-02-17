@@ -20,6 +20,7 @@
 - [Local Inference (Candle)](guide/candle.md)
 - [Model Orchestrator](guide/orchestrator.md)
 - [Self-Learning Skills](guide/self-learning.md)
+- [Skill Trust Levels](guide/skill-trust.md)
 - [A2A Protocol](guide/a2a.md)
 - [Secrets Management](guide/vault.md)
 - [Channels (CLI, Telegram, TUI)](guide/channels.md)
