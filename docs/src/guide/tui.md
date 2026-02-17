@@ -204,9 +204,23 @@ Confidence: F/6 P/2 B/0
 | `hit rate` | Percentage of commands where output was actually reduced |
 | `saved tokens` | Cumulative estimated tokens saved (`chars_saved / 4`) |
 | `%` | Token savings as a fraction of raw token volume |
-| `F/P/B` | Confidence distribution: Full / Partial / Fallback counts |
+| `F/P/B` | Confidence distribution: Full / Partial / Fallback counts (see below) |
 
 The filter section only appears when `filter_applications > 0` — it is hidden when no commands have been filtered.
+
+#### Confidence Levels Explained
+
+Each filter reports how confident it is in the result. The `Confidence: F/1 P/0 B/3` line shows cumulative counts across all filtered commands:
+
+| Level | Abbreviation | When assigned | What it means for the output |
+|-------|-------------|---------------|------------------------------|
+| **Full** | `F` | Filter recognized the output structure completely (e.g. `cargo test` with standard `test result:` summary) | Output is reliably compressed — no useful information lost |
+| **Partial** | `P` | Filter matched the command but output had unexpected sections mixed in (e.g. warnings interleaved with test results) | Most noise removed, but some relevant content may have been stripped — inspect if results look incomplete |
+| **Fallback** | `B` | Command pattern matched but output structure was unrecognized (e.g. `cargo audit` matched a cargo-prefix filter but has no dedicated handler) | Output returned unchanged or with minimal sanitization only (ANSI stripping, blank line collapse) |
+
+**Example:** `Confidence: F/1 P/0 B/3` means 1 command was filtered with Full confidence (e.g. `cargo test` — 99% savings) and 3 commands fell through to Fallback (e.g. `cargo audit`, `cargo doc`, `cargo tree` — matched the filter pattern but output was passed through as-is).
+
+When multiple filters compose in a [pipeline](tools.md#output-filter-pipeline), the worst confidence across stages is propagated. A `Full` + `Partial` composition yields `Partial`.
 
 ## Deferred Model Warmup
 

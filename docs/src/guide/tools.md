@@ -145,7 +145,7 @@ Each filter reports a confidence level:
 | `Partial` | Heuristic match; some content may have been over-filtered |
 | `Fallback` | Pattern matched but output structure was unexpected |
 
-When multiple filters compose in a pipeline, the worst confidence across stages is propagated. Confidence distribution is tracked in [TUI filter metrics](tui.md#filter-metrics).
+When multiple filters compose in a pipeline, the worst confidence across stages is propagated. Confidence distribution is tracked in the [TUI Resources panel](tui.md#confidence-levels-explained) as `F/P/B` counters.
 
 ### Inline Filter Stats (CLI)
 
