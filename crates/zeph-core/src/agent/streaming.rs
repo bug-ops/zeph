@@ -314,7 +314,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 self.channel.send(&display).await?;
 
                 if let Some(ref fs) = output.filter_stats
-                    && fs.filtered_lines < fs.raw_lines
+                    && fs.filtered_chars < fs.raw_chars
                 {
                     let stats_line = fs.format_inline(&output.tool_name);
                     self.channel.send(&stats_line).await?;
@@ -669,7 +669,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                         let _ = self.channel.send_diff(diff).await;
                     }
                     if let Some(ref fs) = out.filter_stats
-                        && fs.filtered_lines < fs.raw_lines
+                        && fs.filtered_chars < fs.raw_chars
                     {
                         let stats_line = fs.format_inline(&tc.name);
                         self.channel.send(&stats_line).await?;
