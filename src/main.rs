@@ -501,6 +501,7 @@ async fn forward_tool_events_to_tui(
                 command,
                 output,
                 success,
+                ..
             } => zeph_tui::AgentEvent::ToolOutput {
                 tool_name,
                 command,
