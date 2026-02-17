@@ -770,7 +770,7 @@ extra_patterns = ["TODO: security review"]
     #[test]
     fn registry_metrics_updated() {
         let r = OutputFilterRegistry::default_filters(&FilterConfig::default());
-        r.apply(
+        let _ = r.apply(
             "cargo test",
             "test result: ok. 5 passed; 0 failed; 0 ignored; 0 filtered out",
             0,
