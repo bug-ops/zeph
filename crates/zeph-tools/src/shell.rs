@@ -231,6 +231,10 @@ impl ShellExecutor {
                             cumulative_filter_stats.get_or_insert_with(FilterStats::default);
                         stats.raw_chars += fr.raw_chars;
                         stats.filtered_chars += fr.filtered_chars;
+                        stats.confidence = Some(match (stats.confidence, fr.confidence) {
+                            (Some(prev), cur) => crate::filter::worse_confidence(prev, cur),
+                            (None, cur) => cur,
+                        });
                         fr.output
                     }
                     None => sanitized,

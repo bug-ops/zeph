@@ -137,7 +137,8 @@ impl<'a> FilterPipeline<'a> {
     }
 }
 
-fn worse_confidence(a: FilterConfidence, b: FilterConfidence) -> FilterConfidence {
+#[must_use]
+pub fn worse_confidence(a: FilterConfidence, b: FilterConfidence) -> FilterConfidence {
     match (a, b) {
         (FilterConfidence::Fallback, _) | (_, FilterConfidence::Fallback) => {
             FilterConfidence::Fallback

@@ -262,10 +262,29 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 if let Some(ref fs) = output.filter_stats {
                     let saved = fs.estimated_tokens_saved() as u64;
                     let raw = (fs.raw_chars / 4) as u64;
+                    let confidence = fs.confidence;
+                    let was_filtered = fs.filtered_chars < fs.raw_chars;
                     self.update_metrics(|m| {
                         m.filter_raw_tokens += raw;
                         m.filter_saved_tokens += saved;
                         m.filter_applications += 1;
+                        m.filter_total_commands += 1;
+                        if was_filtered {
+                            m.filter_filtered_commands += 1;
+                        }
+                        if let Some(c) = confidence {
+                            match c {
+                                zeph_tools::FilterConfidence::Full => {
+                                    m.filter_confidence_full += 1;
+                                }
+                                zeph_tools::FilterConfidence::Partial => {
+                                    m.filter_confidence_partial += 1;
+                                }
+                                zeph_tools::FilterConfidence::Fallback => {
+                                    m.filter_confidence_fallback += 1;
+                                }
+                            }
+                        }
                     });
                 }
                 if output.summary.trim().is_empty() {

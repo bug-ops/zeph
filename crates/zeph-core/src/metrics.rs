@@ -29,6 +29,11 @@ pub struct MetricsSnapshot {
     pub filter_raw_tokens: u64,
     pub filter_saved_tokens: u64,
     pub filter_applications: u64,
+    pub filter_total_commands: u64,
+    pub filter_filtered_commands: u64,
+    pub filter_confidence_full: u64,
+    pub filter_confidence_partial: u64,
+    pub filter_confidence_fallback: u64,
 }
 
 pub struct MetricsCollector {
@@ -109,6 +114,26 @@ mod tests {
         assert_eq!(s.filter_raw_tokens, 350);
         assert_eq!(s.filter_saved_tokens, 280);
         assert_eq!(s.filter_applications, 2);
+    }
+
+    #[test]
+    fn filter_confidence_and_command_metrics() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.filter_total_commands += 1;
+            m.filter_filtered_commands += 1;
+            m.filter_confidence_full += 1;
+        });
+        collector.update(|m| {
+            m.filter_total_commands += 1;
+            m.filter_confidence_partial += 1;
+        });
+        let s = rx.borrow();
+        assert_eq!(s.filter_total_commands, 2);
+        assert_eq!(s.filter_filtered_commands, 1);
+        assert_eq!(s.filter_confidence_full, 1);
+        assert_eq!(s.filter_confidence_partial, 1);
+        assert_eq!(s.filter_confidence_fallback, 0);
     }
 
     #[test]

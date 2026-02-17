@@ -29,6 +29,16 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     }
     if metrics.filter_applications > 0 {
         #[allow(clippy::cast_precision_loss)]
+        let hit_pct = if metrics.filter_total_commands > 0 {
+            metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64 * 100.0
+        } else {
+            0.0
+        };
+        res_lines.push(Line::from(format!(
+            "  Filter: {}/{} commands ({hit_pct:.0}% hit rate)",
+            metrics.filter_filtered_commands, metrics.filter_total_commands,
+        )));
+        #[allow(clippy::cast_precision_loss)]
         let pct = if metrics.filter_raw_tokens > 0 {
             metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
         } else {
@@ -37,6 +47,12 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         res_lines.push(Line::from(format!(
             "  Filter saved: {} tok ({pct:.0}%)",
             metrics.filter_saved_tokens,
+        )));
+        res_lines.push(Line::from(format!(
+            "  Confidence: F/{} P/{} B/{}",
+            metrics.filter_confidence_full,
+            metrics.filter_confidence_partial,
+            metrics.filter_confidence_fallback,
         )));
     }
     let resources = Paragraph::new(res_lines).block(

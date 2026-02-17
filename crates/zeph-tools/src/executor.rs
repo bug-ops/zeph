@@ -13,6 +13,7 @@ pub struct ToolCall {
 pub struct FilterStats {
     pub raw_chars: usize,
     pub filtered_chars: usize,
+    pub confidence: Option<crate::FilterConfidence>,
 }
 
 impl FilterStats {
@@ -272,6 +273,7 @@ mod tests {
         let fs = FilterStats {
             raw_chars: 1000,
             filtered_chars: 200,
+            ..Default::default()
         };
         assert!((fs.savings_pct() - 80.0).abs() < 0.01);
     }
@@ -287,6 +289,7 @@ mod tests {
         let fs = FilterStats {
             raw_chars: 1000,
             filtered_chars: 200,
+            ..Default::default()
         };
         assert_eq!(fs.estimated_tokens_saved(), 200); // (1000 - 200) / 4
     }
