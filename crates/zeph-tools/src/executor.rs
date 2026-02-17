@@ -24,6 +24,7 @@ pub struct FilterStats {
     pub raw_lines: usize,
     pub filtered_lines: usize,
     pub confidence: Option<crate::FilterConfidence>,
+    pub command: Option<String>,
 }
 
 impl FilterStats {
@@ -43,8 +44,20 @@ impl FilterStats {
 
     #[must_use]
     pub fn format_inline(&self, tool_name: &str) -> String {
+        let cmd_label = self
+            .command
+            .as_deref()
+            .map(|c| {
+                let trimmed = c.trim();
+                if trimmed.len() > 60 {
+                    format!(" `{}…`", &trimmed[..57])
+                } else {
+                    format!(" `{trimmed}`")
+                }
+            })
+            .unwrap_or_default();
         format!(
-            "[{tool_name}] {} lines -> {} lines, {:.1}% filtered",
+            "[{tool_name}]{cmd_label} {} lines \u{2192} {} lines, {:.1}% filtered",
             self.raw_lines,
             self.filtered_lines,
             self.savings_pct()
@@ -328,13 +341,13 @@ mod tests {
             ..Default::default()
         };
         let line = fs.format_inline("shell");
-        assert_eq!(line, "[shell] 342 lines -> 28 lines, 80.0% filtered");
+        assert_eq!(line, "[shell] 342 lines \u{2192} 28 lines, 80.0% filtered");
     }
 
     #[test]
     fn filter_stats_format_inline_zero() {
         let fs = FilterStats::default();
         let line = fs.format_inline("bash");
-        assert_eq!(line, "[bash] 0 lines -> 0 lines, 0.0% filtered");
+        assert_eq!(line, "[bash] 0 lines \u{2192} 0 lines, 0.0% filtered");
     }
 }

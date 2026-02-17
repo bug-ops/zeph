@@ -225,6 +225,7 @@ impl ShellExecutor {
                             raw_lines: fr.raw_lines,
                             filtered_lines: fr.filtered_lines,
                             confidence: Some(fr.confidence),
+                            command: Some((*block).to_owned()),
                         };
                         let stats =
                             cumulative_filter_stats.get_or_insert_with(FilterStats::default);
@@ -236,6 +237,9 @@ impl ShellExecutor {
                             (Some(prev), cur) => crate::filter::worse_confidence(prev, cur),
                             (None, cur) => cur,
                         });
+                        if stats.command.is_none() {
+                            stats.command = Some((*block).to_owned());
+                        }
                         per_block_stats = Some(block_fs);
                         fr.output
                     }
