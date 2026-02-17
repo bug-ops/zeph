@@ -14,7 +14,9 @@ use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
 #[cfg(feature = "mcp")]
 use zeph_core::bootstrap::create_mcp_registry;
-use zeph_core::bootstrap::{self, AppBuilder, warmup_provider};
+use zeph_core::bootstrap::{AppBuilder, warmup_provider};
+#[cfg(not(feature = "tui"))]
+use zeph_core::bootstrap::resolve_config_path;
 #[cfg(feature = "tui")]
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::Config;
@@ -26,7 +28,7 @@ use zeph_index::{
     store::CodeStore,
     watcher::IndexWatcher,
 };
-#[cfg(any(feature = "a2a", feature = "tui"))]
+#[cfg(feature = "a2a")]
 use zeph_llm::any::AnyProvider;
 #[cfg(feature = "index")]
 use zeph_llm::provider::LlmProvider;
@@ -106,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt::init();
     }
     #[cfg(not(feature = "tui"))]
-    init_subscriber(&bootstrap::resolve_config_path());
+    init_subscriber(&resolve_config_path());
 
     let app = AppBuilder::from_env().await?;
     let (provider, status_rx) = app.build_provider().await?;
@@ -195,7 +197,8 @@ async fn main() -> anyhow::Result<()> {
                 .collect(),
         );
 
-        let mcp_manager = std::sync::Arc::new(bootstrap::create_mcp_manager(config));
+        let mcp_manager =
+            std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
         let mcp_tools = mcp_manager.connect_all().await;
         tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 
@@ -214,7 +217,41 @@ async fn main() -> anyhow::Result<()> {
         (executor, mcp_tools, mcp_manager, shell_for_tui)
     };
 
-    #[cfg(not(feature = "mcp"))]
+    #[cfg(all(not(feature = "mcp"), feature = "tui"))]
+    let (tool_executor, shell_executor_for_tui) = {
+        let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
+            .with_permissions(permission_policy.clone());
+        if config.tools.audit.enabled
+            && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+        {
+            shell_executor = shell_executor.with_audit(logger);
+        }
+        let tool_event_rx = if tui_handle.is_some() {
+            let (tool_tx, tool_rx) =
+                tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
+            shell_executor = shell_executor.with_tool_event_tx(tool_tx);
+            Some(tool_rx)
+        } else {
+            None
+        };
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let file_executor = zeph_tools::FileExecutor::new(
+            config
+                .tools
+                .shell
+                .allowed_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect(),
+        );
+        let executor = zeph_tools::CompositeExecutor::new(
+            file_executor,
+            zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+        );
+        (executor, tool_event_rx)
+    };
+
+    #[cfg(not(any(feature = "mcp", feature = "tui")))]
     let tool_executor = {
         let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
             .with_permissions(permission_policy.clone());
