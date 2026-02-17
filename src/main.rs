@@ -802,10 +802,8 @@ fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace:
 mod tests {
     use super::*;
     use std::path::Path;
-    use zeph_core::bootstrap;
     use zeph_core::channel::Channel;
     use zeph_core::config::ProviderKind;
-    use zeph_llm::claude::ClaudeProvider;
     use zeph_llm::ollama::OllamaProvider;
 
     #[tokio::test]
