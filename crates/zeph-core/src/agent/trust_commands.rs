@@ -3,9 +3,9 @@ use std::fmt::Write;
 
 use zeph_skills::TrustLevel;
 
-use super::{Agent, Channel, LlmProvider, ToolExecutor};
+use super::{Agent, Channel, ToolExecutor};
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     /// Handle `/skill trust [name [level]]`.
     pub(super) async fn handle_skill_trust_command(
         &mut self,
