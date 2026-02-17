@@ -167,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
     #[allow(unused_variables)]
     let (tool_executor, mcp_tools, mcp_manager, shell_executor_for_tui) = {
         let filter_registry = if config.tools.filters.enabled {
-            zeph_tools::OutputFilterRegistry::default_filters()
+            zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
         } else {
             zeph_tools::OutputFilterRegistry::new(false)
         };

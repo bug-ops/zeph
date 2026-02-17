@@ -1,13 +1,13 @@
 use std::fmt::Write;
+use std::sync::LazyLock;
 
-use super::{FilterResult, OutputFilter, make_result};
+use super::{
+    CommandMatcher, FilterConfidence, FilterResult, OutputFilter, TestFilterConfig, make_result,
+};
 
-pub struct TestOutputFilter;
-
-impl OutputFilter for TestOutputFilter {
-    fn matches(&self, command: &str) -> bool {
+static TEST_MATCHER: LazyLock<CommandMatcher> = LazyLock::new(|| {
+    CommandMatcher::Custom(Box::new(|command| {
         let cmd = command.to_lowercase();
-        // Split into tokens to match "cargo [+toolchain] test" or "cargo nextest"
         let tokens: Vec<&str> = cmd.split_whitespace().collect();
         if tokens.first() != Some(&"cargo") {
             return false;
@@ -16,6 +16,27 @@ impl OutputFilter for TestOutputFilter {
             .iter()
             .skip(1)
             .any(|t| *t == "test" || *t == "nextest")
+    }))
+});
+
+pub struct TestOutputFilter {
+    config: TestFilterConfig,
+}
+
+impl TestOutputFilter {
+    #[must_use]
+    pub fn new(config: TestFilterConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl OutputFilter for TestOutputFilter {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+
+    fn matcher(&self) -> &CommandMatcher {
+        &TEST_MATCHER
     }
 
     fn filter(&self, _command: &str, raw_output: &str, exit_code: i32) -> FilterResult {
@@ -96,17 +117,17 @@ impl OutputFilter for TestOutputFilter {
         }
 
         if !has_summary && passed == 0 && failed == 0 {
-            return make_result(raw_output, raw_output.to_owned());
+            return make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            );
         }
 
         let mut output = String::new();
 
         if exit_code != 0 && !failure_blocks.is_empty() {
-            output.push_str("FAILURES:\n\n");
-            for block in &failure_blocks {
-                output.push_str(block);
-                output.push('\n');
-            }
+            format_failures(&mut output, &failure_blocks, &self.config);
         }
 
         let status = if failed > 0 { "FAILED" } else { "ok" };
@@ -116,7 +137,29 @@ impl OutputFilter for TestOutputFilter {
              {ignored} ignored; {filtered_out} filtered out"
         );
 
-        make_result(raw_output, output)
+        make_result(raw_output, output, FilterConfidence::Full)
+    }
+}
+
+fn format_failures(output: &mut String, blocks: &[String], config: &TestFilterConfig) {
+    output.push_str("FAILURES:\n\n");
+    let max = config.max_failures;
+    for block in blocks.iter().take(max) {
+        let lines: Vec<&str> = block.lines().collect();
+        if lines.len() > config.truncate_stack_trace {
+            for line in &lines[..config.truncate_stack_trace] {
+                output.push_str(line);
+                output.push('\n');
+            }
+            let remaining = lines.len() - config.truncate_stack_trace;
+            let _ = writeln!(output, "... ({remaining} more lines)");
+        } else {
+            output.push_str(block);
+        }
+        output.push('\n');
+    }
+    if blocks.len() > max {
+        let _ = writeln!(output, "... and {} more failure(s)", blocks.len() - max);
     }
 }
 
@@ -133,21 +176,25 @@ fn extract_count(s: &str, label: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn make_filter() -> TestOutputFilter {
+        TestOutputFilter::new(TestFilterConfig::default())
+    }
+
     #[test]
     fn matches_cargo_test() {
-        let f = TestOutputFilter;
-        assert!(f.matches("cargo test"));
-        assert!(f.matches("cargo test --workspace"));
-        assert!(f.matches("cargo +nightly test"));
-        assert!(f.matches("cargo nextest run"));
-        assert!(!f.matches("cargo build"));
-        assert!(!f.matches("cargo test-helper"));
-        assert!(!f.matches("cargo install cargo-nextest"));
+        let f = make_filter();
+        assert!(f.matcher().matches("cargo test"));
+        assert!(f.matcher().matches("cargo test --workspace"));
+        assert!(f.matcher().matches("cargo +nightly test"));
+        assert!(f.matcher().matches("cargo nextest run"));
+        assert!(!f.matcher().matches("cargo build"));
+        assert!(!f.matcher().matches("cargo test-helper"));
+        assert!(!f.matcher().matches("cargo install cargo-nextest"));
     }
 
     #[test]
     fn filter_success_compresses() {
-        let f = TestOutputFilter;
+        let f = make_filter();
         let raw = "\
 running 3 tests
 test foo::test_a ... ok
@@ -161,11 +208,12 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01
         assert!(result.output.contains("0 failed"));
         assert!(!result.output.contains("test_a"));
         assert!(result.savings_pct() > 30.0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
     }
 
     #[test]
     fn filter_failure_preserves_details() {
-        let f = TestOutputFilter;
+        let f = make_filter();
         let raw = "\
 running 2 tests
 test foo::test_a ... ok
@@ -188,9 +236,10 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 filtered out; finished in 
 
     #[test]
     fn filter_no_summary_passthrough() {
-        let f = TestOutputFilter;
+        let f = make_filter();
         let raw = "some random output with no test results";
         let result = f.filter("cargo test", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 }

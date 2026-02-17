@@ -1,12 +1,31 @@
 use std::fmt::Write;
+use std::sync::LazyLock;
 
-use super::{FilterResult, OutputFilter, make_result};
+use super::{
+    CommandMatcher, FilterConfidence, FilterResult, GitFilterConfig, OutputFilter, make_result,
+};
 
-pub struct GitFilter;
+static GIT_MATCHER: LazyLock<CommandMatcher> =
+    LazyLock::new(|| CommandMatcher::Custom(Box::new(|cmd| cmd.trim_start().starts_with("git "))));
+
+pub struct GitFilter {
+    config: GitFilterConfig,
+}
+
+impl GitFilter {
+    #[must_use]
+    pub fn new(config: GitFilterConfig) -> Self {
+        Self { config }
+    }
+}
 
 impl OutputFilter for GitFilter {
-    fn matches(&self, command: &str) -> bool {
-        command.trim_start().starts_with("git ")
+    fn name(&self) -> &'static str {
+        "git"
+    }
+
+    fn matcher(&self) -> &CommandMatcher {
+        &GIT_MATCHER
     }
 
     fn filter(&self, command: &str, raw_output: &str, _exit_code: i32) -> FilterResult {
@@ -20,10 +39,14 @@ impl OutputFilter for GitFilter {
 
         match subcmd {
             "status" => filter_status(raw_output),
-            "diff" => filter_diff(raw_output),
-            "log" => filter_log(raw_output),
+            "diff" => filter_diff(raw_output, self.config.max_diff_lines),
+            "log" => filter_log(raw_output, self.config.max_log_entries),
             "push" => filter_push(raw_output),
-            _ => make_result(raw_output, raw_output.to_owned()),
+            _ => make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            ),
         }
     }
 }
@@ -55,7 +78,7 @@ fn filter_status(raw: &str) -> FilterResult {
 
     let total = modified + added + deleted + untracked;
     if total == 0 {
-        return make_result(raw, raw.to_owned());
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
     }
 
     let mut output = String::new();
@@ -63,10 +86,10 @@ fn filter_status(raw: &str) -> FilterResult {
         output,
         "M  {modified} files | A  {added} files | D  {deleted} files | ??  {untracked} files"
     );
-    make_result(raw, output)
+    make_result(raw, output, FilterConfidence::Full)
 }
 
-fn filter_diff(raw: &str) -> FilterResult {
+fn filter_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
     let mut files: Vec<(String, i32, i32)> = Vec::new();
     let mut current_file = String::new();
     let mut additions = 0i32;
@@ -94,9 +117,10 @@ fn filter_diff(raw: &str) -> FilterResult {
     }
 
     if files.is_empty() {
-        return make_result(raw, raw.to_owned());
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
     }
 
+    let total_lines: usize = raw.lines().count();
     let total_add: i32 = files.iter().map(|(_, a, _)| a).sum();
     let total_del: i32 = files.iter().map(|(_, _, d)| d).sum();
     let mut output = String::new();
@@ -110,19 +134,22 @@ fn filter_diff(raw: &str) -> FilterResult {
         total_add,
         total_del
     );
-    make_result(raw, output)
+    if total_lines > max_diff_lines {
+        let _ = write!(output, " (truncated from {total_lines} lines)");
+    }
+    make_result(raw, output, FilterConfidence::Full)
 }
 
-fn filter_log(raw: &str) -> FilterResult {
+fn filter_log(raw: &str, max_entries: usize) -> FilterResult {
     let lines: Vec<&str> = raw.lines().collect();
-    if lines.len() <= 20 {
-        return make_result(raw, raw.to_owned());
+    if lines.len() <= max_entries {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
     }
 
-    let mut output: String = lines[..20].join("\n");
-    let remaining = lines.len() - 20;
+    let mut output: String = lines[..max_entries].join("\n");
+    let remaining = lines.len() - max_entries;
     let _ = write!(output, "\n... and {remaining} more commits");
-    make_result(raw, output)
+    make_result(raw, output, FilterConfidence::Full)
 }
 
 fn filter_push(raw: &str) -> FilterResult {
@@ -137,39 +164,44 @@ fn filter_push(raw: &str) -> FilterResult {
         }
     }
     if output.is_empty() {
-        return make_result(raw, raw.to_owned());
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
     }
-    make_result(raw, output)
+    make_result(raw, output, FilterConfidence::Full)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn make_filter() -> GitFilter {
+        GitFilter::new(GitFilterConfig::default())
+    }
+
     #[test]
     fn matches_git_commands() {
-        let f = GitFilter;
-        assert!(f.matches("git status"));
-        assert!(f.matches("git diff --stat"));
-        assert!(f.matches("git log --oneline"));
-        assert!(f.matches("git push origin main"));
-        assert!(!f.matches("cargo build"));
-        assert!(!f.matches("github-cli"));
+        let f = make_filter();
+        assert!(f.matcher().matches("git status"));
+        assert!(f.matcher().matches("git diff --stat"));
+        assert!(f.matcher().matches("git log --oneline"));
+        assert!(f.matcher().matches("git push origin main"));
+        assert!(!f.matcher().matches("cargo build"));
+        assert!(!f.matcher().matches("github-cli"));
     }
 
     #[test]
     fn filter_status_summarizes() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = " M src/main.rs\n M src/lib.rs\n?? new_file.txt\nA  added.rs\n";
         let result = f.filter("git status --short", raw, 0);
         assert!(result.output.contains("M  2 files"));
         assert!(result.output.contains("??  1 files"));
         assert!(result.output.contains("A  1 files"));
+        assert_eq!(result.confidence, FilterConfidence::Full);
     }
 
     #[test]
     fn filter_diff_compresses() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "\
 diff --git a/src/main.rs b/src/main.rs
 index abc..def 100644
@@ -194,7 +226,7 @@ index ghi..jkl 100644
 
     #[test]
     fn filter_log_truncates() {
-        let f = GitFilter;
+        let f = make_filter();
         let lines: Vec<String> = (0..50)
             .map(|i| format!("abc{i:04} feat: commit {i}"))
             .collect();
@@ -204,19 +236,21 @@ index ghi..jkl 100644
         assert!(result.output.contains("abc0019"));
         assert!(!result.output.contains("abc0020"));
         assert!(result.output.contains("and 30 more commits"));
+        assert_eq!(result.confidence, FilterConfidence::Full);
     }
 
     #[test]
     fn filter_log_short_passthrough() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "abc1234 feat: something\ndef5678 fix: other";
         let result = f.filter("git log --oneline", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 
     #[test]
     fn filter_push_extracts_summary() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "\
 Enumerating objects: 5, done.
 Counting objects: 100% (5/5), done.
@@ -235,7 +269,7 @@ To github.com:user/repo.git
 
     #[test]
     fn filter_status_long_form() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "\
 On branch main
 Changes not staged for commit:
@@ -253,7 +287,7 @@ Untracked files:
 
     #[test]
     fn filter_diff_empty_passthrough() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "";
         let result = f.filter("git diff", raw, 0);
         assert_eq!(result.output, raw);
@@ -261,9 +295,10 @@ Untracked files:
 
     #[test]
     fn filter_unknown_subcommand_passthrough() {
-        let f = GitFilter;
+        let f = make_filter();
         let raw = "some output";
         let result = f.filter("git stash list", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 }

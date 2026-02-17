@@ -4,24 +4,49 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{FilterResult, OutputFilter, make_result};
+use super::{
+    ClippyFilterConfig, CommandMatcher, FilterConfidence, FilterResult, OutputFilter, make_result,
+};
 
-pub struct ClippyFilter;
+static CLIPPY_MATCHER: LazyLock<CommandMatcher> = LazyLock::new(|| {
+    CommandMatcher::Custom(Box::new(|cmd| {
+        let c = cmd.to_lowercase();
+        let tokens: Vec<&str> = c.split_whitespace().collect();
+        tokens.first() == Some(&"cargo") && tokens.iter().skip(1).any(|t| *t == "clippy")
+    }))
+});
 
 static LINT_RULE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#\[warn\(([^)]+)\)\]").unwrap());
 
 static LOCATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-->\s*(.+:\d+)").unwrap());
 
+pub struct ClippyFilter;
+
+impl ClippyFilter {
+    #[must_use]
+    pub fn new(_config: ClippyFilterConfig) -> Self {
+        Self
+    }
+}
+
 impl OutputFilter for ClippyFilter {
-    fn matches(&self, command: &str) -> bool {
-        command.contains("cargo clippy")
+    fn name(&self) -> &'static str {
+        "clippy"
+    }
+
+    fn matcher(&self) -> &CommandMatcher {
+        &CLIPPY_MATCHER
     }
 
     fn filter(&self, _command: &str, raw_output: &str, exit_code: i32) -> FilterResult {
         let has_error = raw_output.contains("error[") || raw_output.contains("error:");
         if has_error && exit_code != 0 {
-            return make_result(raw_output, raw_output.to_owned());
+            return make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            );
         }
 
         let mut warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -41,7 +66,11 @@ impl OutputFilter for ClippyFilter {
         }
 
         if warnings.is_empty() {
-            return make_result(raw_output, raw_output.to_owned());
+            return make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            );
         }
 
         let total: usize = warnings.values().map(Vec::len).sum();
@@ -59,7 +88,7 @@ impl OutputFilter for ClippyFilter {
         }
         let _ = write!(output, "{total} warnings total ({rules} rules)");
 
-        make_result(raw_output, output)
+        make_result(raw_output, output, FilterConfidence::Full)
     }
 }
 
@@ -67,18 +96,23 @@ impl OutputFilter for ClippyFilter {
 mod tests {
     use super::*;
 
+    fn make_filter() -> ClippyFilter {
+        ClippyFilter::new(ClippyFilterConfig::default())
+    }
+
     #[test]
     fn matches_clippy() {
-        let f = ClippyFilter;
-        assert!(f.matches("cargo clippy --workspace"));
-        assert!(f.matches("cargo clippy -- -D warnings"));
-        assert!(!f.matches("cargo build"));
-        assert!(!f.matches("cargo test"));
+        let f = make_filter();
+        assert!(f.matcher().matches("cargo clippy --workspace"));
+        assert!(f.matcher().matches("cargo clippy -- -D warnings"));
+        assert!(f.matcher().matches("cargo +nightly clippy"));
+        assert!(!f.matcher().matches("cargo build"));
+        assert!(!f.matcher().matches("cargo test"));
     }
 
     #[test]
     fn filter_groups_warnings() {
-        let f = ClippyFilter;
+        let f = make_filter();
         let raw = "\
 warning: needless pass by value
   --> src/foo.rs:12:5
@@ -113,21 +147,24 @@ warning: `my-crate` (lib) generated 3 warnings
                 .contains("clippy::unused_imports (1 warning):")
         );
         assert!(result.output.contains("3 warnings total (2 rules)"));
+        assert_eq!(result.confidence, FilterConfidence::Full);
     }
 
     #[test]
     fn filter_error_preserves_full() {
-        let f = ClippyFilter;
+        let f = make_filter();
         let raw = "error[E0308]: mismatched types\n  --> src/main.rs:10:5\nfull details here";
         let result = f.filter("cargo clippy", raw, 1);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 
     #[test]
     fn filter_no_warnings_passthrough() {
-        let f = ClippyFilter;
+        let f = make_filter();
         let raw = "Checking my-crate v0.1.0\n    Finished dev [unoptimized] target(s)";
         let result = f.filter("cargo clippy", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 }

@@ -4,11 +4,21 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{FilterResult, OutputFilter, make_result};
+use super::{
+    CommandMatcher, FilterConfidence, FilterResult, LogDedupFilterConfig, OutputFilter, make_result,
+};
 
 const MAX_UNIQUE_PATTERNS: usize = 10_000;
 
-pub struct LogDedupFilter;
+static LOG_DEDUP_MATCHER: LazyLock<CommandMatcher> = LazyLock::new(|| {
+    CommandMatcher::Custom(Box::new(|cmd| {
+        let c = cmd.to_lowercase();
+        c.contains("journalctl")
+            || c.contains("tail -f")
+            || c.contains("docker logs")
+            || (c.contains("cat ") && c.contains(".log"))
+    }))
+});
 
 static TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}([.\d]*)?([Z+-][\d:]*)?").unwrap()
@@ -21,19 +31,32 @@ static IP_RE: LazyLock<Regex> =
 static PORT_PID_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:port|pid|PID)[=: ]+\d+").unwrap());
 
+pub struct LogDedupFilter;
+
+impl LogDedupFilter {
+    #[must_use]
+    pub fn new(_config: LogDedupFilterConfig) -> Self {
+        Self
+    }
+}
+
 impl OutputFilter for LogDedupFilter {
-    fn matches(&self, command: &str) -> bool {
-        let cmd = command.to_lowercase();
-        cmd.contains("journalctl")
-            || cmd.contains("tail -f")
-            || cmd.contains("docker logs")
-            || (cmd.contains("cat ") && cmd.contains(".log"))
+    fn name(&self) -> &'static str {
+        "log_dedup"
+    }
+
+    fn matcher(&self) -> &CommandMatcher {
+        &LOG_DEDUP_MATCHER
     }
 
     fn filter(&self, _command: &str, raw_output: &str, _exit_code: i32) -> FilterResult {
         let lines: Vec<&str> = raw_output.lines().collect();
         if lines.len() < 3 {
-            return make_result(raw_output, raw_output.to_owned());
+            return make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            );
         }
 
         let mut pattern_counts: HashMap<String, (usize, String)> = HashMap::new();
@@ -56,7 +79,11 @@ impl OutputFilter for LogDedupFilter {
         let total = lines.len();
 
         if unique == total && !capped {
-            return make_result(raw_output, raw_output.to_owned());
+            return make_result(
+                raw_output,
+                raw_output.to_owned(),
+                FilterConfidence::Fallback,
+            );
         }
 
         let mut output = String::new();
@@ -73,7 +100,7 @@ impl OutputFilter for LogDedupFilter {
             let _ = write!(output, " (capped at {MAX_UNIQUE_PATTERNS})");
         }
 
-        make_result(raw_output, output)
+        make_result(raw_output, output, FilterConfidence::Full)
     }
 }
 
@@ -88,20 +115,24 @@ fn normalize(line: &str) -> String {
 mod tests {
     use super::*;
 
+    fn make_filter() -> LogDedupFilter {
+        LogDedupFilter::new(LogDedupFilterConfig::default())
+    }
+
     #[test]
     fn matches_log_commands() {
-        let f = LogDedupFilter;
-        assert!(f.matches("journalctl -u nginx"));
-        assert!(f.matches("tail -f /var/log/syslog"));
-        assert!(f.matches("docker logs -f container"));
-        assert!(f.matches("cat /var/log/app.log"));
-        assert!(!f.matches("cat file.txt"));
-        assert!(!f.matches("cargo build"));
+        let f = make_filter();
+        assert!(f.matcher().matches("journalctl -u nginx"));
+        assert!(f.matcher().matches("tail -f /var/log/syslog"));
+        assert!(f.matcher().matches("docker logs -f container"));
+        assert!(f.matcher().matches("cat /var/log/app.log"));
+        assert!(!f.matcher().matches("cat file.txt"));
+        assert!(!f.matcher().matches("cargo build"));
     }
 
     #[test]
     fn filter_deduplicates() {
-        let f = LogDedupFilter;
+        let f = make_filter();
         let raw = "\
 2024-01-15T12:00:01Z INFO request handled path=/api/health
 2024-01-15T12:00:02Z INFO request handled path=/api/health
@@ -115,22 +146,25 @@ mod tests {
         assert!(result.output.contains("(x2)"));
         assert!(result.output.contains("3 unique patterns (6 total lines)"));
         assert!(result.savings_pct() > 20.0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
     }
 
     #[test]
     fn filter_all_unique_passthrough() {
-        let f = LogDedupFilter;
+        let f = make_filter();
         let raw = "line one\nline two\nline three";
         let result = f.filter("cat app.log", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 
     #[test]
     fn filter_short_passthrough() {
-        let f = LogDedupFilter;
+        let f = make_filter();
         let raw = "single line";
         let result = f.filter("cat app.log", raw, 0);
         assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
 
     #[test]
