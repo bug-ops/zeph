@@ -40,6 +40,8 @@ pub struct ToolsConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub permissions: Option<PermissionsConfig>,
+    #[serde(default)]
+    pub filters: crate::filter::FilterConfig,
 }
 
 impl ToolsConfig {
@@ -93,6 +95,7 @@ impl Default for ToolsConfig {
             scrape: ScrapeConfig::default(),
             audit: AuditConfig::default(),
             permissions: None,
+            filters: crate::filter::FilterConfig::default(),
         }
     }
 }

@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Smart tool output filtering: command-aware filters that compress tool output before context insertion
+- `OutputFilter` trait and `OutputFilterRegistry` with first-match-wins dispatch
+- `sanitize_output()` ANSI escape and progress bar stripping (runs on all tool output)
+- Test output filter: cargo test/nextest failures-only mode (94-99% token savings on green suites)
+- Git output filter: compact status/diff/log/push compression (80-99% savings)
+- Clippy output filter: group warnings by lint rule (70-90% savings)
+- Directory listing filter: hide noise directories (target, node_modules, .git)
+- Log deduplication filter: normalize timestamps/UUIDs, count repeated patterns (70-85% savings)
+- `[tools.filters]` config section with `enabled` toggle
 - Skill trust levels: 4-tier model (Trusted, Verified, Quarantined, Blocked) with per-turn enforcement
 - `TrustGateExecutor` wrapping tool execution with trust-level permission checks
 - `AnomalyDetector` with sliding-window threshold counters for quarantined skill monitoring

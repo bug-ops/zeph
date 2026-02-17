@@ -168,8 +168,14 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "mcp")]
     let (tool_executor, mcp_tools, mcp_manager, shell_executor_for_tui) = {
+        let filter_registry = if config.tools.filters.enabled {
+            zeph_tools::OutputFilterRegistry::default_filters()
+        } else {
+            zeph_tools::OutputFilterRegistry::new(false)
+        };
         let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-            .with_permissions(permission_policy.clone());
+            .with_permissions(permission_policy.clone())
+            .with_output_filters(filter_registry);
         if config.tools.audit.enabled
             && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
         {
@@ -252,8 +258,14 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(not(any(feature = "mcp", feature = "tui")))]
     let tool_executor = {
+        let filter_registry = if config.tools.filters.enabled {
+            zeph_tools::OutputFilterRegistry::default_filters()
+        } else {
+            zeph_tools::OutputFilterRegistry::new(false)
+        };
         let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-            .with_permissions(permission_policy.clone());
+            .with_permissions(permission_policy.clone())
+            .with_output_filters(filter_registry);
         if config.tools.audit.enabled
             && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
         {

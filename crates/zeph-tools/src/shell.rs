@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
 use crate::executor::{ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput};
+use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
 
 const DEFAULT_BLOCKED: &[&str] = &[
@@ -35,6 +36,7 @@ pub struct ShellExecutor {
     audit_logger: Option<AuditLogger>,
     tool_event_tx: Option<ToolEventTx>,
     permission_policy: Option<PermissionPolicy>,
+    output_filter_registry: Option<OutputFilterRegistry>,
 }
 
 impl ShellExecutor {
@@ -79,6 +81,7 @@ impl ShellExecutor {
             audit_logger: None,
             tool_event_tx: None,
             permission_policy: None,
+            output_filter_registry: None,
         }
     }
 
@@ -100,6 +103,12 @@ impl ShellExecutor {
         self
     }
 
+    #[must_use]
+    pub fn with_output_filters(mut self, registry: OutputFilterRegistry) -> Self {
+        self.output_filter_registry = Some(registry);
+        self
+    }
+
     /// Execute a bash block bypassing the confirmation check (called after user confirms).
     ///
     /// # Errors
@@ -109,6 +118,7 @@ impl ShellExecutor {
         self.execute_inner(response, true).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute_inner(
         &self,
         response: &str,
@@ -178,7 +188,8 @@ impl ShellExecutor {
             }
 
             let start = Instant::now();
-            let out = execute_bash(block, self.timeout, self.tool_event_tx.as_ref()).await;
+            let (out, exit_code) =
+                execute_bash(block, self.timeout, self.tool_event_tx.as_ref()).await;
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -202,7 +213,25 @@ impl ShellExecutor {
                 });
             }
 
-            outputs.push(format!("$ {block}\n{out}"));
+            let sanitized = sanitize_output(&out);
+            let filtered = if let Some(ref registry) = self.output_filter_registry {
+                match registry.apply(block, &sanitized, exit_code) {
+                    Some(fr) => {
+                        tracing::debug!(
+                            command = block,
+                            raw = fr.raw_chars,
+                            filtered = fr.filtered_chars,
+                            savings_pct = fr.savings_pct(),
+                            "output filter applied"
+                        );
+                        fr.output
+                    }
+                    None => sanitized,
+                }
+            } else {
+                sanitized
+            };
+            outputs.push(format!("$ {block}\n{filtered}"));
         }
 
         Ok(Some(ToolOutput {
@@ -338,7 +367,7 @@ fn chrono_now() -> String {
     format!("{secs}")
 }
 
-async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEventTx>) -> String {
+async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEventTx>) -> (String, i32) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -353,7 +382,7 @@ async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEvent
 
     let mut child = match child_result {
         Ok(c) => c,
-        Err(e) => return format!("[error] {e}"),
+        Err(e) => return (format!("[error] {e}"), 1),
     };
 
     let stdout = child.stdout.take().expect("stdout piped");
@@ -402,17 +431,21 @@ async fn execute_bash(code: &str, timeout: Duration, event_tx: Option<&ToolEvent
             }
             () = tokio::time::sleep_until(deadline) => {
                 let _ = child.kill().await;
-                return format!("[error] command timed out after {timeout_secs}s");
+                return (format!("[error] command timed out after {timeout_secs}s"), 1);
             }
         }
     }
 
-    let _ = child.wait().await;
+    let status = child.wait().await;
+    let exit_code = status
+        .ok()
+        .and_then(|s| s.code())
+        .unwrap_or(1);
 
     if combined.is_empty() {
-        "(no output)".to_string()
+        ("(no output)".to_string(), exit_code)
     } else {
-        combined
+        (combined, exit_code)
     }
 }
 
@@ -476,14 +509,15 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_simple_command() {
-        let result = execute_bash("echo hello", Duration::from_secs(30), None).await;
+        let (result, code) = execute_bash("echo hello", Duration::from_secs(30), None).await;
         assert!(result.contains("hello"));
+        assert_eq!(code, 0);
     }
 
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stderr_output() {
-        let result = execute_bash("echo err >&2", Duration::from_secs(30), None).await;
+        let (result, _) = execute_bash("echo err >&2", Duration::from_secs(30), None).await;
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
     }
@@ -491,7 +525,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stdout_and_stderr_combined() {
-        let result = execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
+        let (result, _) = execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
         assert!(result.contains("out"));
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
@@ -501,8 +535,9 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_empty_output() {
-        let result = execute_bash("true", Duration::from_secs(30), None).await;
+        let (result, code) = execute_bash("true", Duration::from_secs(30), None).await;
         assert_eq!(result, "(no output)");
+        assert_eq!(code, 0);
     }
 
     #[tokio::test]
@@ -1073,14 +1108,15 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_error_handling() {
-        let result = execute_bash("false", Duration::from_secs(5), None).await;
+        let (result, code) = execute_bash("false", Duration::from_secs(5), None).await;
         assert_eq!(result, "(no output)");
+        assert_eq!(code, 1);
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_command_not_found() {
-        let result = execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
+        let (result, _) = execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
         assert!(result.contains("[stderr]") || result.contains("[error]"));
     }
 

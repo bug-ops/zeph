@@ -252,6 +252,10 @@ timeout = 15
 # Maximum response body size in bytes (1MB)
 max_body_bytes = 1048576
 
+[tools.filters]
+# Enable smart output filtering for tool results
+enabled = true
+
 [tools.audit]
 # Enable audit logging for tool executions
 enabled = false
