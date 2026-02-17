@@ -1,5 +1,6 @@
 //! Tool execution abstraction and shell backend.
 
+pub mod anomaly;
 pub mod audit;
 pub mod composite;
 pub mod config;
@@ -10,7 +11,9 @@ pub mod permissions;
 pub mod registry;
 pub mod scrape;
 pub mod shell;
+pub mod trust_gate;
 
+pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
 pub use config::{AuditConfig, ScrapeConfig, ShellConfig, ToolsConfig};
@@ -26,3 +29,4 @@ pub use permissions::{
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
 pub use shell::ShellExecutor;
+pub use trust_gate::TrustGateExecutor;

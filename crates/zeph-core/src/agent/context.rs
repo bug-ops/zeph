@@ -699,7 +699,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .cloned()
             .collect();
 
-        let skills_prompt = format_skills_prompt(&active_skills, std::env::consts::OS);
+        let trust_map = self.build_skill_trust_map().await;
+        let skills_prompt = format_skills_prompt(&active_skills, std::env::consts::OS, &trust_map);
         let catalog_prompt = format_skills_catalog(&remaining_skills);
         self.skill_state
             .last_skills_prompt

@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Skill trust levels: 4-tier model (Trusted, Verified, Quarantined, Blocked) with per-turn enforcement
+- `TrustGateExecutor` wrapping tool execution with trust-level permission checks
+- `AnomalyDetector` with sliding-window threshold counters for quarantined skill monitoring
+- blake3 content hashing for skill integrity verification on load and hot-reload
+- Quarantine prompt wrapping for structural isolation of untrusted skill bodies
+- Self-learning gate: skills with trust < Verified skip auto-improvement
+- `skill_trust` SQLite table with migration 009
+- CLI commands: `/skill trust`, `/skill block`, `/skill unblock`
+- `[skills.trust]` config section (default_level, local_level, hash_mismatch_level)
 - `ProviderKind` enum for type-safe provider selection in config
 - `RuntimeConfig` struct grouping agent runtime fields
 - `AnyProvider::embed_fn()` shared embedding closure helper

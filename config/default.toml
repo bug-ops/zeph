@@ -100,6 +100,14 @@ max_versions = 10
 # Cooldown between improvements for same skill (minutes)
 cooldown_minutes = 60
 
+[skills.trust]
+# Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
+default_level = "quarantined"
+# Trust level assigned to local (built-in) skills
+local_level = "trusted"
+# Trust level after blake3 hash mismatch on hot-reload
+hash_mismatch_level = "quarantined"
+
 [memory]
 # SQLite database path for conversation history
 sqlite_path = "./data/zeph.db"

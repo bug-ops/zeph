@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::loader::Skill;
 use crate::resource::discover_resources;
+use crate::trust::TrustLevel;
 
 const OS_NAMES: &[&str] = &["linux", "macos", "windows"];
 
@@ -15,7 +17,11 @@ fn should_include_reference(filename: &str, os_family: &str) -> bool {
 }
 
 #[must_use]
-pub fn format_skills_prompt(skills: &[Skill], os_family: &str) -> String {
+pub fn format_skills_prompt<S: std::hash::BuildHasher>(
+    skills: &[Skill],
+    os_family: &str,
+    trust_levels: &HashMap<String, TrustLevel, S>,
+) -> String {
     if skills.is_empty() {
         return String::new();
     }
@@ -23,12 +29,21 @@ pub fn format_skills_prompt(skills: &[Skill], os_family: &str) -> String {
     let mut out = String::from("<available_skills>\n");
 
     for skill in skills {
+        let trust = trust_levels
+            .get(skill.name())
+            .copied()
+            .unwrap_or(TrustLevel::Trusted);
+        let body = if trust == TrustLevel::Quarantined {
+            wrap_quarantined(skill.name(), &skill.body)
+        } else {
+            skill.body.clone()
+        };
         let _ = write!(
             out,
             "  <skill name=\"{}\">\n    <description>{}</description>\n    <instructions>\n{}",
             skill.name(),
             skill.description(),
-            skill.body,
+            body,
         );
 
         let resources = discover_resources(&skill.meta.skill_dir);
@@ -52,6 +67,15 @@ pub fn format_skills_prompt(skills: &[Skill], os_family: &str) -> String {
 
     out.push_str("</available_skills>");
     out
+}
+
+/// Wrap a quarantined skill's prompt with warning markers.
+#[must_use]
+pub fn wrap_quarantined(skill_name: &str, body: &str) -> String {
+    format!(
+        "[QUARANTINED SKILL: {skill_name}] The following skill is quarantined. \
+         It has restricted tool access (no bash, file_write, web_scrape).\n\n{body}"
+    )
 }
 
 #[must_use]
@@ -113,14 +137,14 @@ mod tests {
     #[test]
     fn empty_skills_returns_empty_string() {
         let empty: &[Skill] = &[];
-        assert_eq!(format_skills_prompt(empty, "linux"), "");
+        assert_eq!(format_skills_prompt(empty, "linux", &HashMap::new()), "");
     }
 
     #[test]
     fn single_skill_format() {
         let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
-        let output = format_skills_prompt(&skills, "linux");
+        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
         assert!(output.starts_with("<available_skills>"));
         assert!(output.ends_with("</available_skills>"));
         assert!(output.contains("<skill name=\"test\">"));
@@ -135,7 +159,7 @@ mod tests {
             make_skill("b", "desc b", "body b"),
         ];
 
-        let output = format_skills_prompt(&skills, "linux");
+        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
         assert!(output.contains("<skill name=\"a\">"));
         assert!(output.contains("<skill name=\"b\">"));
     }
@@ -176,7 +200,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, "linux");
+        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
         assert!(output.contains("# Linux commands"));
         assert!(!output.contains("# macOS commands"));
         assert!(output.contains("# Common docs"));
@@ -194,9 +218,29 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, "macos");
+        let output = format_skills_prompt(&skills, "macos", &HashMap::new());
         assert!(output.contains("skill body"));
         assert!(!output.contains("<reference"));
+    }
+
+    #[test]
+    fn quarantined_skill_gets_wrapped() {
+        let skills = vec![make_skill("untrusted", "desc", "do stuff")];
+        let mut trust = HashMap::new();
+        trust.insert("untrusted".into(), TrustLevel::Quarantined);
+        let output = format_skills_prompt(&skills, "linux", &trust);
+        assert!(output.contains("[QUARANTINED SKILL: untrusted]"));
+        assert!(output.contains("restricted tool access"));
+    }
+
+    #[test]
+    fn trusted_skill_not_wrapped() {
+        let skills = vec![make_skill("safe", "desc", "do stuff")];
+        let mut trust = HashMap::new();
+        trust.insert("safe".into(), TrustLevel::Trusted);
+        let output = format_skills_prompt(&skills, "linux", &trust);
+        assert!(!output.contains("QUARANTINED"));
+        assert!(output.contains("do stuff"));
     }
 
     #[test]

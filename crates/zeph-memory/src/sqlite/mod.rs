@@ -1,6 +1,7 @@
 mod messages;
 mod skills;
 mod summaries;
+mod trust;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -10,6 +11,7 @@ use crate::error::MemoryError;
 
 pub use messages::role_str;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
+pub use trust::SkillTrustRow;
 
 #[derive(Debug)]
 pub struct SqliteStore {

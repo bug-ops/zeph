@@ -10,6 +10,17 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self.learning_config.as_ref().is_some_and(|c| c.enabled)
     }
 
+    #[cfg(feature = "self-learning")]
+    async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
+        let Some(memory) = &self.memory_state.memory else {
+            return true;
+        };
+        let Ok(Some(row)) = memory.sqlite().load_skill_trust(skill_name).await else {
+            return true; // no trust record = local skill = trusted
+        };
+        matches!(row.trust_level.as_str(), "trusted" | "verified")
+    }
+
     #[cfg(not(feature = "self-learning"))]
     #[allow(dead_code, clippy::unused_self)]
     pub(super) fn is_learning_enabled(&self) -> bool {
@@ -66,6 +77,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             return Ok(false);
         };
 
+        if !self.is_skill_trusted_for_learning(&name).await {
+            return Ok(false);
+        }
+
         let Ok(skill) = self.skill_state.registry.get_skill(&name) else {
             return Ok(false);
         };
@@ -115,6 +130,9 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         user_feedback: Option<&str>,
     ) -> Result<(), super::error::AgentError> {
         if !self.is_learning_enabled() {
+            return Ok(());
+        }
+        if !self.is_skill_trusted_for_learning(skill_name).await {
             return Ok(());
         }
 
@@ -378,9 +396,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             }
             Some("approve") => self.handle_skill_approve(parts.get(1).copied()).await,
             Some("reset") => self.handle_skill_reset(parts.get(1).copied()).await,
+            Some("trust") => self.handle_skill_trust_command(&parts[1..]).await,
+            Some("block") => self.handle_skill_block(parts.get(1).copied()).await,
+            Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock")
                     .await?;
                 Ok(())
             }
@@ -390,12 +411,20 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     #[cfg(not(feature = "self-learning"))]
     pub(super) async fn handle_skill_command(
         &mut self,
-        _args: &str,
+        args: &str,
     ) -> Result<(), super::error::AgentError> {
-        self.channel
-            .send("Self-learning feature is not enabled.")
-            .await?;
-        Ok(())
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        match parts.first().copied() {
+            Some("trust") => self.handle_skill_trust_command(&parts[1..]).await,
+            Some("block") => self.handle_skill_block(parts.get(1).copied()).await,
+            Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
+            _ => {
+                self.channel
+                    .send("Available /skill subcommands: trust, block, unblock")
+                    .await?;
+                Ok(())
+            }
+        }
     }
 
     #[cfg(feature = "self-learning")]

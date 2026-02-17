@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::vault::Secret;
@@ -261,6 +262,40 @@ pub struct SkillsConfig {
     pub max_active_skills: usize,
     #[serde(default)]
     pub learning: LearningConfig,
+    #[serde(default)]
+    pub trust: TrustConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrustConfig {
+    #[serde(default = "default_trust_default_level")]
+    pub default_level: TrustLevel,
+    #[serde(default = "default_trust_local_level")]
+    pub local_level: TrustLevel,
+    #[serde(default = "default_trust_hash_mismatch_level")]
+    pub hash_mismatch_level: TrustLevel,
+}
+
+fn default_trust_default_level() -> TrustLevel {
+    TrustLevel::Quarantined
+}
+
+fn default_trust_local_level() -> TrustLevel {
+    TrustLevel::Trusted
+}
+
+fn default_trust_hash_mismatch_level() -> TrustLevel {
+    TrustLevel::Quarantined
+}
+
+impl Default for TrustConfig {
+    fn default() -> Self {
+        Self {
+            default_level: default_trust_default_level(),
+            local_level: default_trust_local_level(),
+            hash_mismatch_level: default_trust_hash_mismatch_level(),
+        }
+    }
 }
 
 fn default_max_active_skills() -> usize {
@@ -918,6 +953,7 @@ impl Config {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
                 learning: LearningConfig::default(),
+                trust: TrustConfig::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: "./data/zeph.db".into(),

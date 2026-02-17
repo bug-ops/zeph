@@ -8516,6 +8516,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "qdrant-client",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -8546,6 +8547,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zeph-skills",
 ]
 
 [[package]]

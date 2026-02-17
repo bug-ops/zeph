@@ -7,6 +7,7 @@ mod learning;
 mod mcp;
 mod persistence;
 mod streaming;
+mod trust_commands;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::metrics::MetricsSnapshot;
+use std::collections::HashMap;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
@@ -151,7 +153,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .iter()
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
-        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
+        let empty_trust = HashMap::new();
+        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &empty_trust);
         let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
@@ -679,7 +682,18 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         let mut output = String::from("Available skills:\n\n");
 
         for meta in self.skill_state.registry.all_meta() {
-            let _ = writeln!(output, "- {} — {}", meta.name, meta.description);
+            let trust_info = if let Some(memory) = &self.memory_state.memory {
+                memory
+                    .sqlite()
+                    .load_skill_trust(&meta.name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or_else(String::new, |r| format!(" [{}]", r.trust_level))
+            } else {
+                String::new()
+            };
+            let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
         }
 
         if let Some(memory) = &self.memory_state.memory {
@@ -799,7 +813,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .iter()
             .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
-        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS);
+        let trust_map = self.build_skill_trust_map().await;
+        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &trust_map);
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);

@@ -10,6 +10,8 @@ pub mod prompt;
 pub mod qdrant_matcher;
 pub mod registry;
 pub(crate) mod resource;
+pub mod trust;
 pub mod watcher;
 
 pub use error::SkillError;
+pub use trust::{SkillSource, SkillTrust, TrustLevel, compute_skill_hash};
