@@ -1269,6 +1269,7 @@ async fn agent_with_security_config() {
         llm_seconds: 60,
         embedding_seconds: 15,
         a2a_seconds: 10,
+        max_parallel_tools: 8,
     };
 
     let mut agent = Agent::new(
