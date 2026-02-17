@@ -207,17 +207,6 @@ impl ShellExecutor {
             };
             self.log_audit(block, result, duration_ms).await;
 
-            if let Some(ref tx) = self.tool_event_tx {
-                let _ = tx.send(ToolEvent::Completed {
-                    tool_name: "bash".to_owned(),
-                    command: (*block).to_owned(),
-                    output: out.clone(),
-                    success: !out.contains("[error]"),
-                    filter_stats: None,
-                    diff: None,
-                });
-            }
-
             let sanitized = sanitize_output(&out);
             let mut per_block_stats: Option<FilterStats> = None;
             let filtered = if let Some(ref registry) = self.output_filter_registry {
