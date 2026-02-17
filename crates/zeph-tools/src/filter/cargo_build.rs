@@ -13,7 +13,6 @@ static CARGO_BUILD_MATCHER: LazyLock<CommandMatcher> = LazyLock::new(|| {
         if tokens.first() != Some(&"cargo") {
             return false;
         }
-        // Skip subcommands already handled by dedicated filters
         let dominated = ["test", "nextest", "clippy"];
         !tokens.iter().skip(1).any(|t| dominated.contains(t))
     }))
@@ -35,7 +34,15 @@ const NOISE_PREFIXES: &[&str] = &[
     "Checking ",
     "Documenting ",
     "Running ",
+    "Loaded ",
+    "Blocking ",
+    "Unpacking ",
 ];
+
+/// Max lines to keep when output has no recognizable noise pattern.
+const LONG_OUTPUT_THRESHOLD: usize = 30;
+const KEEP_HEAD: usize = 10;
+const KEEP_TAIL: usize = 5;
 
 fn is_noise(line: &str) -> bool {
     let trimmed = line.trim_start();
@@ -81,26 +88,52 @@ impl OutputFilter for CargoBuildFilter {
             }
         }
 
-        if noise_count == 0 {
-            return make_result(raw_output, raw_output.to_owned(), FilterConfidence::Fallback);
-        }
-
-        let mut output = String::new();
-        if let Some(fin) = finished_line {
-            let _ = writeln!(output, "{fin}");
-        }
         if noise_count > 0 {
-            let _ = writeln!(output, "({noise_count} compile/fetch lines removed)");
-        }
-        if !kept.is_empty() {
-            output.push('\n');
-            for line in &kept {
-                let _ = writeln!(output, "{line}");
-            }
+            return build_noise_result(raw_output, &kept, finished_line, noise_count);
         }
 
-        make_result(raw_output, output.trim_end().to_owned(), FilterConfidence::Full)
+        // No recognizable noise — apply generic long-output truncation
+        let lines: Vec<&str> = raw_output.lines().collect();
+        if lines.len() > LONG_OUTPUT_THRESHOLD {
+            return truncate_long(raw_output, &lines);
+        }
+
+        make_result(raw_output, raw_output.to_owned(), FilterConfidence::Fallback)
     }
+}
+
+fn build_noise_result(
+    raw: &str,
+    kept: &[&str],
+    finished_line: Option<&str>,
+    noise_count: usize,
+) -> FilterResult {
+    let mut output = String::new();
+    if let Some(fin) = finished_line {
+        let _ = writeln!(output, "{fin}");
+    }
+    let _ = writeln!(output, "({noise_count} compile/fetch lines removed)");
+    if !kept.is_empty() {
+        output.push('\n');
+        for line in kept {
+            let _ = writeln!(output, "{line}");
+        }
+    }
+    make_result(raw, output.trim_end().to_owned(), FilterConfidence::Full)
+}
+
+fn truncate_long(raw: &str, lines: &[&str]) -> FilterResult {
+    let total = lines.len();
+    let omitted = total - KEEP_HEAD - KEEP_TAIL;
+    let mut output = String::new();
+    for line in &lines[..KEEP_HEAD] {
+        let _ = writeln!(output, "{line}");
+    }
+    let _ = writeln!(output, "\n... ({omitted} lines omitted) ...\n");
+    for line in &lines[total - KEEP_TAIL..] {
+        let _ = writeln!(output, "{line}");
+    }
+    make_result(raw, output.trim_end().to_owned(), FilterConfidence::Partial)
 }
 
 #[cfg(test)]
@@ -143,6 +176,32 @@ mod tests {
     }
 
     #[test]
+    fn filters_audit_noise() {
+        let f = make_filter();
+        let raw = "    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`\n      Loaded 920 security advisories (from /Users/rabax/.cargo/advisory-db)\n    Updating crates.io index\n0 vulnerabilities found";
+        let result = f.filter("cargo audit", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("3 compile/fetch lines removed"));
+        assert!(result.output.contains("0 vulnerabilities found"));
+        assert!(!result.output.contains("Fetching"));
+    }
+
+    #[test]
+    fn truncates_long_tree_output() {
+        let f = make_filter();
+        let mut lines = Vec::new();
+        for i in 0..80 {
+            lines.push(format!("├── dep-{i} v0.1.{i}"));
+        }
+        let raw = lines.join("\n");
+        let result = f.filter("cargo tree", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("dep-0"));
+        assert!(result.output.contains("dep-79"));
+    }
+
+    #[test]
     fn preserves_full_on_error() {
         let f = make_filter();
         let raw = "error[E0308]: mismatched types\n  --> src/main.rs:10:5";
@@ -152,9 +211,9 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_when_no_noise() {
+    fn passthrough_short_output() {
         let f = make_filter();
-        let raw = "some random output\nno cargo noise here";
+        let raw = "some short output\nonly two lines";
         let result = f.filter("cargo build", raw, 0);
         assert_eq!(result.output, raw);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
