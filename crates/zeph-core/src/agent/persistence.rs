@@ -1,4 +1,4 @@
-use zeph_llm::provider::{LlmProvider, Role};
+use zeph_llm::provider::Role;
 use zeph_memory::sqlite::role_str;
 use zeph_tools::executor::ToolExecutor;
 
@@ -6,7 +6,7 @@ use crate::channel::Channel;
 
 use super::Agent;
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     /// Load conversation history from memory and inject into messages.
     ///
     /// # Errors
@@ -50,6 +50,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             });
         }
 
+        self.recompute_prompt_tokens();
         Ok(())
     }
 

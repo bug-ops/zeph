@@ -7,6 +7,7 @@ use qdrant_client::qdrant::{Condition, Filter};
 
 use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
+use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::estimate_tokens;
 
@@ -51,15 +52,15 @@ pub struct RetrievedCode {
 }
 
 /// Budget-aware code retriever with query classification.
-pub struct CodeRetriever<P: LlmProvider> {
+pub struct CodeRetriever {
     store: CodeStore,
-    provider: Arc<P>,
+    provider: Arc<AnyProvider>,
     config: RetrievalConfig,
 }
 
-impl<P: LlmProvider + Clone + 'static> CodeRetriever<P> {
+impl CodeRetriever {
     #[must_use]
-    pub fn new(store: CodeStore, provider: Arc<P>, config: RetrievalConfig) -> Self {
+    pub fn new(store: CodeStore, provider: Arc<AnyProvider>, config: RetrievalConfig) -> Self {
         Self {
             store,
             provider,

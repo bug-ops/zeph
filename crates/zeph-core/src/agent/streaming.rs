@@ -9,7 +9,7 @@ use zeph_memory::semantic::estimate_tokens;
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use tracing::Instrument;
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         if self.provider.supports_tool_use() {
             tracing::debug!(
@@ -73,7 +73,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 return Ok(());
             }
 
-            self.messages.push(Message {
+            self.push_message(Message {
                 role: Role::Assistant,
                 content: response.clone(),
                 parts: vec![],
@@ -129,11 +129,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
-        let prompt_estimate: u64 = self
-            .messages
-            .iter()
-            .map(|m| u64::try_from(m.content.len()).unwrap_or(0) / 4)
-            .sum();
+        let prompt_estimate = self.cached_prompt_tokens;
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
@@ -290,7 +286,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 let display = self.maybe_redact(&formatted_output);
                 self.channel.send(&display).await?;
 
-                self.messages.push(Message::from_parts(
+                self.push_message(Message::from_parts(
                     Role::User,
                     vec![MessagePart::ToolOutput {
                         tool_name: output.tool_name.clone(),
@@ -320,7 +316,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         let display = self.maybe_redact(&formatted);
                         self.channel.send(&display).await?;
-                        self.messages.push(Message::from_parts(
+                        self.push_message(Message::from_parts(
                             Role::User,
                             vec![MessagePart::ToolOutput {
                                 tool_name: out.tool_name.clone(),
@@ -568,7 +564,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
         self.persist_message(Role::Assistant, &assistant_msg.content)
             .await;
-        self.messages.push(assistant_msg);
+        self.push_message(assistant_msg);
 
         let mut result_parts: Vec<MessagePart> = Vec::new();
         for tc in tool_calls {
@@ -609,7 +605,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
 
         let user_msg = Message::from_parts(Role::User, result_parts);
         self.persist_message(Role::User, &user_msg.content).await;
-        self.messages.push(user_msg);
+        self.push_message(user_msg);
 
         Ok(())
     }

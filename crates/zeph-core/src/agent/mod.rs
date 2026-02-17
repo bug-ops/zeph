@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
+use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::metrics::MetricsSnapshot;
@@ -52,8 +53,8 @@ struct QueuedMessage {
     received_at: Instant,
 }
 
-pub(super) struct MemoryState<P: LlmProvider + Clone + 'static> {
-    pub(super) memory: Option<SemanticMemory<P>>,
+pub(super) struct MemoryState {
+    pub(super) memory: Option<SemanticMemory>,
     pub(super) conversation_id: Option<zeph_memory::ConversationId>,
     pub(super) history_limit: u32,
     pub(super) recall_limit: usize,
@@ -89,8 +90,8 @@ pub(super) struct McpState {
 }
 
 #[cfg(feature = "index")]
-pub(super) struct IndexState<P: LlmProvider + Clone + 'static> {
-    pub(super) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>>,
+pub(super) struct IndexState {
+    pub(super) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever>>,
     pub(super) repo_map_tokens: usize,
     pub(super) cached_repo_map: Option<(String, std::time::Instant)>,
     pub(super) repo_map_ttl: std::time::Duration,
@@ -105,12 +106,12 @@ pub(super) struct RuntimeConfig {
     pub(super) permission_policy: zeph_tools::PermissionPolicy,
 }
 
-pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> {
-    provider: P,
+pub struct Agent<C: Channel, T: ToolExecutor> {
+    provider: AnyProvider,
     channel: C,
     tool_executor: T,
     messages: Vec<Message>,
-    pub(super) memory_state: MemoryState<P>,
+    pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
     pub(super) context_state: ContextState,
     config_path: Option<PathBuf>,
@@ -125,19 +126,20 @@ pub struct Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> 
     #[cfg(feature = "mcp")]
     pub(super) mcp: McpState,
     #[cfg(feature = "index")]
-    pub(super) index: IndexState<P>,
+    pub(super) index: IndexState,
     start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
-    summary_provider: Option<P>,
+    summary_provider: Option<AnyProvider>,
     warmup_ready: Option<watch::Receiver<bool>>,
     doom_loop_history: Vec<String>,
     cost_tracker: Option<CostTracker>,
+    cached_prompt_tokens: u64,
 }
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     #[must_use]
     pub fn new(
-        provider: P,
+        provider: AnyProvider,
         channel: C,
         registry: SkillRegistry,
         matcher: Option<SkillMatcherBackend>,
@@ -154,6 +156,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
+        let initial_prompt_tokens = u64::try_from(system_prompt.len()).unwrap_or(0) / 4;
         let (_tx, rx) = watch::channel(false);
         Self {
             provider,
@@ -225,6 +228,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             warmup_ready: None,
             doom_loop_history: Vec::new(),
             cost_tracker: None,
+            cached_prompt_tokens: initial_prompt_tokens,
         }
     }
 
@@ -237,7 +241,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_memory(
         mut self,
-        memory: SemanticMemory<P>,
+        memory: SemanticMemory,
         conversation_id: zeph_memory::ConversationId,
         history_limit: u32,
         recall_limit: usize,
@@ -326,12 +330,12 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     #[must_use]
-    pub fn with_summary_provider(mut self, provider: P) -> Self {
+    pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
         self.summary_provider = Some(provider);
         self
     }
 
-    fn summary_or_primary_provider(&self) -> &P {
+    fn summary_or_primary_provider(&self) -> &AnyProvider {
         self.summary_provider.as_ref().unwrap_or(&self.provider)
     }
 
@@ -381,7 +385,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[must_use]
     pub fn with_code_retriever(
         mut self,
-        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever<P>>,
+        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
         repo_map_tokens: usize,
         repo_map_ttl_secs: u64,
     ) -> Self {
@@ -443,6 +447,23 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
                 f(m);
             });
         }
+    }
+
+    fn estimate_tokens(content: &str) -> u64 {
+        u64::try_from(content.len()).unwrap_or(0) / 4
+    }
+
+    pub(super) fn recompute_prompt_tokens(&mut self) {
+        self.cached_prompt_tokens = self
+            .messages
+            .iter()
+            .map(|m| Self::estimate_tokens(&m.content))
+            .sum();
+    }
+
+    pub(super) fn push_message(&mut self, msg: Message) {
+        self.cached_prompt_tokens += Self::estimate_tokens(&msg.content);
+        self.messages.push(msg);
     }
 
     pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
@@ -625,7 +646,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tracing::warn!("context compaction failed: {e:#}");
         }
 
-        if let Err(e) = self.prepare_context(trimmed).await {
+        if let Err(e) = Box::pin(self.prepare_context(trimmed)).await {
             tracing::warn!("context preparation failed: {e:#}");
         }
 
@@ -634,7 +655,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             self.reflection_used = false;
         }
 
-        self.messages.push(Message {
+        self.push_message(Message {
             role: Role::User,
             content: text.clone(),
             parts: vec![],
@@ -646,6 +667,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             let user_msg = format!("Error: {e:#}");
             self.channel.send(&user_msg).await?;
             self.messages.pop();
+            self.recompute_prompt_tokens();
         }
 
         Ok(())
@@ -855,83 +877,19 @@ pub(super) mod agent_tests {
     pub(crate) use super::*;
     use crate::channel::ChannelMessage;
     use std::sync::{Arc, Mutex};
-    use zeph_llm::provider::ChatStream;
+    use zeph_llm::mock::MockProvider;
     use zeph_tools::executor::{ToolError, ToolOutput};
 
-    #[derive(Clone)]
-    pub(super) struct MockProvider {
-        responses: Arc<Mutex<Vec<String>>>,
-        streaming: bool,
-        embeddings: bool,
-        fail_chat: bool,
+    pub(super) fn mock_provider(responses: Vec<String>) -> AnyProvider {
+        AnyProvider::Mock(MockProvider::with_responses(responses))
     }
 
-    impl MockProvider {
-        pub(super) fn new(responses: Vec<String>) -> Self {
-            Self {
-                responses: Arc::new(Mutex::new(responses)),
-                streaming: false,
-                embeddings: false,
-                fail_chat: false,
-            }
-        }
-
-        fn with_streaming(mut self) -> Self {
-            self.streaming = true;
-            self
-        }
-
-        pub(super) fn failing() -> Self {
-            Self {
-                responses: Arc::new(Mutex::new(Vec::new())),
-                streaming: false,
-                embeddings: false,
-                fail_chat: true,
-            }
-        }
+    pub(super) fn mock_provider_streaming(responses: Vec<String>) -> AnyProvider {
+        AnyProvider::Mock(MockProvider::with_responses(responses).with_streaming())
     }
 
-    impl LlmProvider for MockProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
-            if self.fail_chat {
-                return Err(zeph_llm::LlmError::Other("mock LLM error".into()));
-            }
-            let mut responses = self.responses.lock().unwrap();
-            if responses.is_empty() {
-                Ok("default response".to_string())
-            } else {
-                Ok(responses.remove(0))
-            }
-        }
-
-        async fn chat_stream(
-            &self,
-            messages: &[Message],
-        ) -> Result<ChatStream, zeph_llm::LlmError> {
-            let response = self.chat(messages).await?;
-            let chunks: Vec<_> = response.chars().map(|c| c.to_string()).map(Ok).collect();
-            Ok(Box::pin(tokio_stream::iter(chunks)))
-        }
-
-        fn supports_streaming(&self) -> bool {
-            self.streaming
-        }
-
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            if self.embeddings {
-                Ok(vec![0.1, 0.2, 0.3])
-            } else {
-                Err(zeph_llm::LlmError::EmbedUnsupported { provider: "mock" })
-            }
-        }
-
-        fn supports_embeddings(&self) -> bool {
-            self.embeddings
-        }
-
-        fn name(&self) -> &'static str {
-            "mock"
-        }
+    pub(super) fn mock_provider_failing() -> AnyProvider {
+        AnyProvider::Mock(MockProvider::failing())
     }
 
     pub(super) struct MockChannel {
@@ -1045,7 +1003,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_new_initializes_with_system_prompt() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1059,7 +1017,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_with_embedding_model_sets_model() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1072,7 +1030,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_with_shutdown_sets_receiver() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1083,7 +1041,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_with_security_sets_config() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1106,7 +1064,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_run_handles_empty_channel() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1119,7 +1077,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_run_processes_user_message() {
-        let provider = MockProvider::new(vec!["test response".to_string()]);
+        let provider = mock_provider(vec!["test response".to_string()]);
         let channel = MockChannel::new(vec!["hello".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1136,7 +1094,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_run_handles_shutdown_signal() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (tx, rx) = watch::channel(false);
         let channel = MockChannel::new(vec!["should not process".to_string()]);
         let registry = create_test_registry();
@@ -1153,7 +1111,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_skills_command() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let _channel = MockChannel::new(vec!["/skills".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1173,7 +1131,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_process_response_handles_empty_response() {
-        let provider = MockProvider::new(vec!["".to_string()]);
+        let provider = mock_provider(vec!["".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1192,7 +1150,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_execution_success() {
-        let provider = MockProvider::new(vec!["response with tool".to_string()]);
+        let provider = mock_provider(vec!["response with tool".to_string()]);
         let _channel = MockChannel::new(vec!["execute tool".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
@@ -1219,7 +1177,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_blocked_error() {
-        let provider = MockProvider::new(vec!["run blocked command".to_string()]);
+        let provider = mock_provider(vec!["run blocked command".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
@@ -1244,7 +1202,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_sandbox_violation() {
-        let provider = MockProvider::new(vec!["access forbidden path".to_string()]);
+        let provider = mock_provider(vec!["access forbidden path".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::SandboxViolation {
@@ -1265,7 +1223,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_confirmation_approved() {
-        let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
+        let provider = mock_provider(vec!["needs confirmation".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
@@ -1287,7 +1245,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_confirmation_denied() {
-        let provider = MockProvider::new(vec!["needs confirmation".to_string()]);
+        let provider = mock_provider(vec!["needs confirmation".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
@@ -1309,7 +1267,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_streaming_response() {
-        let provider = MockProvider::new(vec!["streaming response".to_string()]).with_streaming();
+        let provider = mock_provider_streaming(vec!["streaming response".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1328,7 +1286,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_maybe_redact_enabled() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1348,7 +1306,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_maybe_redact_disabled() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1368,7 +1326,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_multiple_messages() {
-        let provider = MockProvider::new(vec![
+        let provider = mock_provider(vec![
             "first response".to_string(),
             "second response".to_string(),
         ]);
@@ -1388,7 +1346,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_output_with_error_marker() {
-        let provider = MockProvider::new(vec!["response".to_string(), "retry".to_string()]);
+        let provider = mock_provider(vec!["response".to_string(), "retry".to_string()]);
         let channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![
@@ -1408,7 +1366,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_empty_tool_output() {
-        let provider = MockProvider::new(vec!["response".to_string()]);
+        let provider = mock_provider(vec!["response".to_string()]);
         let channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
@@ -1457,7 +1415,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_with_skill_reload_sets_paths() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1472,7 +1430,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_execution_error() {
-        let provider = MockProvider::new(vec!["response".to_string()]);
+        let provider = mock_provider(vec!["response".to_string()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::Timeout { timeout_secs: 30 })]);
@@ -1495,7 +1453,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_processes_multi_turn_tool_execution() {
-        let provider = MockProvider::new(vec![
+        let provider = mock_provider(vec![
             "first response".to_string(),
             "second response".to_string(),
         ]);
@@ -1523,7 +1481,7 @@ pub(super) mod agent_tests {
         for _ in 0..10 {
             responses.push("response".to_string());
         }
-        let provider = MockProvider::new(responses);
+        let provider = mock_provider(responses);
         let channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
 
@@ -1563,7 +1521,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_with_metrics_sets_initial_values() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1586,7 +1544,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_metrics_update_on_llm_call() {
-        let provider = MockProvider::new(vec!["response".to_string()]);
+        let provider = mock_provider(vec!["response".to_string()]);
         let channel = MockChannel::new(vec!["hello".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1603,7 +1561,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_metrics_streaming_updates_completion_tokens() {
-        let provider = MockProvider::new(vec!["streaming response".to_string()]).with_streaming();
+        let provider = mock_provider_streaming(vec!["streaming response".to_string()]);
         let channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1620,7 +1578,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_metrics_persist_increments_count() {
-        let provider = MockProvider::new(vec!["response".to_string()]);
+        let provider = mock_provider(vec!["response".to_string()]);
         let channel = MockChannel::new(vec!["hello".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1636,7 +1594,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn agent_metrics_skills_updated_on_prompt_rebuild() {
-        let provider = MockProvider::new(vec!["response".to_string()]);
+        let provider = mock_provider(vec!["response".to_string()]);
         let channel = MockChannel::new(vec!["hello".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1653,7 +1611,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn update_metrics_noop_when_none() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1664,7 +1622,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn update_metrics_sets_uptime_seconds() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1681,7 +1639,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn test_last_user_query_finds_original() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1708,7 +1666,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn test_last_user_query_empty_messages() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1719,7 +1677,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn test_maybe_summarize_short_output_passthrough() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1734,7 +1692,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn test_maybe_summarize_long_output_disabled_truncates() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1749,7 +1707,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn test_maybe_summarize_long_output_enabled_calls_llm() {
-        let provider = MockProvider::new(vec!["summary text".to_string()]);
+        let provider = mock_provider(vec!["summary text".to_string()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1766,7 +1724,7 @@ pub(super) mod agent_tests {
 
     #[tokio::test]
     async fn test_summarize_tool_output_llm_failure_fallback() {
-        let provider = MockProvider::failing();
+        let provider = mock_provider_failing();
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1781,7 +1739,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn with_tool_summarization_sets_flag() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1790,7 +1748,7 @@ pub(super) mod agent_tests {
             .with_tool_summarization(true);
         assert!(agent.runtime.summarize_tool_output_enabled);
 
-        let provider2 = MockProvider::new(vec![]);
+        let provider2 = mock_provider(vec![]);
         let channel2 = MockChannel::new(vec![]);
         let registry2 = create_test_registry();
         let executor2 = MockToolExecutor::no_tools();
@@ -1802,7 +1760,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn enqueue_or_merge_adds_new_message() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1815,7 +1773,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn enqueue_or_merge_merges_within_window() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1829,7 +1787,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn enqueue_or_merge_no_merge_after_window() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1847,7 +1805,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn enqueue_or_merge_respects_max_queue_size() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1865,7 +1823,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn clear_queue_returns_count_and_empties() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1886,7 +1844,7 @@ pub(super) mod agent_tests {
     #[test]
     fn drain_channel_fills_queue() {
         let messages: Vec<String> = (0..5).map(|i| format!("msg{i}")).collect();
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(messages);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1902,7 +1860,7 @@ pub(super) mod agent_tests {
     #[test]
     fn drain_channel_stops_at_max_queue_size() {
         let messages: Vec<String> = (0..15).map(|i| format!("msg{i}")).collect();
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(messages);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1922,7 +1880,7 @@ pub(super) mod agent_tests {
 
     #[test]
     fn queue_fifo_order() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();

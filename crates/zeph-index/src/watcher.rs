@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
-use zeph_llm::provider::LlmProvider;
 
 use crate::error::Result;
 use crate::indexer::CodeIndexer;
@@ -19,10 +18,7 @@ impl IndexWatcher {
     /// # Errors
     ///
     /// Returns an error if the filesystem watcher cannot be initialized.
-    pub fn start<P: LlmProvider + Clone + 'static>(
-        root: &Path,
-        indexer: Arc<CodeIndexer<P>>,
-    ) -> Result<Self> {
+    pub fn start(root: &Path, indexer: Arc<CodeIndexer>) -> Result<Self> {
         let (notify_tx, mut notify_rx) = mpsc::channel::<PathBuf>(64);
 
         let mut debouncer = new_debouncer(
@@ -73,53 +69,24 @@ impl IndexWatcher {
 mod tests {
     use super::*;
 
-    use zeph_llm::provider::{ChatStream, LlmProvider, Message};
-
-    #[derive(Debug, Clone)]
-    struct FakeProvider;
-
-    impl LlmProvider for FakeProvider {
-        fn name(&self) -> &'static str {
-            "fake"
-        }
-
-        async fn chat(
-            &self,
-            _messages: &[Message],
-        ) -> std::result::Result<String, zeph_llm::LlmError> {
-            Ok(String::new())
-        }
-
-        async fn chat_stream(
-            &self,
-            _messages: &[Message],
-        ) -> std::result::Result<ChatStream, zeph_llm::LlmError> {
-            Ok(Box::pin(tokio_stream::empty()))
-        }
-
-        fn supports_streaming(&self) -> bool {
-            false
-        }
-
-        async fn embed(&self, _text: &str) -> std::result::Result<Vec<f32>, zeph_llm::LlmError> {
-            Ok(vec![0.0; 384])
-        }
-
-        fn supports_embeddings(&self) -> bool {
-            true
-        }
-    }
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::ollama::OllamaProvider;
 
     async fn create_test_pool() -> sqlx::SqlitePool {
         sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
     }
 
-    async fn create_test_indexer() -> Arc<CodeIndexer<FakeProvider>> {
+    async fn create_test_indexer() -> Arc<CodeIndexer> {
         let store = crate::store::CodeStore::new("http://localhost:6334", create_test_pool().await)
             .unwrap();
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://127.0.0.1:1",
+            "test".into(),
+            "embed".into(),
+        ));
         Arc::new(CodeIndexer::new(
             store,
-            Arc::new(FakeProvider),
+            Arc::new(provider),
             crate::indexer::IndexerConfig::default(),
         ))
     }

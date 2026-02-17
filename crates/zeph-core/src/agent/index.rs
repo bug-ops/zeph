@@ -1,8 +1,8 @@
-use super::{Agent, Channel, LlmProvider, ToolExecutor};
+use super::{Agent, Channel, ToolExecutor};
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     pub(super) async fn fetch_code_rag(
-        index: &super::IndexState<P>,
+        index: &super::IndexState,
         query: &str,
         token_budget: usize,
     ) -> Result<Option<String>, super::error::AgentError> {
@@ -44,7 +44,7 @@ mod tests {
     fn test_repo_map_cache_hit() {
         use std::time::{Duration, Instant};
 
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();

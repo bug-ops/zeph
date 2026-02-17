@@ -3,6 +3,8 @@ use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 #[cfg(feature = "compatible")]
 use crate::compatible::CompatibleProvider;
+#[cfg(feature = "mock")]
+use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 #[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
@@ -29,6 +31,8 @@ macro_rules! delegate_provider {
             AnyProvider::Orchestrator($p) => $expr,
             #[cfg(feature = "router")]
             AnyProvider::Router($p) => $expr,
+            #[cfg(feature = "mock")]
+            AnyProvider::Mock($p) => $expr,
         }
     };
 }
@@ -47,6 +51,8 @@ pub enum AnyProvider {
     Orchestrator(Box<ModelOrchestrator>),
     #[cfg(feature = "router")]
     Router(Box<RouterProvider>),
+    #[cfg(feature = "mock")]
+    Mock(MockProvider),
 }
 
 impl AnyProvider {
@@ -85,6 +91,8 @@ impl AnyProvider {
             Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
+            #[cfg(feature = "mock")]
+            Self::Mock(_) => {}
         }
     }
 }

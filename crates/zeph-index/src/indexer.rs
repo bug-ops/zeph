@@ -9,6 +9,7 @@ use crate::context::contextualize_for_embedding;
 use crate::error::{IndexError, Result};
 use crate::languages::{detect_language, is_indexable};
 use crate::store::{ChunkInsert, CodeStore};
+use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
 /// Indexer configuration.
@@ -30,15 +31,15 @@ pub struct IndexReport {
 }
 
 /// Orchestrates code indexing over a project tree.
-pub struct CodeIndexer<P: LlmProvider> {
+pub struct CodeIndexer {
     store: CodeStore,
-    provider: Arc<P>,
+    provider: Arc<AnyProvider>,
     config: IndexerConfig,
 }
 
-impl<P: LlmProvider + Clone + 'static> CodeIndexer<P> {
+impl CodeIndexer {
     #[must_use]
-    pub fn new(store: CodeStore, provider: Arc<P>, config: IndexerConfig) -> Self {
+    pub fn new(store: CodeStore, provider: Arc<AnyProvider>, config: IndexerConfig) -> Self {
         Self {
             store,
             provider,

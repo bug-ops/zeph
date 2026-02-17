@@ -26,6 +26,7 @@ criterion.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-stream.workspace = true
+zeph-llm = { workspace = true, features = ["mock"] }
 
 [lints]
 workspace = true

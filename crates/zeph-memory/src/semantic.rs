@@ -1,4 +1,5 @@
 use qdrant_client::qdrant::Condition;
+use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::error::MemoryError;
@@ -55,16 +56,16 @@ fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> Strin
     prompt
 }
 
-pub struct SemanticMemory<P: LlmProvider> {
+pub struct SemanticMemory {
     sqlite: SqliteStore,
     qdrant: Option<QdrantStore>,
-    provider: P,
+    provider: AnyProvider,
     embedding_model: String,
     vector_weight: f64,
     keyword_weight: f64,
 }
 
-impl<P: LlmProvider> SemanticMemory<P> {
+impl SemanticMemory {
     /// Create a new `SemanticMemory` instance with default hybrid search weights (0.7/0.3).
     ///
     /// Qdrant connection is best-effort: if unavailable, semantic search is disabled.
@@ -75,7 +76,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     pub async fn new(
         sqlite_path: &str,
         qdrant_url: &str,
-        provider: P,
+        provider: AnyProvider,
         embedding_model: &str,
     ) -> Result<Self, MemoryError> {
         Self::with_weights(sqlite_path, qdrant_url, provider, embedding_model, 0.7, 0.3).await
@@ -89,7 +90,7 @@ impl<P: LlmProvider> SemanticMemory<P> {
     pub async fn with_weights(
         sqlite_path: &str,
         qdrant_url: &str,
-        provider: P,
+        provider: AnyProvider,
         embedding_model: &str,
         vector_weight: f64,
         keyword_weight: f64,
@@ -641,51 +642,17 @@ impl<P: LlmProvider> SemanticMemory<P> {
 
 #[cfg(test)]
 mod tests {
-    use zeph_llm::provider::{ChatStream, Role};
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::Role;
 
     use super::*;
 
-    struct TestProvider {
-        embedding: Vec<f32>,
-        supports_embeddings: bool,
+    fn test_provider() -> AnyProvider {
+        AnyProvider::Mock(MockProvider::default())
     }
 
-    impl LlmProvider for TestProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
-            Ok("test response".into())
-        }
-
-        async fn chat_stream(
-            &self,
-            messages: &[Message],
-        ) -> Result<ChatStream, zeph_llm::LlmError> {
-            let response = self.chat(messages).await?;
-            Ok(Box::pin(tokio_stream::once(Ok(response))))
-        }
-
-        fn supports_streaming(&self) -> bool {
-            false
-        }
-
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            Ok(self.embedding.clone())
-        }
-
-        fn supports_embeddings(&self) -> bool {
-            self.supports_embeddings
-        }
-
-        fn name(&self) -> &'static str {
-            "test"
-        }
-    }
-
-    async fn test_semantic_memory(supports_embeddings: bool) -> SemanticMemory<TestProvider> {
-        let provider = TestProvider {
-            embedding: vec![0.1, 0.2, 0.3],
-            supports_embeddings,
-        };
-
+    async fn test_semantic_memory(_supports_embeddings: bool) -> SemanticMemory {
+        let provider = test_provider();
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
 
         SemanticMemory {
@@ -695,15 +662,6 @@ mod tests {
             embedding_model: "test-model".into(),
             vector_weight: 0.7,
             keyword_weight: 0.3,
-        }
-    }
-
-    impl Clone for TestProvider {
-        fn clone(&self) -> Self {
-            Self {
-                embedding: self.embedding.clone(),
-                supports_embeddings: self.supports_embeddings,
-            }
         }
     }
 
@@ -1119,10 +1077,9 @@ mod tests {
 
     #[tokio::test]
     async fn new_with_invalid_qdrant_url_graceful() {
-        let provider = TestProvider {
-            embedding: vec![0.1, 0.2, 0.3],
-            supports_embeddings: true,
-        };
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        let provider = AnyProvider::Mock(mock);
         let result =
             SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model").await;
         assert!(result.is_ok());
@@ -1214,50 +1171,18 @@ mod tests {
         assert_eq!(token_est, expected);
     }
 
-    struct FailChatProvider;
-
-    impl Clone for FailChatProvider {
-        fn clone(&self) -> Self {
-            Self
-        }
-    }
-
-    impl LlmProvider for FailChatProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
-            Err(zeph_llm::LlmError::Other("chat failed".into()))
-        }
-
-        async fn chat_stream(
-            &self,
-            _messages: &[Message],
-        ) -> Result<ChatStream, zeph_llm::LlmError> {
-            Err(zeph_llm::LlmError::Other("stream failed".into()))
-        }
-
-        fn supports_streaming(&self) -> bool {
-            false
-        }
-
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            Err(zeph_llm::LlmError::Other("embed not supported".into()))
-        }
-
-        fn supports_embeddings(&self) -> bool {
-            false
-        }
-
-        fn name(&self) -> &'static str {
-            "fail"
-        }
-    }
-
     #[tokio::test]
     async fn summarize_fails_when_provider_chat_fails() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let provider = AnyProvider::Ollama(zeph_llm::ollama::OllamaProvider::new(
+            "http://127.0.0.1:1",
+            "test".into(),
+            "embed".into(),
+        ));
         let memory = SemanticMemory {
             sqlite,
             qdrant: None,
-            provider: FailChatProvider,
+            provider,
             embedding_model: "test".into(),
             vector_weight: 0.7,
             keyword_weight: 0.3,

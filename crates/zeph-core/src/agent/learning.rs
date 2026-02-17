@@ -4,7 +4,7 @@ use super::{LearningConfig, Message, Role, SemanticMemory};
 #[cfg(feature = "self-learning")]
 use std::path::PathBuf;
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     #[cfg(feature = "self-learning")]
     pub(super) fn is_learning_enabled(&self) -> bool {
         self.learning_config.as_ref().is_some_and(|c| c.enabled)
@@ -77,7 +77,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             tool_output,
         );
 
-        self.messages.push(Message {
+        self.push_message(Message {
             role: Role::User,
             content: prompt,
             parts: vec![],
@@ -172,7 +172,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[allow(clippy::cast_precision_loss)]
     async fn check_improvement_allowed(
         &self,
-        memory: &SemanticMemory<P>,
+        memory: &SemanticMemory,
         config: &LearningConfig,
         skill_name: &str,
         user_feedback: Option<&str>,
@@ -251,7 +251,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     #[cfg(feature = "self-learning")]
     async fn store_improved_version(
         &self,
-        memory: &SemanticMemory<P>,
+        memory: &SemanticMemory,
         config: &LearningConfig,
         skill_name: &str,
         generated_body: &str,

@@ -683,7 +683,7 @@ async fn create_skill_matcher(
     config: &Config,
     provider: &AnyProvider,
     meta: &[&SkillMeta],
-    memory: &SemanticMemory<AnyProvider>,
+    memory: &SemanticMemory,
     embedding_model: &str,
 ) -> Option<SkillMatcherBackend> {
     let embed_fn = provider.embed_fn();

@@ -10,7 +10,7 @@ use super::{
     build_system_prompt, format_skills_prompt,
 };
 
-impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, T> {
+impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -111,6 +111,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
             "compacted context"
         );
 
+        self.recompute_prompt_tokens();
         self.update_metrics(|m| {
             m.context_compactions += 1;
         });
@@ -311,7 +312,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn fetch_semantic_recall(
-        memory_state: &super::MemoryState<P>,
+        memory_state: &super::MemoryState,
         query: &str,
         token_budget: usize,
     ) -> Result<Option<Message>, super::error::AgentError> {
@@ -424,7 +425,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn fetch_cross_session(
-        memory_state: &super::MemoryState<P>,
+        memory_state: &super::MemoryState,
         query: &str,
         token_budget: usize,
     ) -> Result<Option<Message>, super::error::AgentError> {
@@ -487,7 +488,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
     }
 
     async fn fetch_summaries(
-        memory_state: &super::MemoryState<P>,
+        memory_state: &super::MemoryState,
         token_budget: usize,
     ) -> Result<Option<Message>, super::error::AgentError> {
         let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
@@ -558,6 +559,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         if keep_from > history_start {
             let removed = keep_from - history_start;
             self.messages.drain(history_start..keep_from);
+            self.recompute_prompt_tokens();
             tracing::info!(
                 removed,
                 token_budget,
@@ -621,6 +623,7 @@ impl<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor> Agent<P, C, 
         }
 
         self.trim_messages_to_budget(alloc.recent_history);
+        self.recompute_prompt_tokens();
 
         Ok(())
     }
@@ -783,7 +786,7 @@ mod tests {
 
     #[test]
     fn should_compact_disabled_without_budget() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -801,7 +804,7 @@ mod tests {
 
     #[test]
     fn should_compact_below_threshold() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -813,7 +816,7 @@ mod tests {
 
     #[test]
     fn should_compact_above_threshold() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -833,7 +836,7 @@ mod tests {
 
     #[tokio::test]
     async fn compact_context_preserves_system_and_tail() {
-        let provider = MockProvider::new(vec!["compacted summary".to_string()]);
+        let provider = mock_provider(vec!["compacted summary".to_string()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -871,7 +874,7 @@ mod tests {
 
     #[tokio::test]
     async fn compact_context_too_few_messages() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -897,7 +900,7 @@ mod tests {
 
     #[test]
     fn with_context_budget_zero_disables() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -909,7 +912,7 @@ mod tests {
 
     #[test]
     fn with_context_budget_nonzero_enables() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -928,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn compact_context_increments_metric() {
-        let provider = MockProvider::new(vec!["summary".to_string()]);
+        let provider = mock_provider(vec!["summary".to_string()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -952,7 +955,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_context_no_budget_is_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -966,7 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recall_injection_removed_between_turns() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -990,7 +993,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recall_without_qdrant_returns_empty() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1004,7 +1007,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trim_messages_preserves_system() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1028,7 +1031,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trim_messages_keeps_recent() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1051,7 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trim_zero_budget_is_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1072,9 +1075,9 @@ mod tests {
     }
 
     async fn create_memory_with_summaries(
-        provider: MockProvider,
+        provider: zeph_llm::any::AnyProvider,
         summaries: &[&str],
-    ) -> (SemanticMemory<MockProvider>, zeph_memory::ConversationId) {
+    ) -> (SemanticMemory, zeph_memory::ConversationId) {
         let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test")
             .await
             .unwrap();
@@ -1101,7 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_no_memory_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1115,7 +1118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_zero_budget_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (memory, cid) = create_memory_with_summaries(provider.clone(), &["summary text"]).await;
 
         let channel = MockChannel::new(vec![]);
@@ -1132,7 +1135,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_empty_summaries_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (memory, cid) = create_memory_with_summaries(provider.clone(), &[]).await;
 
         let channel = MockChannel::new(vec![]);
@@ -1149,7 +1152,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_inserts_at_position_1() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (memory, cid) =
             create_memory_with_summaries(provider.clone(), &["User asked about Rust ownership"])
                 .await;
@@ -1182,7 +1185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_removes_old_before_inject() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (memory, cid) =
             create_memory_with_summaries(provider.clone(), &["new summary data"]).await;
 
@@ -1222,7 +1225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_summaries_respects_token_budget() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         // Each summary entry is "- Messages X-Y: <content>\n" (~prefix overhead + content)
         let (memory, cid) = create_memory_with_summaries(
             provider.clone(),
@@ -1263,7 +1266,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_summary_messages_preserves_other_system() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1295,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_prune_frees_tokens() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1332,7 +1335,7 @@ mod tests {
 
     #[test]
     fn test_prune_respects_protection_zone() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1362,7 +1365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tier2_after_insufficient_prune() {
-        let provider = MockProvider::new(vec!["summary".to_string()]);
+        let provider = mock_provider(vec!["summary".to_string()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1386,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_cross_session_no_memory_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1403,7 +1406,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inject_cross_session_zero_budget_noop() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let (memory, cid) = create_memory_with_summaries(provider.clone(), &["summary"]).await;
 
         let channel = MockChannel::new(vec![]);
@@ -1420,7 +1423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_cross_session_messages() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1444,7 +1447,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_cross_session_preserves_other_system() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1478,7 +1481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_session_summary_on_compaction() {
-        let provider = MockProvider::new(vec!["compacted summary".to_string()]);
+        let provider = mock_provider(vec!["compacted summary".to_string()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1564,7 +1567,7 @@ mod tests {
 
     #[test]
     fn prune_stale_tool_outputs_clears_old() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1611,7 +1614,7 @@ mod tests {
 
     #[test]
     fn prune_stale_tool_outputs_noop_when_few_messages() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -1633,7 +1636,7 @@ mod tests {
 
     #[test]
     fn prune_stale_prunes_tool_result_too() {
-        let provider = MockProvider::new(vec![]);
+        let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [features]
 default = []
+mock = []
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
 compatible = ["openai"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
