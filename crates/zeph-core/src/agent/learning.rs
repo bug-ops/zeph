@@ -1,16 +1,14 @@
 use super::{Agent, Channel, LlmProvider, ToolExecutor};
-#[cfg(feature = "self-learning")]
+
 use super::{LearningConfig, Message, Role, SemanticMemory};
-#[cfg(feature = "self-learning")]
+
 use std::path::PathBuf;
 
 impl<C: Channel, T: ToolExecutor> Agent<C, T> {
-    #[cfg(feature = "self-learning")]
     pub(super) fn is_learning_enabled(&self) -> bool {
         self.learning_config.as_ref().is_some_and(|c| c.enabled)
     }
 
-    #[cfg(feature = "self-learning")]
     async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
         let Some(memory) = &self.memory_state.memory else {
             return true;
@@ -21,13 +19,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         matches!(row.trust_level.as_str(), "trusted" | "verified")
     }
 
-    #[cfg(not(feature = "self-learning"))]
-    #[allow(dead_code, clippy::unused_self)]
-    pub(super) fn is_learning_enabled(&self) -> bool {
-        false
-    }
-
-    #[cfg(feature = "self-learning")]
     pub(super) async fn record_skill_outcomes(&self, outcome: &str, error_context: Option<&str>) {
         if self.skill_state.active_skill_names.is_empty() {
             return;
@@ -55,12 +46,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    #[cfg(not(feature = "self-learning"))]
-    #[allow(clippy::unused_async)]
-    pub(super) async fn record_skill_outcomes(&self, _outcome: &str, _error_context: Option<&str>) {
-    }
-
-    #[cfg(feature = "self-learning")]
     pub(super) async fn attempt_self_reflection(
         &mut self,
         error_context: &str,
@@ -120,7 +105,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(retry_succeeded)
     }
 
-    #[cfg(feature = "self-learning")]
     #[allow(clippy::cast_precision_loss)]
     pub(super) async fn generate_improved_skill(
         &self,
@@ -186,7 +170,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         .await
     }
 
-    #[cfg(feature = "self-learning")]
     #[allow(clippy::cast_precision_loss)]
     async fn check_improvement_allowed(
         &self,
@@ -231,7 +214,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(true)
     }
 
-    #[cfg(feature = "self-learning")]
     async fn call_improvement_llm(
         &self,
         skill_name: &str,
@@ -266,7 +248,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self.provider.chat(&messages).await.map_err(Into::into)
     }
 
-    #[cfg(feature = "self-learning")]
     async fn store_improved_version(
         &self,
         memory: &SemanticMemory,
@@ -318,7 +299,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    #[cfg(feature = "self-learning")]
     #[allow(clippy::cast_precision_loss)]
     async fn check_rollback(&self, skill_name: &str) {
         if !self.is_learning_enabled() {
@@ -381,7 +361,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    #[cfg(feature = "self-learning")]
     pub(super) async fn handle_skill_command(
         &mut self,
         args: &str,
@@ -408,26 +387,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    #[cfg(not(feature = "self-learning"))]
-    pub(super) async fn handle_skill_command(
-        &mut self,
-        args: &str,
-    ) -> Result<(), super::error::AgentError> {
-        let parts: Vec<&str> = args.split_whitespace().collect();
-        match parts.first().copied() {
-            Some("trust") => self.handle_skill_trust_command(&parts[1..]).await,
-            Some("block") => self.handle_skill_block(parts.get(1).copied()).await,
-            Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
-            _ => {
-                self.channel
-                    .send("Available /skill subcommands: trust, block, unblock")
-                    .await?;
-                Ok(())
-            }
-        }
-    }
-
-    #[cfg(feature = "self-learning")]
     async fn handle_skill_stats(&mut self) -> Result<(), super::error::AgentError> {
         use std::fmt::Write;
 
@@ -461,7 +420,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    #[cfg(feature = "self-learning")]
     async fn handle_skill_versions(
         &mut self,
         name: Option<&str>,
@@ -499,7 +457,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    #[cfg(feature = "self-learning")]
     async fn handle_skill_activate(
         &mut self,
         name: Option<&str>,
@@ -547,7 +504,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    #[cfg(feature = "self-learning")]
     async fn handle_skill_approve(
         &mut self,
         name: Option<&str>,
@@ -595,7 +551,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    #[cfg(feature = "self-learning")]
     async fn handle_skill_reset(
         &mut self,
         name: Option<&str>,
@@ -634,7 +589,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     }
 }
 
-#[cfg(feature = "self-learning")]
 pub(super) async fn write_skill_file(
     skill_paths: &[PathBuf],
     skill_name: &str,
@@ -662,7 +616,6 @@ pub(super) async fn write_skill_file(
 }
 
 /// Naive parser for `SQLite` datetime strings (e.g. "2024-01-15 10:30:00") to Unix seconds.
-#[cfg(feature = "self-learning")]
 pub(super) fn chrono_parse_sqlite(s: &str) -> Result<u64, ()> {
     // Format: "YYYY-MM-DD HH:MM:SS"
     let parts: Vec<&str> = s.split(&['-', ' ', ':'][..]).collect();
@@ -682,7 +635,7 @@ pub(super) fn chrono_parse_sqlite(s: &str) -> Result<u64, ()> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "self-learning")]
+
 mod tests {
     #[allow(clippy::wildcard_imports)]
     use super::*;

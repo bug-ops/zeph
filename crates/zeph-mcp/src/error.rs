@@ -29,7 +29,6 @@ pub enum McpError {
         timeout_secs: u64,
     },
 
-    #[cfg(feature = "qdrant")]
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),
 

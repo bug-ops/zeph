@@ -734,7 +734,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         system_prompt.push_str("\n<!-- cache:stable -->");
         system_prompt.push_str("\n<!-- cache:volatile -->");
 
-        #[cfg(feature = "mcp")]
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
         let cwd = std::env::current_dir().unwrap_or_default();

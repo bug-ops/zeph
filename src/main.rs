@@ -12,11 +12,9 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
 use zeph_core::agent::Agent;
-#[cfg(feature = "mcp")]
-use zeph_core::bootstrap::create_mcp_registry;
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::resolve_config_path;
-use zeph_core::bootstrap::{AppBuilder, warmup_provider};
+use zeph_core::bootstrap::{AppBuilder, create_mcp_registry, warmup_provider};
 #[cfg(feature = "tui")]
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::Config;
@@ -166,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
         .permission_policy(config.security.autonomy_level);
     let skill_paths = app.skill_paths();
 
-    #[cfg(feature = "mcp")]
+    #[allow(unused_variables)]
     let (tool_executor, mcp_tools, mcp_manager, shell_executor_for_tui) = {
         let filter_registry = if config.tools.filters.enabled {
             zeph_tools::OutputFilterRegistry::default_filters()
@@ -222,71 +220,6 @@ async fn main() -> anyhow::Result<()> {
         (executor, mcp_tools, mcp_manager, shell_for_tui)
     };
 
-    #[cfg(all(not(feature = "mcp"), feature = "tui"))]
-    let (tool_executor, shell_executor_for_tui) = {
-        let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-            .with_permissions(permission_policy.clone());
-        if config.tools.audit.enabled
-            && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
-        {
-            shell_executor = shell_executor.with_audit(logger);
-        }
-        let tool_event_rx = if tui_handle.is_some() {
-            let (tool_tx, tool_rx) =
-                tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
-            shell_executor = shell_executor.with_tool_event_tx(tool_tx);
-            Some(tool_rx)
-        } else {
-            None
-        };
-        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
-        let file_executor = zeph_tools::FileExecutor::new(
-            config
-                .tools
-                .shell
-                .allowed_paths
-                .iter()
-                .map(PathBuf::from)
-                .collect(),
-        );
-        let executor = zeph_tools::CompositeExecutor::new(
-            file_executor,
-            zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
-        );
-        (executor, tool_event_rx)
-    };
-
-    #[cfg(not(any(feature = "mcp", feature = "tui")))]
-    let tool_executor = {
-        let filter_registry = if config.tools.filters.enabled {
-            zeph_tools::OutputFilterRegistry::default_filters()
-        } else {
-            zeph_tools::OutputFilterRegistry::new(false)
-        };
-        let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-            .with_permissions(permission_policy.clone())
-            .with_output_filters(filter_registry);
-        if config.tools.audit.enabled
-            && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
-        {
-            shell_executor = shell_executor.with_audit(logger);
-        }
-        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
-        let file_executor = zeph_tools::FileExecutor::new(
-            config
-                .tools
-                .shell
-                .allowed_paths
-                .iter()
-                .map(PathBuf::from)
-                .collect(),
-        );
-        zeph_tools::CompositeExecutor::new(
-            file_executor,
-            zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
-        )
-    };
-
     let watchers = app.build_watchers();
     let _skill_watcher = watchers.skill_watcher;
     let reload_rx = watchers.skill_reload_rx;
@@ -305,7 +238,6 @@ async fn main() -> anyhow::Result<()> {
         spawn_a2a_server(config, shutdown_rx.clone(), a2a_provider, a2a_system_prompt);
     }
 
-    #[cfg(feature = "mcp")]
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
 
     #[cfg(feature = "index")]
@@ -434,10 +366,7 @@ async fn main() -> anyhow::Result<()> {
         agent
     };
 
-    #[cfg(feature = "mcp")]
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
-
-    #[cfg(feature = "self-learning")]
     let agent = agent.with_learning(config.skills.learning.clone());
 
     #[cfg(feature = "tui")]

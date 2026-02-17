@@ -3,7 +3,6 @@ pub mod error;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
-#[cfg(feature = "mcp")]
 mod mcp;
 mod persistence;
 mod streaming;
@@ -29,7 +28,6 @@ use zeph_tools::executor::ToolExecutor;
 
 use crate::channel::Channel;
 use crate::config::Config;
-#[cfg(feature = "self-learning")]
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
@@ -82,7 +80,6 @@ pub(super) struct ContextState {
     pub(super) prune_protect_tokens: usize,
 }
 
-#[cfg(feature = "mcp")]
 pub(super) struct McpState {
     pub(super) tools: Vec<zeph_mcp::McpTool>,
     pub(super) registry: Option<zeph_mcp::McpToolRegistry>,
@@ -121,11 +118,8 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     shutdown: watch::Receiver<bool>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(super) runtime: RuntimeConfig,
-    #[cfg(feature = "self-learning")]
     learning_config: Option<LearningConfig>,
-    #[cfg(feature = "self-learning")]
     reflection_used: bool,
-    #[cfg(feature = "mcp")]
     pub(super) mcp: McpState,
     #[cfg(feature = "index")]
     pub(super) index: IndexState,
@@ -206,11 +200,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 summarize_tool_output_enabled: false,
                 permission_policy: zeph_tools::PermissionPolicy::default(),
             },
-            #[cfg(feature = "self-learning")]
             learning_config: None,
-            #[cfg(feature = "self-learning")]
             reflection_used: false,
-            #[cfg(feature = "mcp")]
             mcp: McpState {
                 tools: Vec::new(),
                 registry: None,
@@ -293,14 +284,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self
     }
 
-    #[cfg(feature = "self-learning")]
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         self.learning_config = Some(config);
         self
     }
 
-    #[cfg(feature = "mcp")]
     #[must_use]
     pub fn with_mcp(
         mut self,
@@ -413,9 +402,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        #[cfg(feature = "mcp")]
         let mcp_tool_count = self.mcp.tools.len();
-        #[cfg(feature = "mcp")]
         let mcp_server_count = self
             .mcp
             .tools
@@ -432,11 +419,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             m.context_tokens = prompt_estimate;
             m.prompt_tokens = prompt_estimate;
             m.total_tokens = prompt_estimate;
-            #[cfg(feature = "mcp")]
-            {
-                m.mcp_tool_count = mcp_tool_count;
-                m.mcp_server_count = mcp_server_count;
-            }
+            m.mcp_tool_count = mcp_tool_count;
+            m.mcp_server_count = mcp_server_count;
         });
         self.metrics_tx = Some(tx);
         self
@@ -551,7 +535,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
 
-        #[cfg(feature = "mcp")]
         if let Some(ref manager) = self.mcp.manager {
             manager.shutdown_all_shared().await;
         }
@@ -636,7 +619,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             return Ok(());
         }
 
-        #[cfg(feature = "mcp")]
         if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
             let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
             self.handle_mcp_command(args).await?;
@@ -653,10 +635,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             tracing::warn!("context preparation failed: {e:#}");
         }
 
-        #[cfg(feature = "self-learning")]
-        {
-            self.reflection_used = false;
-        }
+        self.reflection_used = false;
 
         self.push_message(Message {
             role: Role::User,
@@ -718,59 +697,47 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     }
 
     async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
-        #[cfg(feature = "self-learning")]
-        {
-            let Some((name, rest)) = input.split_once(' ') else {
-                self.channel
-                    .send("Usage: /feedback <skill_name> <message>")
-                    .await?;
-                return Ok(());
-            };
-            let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
-
-            if feedback.is_empty() {
-                self.channel
-                    .send("Usage: /feedback <skill_name> <message>")
-                    .await?;
-                return Ok(());
-            }
-
-            let Some(memory) = &self.memory_state.memory else {
-                self.channel.send("Memory not available.").await?;
-                return Ok(());
-            };
-
-            memory
-                .sqlite()
-                .record_skill_outcome(
-                    skill_name,
-                    None,
-                    self.memory_state.conversation_id,
-                    "user_rejection",
-                    Some(feedback),
-                )
-                .await?;
-
-            if self.is_learning_enabled() {
-                self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
-                    .await
-                    .ok();
-            }
-
+        let Some((name, rest)) = input.split_once(' ') else {
             self.channel
-                .send(&format!("Feedback recorded for \"{skill_name}\"."))
+                .send("Usage: /feedback <skill_name> <message>")
                 .await?;
-            Ok(())
+            return Ok(());
+        };
+        let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
+
+        if feedback.is_empty() {
+            self.channel
+                .send("Usage: /feedback <skill_name> <message>")
+                .await?;
+            return Ok(());
         }
 
-        #[cfg(not(feature = "self-learning"))]
-        {
-            let _ = input;
-            self.channel
-                .send("Self-learning feature is not enabled.")
-                .await?;
-            Ok(())
+        let Some(memory) = &self.memory_state.memory else {
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
+        };
+
+        memory
+            .sqlite()
+            .record_skill_outcome(
+                skill_name,
+                None,
+                self.memory_state.conversation_id,
+                "user_rejection",
+                Some(feedback),
+            )
+            .await?;
+
+        if self.is_learning_enabled() {
+            self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
+                .await
+                .ok();
         }
+
+        self.channel
+            .send(&format!("Feedback recorded for \"{skill_name}\"."))
+            .await?;
+        Ok(())
     }
 
     async fn reload_skills(&mut self) {

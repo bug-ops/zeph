@@ -4,7 +4,6 @@ use crate::error::LlmError;
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::ollama::OllamaProvider;
-#[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
@@ -13,7 +12,6 @@ use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, 
 pub enum SubProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
-    #[cfg(feature = "openai")]
     OpenAi(OpenAiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
@@ -25,7 +23,6 @@ impl SubProvider {
             Self::Claude(p) => {
                 p.status_tx = Some(tx);
             }
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => {
                 p.status_tx = Some(tx);
             }
@@ -41,7 +38,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.chat(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat(messages).await,
@@ -52,7 +48,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.chat_stream(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_stream(messages).await,
@@ -63,7 +58,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.supports_streaming(),
             Self::Claude(p) => p.supports_streaming(),
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.supports_streaming(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_streaming(),
@@ -74,7 +68,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.embed(text).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.embed(text).await,
@@ -85,7 +78,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.supports_embeddings(),
             Self::Claude(p) => p.supports_embeddings(),
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.supports_embeddings(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_embeddings(),
@@ -96,7 +88,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.supports_tool_use(),
             Self::Claude(p) => p.supports_tool_use(),
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.supports_tool_use(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_tool_use(),
@@ -111,7 +102,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.chat_with_tools(messages, tools).await,
             Self::Claude(p) => p.chat_with_tools(messages, tools).await,
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.chat_with_tools(messages, tools).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_with_tools(messages, tools).await,
@@ -122,7 +112,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.last_cache_usage(),
             Self::Claude(p) => p.last_cache_usage(),
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.last_cache_usage(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.last_cache_usage(),
@@ -133,7 +122,6 @@ impl LlmProvider for SubProvider {
         match self {
             Self::Ollama(p) => p.name(),
             Self::Claude(p) => p.name(),
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => p.name(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.name(),

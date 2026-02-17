@@ -58,7 +58,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 tracing::warn!("received empty response from LLM, skipping");
                 self.record_skill_outcomes("empty_response", None).await;
 
-                #[cfg(feature = "self-learning")]
                 if !self.reflection_used
                     && self
                         .attempt_self_reflection("LLM returned empty response", "")
@@ -269,7 +268,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                     self.record_skill_outcomes("tool_failure", Some(&output.summary))
                         .await;
 
-                    #[cfg(feature = "self-learning")]
                     if !self.reflection_used
                         && self
                             .attempt_self_reflection(&output.summary, &output.summary)
@@ -344,7 +342,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 self.record_skill_outcomes("tool_failure", Some(&err_str))
                     .await;
 
-                #[cfg(feature = "self-learning")]
                 if !self.reflection_used && self.attempt_self_reflection(&err_str, "").await? {
                     return Ok(false);
                 }

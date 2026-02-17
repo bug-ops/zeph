@@ -1,17 +1,13 @@
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
-#[cfg(feature = "compatible")]
 use crate::compatible::CompatibleProvider;
 #[cfg(feature = "mock")]
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
-#[cfg(feature = "openai")]
 use crate::openai::OpenAiProvider;
-#[cfg(feature = "orchestrator")]
 use crate::orchestrator::ModelOrchestrator;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
-#[cfg(feature = "router")]
 use crate::router::RouterProvider;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
@@ -21,15 +17,11 @@ macro_rules! delegate_provider {
         match $self {
             AnyProvider::Ollama($p) => $expr,
             AnyProvider::Claude($p) => $expr,
-            #[cfg(feature = "openai")]
             AnyProvider::OpenAi($p) => $expr,
             #[cfg(feature = "candle")]
             AnyProvider::Candle($p) => $expr,
-            #[cfg(feature = "compatible")]
             AnyProvider::Compatible($p) => $expr,
-            #[cfg(feature = "orchestrator")]
             AnyProvider::Orchestrator($p) => $expr,
-            #[cfg(feature = "router")]
             AnyProvider::Router($p) => $expr,
             #[cfg(feature = "mock")]
             AnyProvider::Mock($p) => $expr,
@@ -41,15 +33,11 @@ macro_rules! delegate_provider {
 pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
-    #[cfg(feature = "openai")]
     OpenAi(OpenAiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
-    #[cfg(feature = "compatible")]
     Compatible(CompatibleProvider),
-    #[cfg(feature = "orchestrator")]
     Orchestrator(Box<ModelOrchestrator>),
-    #[cfg(feature = "router")]
     Router(Box<RouterProvider>),
     #[cfg(feature = "mock")]
     Mock(MockProvider),
@@ -72,19 +60,15 @@ impl AnyProvider {
             Self::Claude(p) => {
                 p.status_tx = Some(tx);
             }
-            #[cfg(feature = "openai")]
             Self::OpenAi(p) => {
                 p.status_tx = Some(tx);
             }
-            #[cfg(feature = "compatible")]
             Self::Compatible(p) => {
                 p.set_status_tx(tx);
             }
-            #[cfg(feature = "orchestrator")]
             Self::Orchestrator(p) => {
                 p.set_status_tx(tx);
             }
-            #[cfg(feature = "router")]
             Self::Router(p) => {
                 p.set_status_tx(tx);
             }
@@ -370,7 +354,6 @@ mod tests {
         assert!(format!("{claude:?}").contains("Claude"));
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn any_openai_name() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
@@ -384,7 +367,6 @@ mod tests {
         assert_eq!(provider.name(), "openai");
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn any_openai_supports_streaming() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
@@ -398,7 +380,6 @@ mod tests {
         assert!(provider.supports_streaming());
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn any_openai_supports_embeddings() {
         let with_embed = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
@@ -422,7 +403,6 @@ mod tests {
         assert!(!without_embed.supports_embeddings());
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn any_openai_debug() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(

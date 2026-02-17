@@ -92,7 +92,6 @@ impl SkillMatcher {
 #[derive(Debug)]
 pub enum SkillMatcherBackend {
     InMemory(SkillMatcher),
-    #[cfg(feature = "qdrant")]
     Qdrant(crate::qdrant_matcher::QdrantSkillMatcher),
 }
 
@@ -101,7 +100,6 @@ impl SkillMatcherBackend {
     pub fn is_qdrant(&self) -> bool {
         match self {
             Self::InMemory(_) => false,
-            #[cfg(feature = "qdrant")]
             Self::Qdrant(_) => true,
         }
     }
@@ -118,7 +116,6 @@ impl SkillMatcherBackend {
     {
         match self {
             Self::InMemory(m) => m.match_skills(meta.len(), query, limit, embed_fn).await,
-            #[cfg(feature = "qdrant")]
             Self::Qdrant(m) => m.match_skills(meta, query, limit, embed_fn).await,
         }
     }
@@ -143,7 +140,6 @@ impl SkillMatcherBackend {
                 let _ = (meta, embedding_model, &embed_fn);
                 Ok(())
             }
-            #[cfg(feature = "qdrant")]
             Self::Qdrant(m) => {
                 m.sync(meta, embedding_model, embed_fn).await?;
                 Ok(())
