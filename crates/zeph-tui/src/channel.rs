@@ -303,9 +303,14 @@ mod tests {
             old_content: "old".into(),
             new_content: "new".into(),
         };
-        ch.send_tool_output("bash", "[tool output: bash]\n```\nok\n```", Some(diff), None)
-            .await
-            .unwrap();
+        ch.send_tool_output(
+            "bash",
+            "[tool output: bash]\n```\nok\n```",
+            Some(diff),
+            None,
+        )
+        .await
+        .unwrap();
 
         let evt = agent_rx.recv().await.unwrap();
         assert!(
