@@ -39,6 +39,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub tui: TuiConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -917,6 +919,12 @@ pub struct SchedulerConfig {
     pub tasks: Vec<ScheduledTaskConfig>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct TuiConfig {
+    #[serde(default)]
+    pub show_source_labels: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
@@ -990,6 +998,7 @@ impl Config {
             gateway: GatewayConfig::default(),
             daemon: DaemonConfig::default(),
             scheduler: SchedulerConfig::default(),
+            tui: TuiConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

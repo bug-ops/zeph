@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Duplicate `ToolEvent::Completed` emission in shell executor before filtering was applied (#480)
 
 ### Added
+- TUI `[tui]` config section with `show_source_labels` option to hide `[user]`/`[zeph]`/`[tool]` prefixes (#488)
 - Syntax-highlighted diff view for write/edit tool output in TUI (#451)
   - Diff rendering with green/red backgrounds for added/removed lines
   - Word-level change highlighting within modified lines

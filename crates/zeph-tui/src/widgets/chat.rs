@@ -38,10 +38,11 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
 
         let msg_start = lines.len();
 
+        let show_labels = app.show_source_labels();
         if msg.role == MessageRole::Tool {
-            render_tool_message(msg, app, &theme, wrap_width, &mut lines);
+            render_tool_message(msg, app, &theme, wrap_width, show_labels, &mut lines);
         } else {
-            render_chat_message(msg, &theme, wrap_width, &mut lines);
+            render_chat_message(msg, &theme, wrap_width, show_labels, &mut lines);
         }
 
         for line in &mut lines[msg_start..] {
@@ -111,13 +112,23 @@ fn render_chat_message(
     msg: &crate::app::ChatMessage,
     theme: &Theme,
     wrap_width: usize,
+    show_labels: bool,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let (prefix, base_style) = match msg.role {
-        MessageRole::User => ("[user] ", theme.user_message),
-        MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
-        MessageRole::System => ("[system] ", theme.system_message),
-        MessageRole::Tool => unreachable!(),
+    let (prefix, base_style) = if show_labels {
+        match msg.role {
+            MessageRole::User => ("[user] ", theme.user_message),
+            MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
+            MessageRole::System => ("[system] ", theme.system_message),
+            MessageRole::Tool => unreachable!(),
+        }
+    } else {
+        match msg.role {
+            MessageRole::User => ("", theme.user_message),
+            MessageRole::Assistant => ("", theme.assistant_message),
+            MessageRole::System => ("", theme.system_message),
+            MessageRole::Tool => unreachable!(),
+        }
     };
 
     let indent = " ".repeat(prefix.len());
@@ -219,10 +230,15 @@ fn render_tool_message(
     app: &App,
     theme: &Theme,
     wrap_width: usize,
+    show_labels: bool,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let name = msg.tool_name.as_deref().unwrap_or("tool");
-    let prefix = format!("[{name}] ");
+    let prefix = if show_labels {
+        let name = msg.tool_name.as_deref().unwrap_or("tool");
+        format!("[{name}] ")
+    } else {
+        String::new()
+    };
     let content_lines: Vec<&str> = msg.content.lines().collect();
 
     // First line is always the command ($ ...)

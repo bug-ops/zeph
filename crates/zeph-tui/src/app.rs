@@ -58,6 +58,7 @@ pub struct App {
     active_panel: Panel,
     tool_expanded: bool,
     compact_tools: bool,
+    show_source_labels: bool,
     status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
@@ -89,6 +90,7 @@ impl App {
             active_panel: Panel::Chat,
             tool_expanded: false,
             compact_tools: false,
+            show_source_labels: false,
             status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
@@ -196,6 +198,15 @@ impl App {
     #[must_use]
     pub fn compact_tools(&self) -> bool {
         self.compact_tools
+    }
+
+    #[must_use]
+    pub fn show_source_labels(&self) -> bool {
+        self.show_source_labels
+    }
+
+    pub fn set_show_source_labels(&mut self, v: bool) {
+        self.show_source_labels = v;
     }
 
     #[must_use]

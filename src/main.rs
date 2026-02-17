@@ -399,6 +399,7 @@ async fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || reader.run());
 
         let mut tui_app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+        tui_app.set_show_source_labels(config.tui.show_source_labels);
 
         let history: Vec<(&str, &str)> = agent
             .context_messages()

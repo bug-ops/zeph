@@ -320,3 +320,7 @@ embedding_seconds = 30
 a2a_seconds = 30
 # Maximum number of tool calls to execute in parallel
 max_parallel_tools = 8
+
+[tui]
+# Show role prefix labels ([user], [zeph], etc.) in chat messages
+show_source_labels = false
