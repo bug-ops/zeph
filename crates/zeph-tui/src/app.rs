@@ -56,6 +56,7 @@ pub struct App {
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     tool_expanded: bool,
+    compact_tools: bool,
     status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
@@ -86,6 +87,7 @@ impl App {
             metrics_rx: None,
             active_panel: Panel::Chat,
             tool_expanded: false,
+            compact_tools: false,
             status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
@@ -186,6 +188,11 @@ impl App {
     #[must_use]
     pub fn tool_expanded(&self) -> bool {
         self.tool_expanded
+    }
+
+    #[must_use]
+    pub fn compact_tools(&self) -> bool {
+        self.compact_tools
     }
 
     #[must_use]
@@ -465,6 +472,9 @@ impl App {
             }
             KeyCode::Char('e') => {
                 self.tool_expanded = !self.tool_expanded;
+            }
+            KeyCode::Char('c') => {
+                self.compact_tools = !self.compact_tools;
             }
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {
