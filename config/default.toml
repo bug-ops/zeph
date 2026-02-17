@@ -318,3 +318,5 @@ llm_seconds = 120
 embedding_seconds = 30
 # A2A remote call timeout in seconds
 a2a_seconds = 30
+# Maximum number of tool calls to execute in parallel
+max_parallel_tools = 8

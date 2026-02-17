@@ -8369,6 +8369,7 @@ dependencies = [
  "age",
  "anyhow",
  "criterion",
+ "futures",
  "notify",
  "notify-debouncer-mini",
  "serde",

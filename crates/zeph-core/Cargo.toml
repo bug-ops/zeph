@@ -17,6 +17,7 @@ metal = ["zeph-llm/metal"]
 [dependencies]
 age.workspace = true
 anyhow.workspace = true
+futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -674,6 +674,10 @@ fn default_a2a_timeout() -> u64 {
     30
 }
 
+fn default_max_parallel_tools() -> usize {
+    8
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
@@ -699,6 +703,8 @@ pub struct TimeoutConfig {
     pub embedding_seconds: u64,
     #[serde(default = "default_a2a_timeout")]
     pub a2a_seconds: u64,
+    #[serde(default = "default_max_parallel_tools")]
+    pub max_parallel_tools: usize,
 }
 
 impl Default for TimeoutConfig {
@@ -707,6 +713,7 @@ impl Default for TimeoutConfig {
             llm_seconds: default_llm_timeout(),
             embedding_seconds: default_embedding_timeout(),
             a2a_seconds: default_a2a_timeout(),
+            max_parallel_tools: default_max_parallel_tools(),
         }
     }
 }
