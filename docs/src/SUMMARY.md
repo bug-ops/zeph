@@ -25,6 +25,7 @@
 - [Secrets Management](guide/vault.md)
 - [Channels (CLI, Telegram, TUI)](guide/channels.md)
 - [Tool System](guide/tools.md)
+- [Pipeline API](guide/pipeline.md)
 - [TUI Dashboard](guide/tui.md)
 - [Observability & Cost](guide/observability.md)
 - [Code Indexing](guide/code-indexing.md)

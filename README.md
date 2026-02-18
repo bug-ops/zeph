@@ -110,6 +110,7 @@ Automatic prompt caching for Anthropic and OpenAI providers. Repeated system pro
 - **Parallel context preparation** via `try_join!` — skills, memory, code context fetched concurrently
 - **Byte-length token estimation** — fast approximation without tokenizer overhead
 - **Config hot-reload** — change runtime parameters without restarting the agent
+- **Pipeline API** — composable, type-safe step chains for LLM calls, vector retrieval, JSON extraction, and parallel execution
 
 [Token efficiency deep dive →](https://bug-ops.github.io/zeph/architecture/token-efficiency.html)
 
@@ -300,7 +301,7 @@ graph TD
 
 <sub>Blue = always compiled &nbsp;·&nbsp; Green = feature-gated</sub>
 
-12 crates. Typed errors throughout (`thiserror`). Native async traits (Edition 2024). `rustls` everywhere — no OpenSSL dependency.
+12 crates. Typed errors throughout (`thiserror`). Native async traits (Edition 2024). `rustls` everywhere — no OpenSSL dependency. `zeph-core` includes a **Pipeline API** — composable, type-safe step chains (`LlmStep`, `RetrievalStep`, `ExtractStep`, `MapStep`, `ParallelStep`) for building multi-stage data processing workflows.
 
 > [!IMPORTANT]
 > Requires Rust 1.88+. See the full [architecture overview](https://bug-ops.github.io/zeph/architecture/overview.html) and [crate reference](https://bug-ops.github.io/zeph/architecture/crates.html).

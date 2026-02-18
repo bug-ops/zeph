@@ -22,6 +22,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `redact` | Sensitive data redaction |
 | `vault` | Secret resolution via vault providers |
 | `diff` | Diff rendering utilities |
+| `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 
 **Re-exports:** `Agent`
 
