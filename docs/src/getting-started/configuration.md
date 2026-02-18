@@ -76,6 +76,7 @@ max_tokens = 4096
 [skills]
 paths = ["./skills"]
 max_active_skills = 5  # Top-K skills per query via embedding similarity
+disambiguation_threshold = 0.05  # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
 
 [memory]
 sqlite_path = "./data/zeph.db"
