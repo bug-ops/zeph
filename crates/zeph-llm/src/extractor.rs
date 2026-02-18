@@ -38,3 +38,111 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
         self.provider.chat_typed::<T>(&messages).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{ChatStream, LlmProvider, Message};
+
+    struct StubProvider {
+        response: String,
+    }
+
+    impl LlmProvider for StubProvider {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+            Ok(self.response.clone())
+        }
+
+        async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+            let response = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(response))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            Err(LlmError::EmbedUnsupported { provider: "stub" })
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
+    struct TestOutput {
+        value: String,
+    }
+
+    #[tokio::test]
+    async fn extract_without_preamble() {
+        let provider = StubProvider {
+            response: r#"{"value": "result"}"#.into(),
+        };
+        let extractor = Extractor::new(&provider);
+        let result: TestOutput = extractor.extract("test input").await.unwrap();
+        assert_eq!(
+            result,
+            TestOutput {
+                value: "result".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_with_preamble() {
+        let provider = StubProvider {
+            response: r#"{"value": "with_preamble"}"#.into(),
+        };
+        let extractor = Extractor::new(&provider).with_preamble("Analyze this");
+        let result: TestOutput = extractor.extract("test input").await.unwrap();
+        assert_eq!(
+            result,
+            TestOutput {
+                value: "with_preamble".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_error_propagation() {
+        struct FailProvider;
+
+        impl LlmProvider for FailProvider {
+            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+
+            async fn chat_stream(&self, _messages: &[Message]) -> Result<ChatStream, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+
+            fn supports_streaming(&self) -> bool {
+                false
+            }
+
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+
+            fn supports_embeddings(&self) -> bool {
+                false
+            }
+
+            fn name(&self) -> &'static str {
+                "fail"
+            }
+        }
+
+        let provider = FailProvider;
+        let extractor = Extractor::new(&provider);
+        let result = extractor.extract::<TestOutput>("test").await;
+        assert!(matches!(result, Err(LlmError::Unavailable)));
+    }
+}

@@ -294,6 +294,9 @@ pub trait LlmProvider: Send + Sync {
     }
 }
 
+/// Strip markdown code fences from LLM output. Only handles outer fences;
+/// JSON containing trailing triple backticks in string values may be
+/// incorrectly trimmed (acceptable for MVP — see review R2).
 fn strip_json_fences(s: &str) -> &str {
     s.trim()
         .trim_start_matches("```json")
@@ -780,5 +783,172 @@ mod tests {
         } else {
             panic!("expected ToolOutput");
         }
+    }
+
+    // --- M27: strip_json_fences tests ---
+
+    #[test]
+    fn strip_json_fences_plain_json() {
+        assert_eq!(strip_json_fences(r#"{"a": 1}"#), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn strip_json_fences_with_json_fence() {
+        assert_eq!(strip_json_fences("```json\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn strip_json_fences_with_plain_fence() {
+        assert_eq!(strip_json_fences("```\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn strip_json_fences_whitespace() {
+        assert_eq!(strip_json_fences("  \n  "), "");
+    }
+
+    #[test]
+    fn strip_json_fences_empty() {
+        assert_eq!(strip_json_fences(""), "");
+    }
+
+    #[test]
+    fn strip_json_fences_outer_whitespace() {
+        assert_eq!(
+            strip_json_fences("  ```json\n{\"a\": 1}\n```  "),
+            r#"{"a": 1}"#
+        );
+    }
+
+    #[test]
+    fn strip_json_fences_only_opening_fence() {
+        assert_eq!(strip_json_fences("```json\n{\"a\": 1}"), r#"{"a": 1}"#);
+    }
+
+    // --- M27: chat_typed tests ---
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
+    struct TestOutput {
+        value: String,
+    }
+
+    struct SequentialStub {
+        responses: std::sync::Mutex<Vec<Result<String, LlmError>>>,
+    }
+
+    impl SequentialStub {
+        fn new(responses: Vec<Result<String, LlmError>>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses),
+            }
+        }
+    }
+
+    impl LlmProvider for SequentialStub {
+        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                return Err(LlmError::Other("no more responses".into()));
+            }
+            responses.remove(0)
+        }
+
+        async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+            let response = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(response))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            Err(LlmError::EmbedUnsupported {
+                provider: "sequential-stub",
+            })
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "sequential-stub"
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_typed_happy_path() {
+        let provider = StubProvider {
+            response: r#"{"value": "hello"}"#.into(),
+        };
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result: TestOutput = provider.chat_typed(&messages).await.unwrap();
+        assert_eq!(
+            result,
+            TestOutput {
+                value: "hello".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_typed_retry_succeeds() {
+        let provider = SequentialStub::new(vec![
+            Ok("not valid json".into()),
+            Ok(r#"{"value": "ok"}"#.into()),
+        ]);
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result: TestOutput = provider.chat_typed(&messages).await.unwrap();
+        assert_eq!(result, TestOutput { value: "ok".into() });
+    }
+
+    #[tokio::test]
+    async fn chat_typed_both_fail() {
+        let provider = SequentialStub::new(vec![Ok("bad json".into()), Ok("still bad".into())]);
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result = provider.chat_typed::<TestOutput>(&messages).await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("parse failed after retry"));
+    }
+
+    #[tokio::test]
+    async fn chat_typed_chat_error_propagates() {
+        let provider = SequentialStub::new(vec![Err(LlmError::Unavailable)]);
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result = provider.chat_typed::<TestOutput>(&messages).await;
+        assert!(matches!(result, Err(LlmError::Unavailable)));
+    }
+
+    #[tokio::test]
+    async fn chat_typed_strips_fences() {
+        let provider = StubProvider {
+            response: "```json\n{\"value\": \"fenced\"}\n```".into(),
+        };
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result: TestOutput = provider.chat_typed(&messages).await.unwrap();
+        assert_eq!(
+            result,
+            TestOutput {
+                value: "fenced".into()
+            }
+        );
+    }
+
+    #[test]
+    fn supports_structured_output_default_false() {
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(!provider.supports_structured_output());
+    }
+
+    #[test]
+    fn structured_parse_error_display() {
+        let err = LlmError::StructuredParse("test error".into());
+        assert_eq!(
+            err.to_string(),
+            "structured output parse failed: test error"
+        );
     }
 }
