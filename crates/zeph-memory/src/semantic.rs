@@ -1,11 +1,11 @@
-use qdrant_client::qdrant::Condition;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::error::MemoryError;
-use crate::qdrant::{Filter, MessageKind, QdrantStore, SearchFilter};
+use crate::qdrant::{MessageKind, QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
 use crate::types::{ConversationId, MessageId};
+use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
 const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
 
@@ -450,8 +450,13 @@ impl SemanticMemory {
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
             .await?;
 
-        let filter = exclude_conversation_id
-            .map(|cid| Filter::must_not(vec![Condition::matches("conversation_id", cid.0)]));
+        let filter = exclude_conversation_id.map(|cid| VectorFilter {
+            must: vec![],
+            must_not: vec![FieldCondition {
+                field: "conversation_id".into(),
+                value: FieldValue::Integer(cid.0),
+            }],
+        });
 
         let points = qdrant
             .search_collection(SESSION_SUMMARIES_COLLECTION, &vector, limit, filter)
@@ -460,9 +465,9 @@ impl SemanticMemory {
         let results = points
             .into_iter()
             .filter_map(|point| {
-                let payload = &point.payload;
-                let summary_text = payload.get("summary_text")?.as_str()?.to_owned();
-                let conversation_id = ConversationId(payload.get("conversation_id")?.as_integer()?);
+                let summary_text = point.payload.get("summary_text")?.as_str()?.to_owned();
+                let conversation_id =
+                    ConversationId(point.payload.get("conversation_id")?.as_i64()?);
                 Some(SessionSummaryResult {
                     summary_text,
                     score: point.score,

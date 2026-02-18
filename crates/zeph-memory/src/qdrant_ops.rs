@@ -205,6 +205,202 @@ impl QdrantOps {
     }
 }
 
+impl crate::vector_store::VectorStore for QdrantOps {
+    fn ensure_collection(
+        &self,
+        collection: &str,
+        vector_size: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            self.ensure_collection(&collection, vector_size)
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
+        })
+    }
+
+    fn collection_exists(
+        &self,
+        collection: &str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<bool, crate::VectorStoreError>> + Send + '_>,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            self.collection_exists(&collection)
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
+        })
+    }
+
+    fn delete_collection(
+        &self,
+        collection: &str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            self.delete_collection(&collection)
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
+        })
+    }
+
+    fn upsert(
+        &self,
+        collection: &str,
+        points: Vec<crate::VectorPoint>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            let qdrant_points: Vec<PointStruct> = points
+                .into_iter()
+                .map(|p| {
+                    let payload: HashMap<String, qdrant_client::qdrant::Value> =
+                        serde_json::from_value(serde_json::Value::Object(
+                            p.payload.into_iter().collect(),
+                        ))
+                        .unwrap_or_default();
+                    PointStruct::new(p.id, p.vector, payload)
+                })
+                .collect();
+            self.upsert(&collection, qdrant_points)
+                .await
+                .map_err(|e| crate::VectorStoreError::Upsert(e.to_string()))
+        })
+    }
+
+    fn search(
+        &self,
+        collection: &str,
+        vector: Vec<f32>,
+        limit: u64,
+        filter: Option<crate::VectorFilter>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<crate::ScoredVectorPoint>, crate::VectorStoreError>,
+                > + Send
+                + '_,
+        >,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            let qdrant_filter = filter.map(vector_filter_to_qdrant);
+            let results = self
+                .search(&collection, vector, limit, qdrant_filter)
+                .await
+                .map_err(|e| crate::VectorStoreError::Search(e.to_string()))?;
+            Ok(results.into_iter().map(scored_point_to_vector).collect())
+        })
+    }
+
+    fn delete_by_ids(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
+    > {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
+            self.delete_by_ids(&collection, point_ids)
+                .await
+                .map_err(|e| crate::VectorStoreError::Delete(e.to_string()))
+        })
+    }
+
+    fn scroll_all(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        HashMap<String, HashMap<String, String>>,
+                        crate::VectorStoreError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let collection = collection.to_owned();
+        let key_field = key_field.to_owned();
+        Box::pin(async move {
+            self.scroll_all(&collection, &key_field)
+                .await
+                .map_err(|e| crate::VectorStoreError::Scroll(e.to_string()))
+        })
+    }
+}
+
+fn vector_filter_to_qdrant(filter: crate::VectorFilter) -> Filter {
+    let must: Vec<_> = filter
+        .must
+        .into_iter()
+        .map(field_condition_to_qdrant)
+        .collect();
+    let must_not: Vec<_> = filter
+        .must_not
+        .into_iter()
+        .map(field_condition_to_qdrant)
+        .collect();
+
+    let mut f = Filter::default();
+    if !must.is_empty() {
+        f.must = must;
+    }
+    if !must_not.is_empty() {
+        f.must_not = must_not;
+    }
+    f
+}
+
+fn field_condition_to_qdrant(cond: crate::FieldCondition) -> qdrant_client::qdrant::Condition {
+    match cond.value {
+        crate::FieldValue::Integer(v) => qdrant_client::qdrant::Condition::matches(cond.field, v),
+        crate::FieldValue::Text(v) => qdrant_client::qdrant::Condition::matches(cond.field, v),
+    }
+}
+
+fn scored_point_to_vector(point: ScoredPoint) -> crate::ScoredVectorPoint {
+    let payload: HashMap<String, serde_json::Value> = point
+        .payload
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let json_val = match v.kind? {
+                Kind::StringValue(s) => serde_json::Value::String(s),
+                Kind::IntegerValue(i) => serde_json::Value::Number(i.into()),
+                Kind::DoubleValue(d) => {
+                    serde_json::Number::from_f64(d).map(serde_json::Value::Number)?
+                }
+                Kind::BoolValue(b) => serde_json::Value::Bool(b),
+                _ => return None,
+            };
+            Some((k, json_val))
+        })
+        .collect();
+
+    let id = match point.id.and_then(|pid| pid.point_id_options) {
+        Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u,
+        Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
+        None => String::new(),
+    };
+
+    crate::ScoredVectorPoint {
+        id,
+        score: point.score,
+        payload,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

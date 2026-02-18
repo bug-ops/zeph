@@ -6,6 +6,9 @@ pub enum MemoryError {
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),
 
+    #[error("vector store error: {0}")]
+    VectorStore(#[from] crate::vector_store::VectorStoreError),
+
     #[error("migration failed: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
 

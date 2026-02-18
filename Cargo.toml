@@ -118,7 +118,7 @@ gateway = ["dep:zeph-gateway"]
 daemon = ["zeph-core/daemon"]
 scheduler = ["dep:zeph-scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
-mock = ["zeph-llm/mock"]
+mock = ["zeph-llm/mock", "zeph-memory/mock"]
 
 [dependencies]
 anyhow.workspace = true

@@ -20,6 +20,10 @@ zeph-llm.workspace = true
 name = "token_estimation"
 harness = false
 
+[features]
+default = []
+mock = []
+
 [dev-dependencies]
 anyhow.workspace = true
 criterion.workspace = true
