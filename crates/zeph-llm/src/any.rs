@@ -433,4 +433,48 @@ mod tests {
         let debug = format!("{provider:?}");
         assert!(debug.contains("OpenAi"));
     }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn chat_typed_erased_dispatches_to_mock() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
+        struct TestOutput {
+            value: String,
+        }
+
+        let mock =
+            crate::mock::MockProvider::with_responses(vec![r#"{"value": "from_mock"}"#.into()]);
+        let provider = AnyProvider::Mock(mock);
+        let messages = vec![Message::from_legacy(Role::User, "test")];
+        let result: TestOutput = provider.chat_typed_erased(&messages).await.unwrap();
+        assert_eq!(
+            result,
+            TestOutput {
+                value: "from_mock".into()
+            }
+        );
+    }
+
+    #[test]
+    fn any_openai_supports_structured_output() {
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        ));
+        assert!(provider.supports_structured_output());
+    }
+
+    #[test]
+    fn any_ollama_does_not_support_structured_output() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert!(!provider.supports_structured_output());
+    }
 }
