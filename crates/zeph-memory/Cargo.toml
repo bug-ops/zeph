@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+pdf-extract = { workspace = true, optional = true }
 qdrant-client = { workspace = true, features = ["serde"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
@@ -16,17 +17,19 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 
+[features]
+default = []
+mock = []
+pdf = ["dep:pdf-extract"]
+
 [[bench]]
 name = "token_estimation"
 harness = false
 
-[features]
-default = []
-mock = []
-
 [dev-dependencies]
 anyhow.workspace = true
 criterion.workspace = true
+tempfile.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-stream.workspace = true

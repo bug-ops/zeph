@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ScoredMatch` struct exposing both skill index and cosine similarity score from matcher backends
 - `IntentClassification` type (`skill_name`, `confidence`, `params`) with `JsonSchema` derive for schema-enforced LLM responses
 - `disambiguation_threshold` in `[skills]` config section (default: 0.05) with `with_disambiguation_threshold()` builder on `Agent`
+- DocumentLoader trait with text/markdown file loader in zeph-memory (#469)
+- Text splitter with configurable chunk size, overlap, and sentence-aware splitting (#470)
+- PDF document loader, feature-gated behind `pdf` (#471)
+- Document ingestion pipeline: load, split, embed, store via Qdrant (#472)
+- File size guard (50 MiB default) and path canonicalization for document loaders
 
 ## [0.10.0] - 2026-02-18
 
