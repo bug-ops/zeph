@@ -1874,6 +1874,83 @@ async fn agent_rebuild_with_skill_matcher() {
     assert_eq!(collected[0], "matched response");
 }
 
+// -- disambiguation reorders skill selection when scores are very close --
+
+#[tokio::test]
+async fn agent_disambiguation_reorders_skill_selection() {
+    use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+
+    // Disambiguation response selects "second-skill"; second response is the normal chat reply.
+    let disambiguation_json =
+        r#"{"skill_name":"second-skill","confidence":0.9,"params":{}}"#.to_string();
+    let mut provider_inner =
+        MockProvider::with_responses(vec![disambiguation_json, "ok".to_string()]);
+    // Identical embeddings for all texts forces a zero-delta between the two matched skills.
+    provider_inner.supports_embeddings = true;
+    provider_inner.embedding = vec![1.0, 0.0];
+    let provider = AnyProvider::Mock(provider_inner);
+
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["do the second thing"], outputs.clone());
+
+    let dir = tempfile::tempdir().unwrap();
+    // Skill names must use only lowercase letters, digits, and hyphens (no underscores).
+    let skill_dir1 = dir.path().join("first-skill");
+    std::fs::create_dir(&skill_dir1).unwrap();
+    std::fs::write(
+        skill_dir1.join("SKILL.md"),
+        "---\nname: first-skill\ndescription: first skill\n---\nfirst body",
+    )
+    .unwrap();
+    let skill_dir2 = dir.path().join("second-skill");
+    std::fs::create_dir(&skill_dir2).unwrap();
+    std::fs::write(
+        skill_dir2.join("SKILL.md"),
+        "---\nname: second-skill\ndescription: second skill\n---\nsecond body",
+    )
+    .unwrap();
+
+    let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+    let all_meta = registry.all_meta();
+    assert_eq!(all_meta.len(), 2, "both skills must be loaded");
+
+    // Pre-build InMemory matcher with constant embeddings so both skills score equally.
+    let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+    };
+    let matcher = SkillMatcher::new(&all_meta, embed_fn)
+        .await
+        .expect("matcher must be built: embed_fn always succeeds");
+    let backend = SkillMatcherBackend::InMemory(matcher);
+
+    let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+
+    let mut agent = Agent::new(
+        provider,
+        channel,
+        registry,
+        Some(backend),
+        2,
+        MockToolExecutor,
+    )
+    // Threshold of 1.0 guarantees disambiguation fires: any score delta < 1.0.
+    .with_disambiguation_threshold(1.0)
+    .with_metrics(tx);
+
+    agent.run().await.unwrap();
+
+    let snapshot = rx.borrow().clone();
+    assert!(
+        !snapshot.active_skills.is_empty(),
+        "active_skills must be populated after run"
+    );
+    assert_eq!(
+        snapshot.active_skills[0], "second-skill",
+        "disambiguation must move second-skill to the front"
+    );
+}
+
 // -- multiple commands in one session (skills + normal message) --
 
 #[tokio::test]

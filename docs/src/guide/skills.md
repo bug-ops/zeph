@@ -126,6 +126,17 @@ export ZEPH_SKILLS_MAX_ACTIVE=5
 
 Lower values reduce prompt size but may miss relevant skills. Higher values include more context but use more tokens.
 
+### Disambiguation Threshold
+
+When the top two candidate skills have cosine similarity scores within `disambiguation_threshold` of each other, the agent calls the LLM with a structured prompt to clarify intent. The LLM returns a typed `IntentClassification` (skill name, confidence 0-1, extracted parameters) via `chat_typed`, and the result reorders the candidate list so the best-matching skill is injected first.
+
+```toml
+[skills]
+disambiguation_threshold = 0.05
+```
+
+Set to `0.0` to disable disambiguation entirely (always use ranking order). Higher values cause disambiguation to trigger more aggressively on ambiguous queries.
+
 ## Progressive Loading
 
 Only metadata (~100 tokens per skill) is loaded at startup for embedding and matching. Full body (<5000 tokens) is loaded lazily on first activation and cached via `OnceLock`. Resource files are loaded on demand.

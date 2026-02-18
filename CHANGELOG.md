@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI test automation infrastructure: EventSource trait abstraction, insta widget snapshot tests, TestBackend integration tests, proptest layout verification, expectrl E2E terminal tests (#542)
 - CI snapshot regression pipeline with `cargo insta test --check` (#547)
 - Pipeline API with composable, type-safe `Step` trait, `Pipeline` builder, `ParallelStep` combinator, and built-in steps (`LlmStep`, `RetrievalStep`, `ExtractStep`, `MapStep`) (#466, #467, #468)
+- Structured intent classification for skill disambiguation: when top-2 skill scores are within `disambiguation_threshold` (default 0.05), agent calls LLM via `chat_typed::<IntentClassification>()` to select the best-matching skill (#550)
+- `ScoredMatch` struct exposing both skill index and cosine similarity score from matcher backends
+- `IntentClassification` type (`skill_name`, `confidence`, `params`) with `JsonSchema` derive for schema-enforced LLM responses
+- `disambiguation_threshold` in `[skills]` config section (default: 0.05) with `with_disambiguation_threshold()` builder on `Agent`
 
 ## [0.10.0] - 2026-02-18
 

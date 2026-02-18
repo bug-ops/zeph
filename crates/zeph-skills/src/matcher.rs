@@ -517,6 +517,33 @@ mod tests {
     }
 
     #[test]
+    fn scored_match_delta_threshold_zero_disables_disambiguation() {
+        // With threshold = 0.0 the condition `(scores[0] - scores[1]) < threshold`
+        // evaluates to `delta < 0.0`. For any pair of sorted (descending) scores the
+        // delta is always >= 0.0, so this threshold effectively disables disambiguation.
+        let threshold = 0.0_f32;
+
+        let high = ScoredMatch {
+            index: 0,
+            score: 0.90,
+        };
+        let low = ScoredMatch {
+            index: 1,
+            score: 0.89,
+        };
+        let delta = high.score - low.score; // 0.01
+
+        assert!(
+            delta >= 0.0,
+            "delta between sorted scores is always non-negative"
+        );
+        assert!(
+            !(delta < threshold),
+            "with threshold=0.0 disambiguation must NOT be triggered"
+        );
+    }
+
+    #[test]
     fn scored_match_delta_at_threshold_boundary() {
         let threshold = 0.05_f32;
 

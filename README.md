@@ -55,7 +55,9 @@ This is the core idea behind Zeph. Every byte that enters the LLM context window
 
 Most frameworks inject all tool descriptions into every prompt. 50 tools installed? 50 descriptions in every request.
 
-Zeph embeds skills and MCP tools as vectors at startup (concurrent embedding via `buffer_unordered`), then retrieves only the **top-K relevant** per query via cosine similarity. Install 500 skills — the prompt sees only the 5 that matter. [How skills work →](https://bug-ops.github.io/zeph/guide/skills.html)
+Zeph embeds skills and MCP tools as vectors at startup (concurrent embedding via `buffer_unordered`), then retrieves only the **top-K relevant** per query via cosine similarity. Install 500 skills — the prompt sees only the 5 that matter.
+
+When two candidates score within a configurable threshold of each other, structured intent classification resolves the ambiguity: the agent calls the LLM with a typed `IntentClassification` schema and reorders candidates accordingly — no hallucination, no guessing. [How skills work →](https://bug-ops.github.io/zeph/guide/skills.html)
 
 ### Smart Output Filtering — 70-99% Token Savings
 
