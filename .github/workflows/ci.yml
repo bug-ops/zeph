@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -57,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ (github.event_name == 'merge_group' || github.event_name == 'push') && fromJson('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJson('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -98,6 +99,7 @@ jobs:
 
   coverage:
     name: Coverage
+    if: github.event_name != 'pull_request'
     needs: [lint-fmt, lint-clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -124,6 +126,7 @@ jobs:
 
   docker-build-and-scan:
     name: Docker Build and Security Scan
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -187,7 +190,7 @@ jobs:
             "${{ needs.docker-build-and-scan.result }}"
           )
           for r in "${results[@]}"; do
-            if [[ "$r" != "success" ]]; then
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
               echo "::error::One or more jobs failed or were cancelled"
               exit 1
             fi
