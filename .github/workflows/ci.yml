@@ -18,6 +18,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint-shellcheck:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: install
+
   lint-fmt:
     name: Lint (fmt)
     runs-on: ubuntu-latest
@@ -196,13 +207,14 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [lint-fmt, lint-clippy, snapshots, test, integration, coverage, docker-build-and-scan]
+    needs: [lint-shellcheck, lint-fmt, lint-clippy, snapshots, test, integration, coverage, docker-build-and-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - name: Check all jobs
         run: |
           results=(
+            "${{ needs.lint-shellcheck.result }}"
             "${{ needs.lint-fmt.result }}"
             "${{ needs.lint-clippy.result }}"
             "${{ needs.snapshots.result }}"

@@ -9,8 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   build-binaries:
@@ -108,6 +107,8 @@ jobs:
     name: Create GitHub Release
     needs: [build-binaries]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
       - name: Verify version matches tag
@@ -130,12 +131,16 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
+            install/install.sh
 
   docker-publish:
     name: Publish Docker Image
     needs: [build-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v6
       - name: Download Linux binaries
