@@ -1,0 +1,8 @@
+target/
+data/
+.local/
+.git/
+.env
+*.swp
+*.swo
+.DS_Store

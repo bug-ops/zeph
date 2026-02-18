@@ -11,8 +11,8 @@ services:
 
   zeph:
     build:
-      context: .
-      dockerfile: Dockerfile.dev
+      context: ..
+      dockerfile: docker/Dockerfile.dev
       args:
         CARGO_FEATURES: ${CARGO_FEATURES:-}
     depends_on:

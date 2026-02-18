@@ -263,5 +263,5 @@ When TUI is active, tracing output is redirected to `zeph.log` to avoid corrupti
 Docker images are built without the `tui` feature by default (headless operation). To build a Docker image with TUI support:
 
 ```bash
-docker build -f Dockerfile.dev --build-arg CARGO_FEATURES=tui -t zeph:tui .
+docker build -f docker/Dockerfile.dev --build-arg CARGO_FEATURES=tui -t zeph:tui .
 ```

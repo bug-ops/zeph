@@ -33,24 +33,24 @@ docker compose --profile gpu run --rm ollama ollama pull mistral:7b
 docker compose --profile gpu run --rm ollama ollama pull qwen3-embedding
 
 # Start all services with GPU
-docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up
+docker compose --profile gpu -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up
 ```
 
 ## Age Vault (Encrypted Secrets)
 
 ```bash
 # Mount key and vault files into container
-docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.vault.yml up
 ```
 
 Override file paths via environment variables:
 
 ```bash
 ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
-  docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+  docker compose -f docker/docker-compose.yml -f docker/docker-compose.vault.yml up
 ```
 
-> The image must be built with `vault-age` feature enabled. For local builds, use `CARGO_FEATURES=vault-age` with `docker-compose.dev.yml`.
+> The image must be built with `vault-age` feature enabled. For local builds, use `CARGO_FEATURES=vault-age` with `docker/docker-compose.dev.yml`.
 
 ## Using Specific Version
 
@@ -79,25 +79,25 @@ trivy image --severity HIGH,CRITICAL --exit-code 1 ghcr.io/bug-ops/zeph:latest
 
 ## Local Development
 
-Full stack with debug tracing (builds from source via `Dockerfile.dev`, uses host Ollama via `host.docker.internal`):
+Full stack with debug tracing (builds from source via `docker/Dockerfile.dev`, uses host Ollama via `host.docker.internal`):
 
 ```bash
 # Build and start Qdrant + Zeph with debug logging
-docker compose -f docker-compose.dev.yml up --build
+docker compose -f docker/docker-compose.dev.yml up --build
 
 # Build with optional features (e.g. vault-age, candle)
-CARGO_FEATURES=vault-age docker compose -f docker-compose.dev.yml up --build
+CARGO_FEATURES=vault-age docker compose -f docker/docker-compose.dev.yml up --build
 
 # Build with vault-age and mount vault files
 CARGO_FEATURES=vault-age \
-  docker compose -f docker-compose.dev.yml -f docker-compose.vault.yml up --build
+  docker compose -f docker/docker-compose.dev.yml -f docker/docker-compose.vault.yml up --build
 ```
 
 Dependencies only (run zeph natively on host):
 
 ```bash
 # Start Qdrant
-docker compose -f docker-compose.deps.yml up
+docker compose -f docker/docker-compose.deps.yml up
 
 # Run zeph natively with debug tracing
 RUST_LOG=zeph=debug,zeph_channels=trace cargo run

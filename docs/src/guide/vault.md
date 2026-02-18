@@ -54,12 +54,12 @@ cargo build --release --features vault-age
 Mount key and vault files into the container:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.vault.yml up
 ```
 
 Override paths:
 
 ```bash
 ZEPH_VAULT_KEY=./my-key.txt ZEPH_VAULT_PATH=./my-secrets.age \
-  docker compose -f docker-compose.yml -f docker-compose.vault.yml up
+  docker compose -f docker/docker-compose.yml -f docker/docker-compose.vault.yml up
 ```
