@@ -64,10 +64,10 @@ fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorF
         }
     }
     for cond in &filter.must_not {
-        if let Some(val) = payload.get(&cond.field) {
-            if field_matches(val, &cond.value) {
-                return false;
-            }
+        if let Some(val) = payload.get(&cond.field)
+            && field_matches(val, &cond.value)
+        {
+            return false;
         }
     }
     true
