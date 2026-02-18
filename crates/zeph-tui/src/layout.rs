@@ -213,4 +213,59 @@ mod tests {
         let diff = (left_margin as i32 - right_margin as i32).unsigned_abs();
         assert!(diff <= 2, "left={left_margin} right={right_margin}");
     }
+
+    mod proptest_layout {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn assert_within_bounds(rect: Rect, area: Rect) {
+            assert!(
+                rect.x + rect.width <= area.x + area.width,
+                "rect {rect:?} exceeds area width {area:?}"
+            );
+            assert!(
+                rect.y + rect.height <= area.y + area.height,
+                "rect {rect:?} exceeds area height {area:?}"
+            );
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            #[test]
+            fn layout_never_panics(
+                width in 1u16..500,
+                height in 1u16..500,
+                show_side in proptest::bool::ANY,
+            ) {
+                let area = Rect::new(0, 0, width, height);
+                let layout = AppLayout::compute(area, show_side);
+
+                assert_within_bounds(layout.header, area);
+                assert_within_bounds(layout.chat, area);
+                assert_within_bounds(layout.activity, area);
+                assert_within_bounds(layout.input, area);
+                assert_within_bounds(layout.status, area);
+
+                if layout.side_panel != Rect::default() {
+                    assert_within_bounds(layout.side_panel, area);
+                    assert_within_bounds(layout.skills, area);
+                    assert_within_bounds(layout.memory, area);
+                    assert_within_bounds(layout.resources, area);
+                }
+            }
+
+            #[test]
+            fn centered_rect_within_bounds(
+                percent_x in 10u16..100,
+                popup_h in 1u16..50,
+                area_w in 20u16..300,
+                area_h in 10u16..100,
+            ) {
+                let area = Rect::new(0, 0, area_w, area_h);
+                let popup = centered_rect(percent_x, popup_h.min(area_h), area);
+                assert_within_bounds(popup, area);
+            }
+        }
+    }
 }

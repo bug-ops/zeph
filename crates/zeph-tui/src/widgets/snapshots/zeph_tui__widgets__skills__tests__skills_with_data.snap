@@ -1,0 +1,14 @@
+---
+source: crates/zeph-tui/src/widgets/skills.rs
+expression: output
+---
+┌ Skills (2/5) ──────────────┐
+│  - web-search              │
+│  - code-gen                │
+│                            │
+│                            │
+│                            │
+│                            │
+│                            │
+│                            │
+└────────────────────────────┘

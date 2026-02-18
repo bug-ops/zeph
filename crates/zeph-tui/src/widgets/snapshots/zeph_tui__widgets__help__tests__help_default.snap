@@ -1,0 +1,32 @@
+---
+source: crates/zeph-tui/src/widgets/help.rs
+expression: output
+---
+                                                                                
+                                                                                
+            ┌─────────── Help — press ? or Esc to close ───────────┐            
+            │Key                 Action                            │            
+            │Normal mode                                           │            
+            │q                   quit                              │            
+            │i                   enter insert mode                 │            
+            │j / k               scroll down / up                  │            
+            │PgDn / PgUp         page scroll down / up             │            
+            │End / Home          jump to bottom / top              │            
+            │d                   toggle side panels                │            
+            │e                   expand tools                      │            
+            │c                   compact tools                     │            
+            │Tab                 cycle panels                      │            
+            │?                   toggle this help                  │            
+            │                                                      │            
+            │Insert mode                                           │            
+            │Enter               send message                      │            
+            │Shift+Enter         insert newline                    │            
+            │Esc                 return to normal mode             │            
+            │Ctrl+U              clear input                       │            
+            │Ctrl+K              clear queue                       │            
+            │Up / Down           navigate history                  │            
+            │                                                      │            
+            │Confirm mode                                          │            
+            │y                   confirm                           │            
+            │n / Esc             cancel                            │            
+            └──────────────────────────────────────────────────────┘

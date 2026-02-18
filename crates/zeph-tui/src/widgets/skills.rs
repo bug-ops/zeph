@@ -52,3 +52,23 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         frame.render_widget(mcp, chunks[1]);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::metrics::MetricsSnapshot;
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn skills_with_data() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.active_skills = vec!["web-search".into(), "code-gen".into()];
+        metrics.total_skills = 5;
+
+        let output = render_to_string(30, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

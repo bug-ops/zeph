@@ -35,3 +35,24 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(memory, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::metrics::MetricsSnapshot;
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn memory_with_stats() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.sqlite_message_count = 42;
+        metrics.qdrant_available = true;
+        metrics.embeddings_generated = 10;
+
+        let output = render_to_string(30, 8, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

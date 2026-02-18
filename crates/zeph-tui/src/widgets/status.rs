@@ -89,4 +89,30 @@ mod tests {
     fn format_uptime_minutes_and_seconds() {
         assert_eq!(format_uptime(135), "2m 15s");
     }
+
+    #[test]
+    fn status_bar_snapshot() {
+        use insta::assert_snapshot;
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let mut metrics = MetricsSnapshot::default();
+        metrics.total_tokens = 4200;
+        metrics.api_calls = 12;
+        metrics.active_skills = vec!["web".into(), "code".into()];
+        metrics.total_skills = 5;
+        metrics.qdrant_available = true;
+        metrics.uptime_seconds = 135;
+
+        let output = render_to_string(100, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
 }

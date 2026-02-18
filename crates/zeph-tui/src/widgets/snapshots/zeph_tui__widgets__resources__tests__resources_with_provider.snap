@@ -1,0 +1,14 @@
+---
+source: crates/zeph-tui/src/widgets/resources.rs
+expression: output
+---
+┌ Resources ──────────────────────┐
+│  Provider: claude               │
+│  Model: opus-4                  │
+│  Context: 8000                  │
+│  Session: 12000                 │
+│  API calls: 5                   │
+│  Latency: 250ms                 │
+│                                 │
+│                                 │
+└─────────────────────────────────┘

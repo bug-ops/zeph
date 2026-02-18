@@ -33,3 +33,18 @@ pub fn render(prompt: &str, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(paragraph, popup);
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn confirm_with_prompt() {
+        let output = render_to_string(60, 20, |frame, area| {
+            super::render("Delete all files?", frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

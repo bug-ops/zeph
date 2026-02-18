@@ -1451,4 +1451,128 @@ mod tests {
         app.submit_input();
         assert!(!app.editing_queued());
     }
+
+    mod integration {
+        use super::*;
+        use crate::test_utils::test_terminal;
+        use insta::assert_snapshot;
+
+        fn draw_app(app: &mut App, width: u16, height: u16) -> String {
+            let mut terminal = test_terminal(width, height);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let mut output = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    output.push_str(buf[(x, y)].symbol());
+                }
+                output.push('\n');
+            }
+            output
+        }
+
+        #[test]
+        fn submit_message_appears_in_chat() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.input = "hello world".into();
+            app.cursor_position = 11;
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(enter)).unwrap();
+
+            let output = draw_app(&mut app, 80, 24);
+            assert!(output.contains("hello world"));
+        }
+
+        #[test]
+        fn help_overlay_renders() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+            let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            let output = draw_app(&mut app, 80, 30);
+            assert!(output.contains("Help"));
+            assert!(output.contains("quit"));
+        }
+
+        #[test]
+        fn help_overlay_closes() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+            let open = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(open)).unwrap();
+            let close = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(close)).unwrap();
+
+            let output = draw_app(&mut app, 80, 30);
+            assert!(!output.contains("Help — press"));
+        }
+
+        #[test]
+        fn confirm_dialog_renders() {
+            let (mut app, _rx, _tx) = make_app();
+            let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+            app.confirm_state = Some(ConfirmState {
+                prompt: "Execute rm -rf?".into(),
+                response_tx: Some(tx),
+            });
+
+            let output = draw_app(&mut app, 60, 20);
+            assert!(output.contains("Confirm"));
+            assert!(output.contains("Execute rm -rf?"));
+            assert!(output.contains("[Y]es / [N]o"));
+        }
+
+        #[test]
+        fn confirm_dialog_disappears_after_response() {
+            let (mut app, _rx, _tx) = make_app();
+            let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+            app.confirm_state = Some(ConfirmState {
+                prompt: "Delete?".into(),
+                response_tx: Some(tx),
+            });
+            let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            let output = draw_app(&mut app, 60, 20);
+            assert!(!output.contains("[Y]es / [N]o"));
+        }
+
+        #[test]
+        fn side_panels_toggle_off() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+
+            let before = draw_app(&mut app, 120, 40);
+            assert!(before.contains("Skills"));
+            assert!(before.contains("Memory"));
+
+            let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            let after = draw_app(&mut app, 120, 40);
+            assert!(!after.contains("Skills ("));
+        }
+
+        #[test]
+        fn splash_shown_initially() {
+            let (mut app, _rx, _tx) = make_app();
+            let output = draw_app(&mut app, 80, 24);
+            assert!(output.contains("Type a message to start."));
+        }
+
+        #[test]
+        fn splash_disappears_after_submit() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.input = "hi".into();
+            app.cursor_position = 2;
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(enter)).unwrap();
+
+            let output = draw_app(&mut app, 80, 24);
+            assert!(!output.contains("Type a message"));
+        }
+    }
 }

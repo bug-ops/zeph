@@ -63,3 +63,27 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(resources, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::metrics::MetricsSnapshot;
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn resources_with_provider() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.provider_name = "claude".into();
+        metrics.model_name = "opus-4".into();
+        metrics.context_tokens = 8000;
+        metrics.total_tokens = 12000;
+        metrics.api_calls = 5;
+        metrics.last_llm_latency_ms = 250;
+
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

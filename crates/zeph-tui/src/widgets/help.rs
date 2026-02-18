@@ -74,3 +74,18 @@ pub fn render(frame: &mut Frame, area: Rect) {
 fn keybind_row(key: &'static str, action: &'static str) -> Row<'static> {
     Row::new([Cell::from(Line::from(key)), Cell::from(Line::from(action))])
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn help_default() {
+        let output = render_to_string(80, 30, |frame, area| {
+            super::render(frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

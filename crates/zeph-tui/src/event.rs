@@ -3,6 +3,40 @@ use std::time::Duration;
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEventKind};
 use tokio::sync::{mpsc, oneshot};
 
+pub trait EventSource: Send + 'static {
+    fn next_event(&mut self) -> Option<AppEvent>;
+}
+
+pub struct CrosstermEventSource {
+    tick_rate: Duration,
+}
+
+impl CrosstermEventSource {
+    #[must_use]
+    pub fn new(tick_rate: Duration) -> Self {
+        Self { tick_rate }
+    }
+}
+
+impl EventSource for CrosstermEventSource {
+    fn next_event(&mut self) -> Option<AppEvent> {
+        if event::poll(self.tick_rate).unwrap_or(false) {
+            match event::read() {
+                Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
+                Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
+                Ok(CrosstermEvent::Mouse(mouse)) => match mouse.kind {
+                    MouseEventKind::ScrollUp => Some(AppEvent::MouseScroll(1)),
+                    MouseEventKind::ScrollDown => Some(AppEvent::MouseScroll(-1)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            Some(AppEvent::Tick)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
@@ -57,22 +91,13 @@ impl EventReader {
 
     /// Blocking loop — must run on a dedicated `std::thread`, not a tokio worker.
     pub fn run(self) {
-        loop {
-            if event::poll(self.tick_rate).unwrap_or(false) {
-                let evt = match event::read() {
-                    Ok(CrosstermEvent::Key(key)) => AppEvent::Key(key),
-                    Ok(CrosstermEvent::Resize(w, h)) => AppEvent::Resize(w, h),
-                    Ok(CrosstermEvent::Mouse(mouse)) => match mouse.kind {
-                        MouseEventKind::ScrollUp => AppEvent::MouseScroll(1),
-                        MouseEventKind::ScrollDown => AppEvent::MouseScroll(-1),
-                        _ => continue,
-                    },
-                    _ => continue,
-                };
-                if self.tx.blocking_send(evt).is_err() {
-                    break;
-                }
-            } else if self.tx.blocking_send(AppEvent::Tick).is_err() {
+        let tick_rate = self.tick_rate;
+        self.run_with_source(CrosstermEventSource::new(tick_rate));
+    }
+
+    pub fn run_with_source(self, mut source: impl EventSource) {
+        while let Some(evt) = source.next_event() {
+            if self.tx.blocking_send(evt).is_err() {
                 break;
             }
         }

@@ -29,6 +29,9 @@ tracing.workspace = true
 zeph-core.workspace = true
 
 [dev-dependencies]
+expectrl = "0.8"
+insta = "1.42"
+proptest = "1.6"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

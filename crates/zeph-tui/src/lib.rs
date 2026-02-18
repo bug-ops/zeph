@@ -5,6 +5,8 @@ pub mod highlight;
 pub mod hyperlink;
 pub mod layout;
 pub mod metrics;
+#[cfg(test)]
+pub mod test_utils;
 pub mod theme;
 pub mod widgets;
 
@@ -17,7 +19,7 @@ use zeph_core::channel::ChannelError;
 
 pub use app::App;
 pub use channel::TuiChannel;
-pub use event::{AgentEvent, AppEvent, EventReader};
+pub use event::{AgentEvent, AppEvent, CrosstermEventSource, EventReader, EventSource};
 pub use metrics::{MetricsCollector, MetricsSnapshot};
 
 /// # Errors

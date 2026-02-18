@@ -1,0 +1,9 @@
+---
+source: crates/zeph-tui/src/widgets/input.rs
+expression: output
+---
+┌ Input (Esc to cancel) ───────────────┐
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

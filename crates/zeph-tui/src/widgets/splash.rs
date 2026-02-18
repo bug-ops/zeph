@@ -61,3 +61,18 @@ pub fn render(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(paragraph, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::test_utils::render_to_string;
+
+    #[test]
+    fn splash_default() {
+        let output = render_to_string(60, 20, |frame, area| {
+            super::render(frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

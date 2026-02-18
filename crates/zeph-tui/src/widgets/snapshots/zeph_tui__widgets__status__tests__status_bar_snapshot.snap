@@ -1,0 +1,5 @@
+---
+source: crates/zeph-tui/src/widgets/status.rs
+expression: output
+---
+ [Insert] | Panel: ON | Skills: 2/5 | Tokens: 4.2k | Qdrant: OK | API: 12 | 2m 15s

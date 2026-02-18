@@ -1,0 +1,18 @@
+---
+source: crates/zeph-tui/src/widgets/confirm.rs
+expression: output
+---
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+               ┌───────── Confirm ──────────┐               
+               │                            │               
+               │      Delete all files?     │               
+               │                            │               
+               │        [Y]es / [N]o        │               
+               │                            │               
+               └────────────────────────────┘

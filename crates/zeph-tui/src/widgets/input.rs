@@ -47,3 +47,43 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use tokio::sync::mpsc;
+
+    use crate::app::App;
+    use crate::test_utils::render_to_string;
+
+    fn make_app() -> App {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        App::new(user_tx, agent_rx)
+    }
+
+    #[test]
+    fn input_insert_mode() {
+        let app = make_app();
+        let output = render_to_string(40, 5, |frame, area| {
+            super::render(&app, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn input_normal_mode() {
+        let mut app = make_app();
+        app.handle_event(crate::event::AppEvent::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ))
+        .unwrap();
+        let output = render_to_string(40, 5, |frame, area| {
+            super::render(&app, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+}

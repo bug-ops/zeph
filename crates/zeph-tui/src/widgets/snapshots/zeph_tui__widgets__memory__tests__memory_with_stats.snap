@@ -1,0 +1,12 @@
+---
+source: crates/zeph-tui/src/widgets/memory.rs
+expression: output
+---
+┌ Memory ────────────────────┐
+│  SQLite: 42 msgs           │
+│  Qdrant: connected         │
+│  Conv ID: ---              │
+│  Embeddings: 10            │
+│                            │
+│                            │
+└────────────────────────────┘
