@@ -1,17 +1,12 @@
-FROM container-registry.oracle.com/os/oraclelinux:9-slim
+FROM debian:bookworm-slim
 
 ARG TARGETARCH
 
-RUN microdnf update -y && \
-    (microdnf module enable nodejs:25 -y 2>/dev/null || \
-     microdnf module enable nodejs:24 -y 2>/dev/null || \
-     microdnf module enable nodejs:22 -y 2>/dev/null || \
-     microdnf module enable nodejs:20 -y) && \
-    microdnf install -y \
-    shadow-utils ca-certificates \
-    curl wget git jq file findutils iproute procps-ng systemd util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl wget git jq file findutils iproute2 procps \
     nodejs npm python3 && \
-    microdnf clean all && \
+    rm -rf /var/lib/apt/lists/* && \
     useradd --system --create-home --shell /sbin/nologin zeph
 
 WORKDIR /app

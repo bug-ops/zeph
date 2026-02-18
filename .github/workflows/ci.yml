@@ -137,6 +137,7 @@ jobs:
         run: |
           cargo build
           mkdir -p binaries
+          # Same binary for both arch variants — scan-only, not for deployment
           cp target/debug/zeph binaries/zeph-amd64
           cp target/debug/zeph binaries/zeph-arm64
         env:
@@ -153,7 +154,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.34.0
         with:
           image-ref: zeph:local
           format: sarif
