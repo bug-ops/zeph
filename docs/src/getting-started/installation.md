@@ -1,6 +1,32 @@
 # Installation
 
-Install Zeph from source, pre-built binaries, or Docker.
+Install Zeph from source, the install script, pre-built binaries, or Docker.
+
+## Install Script (recommended)
+
+Run the one-liner to download and install the latest release:
+
+```bash
+curl -sSf https://raw.githubusercontent.com/bug-ops/zeph/main/install/install.sh | sh
+```
+
+The script detects your OS and architecture, downloads the binary to `~/.zeph/bin/zeph`, and adds it to your `PATH`. Override the install directory with `ZEPH_INSTALL_DIR`:
+
+```bash
+ZEPH_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/bug-ops/zeph/main/install/install.sh | sh
+```
+
+Install a specific version:
+
+```bash
+curl -sSf https://raw.githubusercontent.com/bug-ops/zeph/main/install/install.sh | sh -s -- --version v0.10.0
+```
+
+After installation, run the configuration wizard:
+
+```bash
+zeph init
+```
 
 ## From Source
 
@@ -10,7 +36,7 @@ cd zeph
 cargo build --release
 ```
 
-The binary is produced at `target/release/zeph`.
+The binary is produced at `target/release/zeph`. Run `zeph init` to generate a config file.
 
 ## Pre-built Binaries
 

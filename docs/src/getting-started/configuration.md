@@ -1,5 +1,27 @@
 # Configuration
 
+## Configuration Wizard
+
+Run `zeph init` to generate a `config.toml` interactively. The wizard walks through five steps:
+
+1. **LLM Provider** -- select Ollama (local), Claude, OpenAI, or a compatible endpoint. Provide the base URL, model name, and API key as needed. Choose an embedding model (default: `qwen3-embedding`).
+2. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
+3. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel.
+4. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file via `~/.zeph/vault.age`).
+5. **Review and write** -- inspect the generated TOML, confirm the output path, and save.
+
+Specify the output path directly:
+
+```bash
+zeph init --output ~/.zeph/config.toml
+```
+
+If the target file already exists, the wizard asks before overwriting.
+
+After writing, the wizard prints the environment variables you need to set (API keys, tokens) depending on the chosen secrets backend.
+
+## Config File Resolution
+
 Zeph loads `config/default.toml` at startup and applies environment variable overrides.
 
 The config path can be overridden via CLI argument or environment variable:

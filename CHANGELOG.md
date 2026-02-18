@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Interactive configuration wizard via `zeph init` subcommand with 5-step setup (LLM provider, memory, channels, secrets backend, config generation)
+- clap-based CLI argument parsing with `--help`, `--version` support
+- `Serialize` derive on `Config` and all nested types for TOML generation
+- `dialoguer` dependency for interactive terminal prompts
 - Structured LLM output via `chat_typed<T>()` on `LlmProvider` trait with JSON schema enforcement (#456)
 - OpenAI/Compatible native `response_format: json_schema` structured output (#457)
 - Claude structured output via forced tool use pattern (#458)

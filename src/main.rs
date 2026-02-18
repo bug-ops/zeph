@@ -1029,6 +1029,157 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cli_parse_no_args_runs_default() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(!cli.tui);
+        assert!(cli.config.is_none());
+    }
+
+    #[test]
+    fn cli_parse_init_subcommand() {
+        let cli = Cli::try_parse_from(["zeph", "init"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Init { output: None })));
+    }
+
+    #[test]
+    fn cli_parse_init_with_output() {
+        let cli = Cli::try_parse_from(["zeph", "init", "-o", "/tmp/cfg.toml"]).unwrap();
+        match cli.command {
+            Some(Command::Init { output }) => {
+                assert_eq!(output.unwrap(), PathBuf::from("/tmp/cfg.toml"));
+            }
+            _ => panic!("expected Init subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_tui_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--tui"]).unwrap();
+        assert!(cli.tui);
+    }
+
+    #[test]
+    fn cli_parse_config_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--config", "my.toml"]).unwrap();
+        assert_eq!(cli.config.unwrap(), PathBuf::from("my.toml"));
+    }
+
+    #[test]
+    fn build_config_ollama_defaults() {
+        use crate::init::{WizardState, build_config};
+
+        let state = WizardState {
+            provider: Some(ProviderKind::Ollama),
+            base_url: Some("http://localhost:11434".into()),
+            model: Some("llama3".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.llm.provider, ProviderKind::Ollama);
+        assert_eq!(config.llm.model, "llama3");
+        assert!(config.telegram.is_none());
+    }
+
+    #[test]
+    fn build_config_claude_provider() {
+        use crate::init::{WizardState, build_config};
+
+        let state = WizardState {
+            provider: Some(ProviderKind::Claude),
+            model: Some("claude-sonnet-4-5-20250929".into()),
+            api_key: Some("sk-test".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.llm.provider, ProviderKind::Claude);
+    }
+
+    #[test]
+    fn build_config_compatible_provider() {
+        use crate::init::{WizardState, build_config};
+
+        let state = WizardState {
+            provider: Some(ProviderKind::Compatible),
+            compatible_name: Some("groq".into()),
+            base_url: Some("https://api.groq.com/v1".into()),
+            model: Some("mixtral".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.llm.compatible.is_some());
+        let compat = config.llm.compatible.unwrap();
+        assert_eq!(compat[0].name, "groq");
+    }
+
+    #[test]
+    fn build_config_telegram_channel() {
+        use crate::init::{ChannelChoice, WizardState, build_config};
+
+        let state = WizardState {
+            channel: ChannelChoice::Telegram,
+            telegram_token: Some("tok".into()),
+            telegram_users: vec!["alice".into()],
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.telegram.is_some());
+        assert_eq!(config.telegram.unwrap().allowed_users, vec!["alice"]);
+    }
+
+    #[test]
+    fn build_config_discord_channel() {
+        use crate::init::{ChannelChoice, WizardState, build_config};
+
+        let state = WizardState {
+            channel: ChannelChoice::Discord,
+            discord_token: Some("tok".into()),
+            discord_app_id: Some("123".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.discord.is_some());
+    }
+
+    #[test]
+    fn build_config_slack_channel() {
+        use crate::init::{ChannelChoice, WizardState, build_config};
+
+        let state = WizardState {
+            channel: ChannelChoice::Slack,
+            slack_bot_token: Some("xoxb".into()),
+            slack_signing_secret: Some("secret".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.slack.is_some());
+    }
+
+    #[test]
+    fn build_config_vault_age() {
+        use crate::init::{WizardState, build_config};
+
+        let state = WizardState {
+            vault_backend: "age".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.vault.backend, "age");
+    }
+
+    #[test]
+    fn build_config_semantic_disabled() {
+        use crate::init::{WizardState, build_config};
+
+        let state = WizardState {
+            semantic_enabled: false,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.memory.semantic.enabled);
+    }
+
     #[cfg(feature = "a2a")]
     #[test]
     fn agent_task_processor_construction() {

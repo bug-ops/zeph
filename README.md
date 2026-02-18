@@ -23,29 +23,58 @@ Most AI agent frameworks are **token furnaces**. They dump every tool descriptio
 
 Zeph takes the opposite approach: **automated context engineering**. Only relevant data enters the context. Everything else is filtered, compressed, or retrieved on demand. The result — dramatically lower costs, faster responses, and an agent that runs on hardware you already have.
 
-## Quick Start
+## Installation
 
 ```bash
-git clone https://github.com/bug-ops/zeph && cd zeph
-cargo build --release
-
-# Local models — no API costs
-ollama pull mistral:7b && ollama pull qwen3-embedding
-./target/release/zeph
-
-# Cloud providers
-ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... ./target/release/zeph
-ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... ./target/release/zeph
-
-# Any OpenAI-compatible API (Together AI, Groq, Fireworks, etc.)
-ZEPH_LLM_PROVIDER=compatible ZEPH_COMPATIBLE_BASE_URL=https://api.together.xyz/v1 \
-  ZEPH_COMPATIBLE_API_KEY=... ./target/release/zeph
+# From source
+cargo install --git https://github.com/bug-ops/zeph
 ```
 
 Pre-built binaries for Linux, macOS, and Windows: [GitHub Releases](https://github.com/bug-ops/zeph/releases/latest) · [Docker](https://bug-ops.github.io/zeph/guide/docker.html)
 
+## Quick Start
+
+```bash
+# Interactive setup wizard — generates config.toml with provider, memory, and channel settings
+zeph init
+
+# Run the agent
+zeph
+
+# Or with TUI dashboard (requires `tui` feature)
+zeph --tui
+```
+
+Manual configuration is also supported:
+
+```bash
+# Local models — no API costs
+ollama pull mistral:7b && ollama pull qwen3-embedding
+zeph
+
+# Cloud providers
+ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... zeph
+ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... zeph
+
+# Any OpenAI-compatible API (Together AI, Groq, Fireworks, etc.)
+ZEPH_LLM_PROVIDER=compatible ZEPH_COMPATIBLE_BASE_URL=https://api.together.xyz/v1 \
+  ZEPH_COMPATIBLE_API_KEY=... zeph
+```
+
 > [!TIP]
 > Full setup walkthrough: [Installation](https://bug-ops.github.io/zeph/getting-started/installation.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) · [Secrets management](https://bug-ops.github.io/zeph/guide/vault.html)
+
+## CLI Usage
+
+```
+zeph                     Run the agent (default)
+zeph init                Interactive configuration wizard
+zeph init -o path.toml   Write generated config to a specific path
+zeph --tui               Run with TUI dashboard
+zeph --config <path>     Use a custom config file
+zeph --version           Print version
+zeph --help              Show help
+```
 
 ## Automated Context Engineering
 

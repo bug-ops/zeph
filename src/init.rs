@@ -7,28 +7,29 @@ use zeph_core::config::{
 };
 
 #[derive(Default)]
-struct WizardState {
-    provider: Option<ProviderKind>,
-    base_url: Option<String>,
-    model: Option<String>,
-    embedding_model: Option<String>,
-    api_key: Option<String>,
-    compatible_name: Option<String>,
-    sqlite_path: Option<String>,
-    qdrant_url: Option<String>,
-    semantic_enabled: bool,
-    channel: ChannelChoice,
-    telegram_token: Option<String>,
-    telegram_users: Vec<String>,
-    discord_token: Option<String>,
-    discord_app_id: Option<String>,
-    slack_bot_token: Option<String>,
-    slack_signing_secret: Option<String>,
-    vault_backend: String,
+#[cfg_attr(test, derive(Clone))]
+pub(crate) struct WizardState {
+    pub(crate) provider: Option<ProviderKind>,
+    pub(crate) base_url: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) embedding_model: Option<String>,
+    pub(crate) api_key: Option<String>,
+    pub(crate) compatible_name: Option<String>,
+    pub(crate) sqlite_path: Option<String>,
+    pub(crate) qdrant_url: Option<String>,
+    pub(crate) semantic_enabled: bool,
+    pub(crate) channel: ChannelChoice,
+    pub(crate) telegram_token: Option<String>,
+    pub(crate) telegram_users: Vec<String>,
+    pub(crate) discord_token: Option<String>,
+    pub(crate) discord_app_id: Option<String>,
+    pub(crate) slack_bot_token: Option<String>,
+    pub(crate) slack_signing_secret: Option<String>,
+    pub(crate) vault_backend: String,
 }
 
 #[derive(Default, Clone, Copy)]
-enum ChannelChoice {
+pub(crate) enum ChannelChoice {
     #[default]
     Cli,
     Telegram,
@@ -245,7 +246,7 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_config(state: &WizardState) -> Config {
+pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
@@ -279,6 +280,7 @@ fn build_config(state: &WizardState) -> Config {
             None
         },
         router: None,
+        stt: None,
     };
 
     config.memory = MemoryConfig {

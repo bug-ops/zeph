@@ -10,6 +10,7 @@
 
 # Guide
 
+- [CLI Reference](guide/cli.md)
 - [Skills](guide/skills.md)
 - [Semantic Memory](guide/semantic-memory.md)
 - [Context Engineering](guide/context.md)
