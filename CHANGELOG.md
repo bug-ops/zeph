@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Audio input support: `Attachment`/`AttachmentKind` types, `SpeechToText` trait, OpenAI Whisper backend behind `stt` feature flag (#520, #521, #522)
 - Telegram voice and audio message handling with automatic file download (#524)
 - STT bootstrap wiring: `WhisperProvider` created from `[llm.stt]` config behind `stt` feature (#529)
+- Slack audio file upload handling with host validation and size limits (#525)
 
 ## [0.10.0] - 2026-02-18
 
