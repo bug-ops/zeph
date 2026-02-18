@@ -661,7 +661,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
         for (tc, tool_result) in tool_calls.iter().zip(tool_results) {
-            let (output, is_error, diff, inline_stats) = match tool_result {
+            let (output, is_error, diff, inline_stats, already_streamed) = match tool_result {
                 Ok(Some(out)) => {
                     if let Some(ref fs) = out.filter_stats {
                         let saved = fs.estimated_tokens_saved() as u64;
@@ -694,10 +694,11 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                     let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
                         (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
                     });
-                    (out.summary, false, out.diff, inline_stats)
+                    let streamed = out.streamed;
+                    (out.summary, false, out.diff, inline_stats, streamed)
                 }
-                Ok(None) => ("(no output)".to_owned(), false, None, None),
-                Err(e) => (format!("[error] {e}"), true, None, None),
+                Ok(None) => ("(no output)".to_owned(), false, None, None, false),
+                Err(e) => (format!("[error] {e}"), true, None, None, false),
             };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
@@ -708,18 +709,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             };
             let formatted = format_tool_output(&tc.name, &body);
             let display = self.maybe_redact(&formatted);
-            // Bundle diff and filter stats into a single atomic send so TUI can attach
-            // them to the tool message without a race between DiffReady and FullMessage.
-            let disp_len = display.len();
-            tracing::debug!(
-                tool_name = %tc.name,
-                has_diff = diff.is_some(),
-                disp_len,
-                "about to call send_tool_output"
-            );
-            self.channel
-                .send_tool_output(&tc.name, &display, diff, inline_stats)
-                .await?;
+            // Tools that already streamed via ToolEvent channel (e.g. bash) have their
+            // output displayed by the TUI event forwarder; skip duplicate send.
+            if !already_streamed {
+                self.channel
+                    .send_tool_output(&tc.name, &display, diff, inline_stats)
+                    .await?;
+            }
 
             result_parts.push(MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
@@ -807,6 +803,7 @@ mod tests {
                     summary: format!("result-{idx}"),
                     blocks_executed: 1,
                     diff: None,
+                    streamed: false,
                     filter_stats: None,
                 }))
             }
@@ -845,6 +842,7 @@ mod tests {
                         summary: format!("ok-{idx}"),
                         blocks_executed: 1,
                         diff: None,
+                        streamed: false,
                         filter_stats: None,
                     }))
                 }

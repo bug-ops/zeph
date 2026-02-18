@@ -268,6 +268,7 @@ impl ShellExecutor {
             blocks_executed,
             filter_stats: cumulative_filter_stats,
             diff: None,
+            streamed: self.tool_event_tx.is_some(),
         }))
     }
 

@@ -107,6 +107,7 @@ impl ToolExecutor for WebScrapeExecutor {
             blocks_executed,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 
@@ -136,6 +137,7 @@ impl ToolExecutor for WebScrapeExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }

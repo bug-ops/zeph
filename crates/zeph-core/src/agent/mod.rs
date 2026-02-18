@@ -1159,6 +1159,7 @@ pub(super) mod agent_tests {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))]);
 
         let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
@@ -1358,6 +1359,7 @@ pub(super) mod agent_tests {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             })),
             Ok(None),
         ]);
@@ -1379,6 +1381,7 @@ pub(super) mod agent_tests {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))]);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -1472,6 +1475,7 @@ pub(super) mod agent_tests {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             })),
             Ok(None),
         ]);
@@ -1501,6 +1505,7 @@ pub(super) mod agent_tests {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             })));
         }
         let executor = MockToolExecutor::new(outputs);

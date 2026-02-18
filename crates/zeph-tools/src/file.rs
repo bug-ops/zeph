@@ -145,6 +145,7 @@ impl FileExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 
@@ -173,6 +174,7 @@ impl FileExecutor {
                 old_content,
                 new_content: content,
             }),
+            streamed: false,
         }))
     }
 
@@ -206,6 +208,7 @@ impl FileExecutor {
                 old_content: content,
                 new_content,
             }),
+            streamed: false,
         }))
     }
 
@@ -239,6 +242,7 @@ impl FileExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 
@@ -282,6 +286,7 @@ impl FileExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }

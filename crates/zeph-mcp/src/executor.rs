@@ -69,6 +69,7 @@ impl ToolExecutor for McpToolExecutor {
             blocks_executed,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }

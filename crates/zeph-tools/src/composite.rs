@@ -61,6 +61,7 @@ mod tests {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             }))
         }
     }
@@ -93,6 +94,7 @@ mod tests {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             }))
         }
     }
@@ -170,6 +172,7 @@ mod tests {
                     blocks_executed: 1,
                     filter_stats: None,
                     diff: None,
+                    streamed: false,
                 }))
             } else {
                 Ok(None)
@@ -194,6 +197,7 @@ mod tests {
                     blocks_executed: 1,
                     filter_stats: None,
                     diff: None,
+                    streamed: false,
                 }))
             } else {
                 Ok(None)
