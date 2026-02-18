@@ -207,6 +207,7 @@ Skills **evolve**: failure detection triggers self-reflection, and the agent gen
 |----------|-------------|
 | **MCP** | Connect external tool servers (stdio + HTTP) with SSRF protection |
 | **A2A** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming |
+| **Audio input** | Speech-to-text transcription via OpenAI Whisper (25 MB limit) |
 | **Channels** | CLI, Telegram, Discord, Slack, TUI — all with streaming support |
 | **Gateway** | HTTP webhook ingestion with bearer auth and rate limiting |
 | **Native tool_use** | Structured tool calling via Claude/OpenAI APIs; text fallback for local models |
@@ -323,6 +324,7 @@ Always compiled in: `openai`, `compatible`, `orchestrator`, `router`, `self-lear
 | `gateway` | HTTP webhook ingestion |
 | `daemon` | Component supervisor |
 | `pdf` | PDF document loading for RAG |
+| `stt` | Speech-to-text via OpenAI Whisper API |
 | `scheduler` | Cron-based periodic tasks |
 | `otel` | OpenTelemetry OTLP export |
 | `full` | Everything above |

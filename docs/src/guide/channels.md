@@ -254,6 +254,10 @@ The input line remains interactive during model inference. Messages are queued i
 
 When the queue is full (10 messages), new input is silently dropped until space becomes available.
 
+## Attachments
+
+`ChannelMessage` supports an optional `attachments` field carrying `Attachment` values with typed `AttachmentKind` variants (Audio, Image, Video, File). When the `stt` feature is enabled, audio attachments are automatically transcribed before entering the agent loop. See [Audio Input](audio-input.md) for details.
+
 ## Channel Selection Logic
 
 Zeph selects the channel at startup based on the following priority:

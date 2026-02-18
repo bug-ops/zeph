@@ -30,6 +30,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](guide/gateway.md)) |
 | `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring ([guide](guide/daemon.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence ([guide](guide/scheduler.md)) |
+| `stt` | Speech-to-text transcription via OpenAI Whisper API ([guide](guide/audio-input.md)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](guide/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `mock` | Mock providers and channels for testing |

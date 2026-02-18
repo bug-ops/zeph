@@ -30,6 +30,8 @@ LLM provider abstraction and backend implementations.
 - `OpenAiProvider` — OpenAI + compatible APIs (raw reqwest)
 - `CandleProvider` — local GGUF model inference via candle
 - `AnyProvider` — enum dispatch for runtime provider selection, generated via `delegate_provider!` macro
+- `SpeechToText` trait — async transcription interface returning `Transcription` (text + duration + language)
+- `WhisperProvider` — OpenAI Whisper API backend (feature-gated: `stt`)
 - `ModelOrchestrator` — task-based multi-model routing with fallback chains
 
 ## zeph-skills

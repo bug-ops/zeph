@@ -18,6 +18,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback |
 | `router` | Model selection and routing logic |
+| `stt` | `SpeechToText` trait and `WhisperProvider` (OpenAI Whisper, feature-gated behind `stt`) |
 | `error` | `LlmError` — unified error type |
 
 **Re-exports:** `LlmProvider`, `LlmError`
