@@ -1,8 +1,8 @@
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
+use crate::embedding_store::{EmbeddingStore, MessageKind, SearchFilter};
 use crate::error::MemoryError;
-use crate::qdrant::{MessageKind, QdrantStore, SearchFilter};
 use crate::sqlite::SqliteStore;
 use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
@@ -58,7 +58,7 @@ fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> Strin
 
 pub struct SemanticMemory {
     sqlite: SqliteStore,
-    qdrant: Option<QdrantStore>,
+    qdrant: Option<EmbeddingStore>,
     provider: AnyProvider,
     embedding_model: String,
     vector_weight: f64,
@@ -98,7 +98,7 @@ impl SemanticMemory {
         let sqlite = SqliteStore::new(sqlite_path).await?;
         let pool = sqlite.pool().clone();
 
-        let qdrant = match QdrantStore::new(qdrant_url, pool) {
+        let qdrant = match EmbeddingStore::new(qdrant_url, pool) {
             Ok(store) => Some(store),
             Err(e) => {
                 tracing::warn!("Qdrant unavailable, semantic search disabled: {e:#}");

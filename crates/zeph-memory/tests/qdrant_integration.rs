@@ -2,7 +2,7 @@ use testcontainers::ContainerAsync;
 use testcontainers::GenericImage;
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use zeph_memory::qdrant::{MessageKind, QdrantStore};
+use zeph_memory::embedding_store::{EmbeddingStore, MessageKind};
 use zeph_memory::sqlite::SqliteStore;
 
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
@@ -13,14 +13,14 @@ fn qdrant_image() -> GenericImage {
         .with_exposed_port(QDRANT_GRPC_PORT)
 }
 
-async fn setup_with_qdrant() -> (SqliteStore, QdrantStore, ContainerAsync<GenericImage>) {
+async fn setup_with_qdrant() -> (SqliteStore, EmbeddingStore, ContainerAsync<GenericImage>) {
     let container = qdrant_image().start().await.unwrap();
     let grpc_port = container.get_host_port_ipv4(6334).await.unwrap();
     let url = format!("http://127.0.0.1:{grpc_port}");
 
     let sqlite = SqliteStore::new(":memory:").await.unwrap();
     let pool = sqlite.pool().clone();
-    let store = QdrantStore::new(&url, pool).unwrap();
+    let store = EmbeddingStore::new(&url, pool).unwrap();
 
     (sqlite, store, container)
 }
@@ -105,7 +105,7 @@ async fn search_with_conversation_filter() {
         .unwrap();
 
     let query = vec![0.1, 0.2, 0.3, 0.4];
-    let filter = zeph_memory::qdrant::SearchFilter {
+    let filter = zeph_memory::embedding_store::SearchFilter {
         conversation_id: Some(cid1),
         role: None,
     };

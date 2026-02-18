@@ -37,15 +37,15 @@ pub async fn ensure_qdrant_collection(
     ops.ensure_collection(collection, vector_size).await
 }
 
-pub struct QdrantStore {
+pub struct EmbeddingStore {
     ops: Box<dyn VectorStore>,
     collection: String,
     pool: SqlitePool,
 }
 
-impl std::fmt::Debug for QdrantStore {
+impl std::fmt::Debug for EmbeddingStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantStore")
+        f.debug_struct("EmbeddingStore")
             .field("collection", &self.collection)
             .finish_non_exhaustive()
     }
@@ -64,8 +64,8 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-impl QdrantStore {
-    /// Create a new `QdrantStore` connected to the given Qdrant URL.
+impl EmbeddingStore {
+    /// Create a new `EmbeddingStore` connected to the given Qdrant URL.
     ///
     /// The `pool` is used for `SQLite` metadata operations on the `embeddings_metadata`
     /// table (which must already exist via sqlx migrations).
