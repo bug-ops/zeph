@@ -92,7 +92,14 @@ impl Channel for AppChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
     ) -> Result<(), ChannelError> {
-        dispatch_app_channel!(self, send_tool_output, tool_name, display, diff, filter_stats)
+        dispatch_app_channel!(
+            self,
+            send_tool_output,
+            tool_name,
+            display,
+            diff,
+            filter_stats
+        )
     }
 }
 

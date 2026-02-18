@@ -75,10 +75,7 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_queue_count, count)
     }
 
-    async fn send_diff(
-        &mut self,
-        diff: zeph_core::DiffData,
-    ) -> Result<(), ChannelError> {
+    async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_diff, diff)
     }
 
@@ -89,6 +86,13 @@ impl Channel for AnyChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
     ) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_tool_output, tool_name, display, diff, filter_stats)
+        dispatch_channel!(
+            self,
+            send_tool_output,
+            tool_name,
+            display,
+            diff,
+            filter_stats
+        )
     }
 }

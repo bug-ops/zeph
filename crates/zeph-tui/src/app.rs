@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tracing::debug;
 use tokio::sync::{mpsc, oneshot, watch};
+use tracing::debug;
 
 use crate::event::{AgentEvent, AppEvent};
 use crate::layout::AppLayout;
