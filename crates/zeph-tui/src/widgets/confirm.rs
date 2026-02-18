@@ -1,8 +1,9 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use crate::layout::centered_rect;
 use crate::theme::Theme;
 
 pub fn render(prompt: &str, frame: &mut Frame, area: Rect) {
@@ -31,20 +32,4 @@ pub fn render(prompt: &str, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup);
-}
-
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(vertical[1])[1]
 }

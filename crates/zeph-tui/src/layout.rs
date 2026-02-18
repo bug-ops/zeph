@@ -1,5 +1,23 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+/// Returns a centered `Rect` with the given percentage width and fixed height.
+#[must_use]
+pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical[1])[1]
+}
+
 pub struct AppLayout {
     pub header: Rect,
     pub chat: Rect,
@@ -158,5 +176,41 @@ mod tests {
         let layout = AppLayout::compute(area, true);
         assert!(layout.side_panel.width > 0);
         assert!(layout.skills.width > 0);
+    }
+
+    #[test]
+    fn centered_rect_is_within_area() {
+        let area = Rect::new(0, 0, 100, 40);
+        let popup = centered_rect(70, 22, area);
+        assert!(popup.x >= area.x);
+        assert!(popup.y >= area.y);
+        assert!(popup.x + popup.width <= area.x + area.width);
+        assert!(popup.y + popup.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn centered_rect_height_matches_requested() {
+        let area = Rect::new(0, 0, 100, 40);
+        let popup = centered_rect(70, 22, area);
+        assert_eq!(popup.height, 22);
+    }
+
+    #[test]
+    fn centered_rect_width_is_approximately_percent() {
+        let area = Rect::new(0, 0, 100, 40);
+        let popup = centered_rect(70, 10, area);
+        let expected = (100 * 70) / 100;
+        let delta = (popup.width as i32 - expected as i32).unsigned_abs();
+        assert!(delta <= 2, "width={} expected~={}", popup.width, expected);
+    }
+
+    #[test]
+    fn centered_rect_is_horizontally_centered() {
+        let area = Rect::new(0, 0, 100, 40);
+        let popup = centered_rect(70, 10, area);
+        let left_margin = popup.x;
+        let right_margin = area.width - popup.width - popup.x;
+        let diff = (left_margin as i32 - right_margin as i32).unsigned_abs();
+        assert!(diff <= 2, "left={left_margin} right={right_margin}");
     }
 }

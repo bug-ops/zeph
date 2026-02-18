@@ -53,6 +53,7 @@ pub struct App {
     messages: Vec<ChatMessage>,
     show_splash: bool,
     show_side_panels: bool,
+    show_help: bool,
     scroll_offset: usize,
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
@@ -85,6 +86,7 @@ impl App {
             messages: Vec::new(),
             show_splash: true,
             show_side_panels: true,
+            show_help: false,
             scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
@@ -431,6 +433,10 @@ impl App {
         if let Some(state) = &self.confirm_state {
             widgets::confirm::render(&state.prompt, frame, frame.area());
         }
+
+        if self.show_help {
+            widgets::help::render(frame, frame.area());
+        }
     }
 
     fn draw_header(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
@@ -469,6 +475,14 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
+            return;
+        }
+
+        if self.show_help {
+            match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
+                _ => {}
+            }
             return;
         }
 
@@ -535,6 +549,9 @@ impl App {
                     Panel::Memory => Panel::Resources,
                     Panel::Resources => Panel::Chat,
                 };
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
             }
             _ => {}
         }
@@ -1211,5 +1228,76 @@ mod tests {
 
         // No prior ToolStart and no diff/filter_stats: nothing to display.
         assert!(app.messages().is_empty());
+    }
+
+    #[test]
+    fn show_help_defaults_to_false() {
+        let (app, _rx, _tx) = make_app();
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn question_mark_in_normal_mode_opens_help() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Normal;
+        let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn question_mark_toggles_help_closed() {
+        let (mut app, _rx, _tx) = make_app();
+        app.show_help = true;
+        let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn esc_closes_help_popup() {
+        let (mut app, _rx, _tx) = make_app();
+        app.show_help = true;
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn other_keys_ignored_when_help_open() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.show_help = true;
+
+        // Typing a character should not modify input
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.input().is_empty());
+        assert!(app.show_help);
+
+        // Enter should not submit
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.messages().is_empty());
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn help_popup_does_not_block_ctrl_c() {
+        let (mut app, _rx, _tx) = make_app();
+        app.show_help = true;
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn question_mark_in_insert_mode_does_not_open_help() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert!(!app.show_help);
+        assert_eq!(app.input(), "?");
     }
 }
