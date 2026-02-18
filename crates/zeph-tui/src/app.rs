@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tracing::debug;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::event::{AgentEvent, AppEvent};
@@ -343,6 +344,13 @@ impl App {
                 filter_stats,
                 ..
             } => {
+                debug!(
+                    %tool_name,
+                    has_diff = diff.is_some(),
+                    has_filter_stats = filter_stats.is_some(),
+                    output_len = output.len(),
+                    "TUI ToolOutput event received"
+                );
                 if let Some(msg) = self
                     .messages
                     .iter_mut()
@@ -350,11 +358,13 @@ impl App {
                     .find(|m| m.role == MessageRole::Tool && m.streaming)
                 {
                     // Shell streaming path: finalize existing streaming tool message.
+                    debug!("attaching diff to existing streaming Tool message");
                     msg.streaming = false;
                     msg.diff_data = diff;
                     msg.filter_stats = filter_stats;
                 } else if diff.is_some() || filter_stats.is_some() {
                     // Native tool_use path: no prior ToolStart, create the message now.
+                    debug!("creating new Tool message with diff (native path)");
                     self.messages.push(ChatMessage {
                         role: MessageRole::Tool,
                         content: output,

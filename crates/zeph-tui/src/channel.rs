@@ -106,6 +106,11 @@ impl Channel for TuiChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
     ) -> Result<(), ChannelError> {
+        tracing::debug!(
+            %tool_name,
+            has_diff = diff.is_some(),
+            "TuiChannel::send_tool_output called"
+        );
         self.agent_event_tx
             .send(AgentEvent::ToolOutput {
                 tool_name: tool_name.to_owned(),

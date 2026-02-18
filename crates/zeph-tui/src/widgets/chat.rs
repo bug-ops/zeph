@@ -267,17 +267,27 @@ fn render_tool_message(
     // Diff rendering for write/edit tools
     if let Some(ref diff_data) = msg.diff_data {
         let diff_lines = super::diff::compute_diff(&diff_data.old_content, &diff_data.new_content);
-        if app.tool_expanded() {
-            let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
-            for line in rendered {
-                let mut prefixed_spans = vec![Span::styled(indent.clone(), Style::default())];
-                prefixed_spans.extend(line.spans);
-                lines.push(Line::from(prefixed_spans));
-            }
+        let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
+        let mut wrapped: Vec<Line<'static>> = Vec::new();
+        for line in rendered {
+            let mut prefixed_spans = vec![Span::styled(indent.clone(), Style::default())];
+            prefixed_spans.extend(line.spans);
+            wrapped.push(Line::from(prefixed_spans));
+        }
+        let total_visual = wrapped.len();
+        let show_all = app.tool_expanded() || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
+        if show_all {
+            lines.extend(wrapped);
         } else {
-            let compact =
-                super::diff::render_diff_compact(&diff_data.file_path, &diff_lines, theme);
-            lines.push(compact);
+            lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
+            let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
+            let dim = Style::default().add_modifier(Modifier::DIM);
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
+                ),
+                dim,
+            )));
         }
         return;
     }

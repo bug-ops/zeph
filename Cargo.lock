@@ -8569,6 +8569,7 @@ dependencies = [
  "thiserror 2.0.18",
  "throbber-widgets-tui",
  "tokio",
+ "tracing",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-highlight",

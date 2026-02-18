@@ -85,6 +85,15 @@ impl Channel for AppChannel {
     async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_diff, diff)
     }
+    async fn send_tool_output(
+        &mut self,
+        tool_name: &str,
+        display: &str,
+        diff: Option<zeph_core::DiffData>,
+        filter_stats: Option<String>,
+    ) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_tool_output, tool_name, display, diff, filter_stats)
+    }
 }
 
 #[tokio::main]
@@ -101,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::fmt()
                 .with_env_filter(filter)
                 .with_writer(file)
+                .with_line_number(true)
                 .init();
         } else {
             tracing_subscriber::fmt().with_env_filter(filter).init();

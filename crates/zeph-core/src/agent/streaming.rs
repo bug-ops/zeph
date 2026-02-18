@@ -710,6 +710,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             let display = self.maybe_redact(&formatted);
             // Bundle diff and filter stats into a single atomic send so TUI can attach
             // them to the tool message without a race between DiffReady and FullMessage.
+            let disp_len = display.len();
+            tracing::debug!(
+                tool_name = %tc.name,
+                has_diff = diff.is_some(),
+                disp_len,
+                "about to call send_tool_output"
+            );
             self.channel
                 .send_tool_output(&tc.name, &display, diff, inline_stats)
                 .await?;
