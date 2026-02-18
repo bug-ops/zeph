@@ -11,6 +11,7 @@ pub mod cost;
 #[cfg(feature = "daemon")]
 pub mod daemon;
 pub mod metrics;
+pub mod pipeline;
 pub mod project;
 pub mod redact;
 pub mod vault;
