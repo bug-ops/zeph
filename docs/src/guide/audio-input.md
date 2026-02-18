@@ -43,6 +43,16 @@ Download failures (network errors, expired file links) are logged at `warn` leve
 
 Bootstrap wiring is automatic: when `[llm.stt]` is present in the config and the `stt` feature is enabled, `main.rs` creates a `WhisperProvider` and injects it into the agent via `with_stt()`. No additional setup is needed beyond the configuration shown above.
 
+## Slack Audio Files
+
+The Slack channel automatically detects audio file uploads and voice messages in incoming events. When a message contains files with audio MIME types (`audio/*`) or `video/webm` (commonly used for voice recordings), the adapter downloads the file and wraps it as an `Attachment` with `AttachmentKind::Audio`. The attachment then follows the standard transcription pipeline.
+
+Files are downloaded via `url_private_download` using Bearer token authentication with the bot token. For security, the adapter validates that the download URL host ends with `.slack.com` before making the request. Files exceeding 25 MB are skipped.
+
+Download failures (network errors, host validation rejection, oversized files) are logged at `warn` level and gracefully skipped — the message is delivered without an attachment.
+
+To enable Slack audio transcription, ensure both the `slack` and `stt` features are active and `[llm.stt]` is configured. Add the `files:read` OAuth scope to your Slack app so the bot can access uploaded files.
+
 ## Limitations
 
 - **25 MB file size limit** — audio files exceeding this are rejected before upload.
