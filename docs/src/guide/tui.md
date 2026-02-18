@@ -245,6 +245,15 @@ The TUI runs as three concurrent loops:
 
 `TuiChannel` implements the `Channel` trait, so it plugs into the agent with zero changes to the generic signature. `MetricsSnapshot` and `MetricsCollector` live in `zeph-core` to avoid circular dependencies — `zeph-tui` re-exports them.
 
+## Configuration
+
+```toml
+[tui]
+show_source_labels = true   # Show [user]/[zeph]/[tool] prefixes on messages (default: true)
+```
+
+Set `show_source_labels = false` to hide the source label prefixes from chat messages for a cleaner look. Environment variable: `ZEPH_TUI_SHOW_SOURCE_LABELS`.
+
 ## Tracing
 
 When TUI is active, tracing output is redirected to `zeph.log` to avoid corrupting the terminal display.

@@ -6,14 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-02-18
+
 ### Fixed
+- TUI status spinner not cleared after model warmup completes (#517)
+- Duplicate tool output rendering for shell-streamed tools in TUI (#516)
+- `send_tool_output` not forwarded through `AppChannel`/`AnyChannel` enum dispatch (#508)
+- Tool output and diff not sent atomically in native tool_use path (#498)
+- Parallel tool_use calls: results processed sequentially for correct ordering (#486)
+- Native `tool_result` format not recognized by TUI history loader (#484)
+- Inline filter stats threshold based on char savings instead of line count (#483)
+- Token metrics not propagated in native tool_use path (#482)
 - Filter metrics not appearing in TUI Resources panel when using native tool_use providers (#480)
 - Output filter matchers not matching compound shell commands like `cd /path && cargo test 2>&1 | tail` (#481)
 - Duplicate `ToolEvent::Completed` emission in shell executor before filtering was applied (#480)
+- TUI feature gate compilation errors (#435)
 
 ### Added
-- TUI `[tui]` config section with `show_source_labels` option to hide `[user]`/`[zeph]`/`[tool]` prefixes (#488)
-- Syntax-highlighted diff view for write/edit tool output in TUI (#451)
+- GitHub CLI skill with token-saving patterns (#507)
+- Parallel execution of native tool_use calls with configurable concurrency (#486)
+- TUI compact/detailed tool output toggle with 'e' key binding (#479)
+- TUI `[tui]` config section with `show_source_labels` option to hide `[user]`/`[zeph]`/`[tool]` prefixes (#505)
+- Syntax-highlighted diff view for write/edit tool output in TUI (#455)
   - Diff rendering with green/red backgrounds for added/removed lines
   - Word-level change highlighting within modified lines
   - Syntax highlighting via tree-sitter
@@ -51,6 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `full` feature flag enabling all optional features
 
 ### Changed
+- Remove `P` generic from `Agent`, `SemanticMemory`, `CodeRetriever` — provider resolved at construction (#423)
+- Architecture improvements, performance optimizations, security hardening (M24) (#417)
 - Extract bootstrap logic from main.rs into `zeph-core::bootstrap::AppBuilder` (#393): main.rs reduced from 2313 to 978 lines
 - `SecurityConfig` and `TimeoutConfig` gain `Clone + Copy`
 - `AnyChannel` moved from main.rs to zeph-channels crate
@@ -868,7 +884,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/bug-ops/zeph/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/bug-ops/zeph/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/bug-ops/zeph/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/bug-ops/zeph/compare/v0.9.6...v0.9.7

@@ -1,0 +1,31 @@
+# zeph-tui
+
+ratatui-based TUI dashboard with real-time agent metrics.
+
+## Overview
+
+Provides a terminal UI for monitoring the Zeph agent in real time. Built on ratatui and crossterm, it renders live token usage, latency histograms, conversation history, and skill activity. Feature-gated behind `tui`.
+
+## Key Modules
+
+- **app** — `App` state machine driving the render/event loop
+- **channel** — `TuiChannel` implementing the `Channel` trait for agent I/O
+- **event** — `AgentEvent`, `AppEvent`, `EventReader` for async event dispatch
+- **highlight** — syntax highlighting for code blocks
+- **layout** — panel arrangement and responsive grid
+- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry
+- **theme** — color palette and style definitions
+- **widgets** — reusable ratatui widget components
+
+## Usage
+
+```toml
+# Cargo.toml (workspace root)
+zeph-tui = { path = "crates/zeph-tui" }
+```
+
+Enabled via the `tui` feature flag on the root `zeph` crate.
+
+## License
+
+MIT

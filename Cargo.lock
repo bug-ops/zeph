@@ -8290,7 +8290,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -8318,7 +8318,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "axum 0.8.8",
  "eventsource-stream",
@@ -8342,7 +8342,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "axum 0.8.8",
  "criterion",
@@ -8364,7 +8364,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "age",
  "anyhow",
@@ -8391,7 +8391,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-gateway"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -8408,7 +8408,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -8440,7 +8440,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -8462,7 +8462,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "qdrant-client",
@@ -8481,7 +8481,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -8499,7 +8499,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-scheduler"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "cron",
@@ -8514,7 +8514,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -8536,7 +8536,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "dirs",
  "filetime",
@@ -8559,7 +8559,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "crossterm",
