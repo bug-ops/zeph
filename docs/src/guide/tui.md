@@ -265,3 +265,7 @@ Docker images are built without the `tui` feature by default (headless operation
 ```bash
 docker build -f docker/Dockerfile.dev --build-arg CARGO_FEATURES=tui -t zeph:tui .
 ```
+
+## Testing
+
+The TUI has a dedicated test automation infrastructure covering widget snapshots, integration tests with mock event sources, property-based layout fuzzing, and E2E terminal tests. See [TUI Testing](../development/tui-testing.md) for details.

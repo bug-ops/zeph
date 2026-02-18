@@ -227,6 +227,10 @@ cargo build --release --features tui
 
 [TUI guide →](https://bug-ops.github.io/zeph/guide/tui.html)
 
+### TUI Testing
+
+The TUI crate uses snapshot testing (`insta`) for widget rendering, property-based testing (`proptest`) for layout constraints, and E2E terminal testing (`expectrl`) for interactive flows. Run snapshot tests with `cargo insta test -p zeph-tui` and review changes with `cargo insta review`. See the [TUI testing docs](https://bug-ops.github.io/zeph/development/tui-testing.html) for details.
+
 ## Architecture
 
 ### Agent Loop

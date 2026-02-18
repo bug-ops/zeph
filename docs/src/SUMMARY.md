@@ -42,6 +42,7 @@
 # Development
 
 - [sccache](development/sccache.md)
+- [TUI Testing](development/tui-testing.md)
 
 ---
 

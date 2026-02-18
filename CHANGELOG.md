@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - OpenAI/Compatible native `response_format: json_schema` structured output (#457)
 - Claude structured output via forced tool use pattern (#458)
 - `Extractor<T>` utility for typed data extraction from LLM responses (#459)
+- TUI test automation infrastructure: EventSource trait abstraction, insta widget snapshot tests, TestBackend integration tests, proptest layout verification, expectrl E2E terminal tests (#542)
+- CI snapshot regression pipeline with `cargo insta test --check` (#547)
 
 ## [0.10.0] - 2026-02-18
 
