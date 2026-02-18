@@ -15,10 +15,18 @@ use tokio::sync::mpsc;
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
+pub struct SlackFile {
+    pub url: String,
+    pub filename: Option<String>,
+    pub mimetype: String,
+}
+
+#[derive(Clone)]
 pub struct IncomingMessage {
     pub channel_id: String,
     pub text: String,
     pub user_id: String,
+    pub files: Vec<SlackFile>,
 }
 
 #[derive(Clone)]
@@ -94,7 +102,9 @@ async fn handle_event(
                 let subtype = event.get("subtype").and_then(|v| v.as_str());
                 let event_type = event.get("type").and_then(|v| v.as_str());
 
-                if event_type == Some("message") && subtype.is_none() {
+                if event_type == Some("message")
+                    && (subtype.is_none() || subtype == Some("file_share"))
+                {
                     let user = event.get("user").and_then(|v| v.as_str()).unwrap_or("");
                     let channel = event.get("channel").and_then(|v| v.as_str()).unwrap_or("");
                     let text = event.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -116,12 +126,15 @@ async fn handle_event(
                         return Ok(String::new());
                     }
 
+                    let files = parse_audio_files(event);
+
                     let _ = state
                         .tx
                         .send(IncomingMessage {
                             channel_id: channel.to_owned(),
                             text: text.to_owned(),
                             user_id: user.to_owned(),
+                            files,
                         })
                         .await;
                 }
@@ -130,6 +143,32 @@ async fn handle_event(
         }
         _ => Ok(String::new()),
     }
+}
+
+fn is_audio_mime(mime: &str) -> bool {
+    mime.starts_with("audio/") || mime == "video/webm"
+}
+
+fn parse_audio_files(event: &Value) -> Vec<SlackFile> {
+    event
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|f| {
+                    let mime = f.get("mimetype")?.as_str()?;
+                    if !is_audio_mime(mime) {
+                        return None;
+                    }
+                    Some(SlackFile {
+                        url: f.get("url_private_download")?.as_str()?.to_owned(),
+                        filename: f.get("name").and_then(|v| v.as_str()).map(String::from),
+                        mimetype: mime.to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn verify_signature(
@@ -332,6 +371,7 @@ mod tests {
         assert_eq!(msg.user_id, "U123");
         assert_eq!(msg.channel_id, "C456");
         assert_eq!(msg.text, "hi");
+        assert!(msg.files.is_empty());
     }
 
     #[tokio::test]
@@ -436,5 +476,75 @@ mod tests {
 
         let _ = handle_event(State(state), headers, body.to_owned()).await;
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_event_file_share_with_audio() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let state = EventState {
+            signing_secret: "secret".into(),
+            tx,
+            bot_user_id: String::new(),
+            allowed_user_ids: vec![],
+            allowed_channel_ids: vec![],
+        };
+
+        let body = r#"{"type":"event_callback","event":{"type":"message","subtype":"file_share","user":"U1","channel":"C1","text":"","files":[{"name":"voice.webm","mimetype":"audio/webm","url_private_download":"https://files.slack.com/voice.webm"}]}}"#;
+        let timestamp = current_timestamp();
+        let sig = compute_signature("secret", &timestamp, body);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Slack-Request-Timestamp",
+            HeaderValue::from_str(&timestamp).unwrap(),
+        );
+        headers.insert("X-Slack-Signature", HeaderValue::from_str(&sig).unwrap());
+
+        let result = handle_event(State(state), headers, body.to_owned()).await;
+        assert!(result.is_ok());
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.files.len(), 1);
+        assert_eq!(msg.files[0].mimetype, "audio/webm");
+        assert_eq!(msg.files[0].filename.as_deref(), Some("voice.webm"));
+    }
+
+    #[test]
+    fn parse_audio_files_filters_non_audio() {
+        let event: Value = serde_json::from_str(
+            r#"{"files":[
+                {"name":"img.png","mimetype":"image/png","url_private_download":"https://x/img"},
+                {"name":"voice.ogg","mimetype":"audio/ogg","url_private_download":"https://x/voice"}
+            ]}"#,
+        )
+        .unwrap();
+        let files = parse_audio_files(&event);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].mimetype, "audio/ogg");
+    }
+
+    #[test]
+    fn parse_audio_files_accepts_video_webm() {
+        let event: Value = serde_json::from_str(
+            r#"{"files":[{"name":"v.webm","mimetype":"video/webm","url_private_download":"https://x/v"}]}"#,
+        )
+        .unwrap();
+        let files = parse_audio_files(&event);
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn parse_audio_files_empty_when_no_files() {
+        let event: Value = serde_json::from_str(r#"{"text":"hi"}"#).unwrap();
+        assert!(parse_audio_files(&event).is_empty());
+    }
+
+    #[test]
+    fn is_audio_mime_cases() {
+        assert!(is_audio_mime("audio/webm"));
+        assert!(is_audio_mime("audio/mpeg"));
+        assert!(is_audio_mime("video/webm"));
+        assert!(!is_audio_mime("video/mp4"));
+        assert!(!is_audio_mime("image/png"));
     }
 }

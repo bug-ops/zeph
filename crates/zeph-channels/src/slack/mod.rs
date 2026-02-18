@@ -6,7 +6,7 @@ pub mod events;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
 use self::events::IncomingMessage;
 
@@ -138,9 +138,25 @@ impl Channel for SlackChannel {
         self.last_edit = None;
         self.message_ts = None;
 
+        let mut attachments = Vec::new();
+        for file in &incoming.files {
+            match self.api.download_file(&file.url).await {
+                Ok(data) => {
+                    attachments.push(Attachment {
+                        kind: AttachmentKind::Audio,
+                        data,
+                        filename: file.filename.clone(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("failed to download slack audio file: {e}");
+                }
+            }
+        }
+
         Ok(Some(ChannelMessage {
             text: incoming.text,
-            attachments: vec![],
+            attachments,
         }))
     }
 
@@ -251,6 +267,7 @@ mod tests {
             channel_id: "C123".into(),
             text: "hello".into(),
             user_id: "U1".into(),
+            files: vec![],
         })
         .unwrap();
         let msg = ch.try_recv().unwrap();

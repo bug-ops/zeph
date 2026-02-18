@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const SLACK_API: &str = "https://slack.com/api";
+const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
 pub struct SlackApi {
     client: reqwest::Client,
@@ -130,5 +131,36 @@ impl SlackApi {
             return Err(format!("slack chat.update: {}", resp.error.unwrap_or_default()).into());
         }
         Ok(())
+    }
+
+    /// Download a file from Slack using the bot token for authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response status is not success.
+    pub async fn download_file(
+        &self,
+        url: &str,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let host = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from));
+        if !host.is_some_and(|h| h.ends_with(".slack.com")) {
+            return Err(format!("refusing to send token to non-slack host: {url}").into());
+        }
+
+        let resp = self.client.get(url).bearer_auth(&self.token).send().await?;
+        if !resp.status().is_success() {
+            return Err(format!("slack file download failed: {}", resp.status()).into());
+        }
+        let bytes = resp.bytes().await?;
+        if bytes.len() > MAX_AUDIO_BYTES {
+            return Err(format!(
+                "slack file too large: {} bytes (max {MAX_AUDIO_BYTES})",
+                bytes.len()
+            )
+            .into());
+        }
+        Ok(bytes.to_vec())
     }
 }
