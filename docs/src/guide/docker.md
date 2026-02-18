@@ -62,6 +62,21 @@ ZEPH_IMAGE=ghcr.io/bug-ops/zeph:v0.9.8 docker compose up
 docker compose pull && docker compose up
 ```
 
+## Vulnerability Scanning
+
+Scan the Docker image locally with [Trivy](https://trivy.dev/) before pushing:
+
+```bash
+# Scan the latest local image
+trivy image ghcr.io/bug-ops/zeph:latest
+
+# Scan a locally built dev image
+trivy image zeph:dev
+
+# Fail on HIGH/CRITICAL (useful in CI or pre-push checks)
+trivy image --severity HIGH,CRITICAL --exit-code 1 ghcr.io/bug-ops/zeph:latest
+```
+
 ## Local Development
 
 Full stack with debug tracing (builds from source via `Dockerfile.dev`, uses host Ollama via `host.docker.internal`):
