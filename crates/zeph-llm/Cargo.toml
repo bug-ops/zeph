@@ -10,7 +10,7 @@ repository.workspace = true
 default = []
 mock = []
 stt = ["reqwest/multipart"]
-candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers", "dep:symphonia", "dep:rubato"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
@@ -28,6 +28,8 @@ schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokenizers = { workspace = true, optional = true }
+rubato = { workspace = true, optional = true }
+symphonia = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-stream.workspace = true
 tracing.workspace = true

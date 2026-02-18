@@ -3,6 +3,8 @@
 pub mod any;
 #[cfg(feature = "candle")]
 pub mod candle_provider;
+#[cfg(feature = "candle")]
+pub mod candle_whisper;
 pub mod claude;
 pub mod compatible;
 pub mod error;

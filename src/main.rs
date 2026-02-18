@@ -423,8 +423,39 @@ async fn main() -> anyhow::Result<()> {
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_learning(config.skills.learning.clone());
 
+    #[cfg(feature = "candle")]
+    let agent = if config
+        .llm
+        .stt
+        .as_ref()
+        .is_some_and(|s| s.provider == "candle-whisper")
+    {
+        let model = config
+            .llm
+            .stt
+            .as_ref()
+            .map_or("openai/whisper-tiny", |s| s.model.as_str());
+        match zeph_llm::candle_whisper::CandleWhisperProvider::load(model, None) {
+            Ok(provider) => {
+                tracing::info!("STT enabled via candle-whisper (model: {model})");
+                agent.with_stt(Box::new(provider))
+            }
+            Err(e) => {
+                tracing::error!("failed to load candle-whisper: {e}");
+                agent
+            }
+        }
+    } else {
+        agent
+    };
+
     #[cfg(feature = "stt")]
-    let agent = if config.llm.stt.is_some() {
+    let agent = if config
+        .llm
+        .stt
+        .as_ref()
+        .is_some_and(|s| s.provider != "candle-whisper")
+    {
         if let Some(ref api_key) = config.secrets.openai_api_key {
             let base_url = config
                 .llm
@@ -442,7 +473,7 @@ async fn main() -> anyhow::Result<()> {
                 base_url,
                 model,
             );
-            tracing::info!("STT enabled via Whisper (model: {model})");
+            tracing::info!("STT enabled via Whisper API (model: {model})");
             agent.with_stt(Box::new(whisper))
         } else {
             tracing::warn!("STT configured but ZEPH_OPENAI_API_KEY not found");
