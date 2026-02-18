@@ -6,7 +6,17 @@ use super::super::{
     DEFAULT_MAX_FILE_SIZE, Document, DocumentError, DocumentLoader, DocumentMetadata,
 };
 
-pub struct PdfLoader;
+pub struct PdfLoader {
+    pub max_file_size: u64,
+}
+
+impl Default for PdfLoader {
+    fn default() -> Self {
+        Self {
+            max_file_size: DEFAULT_MAX_FILE_SIZE,
+        }
+    }
+}
 
 impl DocumentLoader for PdfLoader {
     fn load(
@@ -15,11 +25,12 @@ impl DocumentLoader for PdfLoader {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<Document>, DocumentError>> + Send + '_>>
     {
         let path = path.to_path_buf();
+        let max_size = self.max_file_size;
         Box::pin(async move {
             let path = std::fs::canonicalize(&path)?;
 
             let meta = tokio::fs::metadata(&path).await?;
-            if meta.len() > DEFAULT_MAX_FILE_SIZE {
+            if meta.len() > max_size {
                 return Err(DocumentError::FileTooLarge(meta.len()));
             }
 
