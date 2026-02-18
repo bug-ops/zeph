@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
+use serde::Deserialize;
 
-use crate::executor::{DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{
+    DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+};
 use crate::registry::{InvocationHint, ToolDef};
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 pub(crate) struct ReadParams {
     /// File path
     path: String,
@@ -18,9 +19,7 @@ pub(crate) struct ReadParams {
     limit: Option<u32>,
 }
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 struct WriteParams {
     /// File path
     path: String,
@@ -28,9 +27,7 @@ struct WriteParams {
     content: String,
 }
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 struct EditParams {
     /// File path
     path: String,
@@ -40,17 +37,13 @@ struct EditParams {
     new_string: String,
 }
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 struct GlobParams {
     /// Glob pattern
     pattern: String,
 }
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 struct GrepParams {
     /// Regex pattern
     pattern: String,
@@ -110,26 +103,36 @@ impl FileExecutor {
         params: &HashMap<String, serde_json::Value>,
     ) -> Result<Option<ToolOutput>, ToolError> {
         match tool_id {
-            "read" => self.handle_read(params),
-            "write" => self.handle_write(params),
-            "edit" => self.handle_edit(params),
-            "glob" => self.handle_glob(params),
-            "grep" => self.handle_grep(params),
+            "read" => {
+                let p: ReadParams = deserialize_params(params)?;
+                self.handle_read(&p)
+            }
+            "write" => {
+                let p: WriteParams = deserialize_params(params)?;
+                self.handle_write(&p)
+            }
+            "edit" => {
+                let p: EditParams = deserialize_params(params)?;
+                self.handle_edit(&p)
+            }
+            "glob" => {
+                let p: GlobParams = deserialize_params(params)?;
+                self.handle_glob(&p)
+            }
+            "grep" => {
+                let p: GrepParams = deserialize_params(params)?;
+                self.handle_grep(&p)
+            }
             _ => Ok(None),
         }
     }
 
-    fn handle_read(
-        &self,
-        params: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        let path_str = param_str(params, "path")?;
-        let path = self.validate_path(Path::new(&path_str))?;
-
+    fn handle_read(&self, params: &ReadParams) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
         let content = std::fs::read_to_string(&path)?;
 
-        let offset = param_usize(params, "offset").unwrap_or(0);
-        let limit = param_usize(params, "limit").unwrap_or(usize::MAX);
+        let offset = params.offset.unwrap_or(0) as usize;
+        let limit = params.limit.map_or(usize::MAX, |l| l as usize);
 
         let selected: Vec<String> = content
             .lines()
@@ -149,62 +152,50 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_write(
-        &self,
-        params: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        let path_str = param_str(params, "path")?;
-        let content = param_str(params, "content")?;
-        let path = self.validate_path(Path::new(&path_str))?;
-
+    fn handle_write(&self, params: &WriteParams) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
         let old_content = std::fs::read_to_string(&path).unwrap_or_default();
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, &content)?;
+        std::fs::write(&path, &params.content)?;
 
         Ok(Some(ToolOutput {
             tool_name: "write".to_owned(),
-            summary: format!("Wrote {} bytes to {path_str}", content.len()),
+            summary: format!("Wrote {} bytes to {}", params.content.len(), params.path),
             blocks_executed: 1,
             filter_stats: None,
             diff: Some(DiffData {
-                file_path: path_str,
+                file_path: params.path.clone(),
                 old_content,
-                new_content: content,
+                new_content: params.content.clone(),
             }),
             streamed: false,
         }))
     }
 
-    fn handle_edit(
-        &self,
-        params: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        let path_str = param_str(params, "path")?;
-        let old_string = param_str(params, "old_string")?;
-        let new_string = param_str(params, "new_string")?;
-        let path = self.validate_path(Path::new(&path_str))?;
-
+    fn handle_edit(&self, params: &EditParams) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
         let content = std::fs::read_to_string(&path)?;
-        if !content.contains(&old_string) {
+
+        if !content.contains(&params.old_string) {
             return Err(ToolError::Execution(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("old_string not found in {path_str}"),
+                format!("old_string not found in {}", params.path),
             )));
         }
 
-        let new_content = content.replacen(&old_string, &new_string, 1);
+        let new_content = content.replacen(&params.old_string, &params.new_string, 1);
         std::fs::write(&path, &new_content)?;
 
         Ok(Some(ToolOutput {
             tool_name: "edit".to_owned(),
-            summary: format!("Edited {path_str}"),
+            summary: format!("Edited {}", params.path),
             blocks_executed: 1,
             filter_stats: None,
             diff: Some(DiffData {
-                file_path: path_str,
+                file_path: params.path.clone(),
                 old_content: content,
                 new_content,
             }),
@@ -212,12 +203,8 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_glob(
-        &self,
-        params: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        let pattern = param_str(params, "pattern")?;
-        let matches: Vec<String> = glob::glob(&pattern)
+    fn handle_glob(&self, params: &GlobParams) -> Result<Option<ToolOutput>, ToolError> {
+        let matches: Vec<String> = glob::glob(&params.pattern)
             .map_err(|e| {
                 ToolError::Execution(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -235,7 +222,7 @@ impl FileExecutor {
         Ok(Some(ToolOutput {
             tool_name: "glob".to_owned(),
             summary: if matches.is_empty() {
-                format!("No files matching: {pattern}")
+                format!("No files matching: {}", params.pattern)
             } else {
                 matches.join("\n")
             },
@@ -246,23 +233,15 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_grep(
-        &self,
-        params: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        let pattern = param_str(params, "pattern")?;
-        let search_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let case_sensitive = params
-            .get("case_sensitive")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
-
+    fn handle_grep(&self, params: &GrepParams) -> Result<Option<ToolOutput>, ToolError> {
+        let search_path = params.path.as_deref().unwrap_or(".");
+        let case_sensitive = params.case_sensitive.unwrap_or(true);
         let path = self.validate_path(Path::new(search_path))?;
 
         let regex = if case_sensitive {
-            regex::Regex::new(&pattern)
+            regex::Regex::new(&params.pattern)
         } else {
-            regex::RegexBuilder::new(&pattern)
+            regex::RegexBuilder::new(&params.pattern)
                 .case_insensitive(true)
                 .build()
         }
@@ -279,7 +258,7 @@ impl FileExecutor {
         Ok(Some(ToolOutput {
             tool_name: "grep".to_owned(),
             summary: if results.is_empty() {
-                format!("No matches for: {pattern}")
+                format!("No matches for: {}", params.pattern)
             } else {
                 results.join("\n")
             },
@@ -396,27 +375,6 @@ fn grep_recursive(
         }
     }
     Ok(())
-}
-
-fn param_str(params: &HashMap<String, serde_json::Value>, key: &str) -> Result<String, ToolError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ToolError::Execution(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("missing required parameter: {key}"),
-            ))
-        })
-}
-
-fn param_usize(params: &HashMap<String, serde_json::Value>, key: &str) -> Option<usize> {
-    #[allow(clippy::cast_possible_truncation)]
-    params
-        .get(key)
-        .and_then(serde_json::Value::as_u64)
-        .map(|n| n as usize)
 }
 
 #[cfg(test)]
@@ -661,5 +619,14 @@ mod tests {
         assert!(props.contains_key("path"));
         assert!(props.contains_key("offset"));
         assert!(props.contains_key("limit"));
+    }
+
+    #[test]
+    fn missing_required_path_returns_invalid_params() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = HashMap::new();
+        let result = exec.execute_file_tool("read", &params);
+        assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
     }
 }

@@ -5,6 +5,7 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use schemars::JsonSchema;
+use serde::Deserialize;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult};
 use crate::config::ShellConfig;
@@ -21,9 +22,7 @@ const DEFAULT_BLOCKED: &[&str] = &[
 
 const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
 
-// Schema-only: fields are read by schemars derive, not by Rust code directly.
-#[derive(JsonSchema)]
-#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
 pub(crate) struct BashParams {
     /// The bash command to execute
     command: String,
@@ -376,14 +375,11 @@ impl ToolExecutor for ShellExecutor {
         if call.tool_id != "bash" {
             return Ok(None);
         }
-        let command = call
-            .params
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if command.is_empty() {
+        let params: BashParams = crate::executor::deserialize_params(&call.params)?;
+        if params.command.is_empty() {
             return Ok(None);
         }
+        let command = &params.command;
         // Wrap as a fenced block so execute_inner can extract and run it
         let synthetic = format!("```bash\n{command}\n```");
         self.execute_inner(&synthetic, false).await
@@ -1357,5 +1353,43 @@ mod tests {
         let response = "```bash\nsleep 60\n```";
         let result = executor.execute(response).await;
         assert!(matches!(result, Err(ToolError::Cancelled)));
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn execute_tool_call_valid_command() {
+        let executor = ShellExecutor::new(&default_config());
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: [("command".to_owned(), serde_json::json!("echo hi"))]
+                .into_iter()
+                .collect(),
+        };
+        let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("hi"));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_missing_command_returns_invalid_params() {
+        let executor = ShellExecutor::new(&default_config());
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: std::collections::HashMap::new(),
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_empty_command_returns_none() {
+        let executor = ShellExecutor::new(&default_config());
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: [("command".to_owned(), serde_json::json!(""))]
+                .into_iter()
+                .collect(),
+        };
+        let result = executor.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
     }
 }

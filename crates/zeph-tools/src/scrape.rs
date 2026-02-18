@@ -5,7 +5,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::config::ScrapeConfig;
-use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ScrapeInstruction {
@@ -116,18 +116,7 @@ impl ToolExecutor for WebScrapeExecutor {
             return Ok(None);
         }
 
-        let instruction: ScrapeInstruction = serde_json::from_value(serde_json::Value::Object(
-            call.params
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        ))
-        .map_err(|e| {
-            ToolError::Execution(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))
-        })?;
+        let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
 
         let result = self.scrape_instruction(&instruction).await?;
 
