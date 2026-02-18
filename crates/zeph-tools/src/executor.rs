@@ -73,6 +73,7 @@ pub struct ToolOutput {
     pub blocks_executed: u32,
     pub filter_stats: Option<FilterStats>,
     pub diff: Option<DiffData>,
+    /// Whether this tool already streamed its output via `ToolEvent` channel.
     pub streamed: bool,
 }
 

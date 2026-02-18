@@ -803,8 +803,8 @@ mod tests {
                     summary: format!("result-{idx}"),
                     blocks_executed: 1,
                     diff: None,
-                    streamed: false,
                     filter_stats: None,
+                    streamed: false,
                 }))
             }
         }
@@ -842,8 +842,8 @@ mod tests {
                         summary: format!("ok-{idx}"),
                         blocks_executed: 1,
                         diff: None,
-                        streamed: false,
                         filter_stats: None,
+                        streamed: false,
                     }))
                 }
             }

@@ -102,6 +102,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             }))
         } else {
             Ok(None)

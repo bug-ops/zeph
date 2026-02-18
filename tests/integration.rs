@@ -167,6 +167,7 @@ impl ToolExecutor for OutputToolExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }
@@ -181,6 +182,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }
@@ -195,6 +197,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }
@@ -225,6 +228,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }
@@ -260,6 +264,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             blocks_executed: 1,
             filter_stats: None,
             diff: None,
+            streamed: false,
         }))
     }
 }
@@ -2167,6 +2172,7 @@ mod self_learning {
                 blocks_executed: 1,
                 filter_stats: None,
                 diff: None,
+                streamed: false,
             }))
         }
     }
