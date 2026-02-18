@@ -209,6 +209,7 @@ impl Channel for TelegramChannel {
             self.chat_id = Some(incoming.chat_id);
             ChannelMessage {
                 text: incoming.text,
+                attachments: vec![],
             }
         })
     }
@@ -236,11 +237,13 @@ impl Channel for TelegramChannel {
                     "/reset" => {
                         return Ok(Some(ChannelMessage {
                             text: "/reset".to_string(),
+                            attachments: vec![],
                         }));
                     }
                     "/skills" => {
                         return Ok(Some(ChannelMessage {
                             text: "/skills".to_string(),
+                            attachments: vec![],
                         }));
                     }
                     _ => {}
@@ -249,6 +252,7 @@ impl Channel for TelegramChannel {
 
             return Ok(Some(ChannelMessage {
                 text: incoming.text,
+                attachments: vec![],
             }));
         }
     }

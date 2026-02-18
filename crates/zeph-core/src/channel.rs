@@ -18,10 +18,28 @@ pub enum ChannelError {
     Other(String),
 }
 
+/// Kind of binary attachment on an incoming message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Audio,
+    Image,
+    Video,
+    File,
+}
+
+/// Binary attachment carried by a [`ChannelMessage`].
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub kind: AttachmentKind,
+    pub data: Vec<u8>,
+    pub filename: Option<String>,
+}
+
 /// Incoming message from a channel.
 #[derive(Debug, Clone)]
 pub struct ChannelMessage {
     pub text: String,
+    pub attachments: Vec<Attachment>,
 }
 
 /// Bidirectional communication channel for the agent.
@@ -146,8 +164,10 @@ mod tests {
     fn channel_message_creation() {
         let msg = ChannelMessage {
             text: "hello".to_string(),
+            attachments: vec![],
         };
         assert_eq!(msg.text, "hello");
+        assert!(msg.attachments.is_empty());
     }
 
     struct StubChannel;
@@ -212,6 +232,7 @@ mod tests {
     fn channel_message_clone() {
         let msg = ChannelMessage {
             text: "test".to_string(),
+            attachments: vec![],
         };
         let cloned = msg.clone();
         assert_eq!(cloned.text, "test");
@@ -221,9 +242,42 @@ mod tests {
     fn channel_message_debug() {
         let msg = ChannelMessage {
             text: "debug".to_string(),
+            attachments: vec![],
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("debug"));
+    }
+
+    #[test]
+    fn attachment_kind_equality() {
+        assert_eq!(AttachmentKind::Audio, AttachmentKind::Audio);
+        assert_ne!(AttachmentKind::Audio, AttachmentKind::Image);
+    }
+
+    #[test]
+    fn attachment_construction() {
+        let a = Attachment {
+            kind: AttachmentKind::Audio,
+            data: vec![0, 1, 2],
+            filename: Some("test.wav".into()),
+        };
+        assert_eq!(a.kind, AttachmentKind::Audio);
+        assert_eq!(a.data.len(), 3);
+        assert_eq!(a.filename.as_deref(), Some("test.wav"));
+    }
+
+    #[test]
+    fn channel_message_with_attachments() {
+        let msg = ChannelMessage {
+            text: String::new(),
+            attachments: vec![Attachment {
+                kind: AttachmentKind::Audio,
+                data: vec![42],
+                filename: None,
+            }],
+        };
+        assert_eq!(msg.attachments.len(), 1);
+        assert_eq!(msg.attachments[0].kind, AttachmentKind::Audio);
     }
 
     #[test]

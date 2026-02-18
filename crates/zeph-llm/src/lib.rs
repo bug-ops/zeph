@@ -14,7 +14,11 @@ pub mod openai;
 pub mod orchestrator;
 pub mod provider;
 pub mod router;
+pub mod stt;
+#[cfg(feature = "stt")]
+pub mod whisper;
 
 pub use error::LlmError;
 pub use extractor::Extractor;
 pub use provider::LlmProvider;
+pub use stt::{SpeechToText, Transcription};

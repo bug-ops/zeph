@@ -124,6 +124,7 @@ impl Channel for SlackChannel {
         self.channel_id = Some(incoming.channel_id);
         Some(ChannelMessage {
             text: incoming.text,
+            attachments: vec![],
         })
     }
 
@@ -139,6 +140,7 @@ impl Channel for SlackChannel {
 
         Ok(Some(ChannelMessage {
             text: incoming.text,
+            attachments: vec![],
         }))
     }
 

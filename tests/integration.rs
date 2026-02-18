@@ -69,7 +69,10 @@ impl MockChannel {
 
 impl Channel for MockChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+        Ok(self.inputs.pop_front().map(|text| ChannelMessage {
+            text,
+            attachments: vec![],
+        }))
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
@@ -95,7 +98,10 @@ struct ChunkTrackingChannel {
 
 impl Channel for ChunkTrackingChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+        Ok(self.inputs.pop_front().map(|text| ChannelMessage {
+            text,
+            attachments: vec![],
+        }))
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
@@ -123,7 +129,10 @@ struct ConfirmMockChannel {
 
 impl Channel for ConfirmMockChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+        Ok(self.inputs.pop_front().map(|text| ChannelMessage {
+            text,
+            attachments: vec![],
+        }))
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
@@ -2214,7 +2223,10 @@ mod self_learning {
 
     impl Channel for MockChannel {
         async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-            Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+            Ok(self.inputs.pop_front().map(|text| ChannelMessage {
+                text,
+                attachments: vec![],
+            }))
         }
 
         async fn send(&mut self, text: &str) -> Result<(), ChannelError> {

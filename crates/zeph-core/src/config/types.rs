@@ -106,10 +106,27 @@ pub struct LlmConfig {
     #[serde(default)]
     pub compatible: Option<Vec<CompatibleConfig>>,
     pub router: Option<RouterConfig>,
+    pub stt: Option<SttConfig>,
 }
 
 fn default_embedding_model() -> String {
     "qwen3-embedding".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SttConfig {
+    #[serde(default = "default_stt_provider")]
+    pub provider: String,
+    #[serde(default = "default_stt_model")]
+    pub model: String,
+}
+
+fn default_stt_provider() -> String {
+    "whisper".into()
+}
+
+fn default_stt_model() -> String {
+    "whisper-1".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -969,6 +986,7 @@ impl Config {
                 orchestrator: None,
                 compatible: None,
                 router: None,
+                stt: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

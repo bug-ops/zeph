@@ -18,6 +18,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_llm::stt::SpeechToText;
 
 use crate::metrics::MetricsSnapshot;
 use std::collections::HashMap;
@@ -46,6 +47,7 @@ const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 const TOOL_OUTPUT_SUFFIX: &str = "\n```";
+const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
     format!("[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}")
@@ -136,6 +138,7 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     doom_loop_history: Vec<String>,
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
+    stt: Option<Box<dyn SpeechToText>>,
 }
 
 impl<C: Channel, T: ToolExecutor> Agent<C, T> {
@@ -232,7 +235,14 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             doom_loop_history: Vec::new(),
             cost_tracker: None,
             cached_prompt_tokens: initial_prompt_tokens,
+            stt: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_stt(mut self, stt: Box<dyn SpeechToText>) -> Self {
+        self.stt = Some(stt);
+        self
     }
 
     #[must_use]
@@ -626,7 +636,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 };
                 let Some(msg) = incoming else { break };
                 self.drain_channel();
-                msg.text
+                self.resolve_message_text(msg).await
             };
 
             let trimmed = text.trim();
@@ -644,6 +654,67 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
 
         Ok(())
+    }
+
+    async fn resolve_message_text(&self, msg: crate::channel::ChannelMessage) -> String {
+        use crate::channel::AttachmentKind;
+
+        let audio_attachments: Vec<_> = msg
+            .attachments
+            .iter()
+            .filter(|a| a.kind == AttachmentKind::Audio)
+            .collect();
+
+        if audio_attachments.is_empty() {
+            return msg.text;
+        }
+
+        let Some(stt) = &self.stt else {
+            tracing::warn!(
+                count = audio_attachments.len(),
+                "audio attachments received but no STT provider configured, dropping"
+            );
+            return msg.text;
+        };
+
+        let mut transcribed_parts = Vec::new();
+        for attachment in &audio_attachments {
+            if attachment.data.len() > MAX_AUDIO_BYTES {
+                tracing::warn!(
+                    size = attachment.data.len(),
+                    max = MAX_AUDIO_BYTES,
+                    "audio attachment exceeds size limit, skipping"
+                );
+                continue;
+            }
+            match stt
+                .transcribe(&attachment.data, attachment.filename.as_deref())
+                .await
+            {
+                Ok(result) => {
+                    tracing::info!(
+                        len = result.text.len(),
+                        language = ?result.language,
+                        "audio transcribed"
+                    );
+                    transcribed_parts.push(result.text);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "audio transcription failed");
+                }
+            }
+        }
+
+        if transcribed_parts.is_empty() {
+            return msg.text;
+        }
+
+        let transcribed = transcribed_parts.join("\n");
+        if msg.text.is_empty() {
+            transcribed
+        } else {
+            format!("[transcribed audio]\n{transcribed}\n\n{}", msg.text)
+        }
     }
 
     async fn process_user_message(&mut self, text: String) -> Result<(), error::AgentError> {
@@ -958,6 +1029,7 @@ pub(super) mod agent_tests {
             } else {
                 Ok(Some(ChannelMessage {
                     text: msgs.remove(0),
+                    attachments: vec![],
                 }))
             }
         }
@@ -969,6 +1041,7 @@ pub(super) mod agent_tests {
             } else {
                 Some(ChannelMessage {
                     text: msgs.remove(0),
+                    attachments: vec![],
                 })
             }
         }
@@ -2021,5 +2094,152 @@ pub(super) mod agent_tests {
         signal.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(token2.is_cancelled());
+    }
+
+    mod resolve_message_text_tests {
+        use super::*;
+        use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
+        use std::future::Future;
+        use std::pin::Pin;
+        use zeph_llm::error::LlmError;
+        use zeph_llm::stt::{SpeechToText, Transcription};
+
+        struct MockStt {
+            text: Option<String>,
+        }
+
+        impl MockStt {
+            fn ok(text: &str) -> Self {
+                Self {
+                    text: Some(text.to_string()),
+                }
+            }
+
+            fn failing() -> Self {
+                Self { text: None }
+            }
+        }
+
+        impl SpeechToText for MockStt {
+            fn transcribe(
+                &self,
+                _audio: &[u8],
+                _filename: Option<&str>,
+            ) -> Pin<Box<dyn Future<Output = Result<Transcription, LlmError>> + Send + '_>>
+            {
+                let result = match &self.text {
+                    Some(t) => Ok(Transcription {
+                        text: t.clone(),
+                        language: None,
+                        duration_secs: None,
+                    }),
+                    None => Err(LlmError::TranscriptionFailed("mock error".into())),
+                };
+                Box::pin(async move { result })
+            }
+        }
+
+        fn make_agent(stt: Option<Box<dyn SpeechToText>>) -> Agent<MockChannel, MockToolExecutor> {
+            let provider = mock_provider(vec!["ok".into()]);
+            let empty: Vec<String> = vec![];
+            let registry = zeph_skills::registry::SkillRegistry::load(&empty);
+            let channel = MockChannel::new(vec![]);
+            let executor = MockToolExecutor::no_tools();
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.stt = stt;
+            agent
+        }
+
+        fn audio_attachment(data: &[u8]) -> Attachment {
+            Attachment {
+                kind: AttachmentKind::Audio,
+                data: data.to_vec(),
+                filename: Some("test.wav".into()),
+            }
+        }
+
+        #[tokio::test]
+        async fn no_audio_attachments_returns_text() {
+            let agent = make_agent(None);
+            let msg = ChannelMessage {
+                text: "hello".into(),
+                attachments: vec![],
+            };
+            assert_eq!(agent.resolve_message_text(msg).await, "hello");
+        }
+
+        #[tokio::test]
+        async fn audio_without_stt_returns_original_text() {
+            let agent = make_agent(None);
+            let msg = ChannelMessage {
+                text: "hello".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            assert_eq!(agent.resolve_message_text(msg).await, "hello");
+        }
+
+        #[tokio::test]
+        async fn audio_with_stt_prepends_transcription() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            let result = agent.resolve_message_text(msg).await;
+            assert!(result.contains("[transcribed audio]"));
+            assert!(result.contains("transcribed text"));
+            assert!(result.contains("original"));
+        }
+
+        #[tokio::test]
+        async fn audio_with_stt_no_original_text() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
+            let msg = ChannelMessage {
+                text: String::new(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            let result = agent.resolve_message_text(msg).await;
+            assert_eq!(result, "transcribed text");
+        }
+
+        #[tokio::test]
+        async fn all_transcriptions_fail_returns_original() {
+            let agent = make_agent(Some(Box::new(MockStt::failing())));
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            assert_eq!(agent.resolve_message_text(msg).await, "original");
+        }
+
+        #[tokio::test]
+        async fn multiple_audio_attachments_joined() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("chunk"))));
+            let msg = ChannelMessage {
+                text: String::new(),
+                attachments: vec![
+                    audio_attachment(b"a1"),
+                    audio_attachment(b"a2"),
+                    audio_attachment(b"a3"),
+                ],
+            };
+            let result = agent.resolve_message_text(msg).await;
+            assert_eq!(result, "chunk\nchunk\nchunk");
+        }
+
+        #[tokio::test]
+        async fn oversized_audio_skipped() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("should not appear"))));
+            let big = vec![0u8; MAX_AUDIO_BYTES + 1];
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![Attachment {
+                    kind: AttachmentKind::Audio,
+                    data: big,
+                    filename: None,
+                }],
+            };
+            assert_eq!(agent.resolve_message_text(msg).await, "original");
+        }
     }
 }

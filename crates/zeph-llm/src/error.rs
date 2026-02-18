@@ -40,6 +40,9 @@ pub enum LlmError {
     #[error("structured output parse failed: {0}")]
     StructuredParse(String),
 
+    #[error("transcription failed: {0}")]
+    TranscriptionFailed(String),
+
     #[error("{0}")]
     Other(String),
 }

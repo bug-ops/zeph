@@ -29,7 +29,10 @@ impl Channel for TuiChannel {
         match self.user_input_rx.recv().await {
             Some(text) => {
                 self.accumulated.clear();
-                Ok(Some(ChannelMessage { text }))
+                Ok(Some(ChannelMessage {
+                    text,
+                    attachments: vec![],
+                }))
             }
             None => Ok(None),
         }
@@ -38,7 +41,10 @@ impl Channel for TuiChannel {
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         self.user_input_rx.try_recv().ok().map(|text| {
             self.accumulated.clear();
-            ChannelMessage { text }
+            ChannelMessage {
+                text,
+                attachments: vec![],
+            }
         })
     }
 

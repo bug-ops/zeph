@@ -56,6 +56,7 @@ impl Channel for CliChannel {
 
         Ok(Some(ChannelMessage {
             text: trimmed.to_string(),
+            attachments: vec![],
         }))
     }
 

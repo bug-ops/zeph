@@ -33,7 +33,10 @@ impl MockChannel {
 
 impl Channel for MockChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        Ok(self.inputs.pop_front().map(|text| ChannelMessage { text }))
+        Ok(self.inputs.pop_front().map(|text| ChannelMessage {
+            text,
+            attachments: vec![],
+        }))
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {

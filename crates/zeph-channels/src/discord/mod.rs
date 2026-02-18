@@ -146,6 +146,7 @@ impl Channel for DiscordChannel {
             self.channel_id = Some(incoming.channel_id);
             return Some(ChannelMessage {
                 text: incoming.content,
+                attachments: vec![],
             });
         }
     }
@@ -171,6 +172,7 @@ impl Channel for DiscordChannel {
 
             return Ok(Some(ChannelMessage {
                 text: incoming.content,
+                attachments: vec![],
             }));
         }
     }

@@ -2305,3 +2305,30 @@ async fn resolve_secrets_populates_slack_tokens() {
     assert_eq!(sl.bot_token.as_deref(), Some("xoxb-vault"));
     assert_eq!(sl.signing_secret.as_deref(), Some("sign-vault"));
 }
+
+#[test]
+fn stt_config_defaults() {
+    let toml_str = r#"
+[llm.stt]
+"#;
+    let stt: SttConfig = toml::from_str(toml_str).unwrap();
+    assert_eq!(stt.provider, "whisper");
+    assert_eq!(stt.model, "whisper-1");
+}
+
+#[test]
+fn stt_config_custom_values() {
+    let toml_str = r#"
+provider = "custom"
+model = "whisper-large-v3"
+"#;
+    let stt: SttConfig = toml::from_str(toml_str).unwrap();
+    assert_eq!(stt.provider, "custom");
+    assert_eq!(stt.model, "whisper-large-v3");
+}
+
+#[test]
+fn llm_config_stt_none_by_default() {
+    let config = Config::default();
+    assert!(config.llm.stt.is_none());
+}
