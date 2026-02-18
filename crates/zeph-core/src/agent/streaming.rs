@@ -9,6 +9,57 @@ use zeph_memory::semantic::estimate_tokens;
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use tracing::Instrument;
 
+/// Strip volatile IDs from message content so doom-loop comparison is stable.
+/// Normalizes `[tool_result: <id>]` and `[tool_use: <name>(<id>)]` by removing unique IDs.
+fn normalize_for_doom_loop(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while !rest.is_empty() {
+        let r_pos = rest.find("[tool_result: ");
+        let u_pos = rest.find("[tool_use: ");
+        match (r_pos, u_pos) {
+            (Some(r), Some(u)) if u < r => {
+                handle_tool_use(&mut out, &mut rest, u);
+            }
+            (Some(r), _) => {
+                handle_tool_result(&mut out, &mut rest, r);
+            }
+            (_, Some(u)) => {
+                handle_tool_use(&mut out, &mut rest, u);
+            }
+            _ => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn handle_tool_result(out: &mut String, rest: &mut &str, start: usize) {
+    out.push_str(&rest[..start]);
+    if let Some(end) = rest[start..].find(']') {
+        out.push_str("[tool_result]");
+        *rest = &rest[start + end + 1..];
+    } else {
+        out.push_str(&rest[start..]);
+        *rest = "";
+    }
+}
+
+fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
+    out.push_str(&rest[..start]);
+    let tag = &rest[start..];
+    if let (Some(paren), Some(end)) = (tag.find('('), tag.find(']')) {
+        out.push_str(&tag[..paren]);
+        out.push(']');
+        *rest = &rest[start + end + 1..];
+    } else {
+        out.push_str(tag);
+        *rest = "";
+    }
+}
+
 impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         if self.provider.supports_tool_use() {
@@ -93,7 +144,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
             // Doom-loop detection: compare last N outputs by string equality
             if let Some(last_msg) = self.messages.last() {
-                self.doom_loop_history.push(last_msg.content.clone());
+                self.doom_loop_history
+                    .push(normalize_for_doom_loop(&last_msg.content));
                 if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
                     let recent =
                         &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
@@ -737,7 +789,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         iteration: usize,
     ) -> Result<bool, super::error::AgentError> {
         if let Some(last_msg) = self.messages.last() {
-            self.doom_loop_history.push(last_msg.content.clone());
+            self.doom_loop_history
+                .push(normalize_for_doom_loop(&last_msg.content));
             if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
                 let recent =
                     &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
@@ -758,10 +811,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 }
 
 fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
+    let mut params = serde_json::to_value(&def.schema).unwrap_or_default();
+    if let serde_json::Value::Object(ref mut map) = params {
+        map.remove("$schema");
+        map.remove("title");
+    }
     ToolDefinition {
         name: def.id.to_string(),
         description: def.description.to_string(),
-        parameters: serde_json::to_value(&def.schema).unwrap_or_default(),
+        parameters: params,
     }
 }
 
@@ -774,6 +832,84 @@ mod tests {
 
     use futures::future::join_all;
     use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+    use super::{normalize_for_doom_loop, tool_def_to_definition};
+
+    #[test]
+    fn tool_def_strips_schema_and_title() {
+        use schemars::Schema;
+        use zeph_tools::registry::{InvocationHint, ToolDef};
+
+        let raw: serde_json::Value = serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "BashParams",
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" }
+            },
+            "required": ["command"]
+        });
+        let schema: Schema = serde_json::from_value(raw).expect("valid schema");
+        let def = ToolDef {
+            id: "bash",
+            description: "run a shell command",
+            schema,
+            invocation: InvocationHint::ToolCall,
+        };
+
+        let result = tool_def_to_definition(&def);
+        let map = result.parameters.as_object().expect("should be object");
+        assert!(!map.contains_key("$schema"));
+        assert!(!map.contains_key("title"));
+        assert!(map.contains_key("type"));
+        assert!(map.contains_key("properties"));
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(normalize_for_doom_loop(""), "");
+    }
+
+    #[test]
+    fn normalize_multiple_tool_results() {
+        let s = "[tool_result: id1]\nok\n[tool_result: id2]\nfail\n[tool_result: id3]\nok";
+        let expected = "[tool_result]\nok\n[tool_result]\nfail\n[tool_result]\nok";
+        assert_eq!(normalize_for_doom_loop(s), expected);
+    }
+
+    #[test]
+    fn normalize_strips_tool_result_ids() {
+        let a = "[tool_result: toolu_abc123]\nerror: missing field";
+        let b = "[tool_result: toolu_xyz789]\nerror: missing field";
+        assert_eq!(normalize_for_doom_loop(a), normalize_for_doom_loop(b));
+        assert_eq!(
+            normalize_for_doom_loop(a),
+            "[tool_result]\nerror: missing field"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_tool_use_ids() {
+        let a = "[tool_use: bash(toolu_abc)]";
+        let b = "[tool_use: bash(toolu_xyz)]";
+        assert_eq!(normalize_for_doom_loop(a), normalize_for_doom_loop(b));
+        assert_eq!(normalize_for_doom_loop(a), "[tool_use: bash]");
+    }
+
+    #[test]
+    fn normalize_preserves_plain_text() {
+        let text = "hello world, no tool tags here";
+        assert_eq!(normalize_for_doom_loop(text), text);
+    }
+
+    #[test]
+    fn normalize_handles_mixed_tag_order() {
+        let s = "[tool_use: bash(id1)] result: [tool_result: id2]";
+        assert_eq!(
+            normalize_for_doom_loop(s),
+            "[tool_use: bash] result: [tool_result]"
+        );
+    }
 
     struct DelayExecutor {
         delay: Duration,
