@@ -1,6 +1,10 @@
+mod init;
+
 use std::path::PathBuf;
 #[cfg(feature = "tui")]
 use std::time::Duration;
+
+use clap::{Parser, Subcommand};
 
 #[cfg(any(feature = "a2a", feature = "tui"))]
 use tokio::sync::watch;
@@ -103,9 +107,46 @@ impl Channel for AppChannel {
     }
 }
 
+#[derive(Parser)]
+#[command(
+    name = "zeph",
+    version,
+    about = "Lightweight AI agent with hybrid inference"
+)]
+struct Cli {
+    /// Run with TUI dashboard
+    #[arg(long)]
+    tui: bool,
+
+    /// Path to config file
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Interactive configuration wizard
+    Init {
+        /// Output path for generated config
+        #[arg(long, short, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    if let Some(Command::Init { output }) = cli.command {
+        return init::run(output);
+    }
+
+    // --config and --tui are also read by resolve_config_path() and
+    // is_tui_requested() from std::env::args(), so no extra plumbing needed.
     #[cfg(feature = "tui")]
     let tui_active = is_tui_requested();
     #[cfg(feature = "tui")]

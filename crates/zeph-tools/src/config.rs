@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
 
@@ -26,7 +26,7 @@ fn default_audit_destination() -> String {
 }
 
 /// Top-level configuration for tool execution.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -61,7 +61,7 @@ impl ToolsConfig {
 }
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ShellConfig {
     #[serde(default = "default_timeout")]
     pub timeout: u64,
@@ -78,7 +78,7 @@ pub struct ShellConfig {
 }
 
 /// Configuration for audit logging of tool executions.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AuditConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -131,7 +131,7 @@ fn default_max_body_bytes() -> usize {
 }
 
 /// Configuration for the web scrape tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ScrapeConfig {
     #[serde(default = "default_scrape_timeout")]
     pub timeout: u64,

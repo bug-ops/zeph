@@ -11,7 +11,7 @@ mod test_output;
 use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub use self::cargo_build::CargoBuildFilter;
 pub use self::clippy::ClippyFilter;
@@ -269,7 +269,7 @@ fn default_max_diff_lines() -> usize {
 }
 
 /// Configuration for output filters.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -311,7 +311,7 @@ impl Default for FilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TestFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -331,7 +331,7 @@ impl Default for TestFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GitFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -351,7 +351,7 @@ impl Default for GitFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClippyFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -363,7 +363,7 @@ impl Default for ClippyFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CargoBuildFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -375,7 +375,7 @@ impl Default for CargoBuildFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DirListingFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -387,7 +387,7 @@ impl Default for DirListingFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogDedupFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -399,7 +399,7 @@ impl Default for LogDedupFilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecurityFilterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,

@@ -12,6 +12,8 @@ repository = "https://github.com/bug-ops/zeph"
 
 [workspace.dependencies]
 age = { version = "0.11.2", default-features = false }
+clap = { version = "4.5", features = ["derive"] }
+dialoguer = "0.11"
 anyhow = "1.0"
 candle-core = { version = "0.9", default-features = false }
 candle-nn = { version = "0.9", default-features = false }
@@ -126,6 +128,9 @@ stt = ["zeph-llm/stt"]
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
+dialoguer.workspace = true
+toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true

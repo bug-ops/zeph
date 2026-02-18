@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use glob::Pattern;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Tool access level controlling agent autonomy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutonomyLevel {
     /// Read-only tools: `file_read`, `file_glob`, `file_grep`, `web_scrape`
@@ -17,7 +17,7 @@ pub enum AutonomyLevel {
 }
 
 /// Action a permission rule resolves to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionAction {
     Allow,
@@ -26,7 +26,7 @@ pub enum PermissionAction {
 }
 
 /// Single permission rule: glob `pattern` + action.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PermissionRule {
     pub pattern: String,
     pub action: PermissionAction,
@@ -136,7 +136,7 @@ impl PermissionPolicy {
 }
 
 /// TOML-deserializable permissions config section.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PermissionsConfig {
     #[serde(flatten)]
     pub tools: HashMap<String, Vec<PermissionRule>>,

@@ -1,19 +1,22 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::vault::Secret;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub agent: AgentConfig,
     pub llm: LlmConfig,
     pub skills: SkillsConfig,
     pub memory: MemoryConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub discord: Option<DiscordConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackConfig>,
     #[serde(default)]
     pub tools: ToolsConfig,
@@ -49,7 +52,7 @@ fn default_max_tool_iterations() -> usize {
     10
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub name: String,
     #[serde(default = "default_max_tool_iterations")]
@@ -59,7 +62,7 @@ pub struct AgentConfig {
 }
 
 /// LLM provider backend selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Ollama,
@@ -92,19 +95,24 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LlmConfig {
     pub provider: ProviderKind,
     pub base_url: String,
     pub model: String,
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud: Option<CloudLlmConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAiConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub candle: Option<CandleConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compatible: Option<Vec<CompatibleConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<RouterConfig>,
     pub stt: Option<SttConfig>,
 }
@@ -113,7 +121,7 @@ fn default_embedding_model() -> String {
     "qwen3-embedding".into()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SttConfig {
     #[serde(default = "default_stt_provider")]
     pub provider: String,
@@ -129,13 +137,13 @@ fn default_stt_model() -> String {
     "whisper-1".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CloudLlmConfig {
     pub model: String,
     pub max_tokens: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpenAiConfig {
     pub base_url: String,
     pub model: String,
@@ -146,7 +154,7 @@ pub struct OpenAiConfig {
     pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CompatibleConfig {
     pub name: String,
     pub base_url: String,
@@ -156,12 +164,12 @@ pub struct CompatibleConfig {
     pub embedding_model: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub chain: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CandleConfig {
     #[serde(default = "default_candle_source")]
     pub source: String,
@@ -191,7 +199,7 @@ fn default_candle_device() -> String {
     "cpu".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GenerationParams {
     #[serde(default = "default_temperature")]
     pub temperature: f64,
@@ -252,7 +260,7 @@ fn default_repeat_last_n() -> usize {
     64
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct OrchestratorConfig {
     pub default: String,
     pub embed: String,
@@ -262,7 +270,7 @@ pub struct OrchestratorConfig {
     pub routes: std::collections::HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct OrchestratorProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: String,
@@ -274,7 +282,7 @@ pub struct OrchestratorProviderConfig {
     pub device: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
@@ -291,7 +299,7 @@ fn default_disambiguation_threshold() -> f32 {
     0.05
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TrustConfig {
     #[serde(default = "default_trust_default_level")]
     pub default_level: TrustLevel,
@@ -327,7 +335,7 @@ fn default_max_active_skills() -> usize {
     5
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LearningConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -381,7 +389,7 @@ fn default_cooldown_minutes() -> u64 {
     60
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
     pub sqlite_path: String,
     pub history_limit: u32,
@@ -409,7 +417,7 @@ fn default_qdrant_url() -> String {
     "http://localhost:6334".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct IndexConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -493,7 +501,7 @@ fn default_cross_session_score_threshold() -> f32 {
     0.35
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SemanticConfig {
     #[serde(default = "default_semantic_enabled")]
     pub enabled: bool,
@@ -532,7 +540,7 @@ fn default_keyword_weight() -> f64 {
     0.3
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
     pub token: Option<String>,
     #[serde(default)]
@@ -548,7 +556,7 @@ impl std::fmt::Debug for TelegramConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct DiscordConfig {
     pub token: Option<String>,
     pub application_id: Option<String>,
@@ -580,7 +588,7 @@ fn default_slack_webhook_host() -> String {
     "127.0.0.1".into()
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SlackConfig {
     pub bot_token: Option<String>,
     pub signing_secret: Option<String>,
@@ -610,7 +618,7 @@ impl std::fmt::Debug for SlackConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct A2aServerConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -703,7 +711,7 @@ fn default_max_parallel_tools() -> usize {
     8
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
@@ -720,7 +728,7 @@ impl Default for SecurityConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct TimeoutConfig {
     #[serde(default = "default_llm_timeout")]
     pub llm_seconds: u64,
@@ -743,7 +751,7 @@ impl Default for TimeoutConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
@@ -757,7 +765,7 @@ fn default_max_dynamic_servers() -> usize {
     10
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub id: String,
     /// Stdio transport: command to spawn.
@@ -794,7 +802,7 @@ fn default_mcp_timeout() -> u64 {
     30
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct VaultConfig {
     #[serde(default = "default_vault_backend")]
     pub backend: String,
@@ -812,7 +820,7 @@ fn default_vault_backend() -> String {
     "env".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CostConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -833,7 +841,7 @@ impl Default for CostConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
     #[serde(default)]
     pub exporter: String,
@@ -854,7 +862,7 @@ impl Default for ObservabilityConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -899,7 +907,7 @@ impl Default for GatewayConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DaemonConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -934,7 +942,7 @@ impl Default for DaemonConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SchedulerConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -942,13 +950,13 @@ pub struct SchedulerConfig {
     pub tasks: Vec<ScheduledTaskConfig>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 pub struct TuiConfig {
     #[serde(default)]
     pub show_source_labels: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
     pub cron: String,
@@ -967,8 +975,8 @@ pub struct ResolvedSecrets {
     pub slack_signing_secret: Option<Secret>,
 }
 
-impl Config {
-    pub(crate) fn default() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Self {
             agent: AgentConfig {
                 name: "Zeph".into(),
@@ -1026,5 +1034,23 @@ impl Config {
             tui: TuiConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_serialize_roundtrip() {
+        let config = Config::default();
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let back: Config = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.agent.name, config.agent.name);
+        assert_eq!(back.llm.provider, config.llm.provider);
+        assert_eq!(back.llm.model, config.llm.model);
+        assert_eq!(back.memory.sqlite_path, config.memory.sqlite_path);
+        assert_eq!(back.memory.history_limit, config.memory.history_limit);
+        assert_eq!(back.vault.backend, config.vault.backend);
     }
 }
