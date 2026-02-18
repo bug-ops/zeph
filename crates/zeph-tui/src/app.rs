@@ -1455,7 +1455,6 @@ mod tests {
     mod integration {
         use super::*;
         use crate::test_utils::test_terminal;
-        use insta::assert_snapshot;
 
         fn draw_app(app: &mut App, width: u16, height: u16) -> String {
             let mut terminal = test_terminal(width, height);
