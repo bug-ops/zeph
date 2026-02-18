@@ -28,6 +28,21 @@ model = "whisper-1"
 
 The Whisper provider inherits the OpenAI API key from the `[llm.openai]` section (or `ZEPH_OPENAI_API_KEY` env var). No separate key is needed.
 
+### Environment Variable Overrides
+
+STT settings can be configured entirely via environment variables, without a config file:
+
+```bash
+ZEPH_STT_PROVIDER=whisper ZEPH_STT_MODEL=whisper-1 zeph
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ZEPH_STT_PROVIDER` | `whisper` (OpenAI API) or `candle-whisper` (local) | `whisper` |
+| `ZEPH_STT_MODEL` | Model identifier | `whisper-1` |
+
+Setting either variable automatically enables the STT config section.
+
 ## Supported Backends
 
 | Backend | Provider | Feature | Status |

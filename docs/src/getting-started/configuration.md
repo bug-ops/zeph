@@ -233,5 +233,7 @@ rate_limit = 60
 | `ZEPH_OBSERVABILITY_ENDPOINT` | OTLP gRPC endpoint (default: `http://localhost:4317`) |
 | `ZEPH_COST_ENABLED` | Enable cost tracking (default: false) |
 | `ZEPH_COST_MAX_DAILY_CENTS` | Daily spending limit in cents (default: 500) |
+| `ZEPH_STT_PROVIDER` | STT provider: `whisper` or `candle-whisper` (default: `whisper`, requires `stt` feature) |
+| `ZEPH_STT_MODEL` | STT model name (default: `whisper-1`) |
 | `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
 | `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |

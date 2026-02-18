@@ -1,4 +1,4 @@
-use super::Config;
+use super::{Config, SttConfig, default_stt_model, default_stt_provider};
 
 impl Config {
     pub(crate) fn apply_env_overrides(&mut self) {
@@ -136,6 +136,20 @@ impl Config {
             && let Ok(n) = v.parse::<usize>()
         {
             self.index.repo_map_tokens = n;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_PROVIDER") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+            });
+            stt.provider = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_MODEL") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+            });
+            stt.model = v;
         }
         if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()

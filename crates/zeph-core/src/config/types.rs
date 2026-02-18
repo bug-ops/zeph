@@ -129,11 +129,11 @@ pub struct SttConfig {
     pub model: String,
 }
 
-fn default_stt_provider() -> String {
+pub(crate) fn default_stt_provider() -> String {
     "whisper".into()
 }
 
-fn default_stt_model() -> String {
+pub(crate) fn default_stt_model() -> String {
     "whisper-1".into()
 }
 

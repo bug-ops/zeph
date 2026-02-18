@@ -5,7 +5,7 @@ use serial_test::serial;
 
 use super::*;
 
-const ENV_KEYS: [&str; 47] = [
+const ENV_KEYS: [&str; 49] = [
     "ZEPH_LLM_PROVIDER",
     "ZEPH_LLM_BASE_URL",
     "ZEPH_LLM_MODEL",
@@ -53,6 +53,8 @@ const ENV_KEYS: [&str; 47] = [
     "ZEPH_INDEX_SCORE_THRESHOLD",
     "ZEPH_INDEX_BUDGET_RATIO",
     "ZEPH_INDEX_REPO_MAP_TOKENS",
+    "ZEPH_STT_PROVIDER",
+    "ZEPH_STT_MODEL",
 ];
 
 fn clear_env() {
@@ -2331,4 +2333,37 @@ model = "whisper-large-v3"
 fn llm_config_stt_none_by_default() {
     let config = Config::default();
     assert!(config.llm.stt.is_none());
+}
+
+#[test]
+#[serial]
+fn env_override_stt_provider_and_model() {
+    clear_env();
+    let mut config = Config::default();
+    assert!(config.llm.stt.is_none());
+
+    unsafe { std::env::set_var("ZEPH_STT_PROVIDER", "candle-whisper") };
+    unsafe { std::env::set_var("ZEPH_STT_MODEL", "openai/whisper-tiny") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_STT_PROVIDER") };
+    unsafe { std::env::remove_var("ZEPH_STT_MODEL") };
+
+    let stt = config.llm.stt.unwrap();
+    assert_eq!(stt.provider, "candle-whisper");
+    assert_eq!(stt.model, "openai/whisper-tiny");
+}
+
+#[test]
+#[serial]
+fn env_override_stt_provider_only() {
+    clear_env();
+    let mut config = Config::default();
+
+    unsafe { std::env::set_var("ZEPH_STT_PROVIDER", "whisper") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_STT_PROVIDER") };
+
+    let stt = config.llm.stt.unwrap();
+    assert_eq!(stt.provider, "whisper");
+    assert_eq!(stt.model, "whisper-1");
 }
