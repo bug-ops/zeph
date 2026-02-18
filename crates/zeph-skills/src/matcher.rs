@@ -1,10 +1,28 @@
+use std::collections::HashMap;
 use std::time::Duration;
+
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
 use futures::stream::{self, StreamExt};
 
 pub use zeph_llm::provider::EmbedFuture;
+
+#[derive(Debug, Clone)]
+pub struct ScoredMatch {
+    pub index: usize,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct IntentClassification {
+    pub skill_name: String,
+    pub confidence: f32,
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+}
 
 #[derive(Debug)]
 pub struct SkillMatcher {
@@ -49,7 +67,7 @@ impl SkillMatcher {
         Some(Self { embeddings })
     }
 
-    /// Match a user query against stored skill embeddings, returning the top-K indices
+    /// Match a user query against stored skill embeddings, returning the top-K scored matches
     /// ranked by cosine similarity.
     ///
     /// Returns an empty vec if the query embedding fails.
@@ -59,7 +77,7 @@ impl SkillMatcher {
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<usize>
+    ) -> Vec<ScoredMatch>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -76,16 +94,23 @@ impl SkillMatcher {
             }
         };
 
-        let mut scored: Vec<(usize, f32)> = self
+        let mut scored: Vec<ScoredMatch> = self
             .embeddings
             .iter()
-            .map(|(idx, emb)| (*idx, cosine_similarity(&query_vec, emb)))
+            .map(|(idx, emb)| ScoredMatch {
+                index: *idx,
+                score: cosine_similarity(&query_vec, emb),
+            })
             .collect();
 
-        scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(limit);
 
-        scored.into_iter().map(|(idx, _)| idx).collect()
+        scored
     }
 }
 
@@ -110,7 +135,7 @@ impl SkillMatcherBackend {
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<usize>
+    ) -> Vec<ScoredMatch>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -249,8 +274,9 @@ mod tests {
             .await;
 
         assert_eq!(matched.len(), 2);
-        assert_eq!(matched[0], 0); // "a" / "alpha"
-        assert_eq!(matched[1], 1); // "b" / "beta"
+        assert_eq!(matched[0].index, 0); // "a" / "alpha"
+        assert_eq!(matched[1].index, 1); // "b" / "beta"
+        assert!(matched[0].score >= matched[1].score);
     }
 
     #[tokio::test]
@@ -271,7 +297,7 @@ mod tests {
             .await;
 
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0], 0);
+        assert_eq!(matched[0].index, 0);
     }
 
     #[tokio::test]
@@ -394,7 +420,7 @@ mod tests {
             .await;
 
         assert_eq!(matched.len(), 3);
-        assert_eq!(matched[0], 1); // "close" / "alpha" is closest to "query"
+        assert_eq!(matched[0].index, 1); // "close" / "alpha" is closest to "query"
     }
 
     #[test]
@@ -443,5 +469,88 @@ mod tests {
         let backend = SkillMatcherBackend::InMemory(matcher);
         let dbg = format!("{backend:?}");
         assert!(dbg.contains("InMemory"));
+    }
+
+    #[test]
+    fn scored_match_clone_and_debug() {
+        let sm = ScoredMatch {
+            index: 0,
+            score: 0.95,
+        };
+        let cloned = sm.clone();
+        assert_eq!(cloned.index, 0);
+        assert!((cloned.score - 0.95).abs() < f32::EPSILON);
+        let dbg = format!("{sm:?}");
+        assert!(dbg.contains("ScoredMatch"));
+    }
+
+    #[test]
+    fn intent_classification_deserialize() {
+        let json = r#"{"skill_name":"git","confidence":0.9,"params":{"branch":"main"}}"#;
+        let ic: IntentClassification = serde_json::from_str(json).unwrap();
+        assert_eq!(ic.skill_name, "git");
+        assert!((ic.confidence - 0.9).abs() < f32::EPSILON);
+        assert_eq!(ic.params.get("branch").unwrap(), "main");
+    }
+
+    #[test]
+    fn intent_classification_deserialize_without_params() {
+        let json = r#"{"skill_name":"test","confidence":0.5}"#;
+        let ic: IntentClassification = serde_json::from_str(json).unwrap();
+        assert_eq!(ic.skill_name, "test");
+        assert!(ic.params.is_empty());
+    }
+
+    #[test]
+    fn intent_classification_json_schema() {
+        let schema = schemars::schema_for!(IntentClassification);
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(json.contains("skill_name"));
+        assert!(json.contains("confidence"));
+    }
+
+    #[test]
+    fn intent_classification_rejects_missing_required_fields() {
+        let json = r#"{"confidence":0.5}"#;
+        let result: Result<IntentClassification, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scored_match_delta_at_threshold_boundary() {
+        let threshold = 0.05_f32;
+
+        // delta clearly above threshold => not ambiguous
+        let high = ScoredMatch {
+            index: 0,
+            score: 0.90,
+        };
+        let low = ScoredMatch {
+            index: 1,
+            score: 0.80,
+        };
+        assert!(!((high.score - low.score) < threshold));
+
+        // delta clearly below threshold => ambiguous
+        let close = ScoredMatch {
+            index: 2,
+            score: 0.89,
+        };
+        assert!((high.score - close.score) < threshold);
+    }
+
+    #[tokio::test]
+    async fn match_skills_returns_scores() {
+        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let matched = matcher
+            .match_skills(refs.len(), "query", 2, embed_fn_mapping)
+            .await;
+
+        assert_eq!(matched.len(), 2);
+        assert!(matched[0].score > 0.0);
+        assert!(matched[0].score >= matched[1].score);
     }
 }

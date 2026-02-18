@@ -70,6 +70,7 @@ pub(super) struct SkillState {
     pub(super) skill_paths: Vec<PathBuf>,
     pub(super) matcher: Option<SkillMatcherBackend>,
     pub(super) max_active_skills: usize,
+    pub(super) disambiguation_threshold: f32,
     pub(super) embedding_model: String,
     pub(super) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     pub(super) active_skill_names: Vec<String>,
@@ -182,6 +183,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 skill_paths: Vec::new(),
                 matcher,
                 max_active_skills,
+                disambiguation_threshold: 0.05,
                 embedding_model: String::new(),
                 skill_reload_rx: None,
                 active_skill_names: Vec::new(),
@@ -264,6 +266,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     #[must_use]
     pub fn with_embedding_model(mut self, model: String) -> Self {
         self.skill_state.embedding_model = model;
+        self
+    }
+
+    #[must_use]
+    pub fn with_disambiguation_threshold(mut self, threshold: f32) -> Self {
+        self.skill_state.disambiguation_threshold = threshold;
         self
     }
 
@@ -858,6 +866,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self.memory_state.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
         self.skill_state.max_active_skills = config.skills.max_active_skills;
+        self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
 
         if config.memory.context_budget_tokens > 0 {
             self.context_state.budget = Some(ContextBudget::new(

@@ -2,6 +2,8 @@ use std::fmt::Write;
 
 use zeph_llm::provider::MessagePart;
 use zeph_memory::semantic::estimate_tokens;
+use zeph_skills::ScoredMatch;
+use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::format_skills_catalog;
 
 use super::{
@@ -628,12 +630,65 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
+    async fn disambiguate_skills(
+        &self,
+        query: &str,
+        all_meta: &[&SkillMeta],
+        scored: &[ScoredMatch],
+    ) -> Option<Vec<usize>> {
+        let mut candidates = String::new();
+        for sm in scored {
+            if let Some(meta) = all_meta.get(sm.index) {
+                let _ = writeln!(
+                    candidates,
+                    "- {} (score: {:.3}): {}",
+                    meta.name, sm.score, meta.description
+                );
+            }
+        }
+
+        let prompt = format!(
+            "The user said: \"{query}\"\n\n\
+             These skills matched with similar scores:\n{candidates}\n\
+             Which skill best matches the user's intent? \
+             Return the skill_name, your confidence (0-1), and any extracted parameters."
+        );
+
+        let messages = vec![Message::from_legacy(Role::User, prompt)];
+        match self
+            .provider
+            .chat_typed::<zeph_skills::IntentClassification>(&messages)
+            .await
+        {
+            Ok(classification) => {
+                tracing::info!(
+                    skill = %classification.skill_name,
+                    confidence = classification.confidence,
+                    "disambiguation selected skill"
+                );
+                let mut indices: Vec<usize> = scored.iter().map(|s| s.index).collect();
+                if let Some(pos) = indices.iter().position(|&i| {
+                    all_meta
+                        .get(i)
+                        .is_some_and(|m| m.name == classification.skill_name)
+                }) {
+                    indices.swap(0, pos);
+                }
+                Some(indices)
+            }
+            Err(e) => {
+                tracing::warn!("disambiguation failed, using original order: {e:#}");
+                None
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(super) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta = self.skill_state.registry.all_meta();
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
-            matcher
+            let scored = matcher
                 .match_skills(
                     &all_meta,
                     query,
@@ -644,7 +699,18 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                         Box::pin(async move { p.embed(&owned).await })
                     },
                 )
-                .await
+                .await;
+
+            if scored.len() >= 2
+                && (scored[0].score - scored[1].score) < self.skill_state.disambiguation_threshold
+            {
+                match self.disambiguate_skills(query, &all_meta, &scored).await {
+                    Some(reordered) => reordered,
+                    None => scored.iter().map(|s| s.index).collect(),
+                }
+            } else {
+                scored.iter().map(|s| s.index).collect()
+            }
         } else {
             (0..all_meta.len()).collect()
         };
@@ -1669,5 +1735,186 @@ mod tests {
         } else {
             panic!("expected ToolResult");
         }
+    }
+
+    #[tokio::test]
+    async fn disambiguate_skills_reorders_on_match() {
+        let json = r#"{"skill_name":"beta_skill","confidence":0.9,"params":{}}"#;
+        let provider = mock_provider(vec![json.to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let metas = vec![
+            SkillMeta {
+                name: "alpha_skill".into(),
+                description: "does alpha".into(),
+                compatibility: None,
+                license: None,
+                metadata: Vec::new(),
+                allowed_tools: Vec::new(),
+                skill_dir: std::path::PathBuf::new(),
+            },
+            SkillMeta {
+                name: "beta_skill".into(),
+                description: "does beta".into(),
+                compatibility: None,
+                license: None,
+                metadata: Vec::new(),
+                allowed_tools: Vec::new(),
+                skill_dir: std::path::PathBuf::new(),
+            },
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored = vec![
+            ScoredMatch {
+                index: 0,
+                score: 0.90,
+            },
+            ScoredMatch {
+                index: 1,
+                score: 0.88,
+            },
+        ];
+
+        let result = agent
+            .disambiguate_skills("do beta stuff", &refs, &scored)
+            .await;
+        assert!(result.is_some());
+        let indices = result.unwrap();
+        assert_eq!(indices[0], 1); // beta_skill moved to front
+    }
+
+    #[tokio::test]
+    async fn disambiguate_skills_returns_none_on_error() {
+        let provider = mock_provider_failing();
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let metas = vec![SkillMeta {
+            name: "test".into(),
+            description: "test".into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            skill_dir: std::path::PathBuf::new(),
+        }];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored = vec![ScoredMatch {
+            index: 0,
+            score: 0.5,
+        }];
+
+        let result = agent.disambiguate_skills("query", &refs, &scored).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn disambiguate_skills_empty_candidates() {
+        let json = r#"{"skill_name":"none","confidence":0.1,"params":{}}"#;
+        let provider = mock_provider(vec![json.to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let metas: Vec<SkillMeta> = vec![];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored: Vec<ScoredMatch> = vec![];
+
+        let result = agent.disambiguate_skills("query", &refs, &scored).await;
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn disambiguate_skills_unknown_skill_preserves_order() {
+        let json = r#"{"skill_name":"nonexistent","confidence":0.5,"params":{}}"#;
+        let provider = mock_provider(vec![json.to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let metas = vec![
+            SkillMeta {
+                name: "first".into(),
+                description: "first skill".into(),
+                compatibility: None,
+                license: None,
+                metadata: Vec::new(),
+                allowed_tools: Vec::new(),
+                skill_dir: std::path::PathBuf::new(),
+            },
+            SkillMeta {
+                name: "second".into(),
+                description: "second skill".into(),
+                compatibility: None,
+                license: None,
+                metadata: Vec::new(),
+                allowed_tools: Vec::new(),
+                skill_dir: std::path::PathBuf::new(),
+            },
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored = vec![
+            ScoredMatch {
+                index: 0,
+                score: 0.9,
+            },
+            ScoredMatch {
+                index: 1,
+                score: 0.88,
+            },
+        ];
+
+        let result = agent
+            .disambiguate_skills("query", &refs, &scored)
+            .await
+            .unwrap();
+        // No swap since LLM returned unknown name
+        assert_eq!(result[0], 0);
+        assert_eq!(result[1], 1);
+    }
+
+    #[tokio::test]
+    async fn disambiguate_single_candidate_no_swap() {
+        let json = r#"{"skill_name":"only_skill","confidence":0.95,"params":{}}"#;
+        let provider = mock_provider(vec![json.to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let metas = vec![SkillMeta {
+            name: "only_skill".into(),
+            description: "the only one".into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            skill_dir: std::path::PathBuf::new(),
+        }];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored = vec![ScoredMatch {
+            index: 0,
+            score: 0.95,
+        }];
+
+        let result = agent
+            .disambiguate_skills("query", &refs, &scored)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 0);
     }
 }

@@ -5,7 +5,7 @@ use zeph_memory::QdrantOps;
 
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
-use crate::matcher::EmbedFuture;
+use crate::matcher::{EmbedFuture, ScoredMatch};
 
 const COLLECTION_NAME: &str = "zeph_skills";
 
@@ -167,14 +167,14 @@ impl QdrantSkillMatcher {
     }
 
     /// Search for relevant skills using Qdrant native vector search.
-    /// Returns indices into the provided meta slice.
+    /// Returns scored matches with indices into the provided meta slice.
     pub async fn match_skills<F>(
         &self,
         meta: &[&SkillMeta],
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<usize>
+    ) -> Vec<ScoredMatch>
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -210,7 +210,11 @@ impl QdrantSkillMatcher {
                     Some(Kind::StringValue(s)) => s.as_str(),
                     _ => return None,
                 };
-                meta.iter().position(|m| m.name == name_str)
+                let index = meta.iter().position(|m| m.name == name_str)?;
+                Some(ScoredMatch {
+                    index,
+                    score: point.score,
+                })
             })
             .collect()
     }

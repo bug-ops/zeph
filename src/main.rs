@@ -275,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
     .with_max_tool_iterations(config.agent.max_tool_iterations)
     .with_model_name(config.llm.model.clone())
     .with_embedding_model(embed_model.clone())
+    .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_memory(
         memory,

@@ -17,6 +17,7 @@ qdrant-client = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 futures.workspace = true
+schemars.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true

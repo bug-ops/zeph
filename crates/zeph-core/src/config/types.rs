@@ -262,10 +262,16 @@ pub struct SkillsConfig {
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
     pub max_active_skills: usize,
+    #[serde(default = "default_disambiguation_threshold")]
+    pub disambiguation_threshold: f32,
     #[serde(default)]
     pub learning: LearningConfig,
     #[serde(default)]
     pub trust: TrustConfig,
+}
+
+fn default_disambiguation_threshold() -> f32 {
+    0.05
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -967,6 +973,7 @@ impl Config {
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
+                disambiguation_threshold: default_disambiguation_threshold(),
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
             },
