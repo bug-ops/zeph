@@ -4,7 +4,7 @@ use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
 use teloxide::types::{ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
 const MAX_MESSAGE_LEN: usize = 4096;
 
@@ -24,6 +24,7 @@ pub struct TelegramChannel {
 struct IncomingMessage {
     chat_id: ChatId,
     text: String,
+    attachments: Vec<Attachment>,
 }
 
 impl TelegramChannel {
@@ -62,7 +63,7 @@ impl TelegramChannel {
         let allowed = self.allowed_users.clone();
 
         tokio::spawn(async move {
-            let handler = Update::filter_message().endpoint(move |msg: Message, _bot: Bot| {
+            let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
                 let tx = tx.clone();
                 let allowed = allowed.clone();
                 async move {
@@ -81,14 +82,38 @@ impl TelegramChannel {
                         }
                     }
 
-                    let Some(text) = msg.text() else {
+                    let text = msg.text().unwrap_or_default().to_string();
+                    let mut attachments = Vec::new();
+
+                    let audio_file_id = msg
+                        .voice()
+                        .map(|v| v.file.id.0.clone())
+                        .or_else(|| msg.audio().map(|a| a.file.id.0.clone()));
+
+                    if let Some(file_id) = audio_file_id {
+                        match download_file(&bot, file_id).await {
+                            Ok(data) => {
+                                attachments.push(Attachment {
+                                    kind: AttachmentKind::Audio,
+                                    data,
+                                    filename: msg.audio().and_then(|a| a.file_name.clone()),
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to download audio attachment: {e}");
+                            }
+                        }
+                    }
+
+                    if text.is_empty() && attachments.is_empty() {
                         return respond(());
-                    };
+                    }
 
                     let _ = tx
                         .send(IncomingMessage {
                             chat_id: msg.chat.id,
-                            text: text.to_string(),
+                            text,
+                            attachments,
                         })
                         .await;
 
@@ -203,13 +228,27 @@ impl TelegramChannel {
     }
 }
 
+async fn download_file(bot: &Bot, file_id: String) -> Result<Vec<u8>, String> {
+    use teloxide::net::Download;
+
+    let file = bot
+        .get_file(file_id.into())
+        .await
+        .map_err(|e| format!("get_file: {e}"))?;
+    let mut buf: Vec<u8> = Vec::new();
+    bot.download_file(&file.path, &mut buf)
+        .await
+        .map_err(|e| format!("download_file: {e}"))?;
+    Ok(buf)
+}
+
 impl Channel for TelegramChannel {
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         self.rx.try_recv().ok().map(|incoming| {
             self.chat_id = Some(incoming.chat_id);
             ChannelMessage {
                 text: incoming.text,
-                attachments: vec![],
+                attachments: incoming.attachments,
             }
         })
     }
@@ -252,7 +291,7 @@ impl Channel for TelegramChannel {
 
             return Ok(Some(ChannelMessage {
                 text: incoming.text,
-                attachments: vec![],
+                attachments: incoming.attachments,
             }));
         }
     }

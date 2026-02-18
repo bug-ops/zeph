@@ -124,7 +124,7 @@ scheduler = ["dep:zeph-scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 mock = ["zeph-llm/mock", "zeph-memory/mock"]
-stt = ["zeph-llm/stt"]
+stt = ["zeph-llm/stt", "dep:reqwest"]
 
 [dependencies]
 anyhow.workspace = true
@@ -151,6 +151,7 @@ zeph-tools.workspace = true
 zeph-gateway = { workspace = true, optional = true }
 zeph-scheduler = { workspace = true, optional = true }
 zeph-tui = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls"] }
 
 [dev-dependencies]
 tempfile.workspace = true

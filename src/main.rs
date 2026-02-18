@@ -423,6 +423,35 @@ async fn main() -> anyhow::Result<()> {
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_learning(config.skills.learning.clone());
 
+    #[cfg(feature = "stt")]
+    let agent = if config.llm.stt.is_some() {
+        if let Some(ref api_key) = config.secrets.openai_api_key {
+            let base_url = config
+                .llm
+                .openai
+                .as_ref()
+                .map_or("https://api.openai.com/v1", |o| o.base_url.as_str());
+            let model = config
+                .llm
+                .stt
+                .as_ref()
+                .map_or("whisper-1", |s| s.model.as_str());
+            let whisper = zeph_llm::whisper::WhisperProvider::new(
+                reqwest::Client::new(),
+                api_key.expose(),
+                base_url,
+                model,
+            );
+            tracing::info!("STT enabled via Whisper (model: {model})");
+            agent.with_stt(Box::new(whisper))
+        } else {
+            tracing::warn!("STT configured but ZEPH_OPENAI_API_KEY not found");
+            agent
+        }
+    } else {
+        agent
+    };
+
     #[cfg(feature = "tui")]
     let tui_metrics_rx;
     #[cfg(feature = "tui")]
