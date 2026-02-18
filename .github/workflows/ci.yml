@@ -67,7 +67,7 @@ jobs:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
       - name: Check snapshots
-        run: cargo insta test --workspace --features full --check
+        run: cargo insta test --workspace --features full --check --lib --bins
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
