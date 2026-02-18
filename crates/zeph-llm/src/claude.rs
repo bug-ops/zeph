@@ -254,6 +254,84 @@ impl LlmProvider for ClaudeProvider {
         "claude"
     }
 
+    fn supports_structured_output(&self) -> bool {
+        true
+    }
+
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        Self: Sized,
+    {
+        let schema = schemars::schema_for!(T);
+        let schema_value =
+            serde_json::to_value(&schema).map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let type_name = std::any::type_name::<T>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("Output");
+
+        let tool_name = format!("submit_{type_name}");
+        let tool = ToolDefinition {
+            name: tool_name.clone(),
+            description: format!("Submit the structured {type_name} result"),
+            parameters: schema_value,
+        };
+
+        let (system, chat_messages) = split_messages_structured(messages);
+        let api_tool = AnthropicTool {
+            name: &tool.name,
+            description: &tool.description,
+            input_schema: &tool.parameters,
+        };
+
+        let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let body = TypedToolRequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system_blocks,
+            messages: &chat_messages,
+            tools: &[api_tool],
+            tool_choice: ToolChoice {
+                r#type: "tool",
+                name: &tool_name,
+            },
+        };
+
+        let response = self
+            .client
+            .post(API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            return Err(LlmError::Other(format!(
+                "Claude API request failed (status {status})"
+            )));
+        }
+
+        let resp: ToolApiResponse = serde_json::from_str(&text)?;
+
+        for block in resp.content {
+            if let AnthropicContentBlock::ToolUse { input, .. } = block {
+                return serde_json::from_value::<T>(input)
+                    .map_err(|e| LlmError::StructuredParse(e.to_string()));
+            }
+        }
+
+        Err(LlmError::StructuredParse(
+            "no tool_use block in response".into(),
+        ))
+    }
+
     fn supports_tool_use(&self) -> bool {
         true
     }
@@ -504,6 +582,23 @@ fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
     }
 
     blocks
+}
+
+#[derive(Serialize)]
+struct TypedToolRequestBody<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<Vec<SystemContentBlock>>,
+    messages: &'a [StructuredApiMessage],
+    tools: &'a [AnthropicTool<'a>],
+    tool_choice: ToolChoice<'a>,
+}
+
+#[derive(Serialize)]
+struct ToolChoice<'a> {
+    r#type: &'a str,
+    name: &'a str,
 }
 
 #[derive(Serialize)]

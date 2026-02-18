@@ -37,6 +37,9 @@ pub enum LlmError {
     #[error("candle error: {0}")]
     Candle(#[from] candle_core::Error),
 
+    #[error("structured output parse failed: {0}")]
+    StructuredParse(String),
+
     #[error("{0}")]
     Other(String),
 }

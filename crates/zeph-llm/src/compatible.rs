@@ -79,6 +79,18 @@ impl LlmProvider for CompatibleProvider {
         self.leaked_name
     }
 
+    fn supports_structured_output(&self) -> bool {
+        self.inner.supports_structured_output()
+    }
+
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        Self: Sized,
+    {
+        self.inner.chat_typed(messages).await
+    }
+
     fn supports_tool_use(&self) -> bool {
         self.inner.supports_tool_use()
     }

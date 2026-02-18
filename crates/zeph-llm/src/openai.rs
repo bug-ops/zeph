@@ -305,6 +305,66 @@ impl LlmProvider for OpenAiProvider {
         self.last_cache.lock().ok().and_then(|g| *g)
     }
 
+    fn supports_structured_output(&self) -> bool {
+        true
+    }
+
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        Self: Sized,
+    {
+        let schema = schemars::schema_for!(T);
+        let schema_value =
+            serde_json::to_value(&schema).map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let type_name = std::any::type_name::<T>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("Output");
+
+        let api_messages = convert_messages(messages);
+        let body = TypedChatRequest {
+            model: &self.model,
+            messages: &api_messages,
+            max_tokens: self.max_tokens,
+            response_format: ResponseFormat {
+                r#type: "json_schema",
+                json_schema: JsonSchemaFormat {
+                    name: type_name,
+                    schema: schema_value,
+                    strict: true,
+                },
+            },
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            return Err(LlmError::Other(format!(
+                "OpenAI API request failed (status {status})"
+            )));
+        }
+
+        let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
+        let content = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.as_str())
+            .ok_or(LlmError::EmptyResponse { provider: "openai" })?;
+
+        serde_json::from_str::<T>(content).map_err(|e| LlmError::StructuredParse(e.to_string()))
+    }
+
     fn supports_tool_use(&self) -> bool {
         true
     }
@@ -706,6 +766,27 @@ struct EmbeddingResponse {
 #[derive(Deserialize)]
 struct EmbeddingData {
     embedding: Vec<f32>,
+}
+
+#[derive(Serialize)]
+struct TypedChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [ApiMessage<'a>],
+    max_tokens: u32,
+    response_format: ResponseFormat<'a>,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat<'a> {
+    r#type: &'a str,
+    json_schema: JsonSchemaFormat<'a>,
+}
+
+#[derive(Serialize)]
+struct JsonSchemaFormat<'a> {
+    name: &'a str,
+    schema: serde_json::Value,
+    strict: bool,
 }
 
 #[cfg(test)]

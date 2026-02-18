@@ -239,6 +239,67 @@ pub trait LlmProvider: Send + Sync {
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         None
     }
+
+    /// Whether this provider supports native structured output.
+    fn supports_structured_output(&self) -> bool {
+        false
+    }
+
+    /// Send messages and parse the response into a typed value `T`.
+    ///
+    /// Default implementation injects JSON schema into the system prompt and retries once
+    /// on parse failure. Providers with native structured output should override this.
+    #[allow(async_fn_in_trait)]
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        Self: Sized,
+    {
+        let schema = schemars::schema_for!(T);
+        let schema_json = serde_json::to_string_pretty(&schema)
+            .map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let type_name = std::any::type_name::<T>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("Output");
+
+        let mut augmented = messages.to_vec();
+        let instruction = format!(
+            "Respond with a valid JSON object matching this schema. \
+             Output ONLY the JSON, no markdown fences or extra text.\n\n\
+             Type: {type_name}\nSchema:\n```json\n{schema_json}\n```"
+        );
+        augmented.insert(0, Message::from_legacy(Role::System, instruction));
+
+        let raw = self.chat(&augmented).await?;
+        let cleaned = strip_json_fences(&raw);
+        match serde_json::from_str::<T>(cleaned) {
+            Ok(val) => Ok(val),
+            Err(first_err) => {
+                augmented.push(Message::from_legacy(Role::Assistant, &raw));
+                augmented.push(Message::from_legacy(
+                    Role::User,
+                    format!(
+                        "Your response was not valid JSON. Error: {first_err}. \
+                         Please output ONLY valid JSON matching the schema."
+                    ),
+                ));
+                let retry_raw = self.chat(&augmented).await?;
+                let retry_cleaned = strip_json_fences(&retry_raw);
+                serde_json::from_str::<T>(retry_cleaned).map_err(|e| {
+                    LlmError::StructuredParse(format!("parse failed after retry: {e}"))
+                })
+            }
+        }
+    }
+}
+
+fn strip_json_fences(s: &str) -> &str {
+    s.trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
 }
 
 #[cfg(test)]

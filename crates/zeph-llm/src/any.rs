@@ -7,6 +7,9 @@ use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 use crate::orchestrator::ModelOrchestrator;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 use crate::router::RouterProvider;
 
@@ -52,6 +55,16 @@ impl AnyProvider {
             let p = provider.clone();
             Box::pin(async move { p.embed(&owned).await })
         }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the provider fails or the response cannot be parsed.
+    pub async fn chat_typed_erased<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        delegate_provider!(self, |p| p.chat_typed::<T>(messages).await)
     }
 
     /// Propagate a status sender to the inner provider (where supported).
@@ -108,6 +121,10 @@ impl LlmProvider for AnyProvider {
 
     fn name(&self) -> &'static str {
         delegate_provider!(self, |p| p.name())
+    }
+
+    fn supports_structured_output(&self) -> bool {
+        delegate_provider!(self, |p| p.supports_structured_output())
     }
 
     fn supports_tool_use(&self) -> bool {
