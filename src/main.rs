@@ -454,6 +454,10 @@ async fn main() -> anyhow::Result<()> {
                 .send(zeph_tui::AgentEvent::Status("model ready".into()))
                 .await;
             let _ = warmup_tx.send(true);
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let _ = warmup_agent_tx
+                .send(zeph_tui::AgentEvent::Status(String::new()))
+                .await;
         });
 
         let mut agent = agent.with_warmup_ready(warmup_rx);
