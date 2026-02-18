@@ -8,6 +8,14 @@ use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
 const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
+const KEY_FACTS_COLLECTION: &str = "zeph_key_facts";
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct StructuredSummary {
+    pub summary: String,
+    pub key_facts: Vec<String>,
+    pub entities: Vec<String>,
+}
 
 #[derive(Debug)]
 pub struct RecalledMessage {
@@ -40,9 +48,10 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> String {
     let mut prompt = String::from(
-        "Summarize the following conversation concisely. Preserve key facts, decisions, \
-         and context that would be needed to continue the conversation. Be brief.\n\n\
-         Conversation:\n",
+        "Summarize the following conversation. Extract key facts, decisions, entities, \
+         and context needed to continue the conversation.\n\n\
+         Respond in JSON with fields: summary (string), key_facts (list of strings), \
+         entities (list of strings).\n\nConversation:\n",
     );
 
     for (_, role, content) in messages {
@@ -52,7 +61,6 @@ fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> Strin
         prompt.push('\n');
     }
 
-    prompt.push_str("\nSummary:");
     prompt
 }
 
@@ -588,16 +596,33 @@ impl SemanticMemory {
         }
 
         let prompt = build_summarization_prompt(&messages);
-        let summary_text = self
-            .provider
-            .chat(&[Message {
-                role: Role::User,
-                content: prompt,
-                parts: vec![],
-            }])
-            .await?;
+        let chat_messages = vec![Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+        }];
 
-        let token_estimate = i64::try_from(estimate_tokens(&summary_text))?;
+        let structured = match self
+            .provider
+            .chat_typed_erased::<StructuredSummary>(&chat_messages)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "structured summarization failed, falling back to plain text: {e:#}"
+                );
+                let plain = self.provider.chat(&chat_messages).await?;
+                StructuredSummary {
+                    summary: plain,
+                    key_facts: vec![],
+                    entities: vec![],
+                }
+            }
+        };
+        let summary_text = &structured.summary;
+
+        let token_estimate = i64::try_from(estimate_tokens(summary_text))?;
         let first_message_id = messages[0].0;
         let last_message_id = messages[messages.len() - 1].0;
 
@@ -605,7 +630,7 @@ impl SemanticMemory {
             .sqlite
             .save_summary(
                 conversation_id,
-                &summary_text,
+                summary_text,
                 first_message_id,
                 last_message_id,
                 token_estimate,
@@ -615,7 +640,7 @@ impl SemanticMemory {
         if let Some(qdrant) = &self.qdrant
             && self.provider.supports_embeddings()
         {
-            match self.provider.embed(&summary_text).await {
+            match self.provider.embed(summary_text).await {
                 Ok(vector) => {
                     // Ensure collection exists before storing
                     let vector_size = u64::try_from(vector.len()).unwrap_or(896);
@@ -641,7 +666,114 @@ impl SemanticMemory {
             }
         }
 
+        // Store key facts as individual Qdrant points
+        if !structured.key_facts.is_empty() {
+            self.store_key_facts(conversation_id, summary_id, &structured.key_facts)
+                .await;
+        }
+
         Ok(Some(summary_id))
+    }
+
+    async fn store_key_facts(
+        &self,
+        conversation_id: ConversationId,
+        source_summary_id: i64,
+        key_facts: &[String],
+    ) {
+        let Some(qdrant) = &self.qdrant else {
+            return;
+        };
+        if !self.provider.supports_embeddings() {
+            return;
+        }
+
+        let Some(first_fact) = key_facts.first() else {
+            return;
+        };
+        let first_vector = match self.provider.embed(first_fact).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to embed key fact: {e:#}");
+                return;
+            }
+        };
+        let vector_size = u64::try_from(first_vector.len()).unwrap_or(896);
+        if let Err(e) = qdrant
+            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .await
+        {
+            tracing::warn!("Failed to ensure key_facts collection: {e:#}");
+            return;
+        }
+
+        let first_payload = serde_json::json!({
+            "conversation_id": conversation_id.0,
+            "fact_text": first_fact,
+            "source_summary_id": source_summary_id,
+        });
+        if let Err(e) = qdrant
+            .store_to_collection(KEY_FACTS_COLLECTION, first_payload, first_vector)
+            .await
+        {
+            tracing::warn!("Failed to store key fact: {e:#}");
+        }
+
+        for fact in &key_facts[1..] {
+            match self.provider.embed(fact).await {
+                Ok(vector) => {
+                    let payload = serde_json::json!({
+                        "conversation_id": conversation_id.0,
+                        "fact_text": fact,
+                        "source_summary_id": source_summary_id,
+                    });
+                    if let Err(e) = qdrant
+                        .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
+                        .await
+                    {
+                        tracing::warn!("Failed to store key fact: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to embed key fact: {e:#}");
+                }
+            }
+        }
+    }
+
+    /// Search key facts extracted from conversation summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding or Qdrant search fails.
+    pub async fn search_key_facts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, MemoryError> {
+        let Some(qdrant) = &self.qdrant else {
+            return Ok(Vec::new());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(Vec::new());
+        }
+
+        let vector = self.provider.embed(query).await?;
+        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+        qdrant
+            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .await?;
+
+        let points = qdrant
+            .search_collection(KEY_FACTS_COLLECTION, &vector, limit, None)
+            .await?;
+
+        let facts = points
+            .into_iter()
+            .filter_map(|p| p.payload.get("fact_text")?.as_str().map(String::from))
+            .collect();
+
+        Ok(facts)
     }
 }
 
@@ -1013,14 +1145,38 @@ mod tests {
         let prompt = build_summarization_prompt(&messages);
         assert!(prompt.contains("user: Hello"));
         assert!(prompt.contains("assistant: Hi there"));
-        assert!(prompt.contains("Summary:"));
+        assert!(prompt.contains("key_facts"));
     }
 
     #[test]
     fn build_summarization_prompt_empty() {
         let messages: Vec<(MessageId, String, String)> = vec![];
         let prompt = build_summarization_prompt(&messages);
-        assert!(prompt.contains("Summary:"));
+        assert!(prompt.contains("key_facts"));
+    }
+
+    #[test]
+    fn structured_summary_deserialize() {
+        let json = r#"{"summary":"s","key_facts":["f1","f2"],"entities":["e1"]}"#;
+        let ss: StructuredSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(ss.summary, "s");
+        assert_eq!(ss.key_facts.len(), 2);
+        assert_eq!(ss.entities.len(), 1);
+    }
+
+    #[test]
+    fn structured_summary_empty_facts() {
+        let json = r#"{"summary":"s","key_facts":[],"entities":[]}"#;
+        let ss: StructuredSummary = serde_json::from_str(json).unwrap();
+        assert!(ss.key_facts.is_empty());
+        assert!(ss.entities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_key_facts_no_qdrant_empty() {
+        let memory = test_semantic_memory(false).await;
+        let facts = memory.search_key_facts("query", 5).await.unwrap();
+        assert!(facts.is_empty());
     }
 
     #[test]

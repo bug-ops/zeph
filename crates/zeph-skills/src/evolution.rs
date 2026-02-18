@@ -130,6 +130,47 @@ pub fn build_improvement_prompt(
         .replace("{user_feedback_section}", &feedback_section)
 }
 
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct SkillEvaluation {
+    pub should_improve: bool,
+    pub issues: Vec<String>,
+    pub severity: String,
+}
+
+pub const EVALUATION_PROMPT_TEMPLATE: &str = "\
+Evaluate whether the following skill needs improvement based on the error context.
+
+<skill name=\"{name}\">
+{body}
+</skill>
+
+Error context: {error_context}
+Tool output: {tool_output}
+Current success rate: {success_rate}%
+
+Determine if this is a systematic skill problem (should_improve: true) \
+or a transient issue like network timeout, rate limit, etc. (should_improve: false).
+
+Respond in JSON with fields: should_improve (bool), issues (list of strings), severity (\"low\", \"medium\", or \"high\").";
+
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn build_evaluation_prompt(
+    name: &str,
+    body: &str,
+    error_context: &str,
+    tool_output: &str,
+    metrics: &SkillMetrics,
+) -> String {
+    let rate = format!("{:.0}", metrics.success_rate() * 100.0);
+    EVALUATION_PROMPT_TEMPLATE
+        .replace("{name}", name)
+        .replace("{body}", body)
+        .replace("{error_context}", error_context)
+        .replace("{tool_output}", tool_output)
+        .replace("{success_rate}", &rate)
+}
+
 /// Absolute maximum body size to prevent exponential growth across generations.
 pub const MAX_BODY_BYTES: usize = 65_536;
 
@@ -296,6 +337,41 @@ mod tests {
     fn validate_body_size_empty_original() {
         assert!(validate_body_size("", ""));
         assert!(!validate_body_size("", "x"));
+    }
+
+    #[test]
+    fn build_evaluation_prompt_substitutes() {
+        let metrics = SkillMetrics {
+            skill_name: "git".into(),
+            version: 1,
+            total: 10,
+            successes: 7,
+            failures: 3,
+        };
+        let result =
+            build_evaluation_prompt("git", "do git stuff", "exit code 1", "fatal", &metrics);
+        assert!(result.contains("<skill name=\"git\">"));
+        assert!(result.contains("do git stuff"));
+        assert!(result.contains("exit code 1"));
+        assert!(result.contains("fatal"));
+        assert!(result.contains("70%"));
+    }
+
+    #[test]
+    fn skill_evaluation_deserialize() {
+        let json = r#"{"should_improve": true, "issues": ["bad pattern"], "severity": "high"}"#;
+        let eval: SkillEvaluation = serde_json::from_str(json).unwrap();
+        assert!(eval.should_improve);
+        assert_eq!(eval.issues.len(), 1);
+        assert_eq!(eval.severity, "high");
+    }
+
+    #[test]
+    fn skill_evaluation_skip() {
+        let json = r#"{"should_improve": false, "issues": [], "severity": "low"}"#;
+        let eval: SkillEvaluation = serde_json::from_str(json).unwrap();
+        assert!(!eval.should_improve);
+        assert!(eval.issues.is_empty());
     }
 
     #[test]

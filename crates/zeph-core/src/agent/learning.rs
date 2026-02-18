@@ -141,6 +141,58 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             return Ok(());
         }
 
+        // Structured evaluation: ask LLM whether improvement is actually needed
+        if user_feedback.is_none() {
+            let metrics_row = memory.sqlite().skill_metrics(skill_name).await?;
+            if let Some(row) = metrics_row {
+                let metrics = zeph_skills::evolution::SkillMetrics {
+                    skill_name: row.skill_name.clone(),
+                    version: row.version_id.unwrap_or(0),
+                    total: row.total,
+                    successes: row.successes,
+                    failures: row.failures,
+                };
+                let eval_prompt = zeph_skills::evolution::build_evaluation_prompt(
+                    skill_name,
+                    &skill.body,
+                    error_context,
+                    successful_response,
+                    &metrics,
+                );
+                let eval_messages = vec![Message {
+                    role: Role::User,
+                    content: eval_prompt,
+                    parts: vec![],
+                }];
+                match self
+                    .provider
+                    .chat_typed_erased::<zeph_skills::evolution::SkillEvaluation>(&eval_messages)
+                    .await
+                {
+                    Ok(eval) if !eval.should_improve => {
+                        tracing::info!(
+                            skill = %skill_name,
+                            issues = ?eval.issues,
+                            "evaluation: skip improvement"
+                        );
+                        return Ok(());
+                    }
+                    Ok(eval) => {
+                        tracing::info!(
+                            skill = %skill_name,
+                            severity = %eval.severity,
+                            "evaluation: proceed with improvement"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "skill evaluation failed, proceeding with improvement: {e:#}"
+                        );
+                    }
+                }
+            }
+        }
+
         let generated_body = self
             .call_improvement_llm(
                 skill_name,

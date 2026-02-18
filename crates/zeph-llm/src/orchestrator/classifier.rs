@@ -1,5 +1,11 @@
 use crate::provider::{Message, Role};
 
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct ModelSelection {
+    pub model: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskType {
     Coding,
@@ -384,6 +390,14 @@ mod tests {
             TaskType::classify(&user_msg("анализ данных")),
             TaskType::Analysis
         );
+    }
+
+    #[test]
+    fn model_selection_deserialize() {
+        let json = r#"{"model": "claude", "reason": "complex task"}"#;
+        let sel: ModelSelection = serde_json::from_str(json).unwrap();
+        assert_eq!(sel.model, "claude");
+        assert_eq!(sel.reason, "complex task");
     }
 
     #[test]

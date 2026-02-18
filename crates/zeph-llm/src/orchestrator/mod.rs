@@ -1,7 +1,7 @@
 mod classifier;
 mod router;
 
-pub use classifier::TaskType;
+pub use classifier::{ModelSelection, TaskType};
 pub use router::SubProvider;
 
 use std::collections::HashMap;
@@ -16,6 +16,7 @@ pub struct ModelOrchestrator {
     default_provider: String,
     embed_provider: String,
     status_tx: Option<StatusTx>,
+    llm_routing: bool,
 }
 
 impl ModelOrchestrator {
@@ -46,7 +47,14 @@ impl ModelOrchestrator {
             default_provider,
             embed_provider,
             status_tx: None,
+            llm_routing: false,
         })
+    }
+
+    #[must_use]
+    pub fn with_llm_routing(mut self, enabled: bool) -> Self {
+        self.llm_routing = enabled;
+        self
     }
 
     pub fn set_status_tx(&mut self, tx: StatusTx) {
@@ -85,7 +93,60 @@ impl ModelOrchestrator {
             .expect("default provider must exist")
     }
 
+    async fn try_llm_routing(&self, messages: &[Message]) -> Option<String> {
+        if !self.llm_routing {
+            return None;
+        }
+        let provider_names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+        let routing_prompt = format!(
+            "Select the best model provider for this task. Available: {}. \
+             Respond in JSON with fields: model (string), reason (string).",
+            provider_names.join(", ")
+        );
+        let last_message = messages.last().cloned()?;
+        let routing_messages = vec![
+            Message::from_legacy(crate::provider::Role::System, routing_prompt),
+            last_message,
+        ];
+        let default = self.providers.get(&self.default_provider)?;
+        match default
+            .chat_typed::<ModelSelection>(&routing_messages)
+            .await
+        {
+            Ok(selection) if self.providers.contains_key(&selection.model) => {
+                tracing::info!(
+                    model = %selection.model,
+                    reason = %selection.reason,
+                    "LLM routing selected provider"
+                );
+                Some(selection.model)
+            }
+            Ok(selection) => {
+                tracing::warn!(
+                    model = %selection.model,
+                    "LLM routing selected unknown provider, falling back to rule-based"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!("LLM routing failed, falling back to rule-based: {e:#}");
+                None
+            }
+        }
+    }
+
     async fn chat_with_fallback(&self, messages: &[Message]) -> Result<String, LlmError> {
+        if let Some(selected) = self.try_llm_routing(messages).await
+            && let Some(provider) = self.providers.get(&selected)
+        {
+            match provider.chat(messages).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    tracing::warn!("LLM-routed provider {selected} failed: {e:#}, falling back");
+                }
+            }
+        }
+
         let task = TaskType::classify(messages);
         let chain = self
             .routes
@@ -128,6 +189,19 @@ impl ModelOrchestrator {
     }
 
     async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+        if let Some(selected) = self.try_llm_routing(messages).await
+            && let Some(provider) = self.providers.get(&selected)
+        {
+            match provider.chat_stream(messages).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    tracing::warn!(
+                        "LLM-routed provider {selected} stream failed: {e:#}, falling back"
+                    );
+                }
+            }
+        }
+
         let task = TaskType::classify(messages);
         let chain = self
             .routes
