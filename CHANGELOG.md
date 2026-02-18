@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - PDF document loader, feature-gated behind `pdf` (#471)
 - Document ingestion pipeline: load, split, embed, store via Qdrant (#472)
 - File size guard (50 MiB default) and path canonicalization for document loaders
+- Audio input support: `Attachment`/`AttachmentKind` types, `SpeechToText` trait, OpenAI Whisper backend behind `stt` feature flag (#520, #521, #522)
 
 ## [0.10.0] - 2026-02-18
 
