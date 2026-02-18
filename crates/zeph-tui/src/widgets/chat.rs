@@ -8,6 +8,7 @@ use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
 
 use crate::app::{App, MessageRole};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
+use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
 
 /// Returns the maximum scroll offset for the rendered content.
@@ -74,6 +75,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
 
     frame.render_widget(paragraph, area);
+
+    app.set_hyperlinks(hyperlink::collect_from_buffer(frame.buffer_mut(), area));
 
     if total > inner_height {
         render_scrollbar(
@@ -397,6 +400,7 @@ struct MdRenderer<'t> {
     theme: &'t Theme,
     in_code_block: bool,
     code_lang: Option<String>,
+    link_url: Option<String>,
 }
 
 impl<'t> MdRenderer<'t> {
@@ -409,6 +413,7 @@ impl<'t> MdRenderer<'t> {
             theme,
             in_code_block: false,
             code_lang: None,
+            link_url: None,
         }
     }
 
@@ -487,6 +492,14 @@ impl<'t> MdRenderer<'t> {
                     self.base_style.add_modifier(Modifier::DIM),
                 ));
                 self.newline();
+            }
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                self.link_url = Some(dest_url.to_string());
+                self.push_style(self.theme.link);
+            }
+            Event::End(TagEnd::Link) => {
+                self.link_url = None;
+                self.pop_style();
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 self.current.push(Span::styled(

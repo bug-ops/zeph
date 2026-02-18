@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::debug;
 
 use crate::event::{AgentEvent, AppEvent};
+use crate::hyperlink::HyperlinkSpan;
 use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
@@ -70,6 +71,7 @@ pub struct App {
     history_index: Option<usize>,
     draft_input: String,
     queued_count: usize,
+    hyperlinks: Vec<HyperlinkSpan>,
 }
 
 impl App {
@@ -102,6 +104,7 @@ impl App {
             history_index: None,
             draft_input: String::new(),
             queued_count: 0,
+            hyperlinks: Vec::new(),
         }
     }
 
@@ -208,6 +211,14 @@ impl App {
 
     pub fn set_show_source_labels(&mut self, v: bool) {
         self.show_source_labels = v;
+    }
+
+    pub fn set_hyperlinks(&mut self, links: Vec<HyperlinkSpan>) {
+        self.hyperlinks = links;
+    }
+
+    pub fn take_hyperlinks(&mut self) -> Vec<HyperlinkSpan> {
+        std::mem::take(&mut self.hyperlinks)
     }
 
     #[must_use]

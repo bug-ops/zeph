@@ -2,6 +2,7 @@ pub mod app;
 pub mod channel;
 pub mod event;
 pub mod highlight;
+pub mod hyperlink;
 pub mod layout;
 pub mod metrics;
 pub mod theme;
@@ -57,6 +58,11 @@ async fn tui_loop(
     loop {
         app.poll_metrics();
         terminal.draw(|frame| app.draw(frame))?;
+
+        let links = app.take_hyperlinks();
+        if !links.is_empty() {
+            hyperlink::write_osc8(terminal.backend_mut(), &links)?;
+        }
 
         tokio::select! {
             Some(event) = event_rx.recv() => {
