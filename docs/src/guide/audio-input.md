@@ -33,7 +33,58 @@ The Whisper provider inherits the OpenAI API key from the `[llm.openai]` section
 | Backend | Provider | Feature | Status |
 |---------|----------|---------|--------|
 | OpenAI Whisper API | `whisper` | `stt` | Available |
-| Local Whisper (candle) | — | — | Planned |
+| Local Whisper (candle) | `candle-whisper` | `candle` | Available |
+
+## Local Whisper (Candle)
+
+The `candle-whisper` backend runs Whisper inference locally via [candle](https://github.com/huggingface/candle) — no network calls, fully offline after the initial model download.
+
+### Requirements
+
+Enable the `candle` feature flag:
+
+```bash
+cargo build --release --features candle   # CPU
+cargo build --release --features metal    # macOS Metal GPU (implies candle)
+cargo build --release --features cuda     # Linux NVIDIA GPU (implies candle)
+```
+
+### Configuration
+
+```toml
+[llm.stt]
+provider = "candle-whisper"
+model = "openai/whisper-tiny"
+```
+
+### Model Options
+
+Models are downloaded from HuggingFace on first use and cached locally.
+
+| Model | HuggingFace ID | Parameters | Disk |
+|-------|---------------|------------|------|
+| Tiny | `openai/whisper-tiny` | 39M | ~150 MB |
+| Base | `openai/whisper-base` | 74M | ~290 MB |
+| Small | `openai/whisper-small` | 244M | ~950 MB |
+
+Smaller models are faster but less accurate. `whisper-tiny` is a good starting point for low-latency use cases.
+
+### Device Auto-Detection
+
+The backend automatically selects the best available compute device:
+
+1. **Metal** — if `metal` feature is enabled and running on macOS
+2. **CUDA** — if `cuda` feature is enabled and an NVIDIA GPU is available
+3. **CPU** — fallback
+
+### Audio Pipeline
+
+Incoming audio is processed through: symphonia decode, rubato resample to 16 kHz mono, mel spectrogram extraction, then candle Whisper inference.
+
+### Limitations
+
+- **5-minute audio duration guard** — recordings longer than 5 minutes are rejected.
+- **No streaming** — the entire file is decoded and transcribed in one pass.
 
 ## Telegram Voice Messages
 

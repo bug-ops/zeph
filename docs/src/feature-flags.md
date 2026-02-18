@@ -20,7 +20,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | Feature | Description |
 |---------|-------------|
 | `tui` | ratatui-based TUI dashboard with real-time agent metrics |
-| `candle` | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) |
+| `candle` | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) and local Whisper STT ([guide](guide/audio-input.md#local-whisper-candle)) |
 | `metal` | Metal GPU acceleration for candle on macOS (implies `candle`) |
 | `cuda` | CUDA GPU acceleration for candle on Linux (implies `candle`) |
 | `discord` | Discord channel adapter with Gateway v10 WebSocket and slash commands ([guide](guide/channels.md#discord-channel)) |
