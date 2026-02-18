@@ -165,14 +165,6 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("conversation id: {conversation_id}");
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
-    tokio::spawn(async move {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::error!("failed to listen for ctrl-c: {e:#}");
-            return;
-        }
-        tracing::info!("received shutdown signal");
-        let _ = shutdown_tx.send(true);
-    });
 
     tokio::task::spawn_blocking(|| {
         zeph_tools::cleanup_overflow_files(std::time::Duration::from_secs(86_400));
@@ -406,6 +398,28 @@ async fn main() -> anyhow::Result<()> {
 
     let mut agent = agent;
 
+    // Double Ctrl+C: first cancels current operation, second within 2s shuts down
+    let cancel_signal = agent.cancel_signal();
+    tokio::spawn(async move {
+        let mut last_ctrl_c: Option<tokio::time::Instant> = None;
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+            let now = tokio::time::Instant::now();
+            if let Some(prev) = last_ctrl_c
+                && now.duration_since(prev) < std::time::Duration::from_secs(2)
+            {
+                tracing::info!("received second ctrl-c, shutting down");
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+            tracing::info!("received ctrl-c, cancelling current operation");
+            cancel_signal.notify_waiters();
+            last_ctrl_c = Some(now);
+        }
+    });
+
     agent.load_history().await?;
 
     #[cfg(feature = "tui")]
@@ -415,7 +429,8 @@ async fn main() -> anyhow::Result<()> {
         let reader = EventReader::new(event_tx, Duration::from_millis(100));
         std::thread::spawn(move || reader.run());
 
-        let mut tui_app = App::new(tui_handle.user_tx, tui_handle.agent_rx);
+        let mut tui_app = App::new(tui_handle.user_tx, tui_handle.agent_rx)
+            .with_cancel_signal(agent.cancel_signal());
         tui_app.set_show_source_labels(config.tui.show_source_labels);
 
         let history: Vec<(&str, &str)> = agent

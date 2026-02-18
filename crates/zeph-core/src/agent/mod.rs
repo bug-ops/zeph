@@ -12,7 +12,10 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, watch};
+use std::sync::Arc;
+
+use tokio::sync::{Notify, mpsc, watch};
+use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -123,6 +126,8 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     pub(super) mcp: McpState,
     #[cfg(feature = "index")]
     pub(super) index: IndexState,
+    cancel_signal: Arc<Notify>,
+    cancel_token: CancellationToken,
     start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
     summary_provider: Option<AnyProvider>,
@@ -216,6 +221,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 cached_repo_map: None,
                 repo_map_ttl: std::time::Duration::from_secs(300),
             },
+            cancel_signal: Arc::new(Notify::new()),
+            cancel_token: CancellationToken::new(),
             start_time: Instant::now(),
             message_queue: VecDeque::new(),
             summary_provider: None,
@@ -426,6 +433,14 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self
     }
 
+    /// Returns a handle that can cancel the current in-flight operation.
+    /// The returned `Notify` is stable across messages — callers invoke
+    /// `notify_waiters()` to cancel whatever operation is running.
+    #[must_use]
+    pub fn cancel_signal(&self) -> Arc<Notify> {
+        Arc::clone(&self.cancel_signal)
+    }
+
     fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics_tx {
             let elapsed = self.start_time.elapsed().as_secs();
@@ -620,6 +635,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     }
 
     async fn process_user_message(&mut self, text: String) -> Result<(), error::AgentError> {
+        self.cancel_token = CancellationToken::new();
+        let signal = Arc::clone(&self.cancel_signal);
+        let token = self.cancel_token.clone();
+        tokio::spawn(async move {
+            signal.notified().await;
+            token.cancel();
+        });
         let trimmed = text.trim();
 
         if trimmed == "/skills" {
@@ -1930,5 +1952,61 @@ pub(super) mod agent_tests {
         ];
         let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
         assert!(!recent.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[tokio::test]
+    async fn cancel_signal_propagates_to_fresh_token() {
+        use tokio_util::sync::CancellationToken;
+        let signal = Arc::new(Notify::new());
+
+        let token = CancellationToken::new();
+        let sig = Arc::clone(&signal);
+        let tok = token.clone();
+        tokio::spawn(async move {
+            sig.notified().await;
+            tok.cancel();
+        });
+
+        // Yield to let the spawned task reach notified().await
+        tokio::task::yield_now().await;
+        assert!(!token.is_cancelled());
+        signal.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancel_signal_works_across_multiple_messages() {
+        use tokio_util::sync::CancellationToken;
+        let signal = Arc::new(Notify::new());
+
+        // First "message"
+        let token1 = CancellationToken::new();
+        let sig1 = Arc::clone(&signal);
+        let tok1 = token1.clone();
+        tokio::spawn(async move {
+            sig1.notified().await;
+            tok1.cancel();
+        });
+
+        tokio::task::yield_now().await;
+        signal.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(token1.is_cancelled());
+
+        // Second "message" — same signal, new token
+        let token2 = CancellationToken::new();
+        let sig2 = Arc::clone(&signal);
+        let tok2 = token2.clone();
+        tokio::spawn(async move {
+            sig2.notified().await;
+            tok2.cancel();
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!token2.is_cancelled());
+        signal.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(token2.is_cancelled());
     }
 }

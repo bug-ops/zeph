@@ -77,6 +77,11 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         self.doom_loop_history.clear();
 
         for iteration in 0..self.runtime.max_tool_iterations {
+            if self.cancel_token.is_cancelled() {
+                tracing::info!("tool loop cancelled by user");
+                break;
+            }
+
             self.channel.send_typing().await?;
 
             // Context budget check at 80% threshold
@@ -169,6 +174,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     pub(crate) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::error::AgentError> {
+        if self.cancel_token.is_cancelled() {
+            return Ok(None);
+        }
+
         if let Some(ref tracker) = self.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
@@ -184,12 +193,18 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
-            if let Ok(r) = tokio::time::timeout(
-                llm_timeout,
-                self.process_response_streaming().instrument(llm_span),
-            )
-            .await
-            {
+            let cancel = self.cancel_token.clone();
+            let streaming_fut = self.process_response_streaming().instrument(llm_span);
+            let result = tokio::select! {
+                r = tokio::time::timeout(llm_timeout, streaming_fut) => r,
+                () = cancel.cancelled() => {
+                    tracing::info!("LLM call cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    return Ok(None);
+                }
+            };
+            if let Ok(r) = result {
                 let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let completion_estimate_for_cost = r
                     .as_ref()
@@ -211,12 +226,18 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 Ok(None)
             }
         } else {
-            match tokio::time::timeout(
-                llm_timeout,
-                self.provider.chat(&self.messages).instrument(llm_span),
-            )
-            .await
-            {
+            let cancel = self.cancel_token.clone();
+            let chat_fut = self.provider.chat(&self.messages).instrument(llm_span);
+            let result = tokio::select! {
+                r = tokio::time::timeout(llm_timeout, chat_fut) => r,
+                () = cancel.cancelled() => {
+                    tracing::info!("LLM call cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    return Ok(None);
+                }
+            };
+            match result {
                 Ok(Ok(resp)) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let completion_estimate = u64::try_from(resp.len()).unwrap_or(0) / 4;
@@ -417,6 +438,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 }
                 Ok(false)
             }
+            Err(ToolError::Cancelled) => {
+                tracing::info!("tool execution cancelled");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                Ok(false)
+            }
             Err(ToolError::SandboxViolation { path }) => {
                 tracing::warn!("sandbox violation: {path}");
                 self.channel
@@ -456,6 +483,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 },
                 () = super::shutdown_signal(&mut self.shutdown) => {
                     tracing::info!("streaming interrupted by shutdown");
+                    break;
+                }
+                () = self.cancel_token.cancelled() => {
+                    tracing::info!("streaming interrupted by cancellation");
                     break;
                 }
             };
@@ -508,6 +539,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         for iteration in 0..self.runtime.max_tool_iterations {
             if *self.shutdown.borrow() {
                 tracing::info!("native tool loop interrupted by shutdown");
+                break;
+            }
+            if self.cancel_token.is_cancelled() {
+                tracing::info!("native tool loop cancelled by user");
                 break;
             }
 
@@ -595,14 +630,22 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         let start = std::time::Instant::now();
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
-        let result = if let Ok(result) = tokio::time::timeout(
+        let chat_fut = tokio::time::timeout(
             llm_timeout,
             self.provider
                 .chat_with_tools(&self.messages, tool_defs)
                 .instrument(llm_span),
-        )
-        .await
-        {
+        );
+        let timeout_result = tokio::select! {
+            r = chat_fut => r,
+            () = self.cancel_token.cancelled() => {
+                tracing::info!("chat_with_tools cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                return Ok(None);
+            }
+        };
+        let result = if let Ok(result) = timeout_result {
             result?
         } else {
             self.channel
@@ -686,28 +729,39 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             })
             .collect();
 
-        // Execute tool calls in parallel
+        // Execute tool calls in parallel, with cancellation
         let max_parallel = self.runtime.timeouts.max_parallel_tools;
-        let tool_results = if calls.len() <= max_parallel {
-            let futs: Vec<_> = calls
-                .iter()
-                .zip(tool_calls.iter())
-                .map(|(call, tc)| {
-                    self.tool_executor.execute_tool_call(call).instrument(
-                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
-                    )
-                })
-                .collect();
-            futures::future::join_all(futs).await
-        } else {
-            use futures::StreamExt;
-            let stream =
-                futures::stream::iter(calls.iter().zip(tool_calls.iter()).map(|(call, tc)| {
-                    self.tool_executor.execute_tool_call(call).instrument(
-                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
-                    )
-                }));
-            futures::StreamExt::collect::<Vec<_>>(stream.buffered(max_parallel)).await
+        let exec_fut = async {
+            if calls.len() <= max_parallel {
+                let futs: Vec<_> = calls
+                    .iter()
+                    .zip(tool_calls.iter())
+                    .map(|(call, tc)| {
+                        self.tool_executor.execute_tool_call(call).instrument(
+                            tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
+                        )
+                    })
+                    .collect();
+                futures::future::join_all(futs).await
+            } else {
+                use futures::StreamExt;
+                let stream =
+                    futures::stream::iter(calls.iter().zip(tool_calls.iter()).map(|(call, tc)| {
+                        self.tool_executor.execute_tool_call(call).instrument(
+                            tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
+                        )
+                    }));
+                futures::StreamExt::collect::<Vec<_>>(stream.buffered(max_parallel)).await
+            }
+        };
+        let tool_results = tokio::select! {
+            results = exec_fut => results,
+            () = self.cancel_token.cancelled() => {
+                tracing::info!("tool execution cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                return Ok(());
+            }
         };
 
         // Process results sequentially (metrics, channel sends, message parts)

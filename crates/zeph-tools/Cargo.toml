@@ -18,6 +18,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 zeph-skills.workspace = true

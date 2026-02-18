@@ -34,6 +34,7 @@ pub struct MetricsSnapshot {
     pub filter_confidence_full: u64,
     pub filter_confidence_partial: u64,
     pub filter_confidence_fallback: u64,
+    pub cancellations: u64,
 }
 
 pub struct MetricsCollector {
@@ -142,5 +143,14 @@ mod tests {
         collector.update(|m| m.summaries_count += 1);
         collector.update(|m| m.summaries_count += 1);
         assert_eq!(rx.borrow().summaries_count, 2);
+    }
+
+    #[test]
+    fn cancellations_counter_increments() {
+        let (collector, rx) = MetricsCollector::new();
+        assert_eq!(rx.borrow().cancellations, 0);
+        collector.update(|m| m.cancellations += 1);
+        collector.update(|m| m.cancellations += 1);
+        assert_eq!(rx.borrow().cancellations, 2);
     }
 }

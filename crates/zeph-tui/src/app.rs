@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
 
 use crate::event::{AgentEvent, AppEvent};
@@ -73,6 +75,7 @@ pub struct App {
     draft_input: String,
     queued_count: usize,
     hyperlinks: Vec<HyperlinkSpan>,
+    cancel_signal: Option<Arc<Notify>>,
 }
 
 impl App {
@@ -107,6 +110,7 @@ impl App {
             draft_input: String::new(),
             queued_count: 0,
             hyperlinks: Vec::new(),
+            cancel_signal: None,
         }
     }
 
@@ -155,6 +159,12 @@ impl App {
         if !self.messages.is_empty() {
             self.show_splash = false;
         }
+    }
+
+    #[must_use]
+    pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
+        self.cancel_signal = Some(signal);
+        self
     }
 
     #[must_use]
@@ -231,6 +241,11 @@ impl App {
     #[must_use]
     pub fn queued_count(&self) -> usize {
         self.queued_count
+    }
+
+    #[must_use]
+    pub fn is_agent_busy(&self) -> bool {
+        self.status_label.is_some() || self.messages.last().is_some_and(|m| m.streaming)
     }
 
     #[must_use]
@@ -524,6 +539,11 @@ impl App {
 
     fn handle_normal_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Esc if self.is_agent_busy() => {
+                if let Some(ref signal) = self.cancel_signal {
+                    signal.notify_waiters();
+                }
+            }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('i') => self.input_mode = InputMode::Insert,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1310,5 +1330,40 @@ mod tests {
         app.handle_event(AppEvent::Key(key)).unwrap();
         assert!(!app.show_help);
         assert_eq!(app.input(), "?");
+    }
+
+    #[tokio::test]
+    async fn esc_in_normal_mode_cancels_when_busy() {
+        let (mut app, _rx, _tx) = make_app();
+        let notify = Arc::new(Notify::new());
+        let notify_waiter = Arc::clone(&notify);
+        let handle = tokio::spawn(async move {
+            notify_waiter.notified().await;
+            true
+        });
+        tokio::task::yield_now().await;
+
+        app = app.with_cancel_signal(Arc::clone(&notify));
+        app.input_mode = InputMode::Normal;
+        app.status_label = Some("Thinking...".into());
+        assert!(app.is_agent_busy());
+
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
+        assert!(result.is_ok(), "notify should have been triggered");
+    }
+
+    #[test]
+    fn esc_in_normal_mode_does_not_cancel_when_idle() {
+        let (mut app, _rx, _tx) = make_app();
+        let notify = Arc::new(Notify::new());
+        app = app.with_cancel_signal(notify);
+        app.input_mode = InputMode::Normal;
+        assert!(!app.is_agent_busy());
+
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        // No way to assert "not notified" directly, but we verify no panic
     }
 }

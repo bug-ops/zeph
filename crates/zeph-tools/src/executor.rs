@@ -143,6 +143,9 @@ pub enum ToolError {
     #[error("command timed out after {timeout_secs}s")]
     Timeout { timeout_secs: u64 },
 
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("execution failed: {0}")]
     Execution(#[from] std::io::Error),
 }

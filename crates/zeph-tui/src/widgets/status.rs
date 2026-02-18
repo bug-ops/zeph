@@ -21,8 +21,14 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 
     let panel = if app.show_side_panels() { "ON" } else { "OFF" };
 
+    let cancel_hint = if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
+        " | [Esc to cancel]"
+    } else {
+        ""
+    };
+
     let text = format!(
-        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok} | Qdrant: {qdrant} | API: {api} | {uptime}",
+        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok} | Qdrant: {qdrant} | API: {api} | {uptime}{cancel_hint}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),

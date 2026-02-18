@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use schemars::JsonSchema;
 
@@ -39,6 +40,7 @@ pub struct ShellExecutor {
     tool_event_tx: Option<ToolEventTx>,
     permission_policy: Option<PermissionPolicy>,
     output_filter_registry: Option<OutputFilterRegistry>,
+    cancel_token: Option<CancellationToken>,
 }
 
 impl ShellExecutor {
@@ -84,6 +86,7 @@ impl ShellExecutor {
             tool_event_tx: None,
             permission_policy: None,
             output_filter_registry: None,
+            cancel_token: None,
         }
     }
 
@@ -102,6 +105,12 @@ impl ShellExecutor {
     #[must_use]
     pub fn with_permissions(mut self, policy: PermissionPolicy) -> Self {
         self.permission_policy = Some(policy);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = Some(token);
         self
     }
 
@@ -191,8 +200,21 @@ impl ShellExecutor {
             }
 
             let start = Instant::now();
-            let (out, exit_code) =
-                execute_bash(block, self.timeout, self.tool_event_tx.as_ref()).await;
+            let (out, exit_code) = execute_bash(
+                block,
+                self.timeout,
+                self.tool_event_tx.as_ref(),
+                self.cancel_token.as_ref(),
+            )
+            .await;
+            if exit_code == 130
+                && self
+                    .cancel_token
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+            {
+                return Err(ToolError::Cancelled);
+            }
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -398,10 +420,25 @@ fn chrono_now() -> String {
     format!("{secs}")
 }
 
+/// Kill a child process and its descendants.
+/// On unix, sends SIGKILL to child processes via `pkill -KILL -P <pid>` before
+/// killing the parent, preventing zombie subprocesses.
+async fn kill_process_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = Command::new("pkill")
+            .args(["-KILL", "-P", &pid.to_string()])
+            .status()
+            .await;
+    }
+    let _ = child.kill().await;
+}
+
 async fn execute_bash(
     code: &str,
     timeout: Duration,
     event_tx: Option<&ToolEventTx>,
+    cancel_token: Option<&CancellationToken>,
 ) -> (String, i32) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -465,8 +502,17 @@ async fn execute_bash(
                 }
             }
             () = tokio::time::sleep_until(deadline) => {
-                let _ = child.kill().await;
+                kill_process_tree(&mut child).await;
                 return (format!("[error] command timed out after {timeout_secs}s"), 1);
+            }
+            () = async {
+                match cancel_token {
+                    Some(t) => t.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                kill_process_tree(&mut child).await;
+                return ("[cancelled] operation aborted".to_string(), 130);
             }
         }
     }
@@ -541,7 +587,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_simple_command() {
-        let (result, code) = execute_bash("echo hello", Duration::from_secs(30), None).await;
+        let (result, code) = execute_bash("echo hello", Duration::from_secs(30), None, None).await;
         assert!(result.contains("hello"));
         assert_eq!(code, 0);
     }
@@ -549,7 +595,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stderr_output() {
-        let (result, _) = execute_bash("echo err >&2", Duration::from_secs(30), None).await;
+        let (result, _) = execute_bash("echo err >&2", Duration::from_secs(30), None, None).await;
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
     }
@@ -557,8 +603,13 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stdout_and_stderr_combined() {
-        let (result, _) =
-            execute_bash("echo out && echo err >&2", Duration::from_secs(30), None).await;
+        let (result, _) = execute_bash(
+            "echo out && echo err >&2",
+            Duration::from_secs(30),
+            None,
+            None,
+        )
+        .await;
         assert!(result.contains("out"));
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
@@ -568,7 +619,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_empty_output() {
-        let (result, code) = execute_bash("true", Duration::from_secs(30), None).await;
+        let (result, code) = execute_bash("true", Duration::from_secs(30), None, None).await;
         assert_eq!(result, "(no output)");
         assert_eq!(code, 0);
     }
@@ -1141,7 +1192,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_error_handling() {
-        let (result, code) = execute_bash("false", Duration::from_secs(5), None).await;
+        let (result, code) = execute_bash("false", Duration::from_secs(5), None, None).await;
         assert_eq!(result, "(no output)");
         assert_eq!(code, 1);
     }
@@ -1149,8 +1200,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execute_bash_command_not_found() {
-        let (result, _) =
-            execute_bash("nonexistent-command-xyz", Duration::from_secs(5), None).await;
+        let (result, _) = execute_bash(
+            "nonexistent-command-xyz",
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
         assert!(result.contains("[stderr]") || result.contains("[error]"));
     }
 
@@ -1239,5 +1295,67 @@ mod tests {
         assert!(props.contains_key("command"));
         let req = obj["required"].as_array().unwrap();
         assert!(req.iter().any(|v| v.as_str() == Some("command")));
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn cancel_token_kills_child_process() {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token_clone.cancel();
+        });
+        let (result, code) =
+            execute_bash("sleep 60", Duration::from_secs(30), None, Some(&token)).await;
+        assert_eq!(code, 130);
+        assert!(result.contains("[cancelled]"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn cancel_token_none_does_not_cancel() {
+        let (result, code) = execute_bash("echo ok", Duration::from_secs(5), None, None).await;
+        assert_eq!(code, 0);
+        assert!(result.contains("ok"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn cancel_kills_child_process_group() {
+        use std::path::Path;
+        let marker = format!("/tmp/zeph-pgkill-test-{}", std::process::id());
+        let script = format!("bash -c 'sleep 30 && touch {marker}' & sleep 60");
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            token_clone.cancel();
+        });
+        let (result, code) =
+            execute_bash(&script, Duration::from_secs(30), None, Some(&token)).await;
+        assert_eq!(code, 130);
+        assert!(result.contains("[cancelled]"));
+        // Wait briefly, then verify the subprocess did NOT create the marker file
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !Path::new(&marker).exists(),
+            "subprocess should have been killed with process group"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn shell_executor_cancel_returns_cancelled_error() {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token_clone.cancel();
+        });
+        let executor = ShellExecutor::new(&default_config()).with_cancel_token(token);
+        let response = "```bash\nsleep 60\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Cancelled)));
     }
 }
