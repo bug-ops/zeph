@@ -95,6 +95,11 @@ max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
+[llm.stt]
+provider = "whisper"
+model = "whisper-1"
+# Requires `stt` feature. Uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
+
 [skills]
 paths = ["./skills"]
 max_active_skills = 5  # Top-K skills per query via embedding similarity

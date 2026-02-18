@@ -35,6 +35,14 @@ The Whisper provider inherits the OpenAI API key from the `[llm.openai]` section
 | OpenAI Whisper API | `whisper` | `stt` | Available |
 | Local Whisper (candle) | — | — | Planned |
 
+## Telegram Voice Messages
+
+The Telegram channel automatically detects voice and audio messages. When a user sends a voice note or audio file, the adapter downloads the file bytes via the Telegram Bot API and wraps them as an `Attachment` with `AttachmentKind::Audio`. The attachment then follows the standard transcription pipeline described above.
+
+Download failures (network errors, expired file links) are logged at `warn` level and gracefully skipped — the message is delivered without an attachment rather than causing an error.
+
+Bootstrap wiring is automatic: when `[llm.stt]` is present in the config and the `stt` feature is enabled, `main.rs` creates a `WhisperProvider` and injects it into the agent via `with_stt()`. No additional setup is needed beyond the configuration shown above.
+
 ## Limitations
 
 - **25 MB file size limit** — audio files exceeding this are rejected before upload.
