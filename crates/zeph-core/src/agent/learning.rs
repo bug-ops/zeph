@@ -689,8 +689,52 @@ pub(super) fn chrono_parse_sqlite(s: &str) -> Result<u64, ()> {
 #[cfg(test)]
 
 mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
+    };
     #[allow(clippy::wildcard_imports)]
     use super::*;
+    use crate::config::LearningConfig;
+    use zeph_llm::any::AnyProvider;
+    use zeph_memory::semantic::SemanticMemory;
+    use zeph_skills::registry::SkillRegistry;
+
+    async fn test_memory() -> SemanticMemory {
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        // Qdrant URL is unreachable so it gracefully degrades (qdrant = None)
+        SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
+            .await
+            .unwrap()
+    }
+
+    /// Creates a registry with a "test-skill" and returns both the registry and the TempDir.
+    /// The TempDir must be kept alive for the duration of the test because get_skill reads
+    /// the skill body lazily from the filesystem.
+    fn create_registry_with_tempdir() -> (SkillRegistry, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+        (registry, temp_dir)
+    }
+
+    fn learning_config_enabled() -> LearningConfig {
+        LearningConfig {
+            enabled: true,
+            auto_activate: false,
+            min_failures: 2,
+            improve_threshold: 0.7,
+            rollback_threshold: 0.3,
+            min_evaluations: 3,
+            max_versions: 5,
+            cooldown_minutes: 0, // no cooldown in tests
+        }
+    }
 
     #[test]
     fn chrono_parse_valid_datetime() {
@@ -771,5 +815,406 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    // Priority 2: is_learning_enabled
+
+    #[test]
+    fn is_learning_enabled_no_config_returns_false() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // No learning config set → false
+        assert!(!agent.is_learning_enabled());
+    }
+
+    #[test]
+    fn is_learning_enabled_with_disabled_config_returns_false() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut config = learning_config_enabled();
+        config.enabled = false;
+        let agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_learning(config);
+        assert!(!agent.is_learning_enabled());
+    }
+
+    #[test]
+    fn is_learning_enabled_with_enabled_config_returns_true() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(learning_config_enabled());
+        assert!(agent.is_learning_enabled());
+    }
+
+    // Priority 1: check_improvement_allowed
+
+    #[tokio::test]
+    async fn check_improvement_allowed_below_min_failures_returns_false() {
+        let provider = mock_provider(vec!["improved skill body".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Record 1 failure (below min_failures = 2)
+        memory
+            .sqlite()
+            .record_skill_outcomes_batch(
+                &["test-skill".to_string()],
+                Some(cid),
+                "tool_failure",
+                None,
+            )
+            .await
+            .unwrap();
+
+        let config = learning_config_enabled(); // min_failures = 2
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config.clone())
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let allowed = agent
+            .check_improvement_allowed(mem, &config, "test-skill", None)
+            .await
+            .unwrap();
+        assert!(
+            !allowed,
+            "should be false when below min_failures threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_improvement_allowed_high_success_rate_returns_false() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Record 5 successes and 2 failures (success rate = 5/7 ≈ 0.71 >= improve_threshold 0.7)
+        for _ in 0..5 {
+            memory
+                .sqlite()
+                .record_skill_outcomes_batch(
+                    &["test-skill".to_string()],
+                    Some(cid),
+                    "success",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        for _ in 0..2 {
+            memory
+                .sqlite()
+                .record_skill_outcomes_batch(
+                    &["test-skill".to_string()],
+                    Some(cid),
+                    "tool_failure",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let config = learning_config_enabled(); // improve_threshold = 0.7
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config.clone())
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let allowed = agent
+            .check_improvement_allowed(mem, &config, "test-skill", None)
+            .await
+            .unwrap();
+        assert!(
+            !allowed,
+            "should be false when success rate >= improve_threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_improvement_allowed_all_conditions_met_returns_true() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // 1 success, 3 failures (success rate = 0.25 < 0.7, failures = 3 >= min_failures = 2)
+        memory
+            .sqlite()
+            .record_skill_outcomes_batch(&["test-skill".to_string()], Some(cid), "success", None)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            memory
+                .sqlite()
+                .record_skill_outcomes_batch(
+                    &["test-skill".to_string()],
+                    Some(cid),
+                    "tool_failure",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let config = LearningConfig {
+            cooldown_minutes: 0,
+            min_failures: 2,
+            improve_threshold: 0.7,
+            ..learning_config_enabled()
+        };
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config.clone())
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let allowed = agent
+            .check_improvement_allowed(mem, &config, "test-skill", None)
+            .await
+            .unwrap();
+        assert!(allowed, "should be true when all conditions are met");
+    }
+
+    #[tokio::test]
+    async fn check_improvement_allowed_with_user_feedback_skips_metrics() {
+        // When user_feedback is Some, metrics check is skipped entirely → returns true
+        // (assuming no cooldown active)
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        // No skill outcomes recorded → metrics would block; but user_feedback bypasses it
+
+        let config = learning_config_enabled();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config.clone())
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let allowed = agent
+            .check_improvement_allowed(mem, &config, "test-skill", Some("please improve this"))
+            .await
+            .unwrap();
+        assert!(allowed, "user_feedback bypasses metrics check");
+    }
+
+    // Priority 1: generate_improved_skill evaluation gate
+
+    #[tokio::test]
+    async fn generate_improved_skill_returns_early_when_learning_disabled() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // No learning config → is_learning_enabled() = false → returns Ok(()) immediately
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent
+            .generate_improved_skill("test-skill", "error", "response", None)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn generate_improved_skill_returns_early_when_no_memory() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // Learning enabled but no memory → returns Ok(()) early
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(learning_config_enabled());
+
+        let result = agent
+            .generate_improved_skill("test-skill", "error", "response", None)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn generate_improved_skill_should_improve_false_skips_improvement() {
+        // Provider returns SkillEvaluation JSON with should_improve: false → returns Ok(()) early
+        let eval_json = r#"{"should_improve": false, "issues": [], "severity": "low"}"#;
+        let provider = mock_provider(vec![eval_json.into()]);
+        let channel = MockChannel::new(vec![]);
+        // Keep tempdir alive so get_skill can load body from filesystem
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Add enough failures to pass check_improvement_allowed
+        for _ in 0..3 {
+            memory
+                .sqlite()
+                .record_skill_outcomes_batch(
+                    &["test-skill".to_string()],
+                    Some(cid),
+                    "tool_failure",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                cooldown_minutes: 0,
+                min_failures: 2,
+                improve_threshold: 0.7,
+                ..learning_config_enabled()
+            })
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let result = agent
+            .generate_improved_skill("test-skill", "exit code 1", "response", None)
+            .await;
+        // Should return Ok(()) without calling improvement LLM
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn generate_improved_skill_eval_error_proceeds_with_improvement() {
+        // Provider fails for eval → logs warning, proceeds to call improvement LLM
+        // Second call (improvement) also fails (failing provider) → error propagates
+        let provider = mock_provider_failing();
+        let channel = MockChannel::new(vec![]);
+        // Keep tempdir alive so get_skill can load body from filesystem
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Add enough failures
+        for _ in 0..3 {
+            memory
+                .sqlite()
+                .record_skill_outcomes_batch(
+                    &["test-skill".to_string()],
+                    Some(cid),
+                    "tool_failure",
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                cooldown_minutes: 0,
+                min_failures: 2,
+                improve_threshold: 0.7,
+                ..learning_config_enabled()
+            })
+            .with_memory(memory, cid, 50, 5, 50);
+
+        let result = agent
+            .generate_improved_skill("test-skill", "exit code 1", "response", None)
+            .await;
+        // eval fails (warn) → proceeds to call_improvement_llm → provider fails → Err
+        assert!(result.is_err());
+    }
+
+    // Priority 2: attempt_self_reflection
+
+    #[tokio::test]
+    async fn attempt_self_reflection_learning_disabled_returns_false() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // No learning config → is_learning_enabled() = false
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.attempt_self_reflection("error", "output").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn attempt_self_reflection_reflection_used_returns_false() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(learning_config_enabled());
+
+        // Mark reflection as already used
+        agent.reflection_used = true;
+
+        let result = agent.attempt_self_reflection("error", "output").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    // Priority 2: write_skill_file with multiple paths
+
+    #[tokio::test]
+    async fn write_skill_file_uses_first_matching_path() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+
+        // Create skill only in dir2
+        let skill_dir = dir2.path().join("my-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "old").unwrap();
+
+        // dir1 has no matching skill dir
+        write_skill_file(
+            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+            "my-skill",
+            "desc",
+            "updated body",
+        )
+        .await
+        .unwrap();
+
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("updated body"));
+    }
+
+    #[tokio::test]
+    async fn write_skill_file_empty_paths_returns_error() {
+        let result = write_skill_file(&[], "any-skill", "desc", "body").await;
+        assert!(result.is_err());
+    }
+
+    // Priority 3: proptest
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn chrono_parse_never_panics(s in ".*") {
+            let _ = chrono_parse_sqlite(&s);
+        }
     }
 }

@@ -1587,4 +1587,61 @@ mod tests {
         let recalled = memory.recall("test", 3, None).await.unwrap();
         assert_eq!(recalled.len(), 3);
     }
+
+    // Priority 2: summarize fallback path
+
+    #[tokio::test]
+    async fn summarize_fallback_to_plain_text_when_structured_fails() {
+        // Use OllamaProvider pointing at an unreachable URL for chat_typed_erased,
+        // but MockProvider for the plain chat call.
+        // The easiest way: MockProvider returns non-JSON plain text so chat_typed_erased
+        // (which uses chat() + JSON parse) will fail to parse, then falls back to chat().
+        // However MockProvider.chat_typed calls chat() which returns default_response.
+        // chat_typed tries to parse it as JSON → fails → retries → fails → returns StructuredParse error.
+        // Then the fallback calls plain chat() which succeeds.
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let mut mock = MockProvider::default();
+        // First two calls go to chat_typed (attempt + retry), third call is the plain fallback
+        mock.default_response = "plain text summary".into();
+        let provider = AnyProvider::Mock(mock);
+
+        let memory = SemanticMemory {
+            sqlite,
+            qdrant: None,
+            provider,
+            embedding_model: "test".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
+        };
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        for i in 0..5 {
+            memory
+                .remember(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        let result = memory.summarize(cid, 3).await;
+        // The summarize will either succeed (with plain text fallback) or fail
+        // depending on how many retries chat_typed_erased does internally.
+        // With MockProvider returning non-JSON plain text, chat_typed fails to parse.
+        // The fallback plain chat() returns "plain text summary".
+        // Result should be Ok with a summary stored.
+        assert!(result.is_ok());
+        let summaries = memory.load_summaries(cid).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(!summaries[0].content.is_empty());
+    }
+
+    // Priority 3: proptest
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn estimate_tokens_never_panics(s in ".*") {
+            let _ = estimate_tokens(&s);
+        }
+    }
 }

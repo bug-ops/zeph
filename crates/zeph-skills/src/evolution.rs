@@ -381,4 +381,60 @@ mod tests {
         // Within 2x but exceeds MAX_BODY_BYTES (65536)
         assert!(!validate_body_size(&large_original, &large_generated));
     }
+
+    // Priority 2: SkillEvaluation deserialization edge cases
+
+    #[test]
+    fn skill_evaluation_missing_severity_fails() {
+        let json = r#"{"should_improve": true, "issues": ["bad pattern"]}"#;
+        let result: Result<SkillEvaluation, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "expected error when severity field is missing"
+        );
+    }
+
+    #[test]
+    fn skill_evaluation_should_improve_as_string_fails() {
+        let json = r#"{"should_improve": "true", "issues": [], "severity": "low"}"#;
+        let result: Result<SkillEvaluation, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "expected error when should_improve is a string"
+        );
+    }
+
+    #[test]
+    fn skill_evaluation_extra_unknown_fields_succeeds() {
+        let json =
+            r#"{"should_improve": false, "issues": [], "severity": "low", "extra_field": 42}"#;
+        let result: SkillEvaluation = serde_json::from_str(json).unwrap();
+        assert!(!result.should_improve);
+        assert_eq!(result.severity, "low");
+    }
+
+    // Priority 3: Proptest
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn build_evaluation_prompt_never_panics(
+            name in ".*",
+            body in ".*",
+            desc in ".*",
+            total in 0i64..=1000,
+            successes in 0i64..=1000,
+        ) {
+            let failures = total - successes.min(total);
+            let metrics = SkillMetrics {
+                skill_name: name.clone(),
+                version: 1,
+                total,
+                successes: successes.min(total),
+                failures,
+            };
+            let _ = build_evaluation_prompt(&name, &body, &desc, "", &metrics);
+        }
+    }
 }
