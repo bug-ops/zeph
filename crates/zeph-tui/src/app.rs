@@ -611,6 +611,32 @@ impl App {
         self.input.chars().count()
     }
 
+    fn prev_word_boundary(&self) -> usize {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut pos = self.cursor_position;
+        while pos > 0 && !chars[pos - 1].is_alphanumeric() {
+            pos -= 1;
+        }
+        while pos > 0 && chars[pos - 1].is_alphanumeric() {
+            pos -= 1;
+        }
+        pos
+    }
+
+    fn next_word_boundary(&self) -> usize {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        let mut pos = self.cursor_position;
+        while pos < len && chars[pos].is_alphanumeric() {
+            pos += 1;
+        }
+        while pos < len && !chars[pos].is_alphanumeric() {
+            pos += 1;
+        }
+        pos
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn handle_insert_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -620,6 +646,15 @@ impl App {
             }
             KeyCode::Enter => self.submit_input(),
             KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
+                let boundary = self.prev_word_boundary();
+                if boundary < self.cursor_position {
+                    let start = self.byte_offset_of_char(boundary);
+                    let end = self.byte_offset_of_char(self.cursor_position);
+                    self.input.drain(start..end);
+                    self.cursor_position = boundary;
+                }
+            }
             KeyCode::Backspace => {
                 if self.cursor_position > 0 {
                     let byte_offset = self.byte_offset_of_char(self.cursor_position - 1);
@@ -685,6 +720,12 @@ impl App {
                 }
                 self.cursor_position = self.char_count();
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.cursor_position = self.prev_word_boundary();
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.cursor_position = self.next_word_boundary();
+            }
             KeyCode::Left => {
                 self.cursor_position = self.cursor_position.saturating_sub(1);
             }
@@ -695,6 +736,12 @@ impl App {
             }
             KeyCode::Home => self.cursor_position = 0,
             KeyCode::End => self.cursor_position = self.char_count(),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_position = 0;
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_position = self.char_count();
+            }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor_position = 0;
@@ -1573,5 +1620,151 @@ mod tests {
             let output = draw_app(&mut app, 80, 24);
             assert!(!output.contains("Type a message"));
         }
+    }
+
+    #[test]
+    fn prev_word_boundary_from_middle_of_word() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 8;
+        assert_eq!(app.prev_word_boundary(), 6);
+    }
+
+    #[test]
+    fn prev_word_boundary_from_start_of_second_word() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 6;
+        assert_eq!(app.prev_word_boundary(), 0);
+    }
+
+    #[test]
+    fn prev_word_boundary_at_zero_stays_zero() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 0;
+        assert_eq!(app.prev_word_boundary(), 0);
+    }
+
+    #[test]
+    fn next_word_boundary_from_middle_of_first_word() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 2;
+        assert_eq!(app.next_word_boundary(), 6);
+    }
+
+    #[test]
+    fn next_word_boundary_from_start_of_second_word() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 6;
+        assert_eq!(app.next_word_boundary(), 11);
+    }
+
+    #[test]
+    fn next_word_boundary_at_end_stays_at_end() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input = "hello world".into();
+        app.cursor_position = 11;
+        assert_eq!(app.next_word_boundary(), 11);
+    }
+
+    #[test]
+    fn prev_word_boundary_unicode() {
+        let (mut app, _rx, _tx) = make_app();
+        // "привет мир" — 6 chars + space + 3 chars = 10 chars total
+        app.input = "привет мир".into();
+        app.cursor_position = 9;
+        assert_eq!(app.prev_word_boundary(), 7);
+    }
+
+    #[test]
+    fn next_word_boundary_unicode() {
+        let (mut app, _rx, _tx) = make_app();
+        // "привет мир" — 6 chars + space + 3 chars
+        app.input = "привет мир".into();
+        app.cursor_position = 2;
+        assert_eq!(app.next_word_boundary(), 7);
+    }
+
+    #[test]
+    fn alt_left_moves_to_prev_word_boundary() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 8;
+        let key = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.cursor_position(), 6);
+    }
+
+    #[test]
+    fn alt_right_moves_to_next_word_boundary() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 2;
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.cursor_position(), 6);
+    }
+
+    #[test]
+    fn ctrl_a_moves_cursor_to_start() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 7;
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.cursor_position(), 0);
+    }
+
+    #[test]
+    fn ctrl_e_moves_cursor_to_end() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 3;
+        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.cursor_position(), 11);
+    }
+
+    #[test]
+    fn alt_backspace_deletes_to_prev_word_boundary() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 11;
+        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.input(), "hello ");
+        assert_eq!(app.cursor_position(), 6);
+    }
+
+    #[test]
+    fn alt_backspace_at_boundary_deletes_word_and_space() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello world".into();
+        app.cursor_position = 6;
+        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.input(), "world");
+        assert_eq!(app.cursor_position(), 0);
+    }
+
+    #[test]
+    fn alt_backspace_at_zero_is_noop() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello".into();
+        app.cursor_position = 0;
+        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+        assert_eq!(app.input(), "hello");
+        assert_eq!(app.cursor_position(), 0);
     }
 }
