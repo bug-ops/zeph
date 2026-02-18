@@ -294,4 +294,88 @@ mod tests {
         let sentences = super::split_sentences("Wow! Amazing.");
         assert_eq!(sentences.len(), 2);
     }
+
+    mod proptest_splitter {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            #[test]
+            fn split_never_panics(
+                content in "\\PC{0,5000}",
+                chunk_size in 1usize..2000,
+                chunk_overlap in 0usize..500,
+                sentence_aware in proptest::bool::ANY,
+            ) {
+                let splitter = TextSplitter::new(SplitterConfig {
+                    chunk_size,
+                    chunk_overlap,
+                    sentence_aware,
+                });
+                let doc = make_doc(&content);
+                let _ = splitter.split(&doc);
+            }
+
+            #[test]
+            fn chunks_cover_all_content(
+                content in "[a-z ]{10,500}",
+                chunk_size in 10usize..200,
+            ) {
+                let splitter = TextSplitter::new(SplitterConfig {
+                    chunk_size,
+                    chunk_overlap: 0,
+                    sentence_aware: false,
+                });
+                let doc = make_doc(&content);
+                let chunks = splitter.split(&doc);
+
+                if !content.is_empty() {
+                    prop_assert!(!chunks.is_empty());
+                }
+
+                let total_chars: usize = chunks.iter().map(|c| c.content.len()).sum();
+                prop_assert!(total_chars >= content.len());
+            }
+
+            #[test]
+            fn chunk_indices_sequential(
+                content in "[a-z. ]{10,1000}",
+                chunk_size in 5usize..100,
+                sentence_aware in proptest::bool::ANY,
+            ) {
+                let splitter = TextSplitter::new(SplitterConfig {
+                    chunk_size,
+                    chunk_overlap: 0,
+                    sentence_aware,
+                });
+                let doc = make_doc(&content);
+                let chunks = splitter.split(&doc);
+
+                for (i, chunk) in chunks.iter().enumerate() {
+                    prop_assert_eq!(chunk.chunk_index, i);
+                }
+            }
+
+            #[test]
+            fn no_empty_chunks(
+                content in "[a-z. !?]{1,500}",
+                chunk_size in 1usize..200,
+                sentence_aware in proptest::bool::ANY,
+            ) {
+                let splitter = TextSplitter::new(SplitterConfig {
+                    chunk_size,
+                    chunk_overlap: 0,
+                    sentence_aware,
+                });
+                let doc = make_doc(&content);
+                let chunks = splitter.split(&doc);
+
+                for chunk in &chunks {
+                    prop_assert!(!chunk.content.is_empty());
+                }
+            }
+        }
+    }
 }

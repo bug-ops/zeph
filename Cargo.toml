@@ -32,6 +32,7 @@ notify = "8"
 notify-debouncer-mini = "0.7"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 pdf-extract = "0.7"
+proptest = "1.6"
 pulldown-cmark = "0.13"
 qdrant-client = { version = "1.16", default-features = false }
 ratatui = "0.30"

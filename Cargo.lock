@@ -8708,6 +8708,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "pdf-extract",
+ "proptest",
  "qdrant-client",
  "serde_json",
  "sqlx",
