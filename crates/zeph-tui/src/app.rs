@@ -1767,4 +1767,48 @@ mod tests {
         assert_eq!(app.input(), "hello");
         assert_eq!(app.cursor_position(), 0);
     }
+
+    mod proptest_cursor {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            #[test]
+            fn word_boundaries_stay_in_bounds(
+                input in "\\PC{0,100}",
+                cursor in 0usize..=100,
+            ) {
+                let (mut app, _rx, _tx) = make_app();
+                app.input = input;
+                let len = app.char_count();
+                app.cursor_position = cursor.min(len);
+
+                let prev = app.prev_word_boundary();
+                prop_assert!(prev <= app.cursor_position, "prev {prev} > cursor {}", app.cursor_position);
+
+                let next = app.next_word_boundary();
+                prop_assert!(next >= app.cursor_position, "next {next} < cursor {}", app.cursor_position);
+                prop_assert!(next <= len, "next {next} > len {len}");
+            }
+
+            #[test]
+            fn alt_backspace_keeps_valid_state(
+                input in "\\PC{0,50}",
+                cursor in 0usize..=50,
+            ) {
+                let (mut app, _rx, _tx) = make_app();
+                app.input_mode = InputMode::Insert;
+                app.input = input;
+                let len = app.char_count();
+                app.cursor_position = cursor.min(len);
+
+                let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+                app.handle_event(AppEvent::Key(key)).unwrap();
+
+                prop_assert!(app.cursor_position() <= app.char_count());
+            }
+        }
+    }
 }
