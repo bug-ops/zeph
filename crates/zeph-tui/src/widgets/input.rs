@@ -25,6 +25,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         block = block.title_bottom(Span::styled(badge, theme.highlight));
     }
 
+    if app.editing_queued() {
+        block = block.title_bottom(Span::styled(" [editing queued] ", theme.highlight));
+    }
+
     let paragraph = Paragraph::new(app.input())
         .block(block)
         .style(theme.input_cursor)

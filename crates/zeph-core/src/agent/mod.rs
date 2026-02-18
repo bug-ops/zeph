@@ -513,6 +513,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             let Some(msg) = self.channel.try_recv() else {
                 break;
             };
+            if msg.text.trim() == "/drop-last-queued" {
+                self.message_queue.pop_back();
+                continue;
+            }
             self.enqueue_or_merge(msg.text);
         }
     }

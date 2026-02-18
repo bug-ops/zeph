@@ -74,6 +74,8 @@ pub struct App {
     history_index: Option<usize>,
     draft_input: String,
     queued_count: usize,
+    pending_count: usize,
+    editing_queued: bool,
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
 }
@@ -109,6 +111,8 @@ impl App {
             history_index: None,
             draft_input: String::new(),
             queued_count: 0,
+            pending_count: 0,
+            editing_queued: false,
             hyperlinks: Vec::new(),
             cancel_signal: None,
         }
@@ -240,7 +244,12 @@ impl App {
 
     #[must_use]
     pub fn queued_count(&self) -> usize {
-        self.queued_count
+        self.queued_count.max(self.pending_count)
+    }
+
+    #[must_use]
+    pub fn editing_queued(&self) -> bool {
+        self.editing_queued
     }
 
     #[must_use]
@@ -336,6 +345,7 @@ impl App {
                 }
             }
             AgentEvent::Typing => {
+                self.pending_count = self.pending_count.saturating_sub(1);
                 self.status_label = Some("thinking...".to_owned());
             }
             AgentEvent::Status(text) => {
@@ -422,6 +432,7 @@ impl App {
             }
             AgentEvent::QueueCount(count) => {
                 self.queued_count = count;
+                self.pending_count = count;
             }
             AgentEvent::DiffReady(diff) => {
                 if let Some(msg) = self
@@ -623,6 +634,24 @@ impl App {
                 }
             }
             KeyCode::Up => {
+                if self.input.is_empty() && self.pending_count > 0 && self.history_index.is_none() {
+                    if let Some(last) = self.input_history.pop() {
+                        self.input = last;
+                        self.cursor_position = self.char_count();
+                        self.pending_count -= 1;
+                        self.queued_count = self.queued_count.saturating_sub(1);
+                        self.editing_queued = true;
+                        if let Some(pos) = self
+                            .messages
+                            .iter()
+                            .rposition(|m| m.role == MessageRole::User)
+                        {
+                            self.messages.remove(pos);
+                        }
+                        let _ = self.user_input_tx.try_send("/drop-last-queued".to_owned());
+                    }
+                    return;
+                }
                 match self.history_index {
                     None => {
                         if self.input_history.is_empty() {
@@ -702,6 +731,8 @@ impl App {
         self.input.clear();
         self.cursor_position = 0;
         self.scroll_offset = 0;
+        self.editing_queued = false;
+        self.pending_count += 1;
 
         // Non-blocking send; if channel full, message is dropped
         let _ = self.user_input_tx.try_send(text);
@@ -1365,5 +1396,59 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key)).unwrap();
         // No way to assert "not notified" directly, but we verify no panic
+    }
+
+    #[test]
+    fn up_with_empty_input_and_queued_recalls_from_history() {
+        let (mut app, mut rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.pending_count = 2;
+        app.input_history.push("queued msg".into());
+        app.messages.push(ChatMessage {
+            role: MessageRole::User,
+            content: "queued msg".into(),
+            streaming: false,
+            tool_name: None,
+            diff_data: None,
+            filter_stats: None,
+        });
+
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+
+        assert_eq!(app.input(), "queued msg");
+        assert_eq!(app.cursor_position(), 10);
+        assert!(app.editing_queued());
+        assert_eq!(app.queued_count(), 1);
+        assert!(app.input_history.is_empty());
+        assert!(app.messages().is_empty());
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(sent, "/drop-last-queued");
+    }
+
+    #[test]
+    fn up_with_non_empty_input_navigates_history() {
+        let (mut app, mut rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.pending_count = 2;
+        app.input = "hello".into();
+        app.cursor_position = 5;
+        app.input_history.push("prev".into());
+
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key)).unwrap();
+
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.input(), "prev");
+    }
+
+    #[test]
+    fn submit_input_resets_editing_queued() {
+        let (mut app, _rx, _tx) = make_app();
+        app.editing_queued = true;
+        app.input = "some text".into();
+        app.cursor_position = 9;
+        app.submit_input();
+        assert!(!app.editing_queued());
     }
 }
