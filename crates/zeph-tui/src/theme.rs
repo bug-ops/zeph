@@ -40,6 +40,7 @@ pub struct Theme {
     pub diff_gutter_add: Style,
     pub diff_gutter_remove: Style,
     pub diff_header: Style,
+    pub link: Style,
 }
 
 impl Default for Theme {
@@ -83,6 +84,9 @@ impl Default for Theme {
             diff_gutter_add: Style::default().fg(Color::Green),
             diff_gutter_remove: Style::default().fg(Color::Red),
             diff_header: Style::default().fg(Color::DarkGray),
+            link: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
         }
     }
 }

@@ -8565,6 +8565,7 @@ dependencies = [
  "crossterm",
  "pulldown-cmark",
  "ratatui",
+ "regex",
  "similar",
  "thiserror 2.0.18",
  "throbber-widgets-tui",
