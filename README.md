@@ -322,6 +322,7 @@ Always compiled in: `openai`, `compatible`, `orchestrator`, `router`, `self-lear
 | `index` | AST-based code indexing |
 | `gateway` | HTTP webhook ingestion |
 | `daemon` | Component supervisor |
+| `pdf` | PDF document loading for RAG |
 | `scheduler` | Cron-based periodic tasks |
 | `otel` | OpenTelemetry OTLP export |
 | `full` | Everything above |

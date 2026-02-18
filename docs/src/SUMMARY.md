@@ -32,6 +32,7 @@
 - [HTTP Gateway](guide/gateway.md)
 - [Daemon Supervisor](guide/daemon.md)
 - [Cron Scheduler](guide/scheduler.md)
+- [Document Loaders](guide/document-loaders.md)
 
 # Architecture
 

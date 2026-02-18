@@ -54,6 +54,11 @@ SQLite-backed conversation persistence with Qdrant vector search.
 - `QdrantStore` — vector storage and cosine similarity search with `MessageKind` enum (`Regular` | `Summary`) for payload classification
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
 - Automatic collection creation, graceful degradation without Qdrant
+- `DocumentLoader` trait — async document loading with `load(&Path)` returning `Vec<Document>`, dyn-compatible via `Pin<Box<dyn Future>>`
+- `TextLoader` — plain text and markdown loader (`.txt`, `.md`, `.markdown`) with configurable `max_file_size` (50 MiB default) and path canonicalization
+- `PdfLoader` — PDF text extraction via `pdf-extract` with `spawn_blocking` (feature-gated: `pdf`)
+- `TextSplitter` — configurable text chunking with `chunk_size`, `chunk_overlap`, and sentence-aware splitting
+- `IngestionPipeline` — document ingestion orchestrator: load → split → embed → store via `QdrantOps`
 
 ## zeph-channels
 
