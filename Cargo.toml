@@ -32,6 +32,7 @@ eventsource-stream = "0.2"
 http-body-util = "0.1"
 futures-core = "0.3"
 notify = "8"
+nucleo-matcher = "0.3.1"
 notify-debouncer-mini = "0.7"
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 pdf-extract = "0.7"

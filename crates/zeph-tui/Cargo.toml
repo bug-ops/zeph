@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ignore.workspace = true
+nucleo-matcher.workspace = true
 crossterm.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
@@ -32,6 +34,7 @@ zeph-core.workspace = true
 expectrl = "0.8"
 insta = "1.42"
 proptest = "1.6"
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

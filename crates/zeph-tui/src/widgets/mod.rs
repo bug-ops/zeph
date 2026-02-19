@@ -2,6 +2,7 @@ pub mod chat;
 pub mod command_palette;
 pub mod confirm;
 pub mod diff;
+pub mod file_picker;
 pub mod help;
 pub mod input;
 pub mod memory;

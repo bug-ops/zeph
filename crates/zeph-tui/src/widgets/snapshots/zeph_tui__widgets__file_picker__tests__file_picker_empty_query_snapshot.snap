@@ -1,0 +1,19 @@
+---
+source: crates/zeph-tui/src/widgets/file_picker.rs
+expression: output
+---
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+┌ Files ───────────────────────────────────────────────────┐
+│>                                                         │
+│> README.md                                               │
+│  src/lib.rs                                              │
+│  src/main.rs                                             │
+└──────────────────────────────────────────────────────────┘

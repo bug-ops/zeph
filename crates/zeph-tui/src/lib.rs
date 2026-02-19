@@ -2,6 +2,7 @@ pub mod app;
 pub mod channel;
 pub mod command;
 pub mod event;
+pub mod file_picker;
 pub mod highlight;
 pub mod hyperlink;
 pub mod layout;

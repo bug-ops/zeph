@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::command::TuiCommand;
 use crate::event::{AgentEvent, AppEvent};
+use crate::file_picker::{FileIndex, FilePickerState};
 use crate::hyperlink::HyperlinkSpan;
 use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
@@ -128,6 +129,8 @@ pub struct App {
     confirm_state: Option<ConfirmState>,
     command_palette: Option<CommandPaletteState>,
     command_tx: Option<mpsc::Sender<TuiCommand>>,
+    file_picker_state: Option<FilePickerState>,
+    file_index: Option<FileIndex>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -168,6 +171,8 @@ impl App {
             confirm_state: None,
             command_palette: None,
             command_tx: None,
+            file_picker_state: None,
+            file_index: None,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -569,6 +574,10 @@ impl App {
         widgets::input::render(self, frame, layout.input);
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
+        if let Some(state) = &self.file_picker_state {
+            widgets::file_picker::render(state, frame, layout.input);
+        }
+
         if let Some(state) = &self.confirm_state {
             widgets::confirm::render(&state.prompt, frame, frame.area());
         }
@@ -636,6 +645,11 @@ impl App {
 
         if self.command_palette.is_some() {
             self.handle_palette_key(key);
+            return;
+        }
+
+        if self.file_picker_state.is_some() {
+            self.handle_file_picker_key(key);
             return;
         }
 
@@ -1000,10 +1014,58 @@ impl App {
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
             }
+            KeyCode::Char('@') => {
+                self.open_file_picker();
+            }
             KeyCode::Char(c) => {
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
                 self.input.insert(byte_offset, c);
                 self.cursor_position += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn open_file_picker(&mut self) {
+        let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
+        if needs_rebuild {
+            self.file_index = Some(FileIndex::build(&root));
+        }
+        if let Some(idx) = &self.file_index {
+            self.file_picker_state = Some(FilePickerState::new(idx));
+        }
+    }
+
+    fn handle_file_picker_key(&mut self, key: KeyEvent) {
+        let Some(state) = self.file_picker_state.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.file_picker_state = None;
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                if let Some(path) = state.selected_path().map(ToOwned::to_owned) {
+                    let byte_offset = self.byte_offset_of_char(self.cursor_position);
+                    self.input.insert_str(byte_offset, &path);
+                    self.cursor_position += path.chars().count();
+                }
+                self.file_picker_state = None;
+            }
+            KeyCode::Up => {
+                state.move_selection(-1);
+            }
+            KeyCode::Down => {
+                state.move_selection(1);
+            }
+            KeyCode::Char(c) => {
+                state.push_char(c);
+            }
+            KeyCode::Backspace => {
+                if !state.pop_char() {
+                    self.file_picker_state = None;
+                }
             }
             _ => {}
         }
@@ -2368,6 +2430,244 @@ mod tests {
 
             assert_eq!(app.messages().len(), 1);
             assert!(app.messages()[0].content.contains("no command channel"));
+        }
+    }
+
+    mod file_picker_tests {
+        use std::fs;
+
+        use super::*;
+        use crate::file_picker::FileIndex;
+
+        fn make_app_with_index() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
+            let (app, rx, tx) = make_app();
+            (app, rx, tx)
+        }
+
+        fn build_temp_index(files: &[&str]) -> (FileIndex, tempfile::TempDir) {
+            let dir = tempfile::tempdir().unwrap();
+            for &f in files {
+                let path = dir.path().join(f);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::write(&path, "").unwrap();
+            }
+            let idx = FileIndex::build(dir.path());
+            (idx, dir)
+        }
+
+        fn open_picker_with_index(app: &mut App, idx: &FileIndex) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_owned();
+            drop(dir.keep());
+            app.file_index = Some(FileIndex::build(&path));
+            // Replace with our controlled index
+            app.file_picker_state = Some(crate::file_picker::FilePickerState::new(idx));
+        }
+
+        #[test]
+        fn at_sign_opens_picker_and_does_not_insert_into_input() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            app.input_mode = InputMode::Insert;
+            let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(
+                !app.input.contains('@'),
+                "@ should not be in input after opening picker"
+            );
+            assert!(
+                app.file_picker_state.is_some(),
+                "file_picker_state should be Some after @"
+            );
+        }
+
+        #[test]
+        fn esc_dismisses_picker() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs", "b.rs"]);
+            open_picker_with_index(&mut app, &idx);
+            assert!(app.file_picker_state.is_some());
+
+            let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(app.file_picker_state.is_none());
+            assert!(app.input.is_empty());
+        }
+
+        #[test]
+        fn enter_inserts_selected_path_and_closes_picker() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["src/main.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            let selected = app
+                .file_picker_state
+                .as_ref()
+                .unwrap()
+                .selected_path()
+                .map(ToOwned::to_owned)
+                .unwrap();
+
+            let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.file_picker_state.is_none());
+            assert!(
+                app.input.contains(&selected),
+                "input should contain selected path"
+            );
+            assert_eq!(app.cursor_position, selected.chars().count());
+        }
+
+        #[test]
+        fn tab_inserts_selected_path_and_closes_picker() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["README.md"]);
+            open_picker_with_index(&mut app, &idx);
+
+            let selected = app
+                .file_picker_state
+                .as_ref()
+                .unwrap()
+                .selected_path()
+                .map(ToOwned::to_owned)
+                .unwrap();
+
+            let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.file_picker_state.is_none());
+            assert!(app.input.contains(&selected));
+        }
+
+        #[test]
+        fn enter_with_no_matches_closes_picker_without_modifying_input() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            let state = app.file_picker_state.as_mut().unwrap();
+            state.update_query("xyznotfound");
+
+            assert!(app.file_picker_state.as_ref().unwrap().matches().is_empty());
+
+            let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.file_picker_state.is_none());
+            assert!(app.input.is_empty(), "input must be unchanged");
+        }
+
+        #[test]
+        fn down_key_advances_selection() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs", "b.rs", "c.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 0);
+
+            let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 1);
+        }
+
+        #[test]
+        fn up_key_wraps_selection_to_last() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs", "b.rs", "c.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            let state = app.file_picker_state.as_ref().unwrap();
+            assert_eq!(state.selected, state.matches().len() - 1);
+        }
+
+        #[test]
+        fn typing_filters_matches() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["src/main.rs", "src/lib.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            let initial_count = app.file_picker_state.as_ref().unwrap().matches().len();
+
+            let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            let filtered_count = app.file_picker_state.as_ref().unwrap().matches().len();
+            assert!(filtered_count <= initial_count);
+            assert_eq!(app.file_picker_state.as_ref().unwrap().query, "m");
+        }
+
+        #[test]
+        fn backspace_with_nonempty_query_removes_char() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            app.file_picker_state.as_mut().unwrap().update_query("ma");
+
+            let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.file_picker_state.is_some());
+            assert_eq!(app.file_picker_state.as_ref().unwrap().query, "m");
+        }
+
+        #[test]
+        fn backspace_on_empty_query_dismisses_picker() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            assert!(app.file_picker_state.as_ref().unwrap().query.is_empty());
+
+            let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.file_picker_state.is_none());
+        }
+
+        #[test]
+        fn picker_blocks_other_keys() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["a.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            app.input = "hello".into();
+            app.cursor_position = 5;
+            let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert_eq!(
+                app.input, "hello",
+                "input should be unchanged while picker is open"
+            );
+        }
+
+        #[test]
+        fn enter_inserts_at_cursor_mid_input() {
+            let (mut app, _rx, _tx) = make_app_with_index();
+            let (idx, _dir) = build_temp_index(&["src/lib.rs"]);
+            open_picker_with_index(&mut app, &idx);
+
+            app.input = "ab".into();
+            app.cursor_position = 1;
+
+            let selected = app
+                .file_picker_state
+                .as_ref()
+                .unwrap()
+                .selected_path()
+                .map(ToOwned::to_owned)
+                .unwrap();
+
+            let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+
+            assert!(app.input.contains(&selected));
+            assert!(app.input.starts_with('a'));
+            assert!(app.input.ends_with('b'));
         }
     }
 }
