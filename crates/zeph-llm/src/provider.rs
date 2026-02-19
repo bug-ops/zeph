@@ -1,10 +1,40 @@
+use std::any::TypeId;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{LazyLock, Mutex};
 
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
+
+static SCHEMA_CACHE: LazyLock<Mutex<HashMap<TypeId, (serde_json::Value, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Return the JSON schema value and pretty-printed string for type `T`, cached by `TypeId`.
+///
+/// # Errors
+///
+/// Returns an error if schema serialization fails.
+pub(crate) fn cached_schema<T: schemars::JsonSchema + 'static>()
+-> Result<(serde_json::Value, String), crate::LlmError> {
+    let type_id = TypeId::of::<T>();
+    if let Ok(cache) = SCHEMA_CACHE.lock()
+        && let Some(entry) = cache.get(&type_id)
+    {
+        return Ok(entry.clone());
+    }
+    let schema = schemars::schema_for!(T);
+    let value = serde_json::to_value(&schema)
+        .map_err(|e| crate::LlmError::StructuredParse(e.to_string()))?;
+    let pretty = serde_json::to_string_pretty(&schema)
+        .map_err(|e| crate::LlmError::StructuredParse(e.to_string()))?;
+    if let Ok(mut cache) = SCHEMA_CACHE.lock() {
+        cache.insert(type_id, (value.clone(), pretty.clone()));
+    }
+    Ok((value, pretty))
+}
 
 /// Boxed stream of string chunks from an LLM provider.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
@@ -239,7 +269,7 @@ pub trait LlmProvider: Send + Sync {
     fn supports_embeddings(&self) -> bool;
 
     /// Provider name for logging and identification.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     /// Whether this provider supports image input (vision).
     fn supports_vision(&self) -> bool {
@@ -285,12 +315,10 @@ pub trait LlmProvider: Send + Sync {
     #[allow(async_fn_in_trait)]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
         Self: Sized,
     {
-        let schema = schemars::schema_for!(T);
-        let schema_json = serde_json::to_string_pretty(&schema)
-            .map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let (_, schema_json) = cached_schema::<T>()?;
         let type_name = std::any::type_name::<T>()
             .rsplit("::")
             .next()
@@ -370,7 +398,7 @@ mod tests {
             false
         }
 
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             "stub"
         }
     }
@@ -434,7 +462,7 @@ mod tests {
                 false
             }
 
-            fn name(&self) -> &'static str {
+            fn name(&self) -> &str {
                 "fail"
             }
         }
@@ -481,14 +509,16 @@ mod tests {
             }
 
             async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Err(LlmError::EmbedUnsupported { provider: "fail" })
+                Err(LlmError::EmbedUnsupported {
+                    provider: "fail".into(),
+                })
             }
 
             fn supports_embeddings(&self) -> bool {
                 false
             }
 
-            fn name(&self) -> &'static str {
+            fn name(&self) -> &str {
                 "fail"
             }
         }
@@ -897,7 +927,7 @@ mod tests {
 
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             Err(LlmError::EmbedUnsupported {
-                provider: "sequential-stub",
+                provider: "sequential-stub".into(),
             })
         }
 
@@ -905,7 +935,7 @@ mod tests {
             false
         }
 
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             "sequential-stub"
         }
     }

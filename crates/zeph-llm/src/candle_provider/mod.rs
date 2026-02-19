@@ -163,7 +163,9 @@ impl LlmProvider for CandleProvider {
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let Some(ref embed_model) = self.embed_model else {
-            return Err(LlmError::EmbedUnsupported { provider: "candle" });
+            return Err(LlmError::EmbedUnsupported {
+                provider: "candle".into(),
+            });
         };
         let model = embed_model.clone();
         let text = text.to_owned();
@@ -176,7 +178,7 @@ impl LlmProvider for CandleProvider {
         self.embed_model.is_some()
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "candle"
     }
 }

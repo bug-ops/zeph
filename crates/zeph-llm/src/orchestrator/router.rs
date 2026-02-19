@@ -118,7 +118,8 @@ impl LlmProvider for SubProvider {
         }
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         match self {
             Self::Ollama(p) => p.name(),
             Self::Claude(p) => p.name(),

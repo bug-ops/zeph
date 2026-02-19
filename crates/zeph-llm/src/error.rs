@@ -13,13 +13,13 @@ pub enum LlmError {
     Unavailable,
 
     #[error("empty response from {provider}")]
-    EmptyResponse { provider: &'static str },
+    EmptyResponse { provider: String },
 
     #[error("SSE parse error: {0}")]
     SseParse(String),
 
     #[error("embedding not supported by {provider}")]
-    EmbedUnsupported { provider: &'static str },
+    EmbedUnsupported { provider: String },
 
     #[error("model loading failed: {0}")]
     ModelLoad(String),

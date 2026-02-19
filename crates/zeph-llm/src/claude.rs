@@ -1,22 +1,20 @@
 use std::fmt;
-use std::time::Duration;
 
 use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 
 use crate::provider::{
     ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
     ToolUseRequest,
 };
+use crate::retry::send_with_retry;
+use crate::sse::claude_sse_to_stream;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA: &str = "prompt-caching-2024-07-31";
 const MAX_RETRIES: u32 = 3;
-const BASE_BACKOFF_SECS: u64 = 1;
 
 const CACHE_MARKER_STABLE: &str = "<!-- cache:stable -->";
 const CACHE_MARKER_TOOLS: &str = "<!-- cache:tools -->";
@@ -71,6 +69,12 @@ impl ClaudeProvider {
     }
 
     #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    #[must_use]
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
@@ -82,12 +86,6 @@ impl ClaudeProvider {
                 usage.cache_creation_input_tokens,
                 usage.cache_read_input_tokens,
             ));
-        }
-    }
-
-    fn emit_status(&self, msg: impl Into<String>) {
-        if let Some(ref tx) = self.status_tx {
-            let _ = tx.send(msg.into());
         }
     }
 
@@ -141,116 +139,73 @@ impl ClaudeProvider {
     }
 
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
-        for attempt in 0..=MAX_RETRIES {
-            let response = self.build_request(messages, false).send().await?;
+        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.build_request(messages, false).send()
+        })
+        .await?;
 
-            let status = response.status();
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
 
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if attempt == MAX_RETRIES {
-                    return Err(LlmError::RateLimited);
-                }
-                let delay = retry_delay(&response, attempt);
-                self.emit_status(format!(
-                    "Claude rate limited, retrying in {}s ({}/{})",
-                    delay.as_secs(),
-                    attempt + 1,
-                    MAX_RETRIES
-                ));
-                tracing::warn!(
-                    "Claude rate limited, retrying in {}s (attempt {}/{})",
-                    delay.as_secs(),
-                    attempt + 1,
-                    MAX_RETRIES
-                );
-                tokio::time::sleep(delay).await;
-                continue;
-            }
+        if !status.is_success() {
+            tracing::error!("Claude API error {status}: {text}");
+            return Err(LlmError::Other(format!(
+                "Claude API request failed (status {status})"
+            )));
+        }
 
-            let text = response.text().await.map_err(LlmError::Http)?;
-
-            if !status.is_success() {
-                tracing::error!("Claude API error {status}: {text}");
-                return Err(LlmError::Other(format!(
-                    "Claude API request failed (status {status})"
-                )));
-            }
-
-            if Self::has_image_parts(messages) {
-                let resp: ToolApiResponse = serde_json::from_str(&text)?;
-                if let Some(ref usage) = resp.usage {
-                    log_cache_usage(usage);
-                    self.store_cache_usage(usage);
-                }
-                let extracted = resp.content.into_iter().find_map(|b| {
-                    if let AnthropicContentBlock::Text { text } = b {
-                        Some(text)
-                    } else {
-                        None
-                    }
-                });
-                return extracted.ok_or(LlmError::EmptyResponse { provider: "claude" });
-            }
-
-            let resp: ApiResponse = serde_json::from_str(&text)?;
-
+        if Self::has_image_parts(messages) {
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
             if let Some(ref usage) = resp.usage {
                 log_cache_usage(usage);
                 self.store_cache_usage(usage);
             }
-
-            return resp
-                .content
-                .first()
-                .map(|c| c.text.clone())
-                .ok_or(LlmError::EmptyResponse { provider: "claude" });
+            let extracted = resp.content.into_iter().find_map(|b| {
+                if let AnthropicContentBlock::Text { text } = b {
+                    Some(text)
+                } else {
+                    None
+                }
+            });
+            return extracted.ok_or(LlmError::EmptyResponse {
+                provider: "claude".into(),
+            });
         }
 
-        Err(LlmError::RateLimited)
+        let resp: ApiResponse = serde_json::from_str(&text)?;
+
+        if let Some(ref usage) = resp.usage {
+            log_cache_usage(usage);
+            self.store_cache_usage(usage);
+        }
+
+        resp.content
+            .first()
+            .map(|c| c.text.clone())
+            .ok_or(LlmError::EmptyResponse {
+                provider: "claude".into(),
+            })
     }
 
     async fn send_stream_request(
         &self,
         messages: &[Message],
     ) -> Result<reqwest::Response, LlmError> {
-        for attempt in 0..=MAX_RETRIES {
-            let response = self.build_request(messages, true).send().await?;
+        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.build_request(messages, true).send()
+        })
+        .await?;
 
-            let status = response.status();
-
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if attempt == MAX_RETRIES {
-                    return Err(LlmError::RateLimited);
-                }
-                let delay = retry_delay(&response, attempt);
-                self.emit_status(format!(
-                    "Claude rate limited, retrying in {}s ({}/{})",
-                    delay.as_secs(),
-                    attempt + 1,
-                    MAX_RETRIES
-                ));
-                tracing::warn!(
-                    "Claude rate limited, retrying in {}s (attempt {}/{})",
-                    delay.as_secs(),
-                    attempt + 1,
-                    MAX_RETRIES
-                );
-                tokio::time::sleep(delay).await;
-                continue;
-            }
-
-            if !status.is_success() {
-                let text = response.text().await.map_err(LlmError::Http)?;
-                tracing::error!("Claude API streaming request error {status}: {text}");
-                return Err(LlmError::Other(format!(
-                    "Claude API streaming request failed (status {status})"
-                )));
-            }
-
-            return Ok(response);
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.map_err(LlmError::Http)?;
+            tracing::error!("Claude API streaming request error {status}: {text}");
+            return Err(LlmError::Other(format!(
+                "Claude API streaming request failed (status {status})"
+            )));
         }
 
-        Err(LlmError::RateLimited)
+        Ok(response)
     }
 }
 
@@ -272,15 +227,7 @@ impl LlmProvider for ClaudeProvider {
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
-
-        let event_stream = response.bytes_stream().eventsource();
-
-        let mapped = event_stream.filter_map(|event| match event {
-            Ok(event) => parse_sse_event(&event.data, &event.event),
-            Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
-        });
-
-        Ok(Box::pin(mapped))
+        Ok(claude_sse_to_stream(response))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -288,14 +235,17 @@ impl LlmProvider for ClaudeProvider {
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Err(LlmError::EmbedUnsupported { provider: "claude" })
+        Err(LlmError::EmbedUnsupported {
+            provider: "claude".into(),
+        })
     }
 
     fn supports_embeddings(&self) -> bool {
         false
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "claude"
     }
 
@@ -305,12 +255,10 @@ impl LlmProvider for ClaudeProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
         Self: Sized,
     {
-        let schema = schemars::schema_for!(T);
-        let schema_value =
-            serde_json::to_value(&schema).map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let (schema_value, _) = crate::provider::cached_schema::<T>()?;
         let type_name = std::any::type_name::<T>()
             .rsplit("::")
             .next()
@@ -413,9 +361,8 @@ impl LlmProvider for ClaudeProvider {
             tools: &api_tools,
         };
 
-        for attempt in 0..=MAX_RETRIES {
-            let response = self
-                .client
+        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.client
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
@@ -423,58 +370,30 @@ impl LlmProvider for ClaudeProvider {
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
-                .await?;
+        })
+        .await?;
 
-            let status = response.status();
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
 
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if attempt == MAX_RETRIES {
-                    return Err(LlmError::RateLimited);
-                }
-                let delay = retry_delay(&response, attempt);
-                self.emit_status(format!(
-                    "Claude rate limited, retrying in {}s ({}/{})",
-                    delay.as_secs(),
-                    attempt + 1,
-                    MAX_RETRIES
-                ));
-                tokio::time::sleep(delay).await;
-                continue;
-            }
-
-            let text = response.text().await.map_err(LlmError::Http)?;
-
-            if !status.is_success() {
-                tracing::error!("Claude API error {status}: {text}");
-                return Err(LlmError::Other(format!(
-                    "Claude API request failed (status {status})"
-                )));
-            }
-
-            tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
-
-            let resp: ToolApiResponse = serde_json::from_str(&text)?;
-            if let Some(ref usage) = resp.usage {
-                log_cache_usage(usage);
-                self.store_cache_usage(usage);
-            }
-            let parsed = parse_tool_response(resp);
-            tracing::debug!(?parsed, "parsed ChatResponse");
-            return Ok(parsed);
+        if !status.is_success() {
+            tracing::error!("Claude API error {status}: {text}");
+            return Err(LlmError::Other(format!(
+                "Claude API request failed (status {status})"
+            )));
         }
 
-        Err(LlmError::RateLimited)
-    }
-}
+        tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
 
-fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
-    if let Some(val) = response.headers().get("retry-after")
-        && let Ok(s) = val.to_str()
-        && let Ok(secs) = s.parse::<u64>()
-    {
-        return Duration::from_secs(secs);
+        let resp: ToolApiResponse = serde_json::from_str(&text)?;
+        if let Some(ref usage) = resp.usage {
+            log_cache_usage(usage);
+            self.store_cache_usage(usage);
+        }
+        let parsed = parse_tool_response(resp);
+        tracing::debug!(?parsed, "parsed ChatResponse");
+        Ok(parsed)
     }
-    Duration::from_secs(BASE_BACKOFF_SECS << attempt)
 }
 
 fn log_cache_usage(usage: &ApiUsage) {
@@ -485,43 +404,6 @@ fn log_cache_usage(usage: &ApiUsage) {
         cache_read = usage.cache_read_input_tokens,
         "Claude API usage"
     );
-}
-
-fn parse_sse_event(data: &str, event_type: &str) -> Option<Result<String, LlmError>> {
-    match event_type {
-        "content_block_delta" => match serde_json::from_str::<StreamEvent>(data) {
-            Ok(event) => {
-                if let Some(delta) = event.delta
-                    && delta.delta_type == "text_delta"
-                    && !delta.text.is_empty()
-                {
-                    return Some(Ok(delta.text));
-                }
-                None
-            }
-            Err(e) => Some(Err(LlmError::SseParse(format!(
-                "failed to parse SSE data: {e}"
-            )))),
-        },
-        "error" => match serde_json::from_str::<StreamEvent>(data) {
-            Ok(event) => {
-                if let Some(err) = event.error {
-                    Some(Err(LlmError::SseParse(format!(
-                        "Claude stream error ({}): {}",
-                        err.error_type, err.message
-                    ))))
-                } else {
-                    Some(Err(LlmError::SseParse(format!(
-                        "Claude stream error: {data}"
-                    ))))
-                }
-            }
-            Err(_) => Some(Err(LlmError::SseParse(format!(
-                "Claude stream error: {data}"
-            )))),
-        },
-        _ => None,
-    }
 }
 
 fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>) {
@@ -902,32 +784,10 @@ struct ContentBlock {
     text: String,
 }
 
-#[derive(Deserialize)]
-struct StreamEvent {
-    #[serde(default)]
-    delta: Option<Delta>,
-    #[serde(default)]
-    error: Option<StreamError>,
-}
-
-#[derive(Deserialize)]
-struct Delta {
-    #[serde(rename = "type")]
-    delta_type: String,
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct StreamError {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_stream::StreamExt;
 
     #[test]
     fn context_window_known_models() {
@@ -1003,57 +863,6 @@ mod tests {
 
         let (system, _) = split_messages(&messages);
         assert_eq!(system.unwrap(), "Part 1\n\nPart 2");
-    }
-
-    #[test]
-    fn parse_sse_event_text_delta() {
-        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
-        let result = parse_sse_event(data, "content_block_delta");
-        assert_eq!(result.unwrap().unwrap(), "Hello");
-    }
-
-    #[test]
-    fn parse_sse_event_empty_text_delta() {
-        let data =
-            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}"#;
-        let result = parse_sse_event(data, "content_block_delta");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_event_error() {
-        let data = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        let result = parse_sse_event(data, "error");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("overloaded_error"));
-        assert!(err.to_string().contains("Overloaded"));
-    }
-
-    #[test]
-    fn parse_sse_event_message_start_skipped() {
-        let data = r#"{"type":"message_start","message":{}}"#;
-        let result = parse_sse_event(data, "message_start");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_event_message_stop_skipped() {
-        let data = r#"{"type":"message_stop"}"#;
-        let result = parse_sse_event(data, "message_stop");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_event_ping_skipped() {
-        let result = parse_sse_event("{}", "ping");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_event_invalid_json() {
-        let result = parse_sse_event("not json", "content_block_delta");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("failed to parse SSE data"));
     }
 
     #[test]
@@ -1225,98 +1034,6 @@ mod tests {
         let (system, chat) = split_messages(&[]);
         assert!(system.is_none());
         assert!(chat.is_empty());
-    }
-
-    #[test]
-    fn parse_sse_error_without_structured_error() {
-        let data = r#"not valid json at all"#;
-        let result = parse_sse_event(data, "error");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("Claude stream error"));
-    }
-
-    #[test]
-    fn parse_sse_error_with_empty_error_field() {
-        let data = r#"{"type":"error"}"#;
-        let result = parse_sse_event(data, "error");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("Claude stream error"));
-    }
-
-    #[test]
-    fn parse_sse_content_block_delta_non_text_type() {
-        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#;
-        let result = parse_sse_event(data, "content_block_delta");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_content_block_delta_no_delta() {
-        let data = r#"{"type":"content_block_delta","index":0}"#;
-        let result = parse_sse_event(data, "content_block_delta");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_content_block_start_skipped() {
-        let data = r#"{"type":"content_block_start","index":0}"#;
-        let result = parse_sse_event(data, "content_block_start");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_content_block_stop_skipped() {
-        let data = r#"{"type":"content_block_stop","index":0}"#;
-        let result = parse_sse_event(data, "content_block_stop");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_message_delta_skipped() {
-        let data = r#"{"type":"message_delta","usage":{}}"#;
-        let result = parse_sse_event(data, "message_delta");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_error_invalid_json() {
-        let result = parse_sse_event("{broken", "error");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("Claude stream error"));
-    }
-
-    #[test]
-    fn stream_event_deserializes_with_delta() {
-        let json = r#"{"delta":{"type":"text_delta","text":"hi"}}"#;
-        let event: StreamEvent = serde_json::from_str(json).unwrap();
-        let delta = event.delta.unwrap();
-        assert_eq!(delta.delta_type, "text_delta");
-        assert_eq!(delta.text, "hi");
-    }
-
-    #[test]
-    fn stream_event_deserializes_with_error() {
-        let json = r#"{"error":{"type":"rate_limit","message":"too fast"}}"#;
-        let event: StreamEvent = serde_json::from_str(json).unwrap();
-        let err = event.error.unwrap();
-        assert_eq!(err.error_type, "rate_limit");
-        assert_eq!(err.message, "too fast");
-    }
-
-    #[test]
-    fn stream_event_deserializes_empty() {
-        let json = r#"{}"#;
-        let event: StreamEvent = serde_json::from_str(json).unwrap();
-        assert!(event.delta.is_none());
-        assert!(event.error.is_none());
-    }
-
-    #[test]
-    fn delta_default_text_is_empty() {
-        let json = r#"{"type":"text_delta"}"#;
-        let delta: Delta = serde_json::from_str(json).unwrap();
-        assert_eq!(delta.delta_type, "text_delta");
-        assert!(delta.text.is_empty());
     }
 
     #[test]
@@ -1698,25 +1415,6 @@ mod tests {
     fn supports_tool_use_returns_true() {
         let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
         assert!(provider.supports_tool_use());
-    }
-
-    #[test]
-    fn backoff_constants() {
-        assert_eq!(MAX_RETRIES, 3);
-        assert_eq!(BASE_BACKOFF_SECS, 1);
-        // exponential: 1s, 2s, 4s
-        assert_eq!(
-            Duration::from_secs(BASE_BACKOFF_SECS << 0),
-            Duration::from_secs(1)
-        );
-        assert_eq!(
-            Duration::from_secs(BASE_BACKOFF_SECS << 1),
-            Duration::from_secs(2)
-        );
-        assert_eq!(
-            Duration::from_secs(BASE_BACKOFF_SECS << 2),
-            Duration::from_secs(4)
-        );
     }
 
     #[test]

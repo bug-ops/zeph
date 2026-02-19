@@ -3,14 +3,13 @@ use std::time::Duration;
 
 use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 
 use crate::provider::{
     ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
     ToolUseRequest,
 };
+use crate::sse::openai_sse_to_stream;
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -80,6 +79,12 @@ impl OpenAiProvider {
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
         }
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     #[must_use]
@@ -175,7 +180,9 @@ impl OpenAiProvider {
         resp.choices
             .first()
             .map(|c| c.message.content.clone())
-            .ok_or(LlmError::EmptyResponse { provider: "openai" })
+            .ok_or(LlmError::EmptyResponse {
+                provider: "openai".into(),
+            })
     }
 
     async fn send_stream_request(
@@ -261,14 +268,7 @@ impl LlmProvider for OpenAiProvider {
             Err(e) => return Err(e),
         };
 
-        let event_stream = response.bytes_stream().eventsource();
-
-        let mapped = event_stream.filter_map(|event| match event {
-            Ok(event) => parse_sse_event(&event.data),
-            Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
-        });
-
-        Ok(Box::pin(mapped))
+        Ok(openai_sse_to_stream(response))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -279,7 +279,9 @@ impl LlmProvider for OpenAiProvider {
         let model = self
             .embedding_model
             .as_deref()
-            .ok_or(LlmError::EmbedUnsupported { provider: "openai" })?;
+            .ok_or(LlmError::EmbedUnsupported {
+                provider: "openai".into(),
+            })?;
 
         let body = EmbeddingRequest { input: text, model };
 
@@ -307,14 +309,17 @@ impl LlmProvider for OpenAiProvider {
         resp.data
             .first()
             .map(|d| d.embedding.clone())
-            .ok_or(LlmError::EmptyResponse { provider: "openai" })
+            .ok_or(LlmError::EmptyResponse {
+                provider: "openai".into(),
+            })
     }
 
     fn supports_embeddings(&self) -> bool {
         self.embedding_model.is_some()
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "openai"
     }
 
@@ -328,12 +333,10 @@ impl LlmProvider for OpenAiProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
         Self: Sized,
     {
-        let schema = schemars::schema_for!(T);
-        let schema_value =
-            serde_json::to_value(&schema).map_err(|e| LlmError::StructuredParse(e.to_string()))?;
+        let (schema_value, _) = crate::provider::cached_schema::<T>()?;
         let type_name = std::any::type_name::<T>()
             .rsplit("::")
             .next()
@@ -377,7 +380,9 @@ impl LlmProvider for OpenAiProvider {
             .choices
             .first()
             .map(|c| c.message.content.as_str())
-            .ok_or(LlmError::EmptyResponse { provider: "openai" })?;
+            .ok_or(LlmError::EmptyResponse {
+                provider: "openai".into(),
+            })?;
 
         serde_json::from_str::<T>(content).map_err(|e| LlmError::StructuredParse(e.to_string()))
     }
@@ -454,7 +459,9 @@ impl LlmProvider for OpenAiProvider {
             .choices
             .into_iter()
             .next()
-            .ok_or(LlmError::EmptyResponse { provider: "openai" })?;
+            .ok_or(LlmError::EmptyResponse {
+                provider: "openai".into(),
+            })?;
 
         if let Some(tool_calls) = choice.message.tool_calls
             && !tool_calls.is_empty()
@@ -585,31 +592,6 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
         .collect()
 }
 
-fn parse_sse_event(data: &str) -> Option<Result<String, LlmError>> {
-    if data == "[DONE]" {
-        return None;
-    }
-
-    match serde_json::from_str::<StreamChunk>(data) {
-        Ok(chunk) => {
-            let content = chunk
-                .choices
-                .first()
-                .and_then(|c| c.delta.content.as_deref())
-                .unwrap_or_default();
-
-            if content.is_empty() {
-                None
-            } else {
-                Some(Ok(content.to_owned()))
-            }
-        }
-        Err(e) => Some(Err(LlmError::SseParse(format!(
-            "failed to parse SSE data: {e}"
-        )))),
-    }
-}
-
 fn convert_messages(messages: &[Message]) -> Vec<ApiMessage<'_>> {
     messages
         .iter()
@@ -680,22 +662,6 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatMessage {
     content: String,
-}
-
-#[derive(Deserialize)]
-struct StreamChunk {
-    choices: Vec<StreamChoice>,
-}
-
-#[derive(Deserialize)]
-struct StreamChoice {
-    delta: StreamDelta,
-}
-
-#[derive(Deserialize)]
-struct StreamDelta {
-    #[serde(default)]
-    content: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -912,6 +878,7 @@ struct JsonSchemaFormat<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_stream::StreamExt;
 
     fn test_provider() -> OpenAiProvider {
         OpenAiProvider::new(
@@ -1089,40 +1056,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_chunk_with_content() {
-        let data = r#"{"choices":[{"delta":{"content":"Hello"}}]}"#;
-        let result = parse_sse_event(data);
-        assert_eq!(result.unwrap().unwrap(), "Hello");
-    }
-
-    #[test]
-    fn parse_stream_chunk_empty_content() {
-        let data = r#"{"choices":[{"delta":{"content":""}}]}"#;
-        let result = parse_sse_event(data);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_stream_chunk_null_content() {
-        let data = r#"{"choices":[{"delta":{}}]}"#;
-        let result = parse_sse_event(data);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_done_signal() {
-        let result = parse_sse_event("[DONE]");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sse_invalid_json() {
-        let result = parse_sse_event("not json");
-        let err = result.unwrap().unwrap_err();
-        assert!(err.to_string().contains("failed to parse SSE data"));
-    }
-
-    #[test]
     fn parse_embedding_response() {
         let json = r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#;
         let resp: EmbeddingResponse = serde_json::from_str(json).unwrap();
@@ -1258,13 +1191,6 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
         assert!(json.contains("\"content\":\"hello\""));
-    }
-
-    #[test]
-    fn stream_delta_deserializes_without_content() {
-        let json = r#"{}"#;
-        let delta: StreamDelta = serde_json::from_str(json).unwrap();
-        assert!(delta.content.is_none());
     }
 
     #[test]

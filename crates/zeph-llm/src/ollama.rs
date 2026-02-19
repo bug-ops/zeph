@@ -187,14 +187,17 @@ impl LlmProvider for OllamaProvider {
             .embeddings
             .into_iter()
             .next()
-            .ok_or(LlmError::EmptyResponse { provider: "ollama" })
+            .ok_or(LlmError::EmptyResponse {
+                provider: "ollama".into(),
+            })
     }
 
     fn supports_embeddings(&self) -> bool {
         true
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "ollama"
     }
 }

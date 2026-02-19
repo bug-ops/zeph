@@ -15,7 +15,9 @@ pub mod ollama;
 pub mod openai;
 pub mod orchestrator;
 pub mod provider;
+pub(crate) mod retry;
 pub mod router;
+pub(crate) mod sse;
 pub mod stt;
 #[cfg(feature = "stt")]
 pub mod whisper;

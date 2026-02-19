@@ -7,7 +7,6 @@ use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, 
 pub struct CompatibleProvider {
     inner: OpenAiProvider,
     provider_name: String,
-    leaked_name: &'static str,
 }
 
 impl CompatibleProvider {
@@ -22,11 +21,9 @@ impl CompatibleProvider {
     ) -> Self {
         let inner =
             OpenAiProvider::new(api_key, base_url, model, max_tokens, embedding_model, None);
-        let leaked_name = Box::leak(provider_name.clone().into_boxed_str());
         Self {
             inner,
             provider_name,
-            leaked_name,
         }
     }
 }
@@ -45,7 +42,6 @@ impl Clone for CompatibleProvider {
         Self {
             inner: self.inner.clone(),
             provider_name: self.provider_name.clone(),
-            leaked_name: self.leaked_name,
         }
     }
 }
@@ -75,8 +71,8 @@ impl LlmProvider for CompatibleProvider {
         self.inner.supports_embeddings()
     }
 
-    fn name(&self) -> &'static str {
-        self.leaked_name
+    fn name(&self) -> &str {
+        &self.provider_name
     }
 
     fn supports_structured_output(&self) -> bool {
@@ -85,7 +81,7 @@ impl LlmProvider for CompatibleProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
         Self: Sized,
     {
         self.inner.chat_typed(messages).await

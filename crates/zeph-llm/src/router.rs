@@ -111,7 +111,8 @@ impl LlmProvider for RouterProvider {
         self.providers.iter().any(LlmProvider::supports_embeddings)
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "router"
     }
 

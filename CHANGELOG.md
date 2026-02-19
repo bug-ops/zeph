@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replace doom-loop string history with content hash comparison (#645)
 - Return &'static str from detect_image_mime with case-insensitive matching (#646)
 - Replace block_on in history persist with fire-and-forget async spawn (#647)
+- Change `LlmProvider::name()` from `&'static str` to `&str`, eliminating `Box::leak` memory leak in CompatibleProvider (#633)
+- Extract rate-limit retry helper `send_with_retry()` in zeph-llm, deduplicating 3 retry loops (#634)
+- Extract `sse_to_chat_stream()` helpers shared by Claude and OpenAI providers (#635)
+- Replace double `AnyProvider::clone()` in `embed_fn()` with single `Arc` clone (#636)
+- Add `with_client()` builder to ClaudeProvider and OpenAiProvider for shared `reqwest::Client` (#637)
+- Cache `JsonSchema` per `TypeId` in `chat_typed` to avoid per-call schema generation (#638)
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)

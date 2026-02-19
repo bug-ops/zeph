@@ -28,7 +28,7 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
     /// Returns an error if the provider fails or the response cannot be parsed.
     pub async fn extract<T>(&self, input: &str) -> Result<T, LlmError>
     where
-        T: DeserializeOwned + JsonSchema,
+        T: DeserializeOwned + JsonSchema + 'static,
     {
         let mut messages = Vec::new();
         if let Some(ref preamble) = self.preamble {
@@ -63,14 +63,16 @@ mod tests {
         }
 
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Err(LlmError::EmbedUnsupported { provider: "stub" })
+            Err(LlmError::EmbedUnsupported {
+                provider: "stub".into(),
+            })
         }
 
         fn supports_embeddings(&self) -> bool {
             false
         }
 
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             "stub"
         }
     }
@@ -135,7 +137,7 @@ mod tests {
                 false
             }
 
-            fn name(&self) -> &'static str {
+            fn name(&self) -> &str {
                 "fail"
             }
         }

@@ -48,11 +48,11 @@ pub enum AnyProvider {
 
 impl AnyProvider {
     /// Return a cloneable closure that calls `embed()` on this provider.
-    pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture {
-        let provider = self.clone();
+    pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture + Send + Sync {
+        let provider = std::sync::Arc::new(self.clone());
         move |text: &str| -> crate::provider::EmbedFuture {
+            let p = std::sync::Arc::clone(&provider);
             let owned = text.to_owned();
-            let p = provider.clone();
             Box::pin(async move { p.embed(&owned).await })
         }
     }
@@ -62,7 +62,7 @@ impl AnyProvider {
     /// Returns an error if the provider fails or the response cannot be parsed.
     pub async fn chat_typed_erased<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
     where
-        T: DeserializeOwned + JsonSchema,
+        T: DeserializeOwned + JsonSchema + 'static,
     {
         delegate_provider!(self, |p| p.chat_typed::<T>(messages).await)
     }
@@ -119,7 +119,7 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.supports_embeddings())
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         delegate_provider!(self, |p| p.name())
     }
 

@@ -61,7 +61,8 @@ impl MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "mock"
     }
 
@@ -94,7 +95,9 @@ impl LlmProvider for MockProvider {
         if self.supports_embeddings {
             Ok(self.embedding.clone())
         } else {
-            Err(crate::LlmError::EmbedUnsupported { provider: "mock" })
+            Err(crate::LlmError::EmbedUnsupported {
+                provider: "mock".into(),
+            })
         }
     }
 

@@ -312,7 +312,8 @@ impl LlmProvider for ModelOrchestrator {
             .and_then(LlmProvider::last_cache_usage)
     }
 
-    fn name(&self) -> &'static str {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
         "orchestrator"
     }
 }
