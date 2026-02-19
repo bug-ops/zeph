@@ -8,9 +8,36 @@ See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-02-19
+
+### Added
+- Vision (image input) support across Claude, OpenAI, and Ollama providers (#490)
+- Interactive configuration wizard via `zeph init` subcommand with 5-step setup
+- clap-based CLI argument parsing with `--help`, `--version` support
+- Structured LLM output via `chat_typed<T>()` with JSON schema enforcement
+- Pipeline API with composable `Step` trait, `Pipeline` builder, and `ParallelStep` combinator
+- Structured intent classification for skill disambiguation
+- DocumentLoader trait with text/markdown/PDF file loaders in zeph-memory
+- Document ingestion pipeline: load, split, embed, store via Qdrant
+- Audio input support with `SpeechToText` trait and OpenAI Whisper backend (feature: `stt`)
+- Local Whisper backend via candle for offline STT
+- Telegram voice/audio message handling with automatic file download
+- Slack audio file upload handling with host validation and size limits
+- Shell-based installation script with SHA256 verification and platform detection
+- TUI test automation infrastructure with insta snapshots and proptest
+- TUI word-jump, line-jump cursor navigation, keybinding help popup, clickable hyperlinks
+- VectorStore trait abstraction in zeph-memory
+- Operation-level cancellation for LLM requests and tool executions
+
+### Changed
+- Consolidate Docker files into `docker/` directory
+- Typed deserialization for tool call params
+- CI: replace oraclelinux base image with debian bookworm-slim
+
 ### Fixed
-- TUI freezes during fast LLM streaming and parallel tool execution: biased event loop with input priority and agent event batching (#500)
-- Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
+- Strip schema metadata and fix doom loop detection for native tool calls (#534)
+- TUI freezes during fast LLM streaming and parallel tool execution (#500)
+- Redundant syntax highlighting and markdown parsing on every TUI frame (#501)
 
 ## [0.10.0] - 2026-02-18
 

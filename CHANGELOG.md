@@ -6,9 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-- TUI freezes during fast LLM streaming and parallel tool execution: biased event loop with input priority and agent event batching (#500)
-- Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
+## [0.11.0] - 2026-02-19
 
 ### Added
 - Vision (image input) support across Claude, OpenAI, and Ollama providers (#490)
@@ -49,6 +47,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Shell-based installation script (`install/install.sh`) with SHA256 verification, platform detection, and `--version` flag
 - Shellcheck lint job in CI pipeline
 - Per-job permission scoping in release workflow (least privilege)
+- TUI word-jump and line-jump cursor navigation (#557)
+- TUI keybinding help popup on `?` in normal mode (#533)
+- TUI clickable hyperlinks via OSC 8 escape sequences (#530)
+- TUI edit-last-queued for recalling queued messages (#535)
+- VectorStore trait abstraction in zeph-memory (#554)
+- Operation-level cancellation for LLM requests and tool executions (#538)
+
+### Changed
+- Consolidate Docker files into `docker/` directory (#539)
+- Typed deserialization for tool call params (#540)
+- CI: replace oraclelinux base image with debian bookworm-slim (#532)
+
+### Fixed
+- Strip schema metadata and fix doom loop detection for native tool calls (#534)
+- TUI freezes during fast LLM streaming and parallel tool execution: biased event loop with input priority and agent event batching (#500)
+- Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
 
 ## [0.10.0] - 2026-02-18
 
@@ -928,7 +942,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/bug-ops/zeph/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bug-ops/zeph/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/bug-ops/zeph/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/bug-ops/zeph/compare/v0.9.7...v0.9.8

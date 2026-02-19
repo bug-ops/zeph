@@ -19,6 +19,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `orchestrator` | Multi-model coordination and fallback |
 | `router` | Model selection and routing logic |
 | `vision` | Image input support — base64-encoded images in LLM requests; optional dedicated `vision_model` per provider |
+| `extractor` | `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`) |
 | `stt` | `SpeechToText` trait and `WhisperProvider` (OpenAI Whisper, feature-gated behind `stt`) |
 | `candle_whisper` | Local offline STT via Candle (whisper-tiny/base/small, feature-gated behind `candle`) |
 | `error` | `LlmError` — unified error type |
