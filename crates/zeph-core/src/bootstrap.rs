@@ -54,12 +54,24 @@ pub struct ToolExecutorBundle {
 
 impl AppBuilder {
     /// Resolve config, load it, create vault, resolve secrets.
-    pub async fn from_env() -> anyhow::Result<Self> {
-        let config_path = resolve_config_path();
+    ///
+    /// CLI-provided overrides take priority over environment variables and config.
+    pub async fn new(
+        config_override: Option<&Path>,
+        vault_override: Option<&str>,
+        vault_key_override: Option<&Path>,
+        vault_path_override: Option<&Path>,
+    ) -> anyhow::Result<Self> {
+        let config_path = resolve_config_path(config_override);
         let mut config = Config::load(&config_path)?;
         config.validate()?;
 
-        let vault_args = parse_vault_args(&config);
+        let vault_args = parse_vault_args(
+            &config,
+            vault_override,
+            vault_key_override,
+            vault_path_override,
+        );
         let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
             "env" => Box::new(EnvVaultProvider),
             "age" => {
@@ -280,10 +292,9 @@ impl AppBuilder {
 
 // --- Free functions moved from main.rs ---
 
-pub fn resolve_config_path() -> PathBuf {
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(path) = args.windows(2).find(|w| w[0] == "--config").map(|w| &w[1]) {
-        return PathBuf::from(path);
+pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
+    if let Some(path) = cli_override {
+        return path.to_owned();
     }
     if let Ok(path) = std::env::var("ZEPH_CONFIG") {
         return PathBuf::from(path);
@@ -291,25 +302,29 @@ pub fn resolve_config_path() -> PathBuf {
     PathBuf::from("config/default.toml")
 }
 
-/// Priority: CLI --vault > `ZEPH_VAULT_BACKEND` env > config.vault.backend > "env"
-pub fn parse_vault_args(config: &Config) -> VaultArgs {
-    let args: Vec<String> = std::env::args().collect();
-    let cli_backend = args
-        .windows(2)
-        .find(|w| w[0] == "--vault")
-        .map(|w| w[1].clone());
+/// Priority: CLI flag > `ZEPH_VAULT_*` env > config.vault.* > defaults
+pub fn parse_vault_args(
+    config: &Config,
+    cli_backend: Option<&str>,
+    cli_key_path: Option<&Path>,
+    cli_vault_path: Option<&Path>,
+) -> VaultArgs {
     let env_backend = std::env::var("ZEPH_VAULT_BACKEND").ok();
     let backend = cli_backend
+        .map(String::from)
         .or(env_backend)
         .unwrap_or_else(|| config.vault.backend.clone());
-    let key_path = args
-        .windows(2)
-        .find(|w| w[0] == "--vault-key")
-        .map(|w| w[1].clone());
-    let vault_path = args
-        .windows(2)
-        .find(|w| w[0] == "--vault-path")
-        .map(|w| w[1].clone());
+
+    let env_key = std::env::var("ZEPH_VAULT_KEY").ok();
+    let key_path = cli_key_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .or(env_key);
+
+    let env_vault = std::env::var("ZEPH_VAULT_PATH").ok();
+    let vault_path = cli_vault_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .or(env_vault);
+
     VaultArgs {
         backend,
         key_path,
@@ -828,7 +843,7 @@ mod tests {
     #[test]
     fn vault_args_defaults_in_test_context() {
         let config = Config::load(Path::new("/nonexistent")).unwrap();
-        let args = parse_vault_args(&config);
+        let args = parse_vault_args(&config, None, None, None);
         assert_eq!(args.backend, "env");
         assert!(args.key_path.is_none());
         assert!(args.vault_path.is_none());
@@ -838,7 +853,7 @@ mod tests {
     fn vault_args_uses_config_backend_as_fallback() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.vault.backend = "age".into();
-        let args = parse_vault_args(&config);
+        let args = parse_vault_args(&config, None, None, None);
         assert_eq!(args.backend, "age");
     }
 
@@ -847,7 +862,7 @@ mod tests {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.vault.backend = "age".into();
         unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "env") };
-        let args = parse_vault_args(&config);
+        let args = parse_vault_args(&config, None, None, None);
         unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
         assert_eq!(args.backend, "env");
     }
@@ -862,6 +877,50 @@ mod tests {
         assert_eq!(args.backend, "age");
         assert_eq!(args.key_path.as_deref(), Some("/tmp/key"));
         assert_eq!(args.vault_path.as_deref(), Some("/tmp/vault"));
+    }
+
+    #[test]
+    fn vault_args_cli_overrides_env_and_config() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.vault.backend = "env".into();
+        unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "env") };
+        let args = parse_vault_args(
+            &config,
+            Some("age"),
+            Some(Path::new("/cli/key")),
+            Some(Path::new("/cli/vault")),
+        );
+        unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
+        assert_eq!(args.backend, "age");
+        assert_eq!(args.key_path.as_deref(), Some("/cli/key"));
+        assert_eq!(args.vault_path.as_deref(), Some("/cli/vault"));
+    }
+
+    #[test]
+    fn vault_args_env_key_and_path_fallback() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        unsafe { std::env::set_var("ZEPH_VAULT_KEY", "/env/key") };
+        unsafe { std::env::set_var("ZEPH_VAULT_PATH", "/env/vault") };
+        let args = parse_vault_args(&config, None, None, None);
+        unsafe { std::env::remove_var("ZEPH_VAULT_KEY") };
+        unsafe { std::env::remove_var("ZEPH_VAULT_PATH") };
+        assert_eq!(args.key_path.as_deref(), Some("/env/key"));
+        assert_eq!(args.vault_path.as_deref(), Some("/env/vault"));
+    }
+
+    #[test]
+    fn resolve_config_path_cli_override() {
+        let path = resolve_config_path(Some(Path::new("/custom/config.toml")));
+        assert_eq!(path, PathBuf::from("/custom/config.toml"));
+    }
+
+    #[test]
+    fn resolve_config_path_default() {
+        let path = resolve_config_path(None);
+        // Without ZEPH_CONFIG env, falls back to default
+        if std::env::var("ZEPH_CONFIG").is_err() {
+            assert_eq!(path, PathBuf::from("config/default.toml"));
+        }
     }
 
     #[test]

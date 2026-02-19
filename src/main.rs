@@ -122,6 +122,18 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
 
+    /// Secrets backend: "env" or "age"
+    #[arg(long, value_name = "BACKEND")]
+    vault: Option<String>,
+
+    /// Path to age identity (private key) file
+    #[arg(long, value_name = "PATH")]
+    vault_key: Option<PathBuf>,
+
+    /// Path to age-encrypted secrets file
+    #[arg(long, value_name = "PATH")]
+    vault_path: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -145,10 +157,8 @@ async fn main() -> anyhow::Result<()> {
         return init::run(output);
     }
 
-    // --config and --tui are also read by resolve_config_path() and
-    // is_tui_requested() from std::env::args(), so no extra plumbing needed.
     #[cfg(feature = "tui")]
-    let tui_active = is_tui_requested();
+    let tui_active = cli.tui;
     #[cfg(feature = "tui")]
     if tui_active {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -167,9 +177,15 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt::init();
     }
     #[cfg(not(feature = "tui"))]
-    init_subscriber(&resolve_config_path());
+    init_subscriber(&resolve_config_path(cli.config.as_deref()));
 
-    let app = AppBuilder::from_env().await?;
+    let app = AppBuilder::new(
+        cli.config.as_deref(),
+        cli.vault.as_deref(),
+        cli.vault_key.as_deref(),
+        cli.vault_path.as_deref(),
+    )
+    .await?;
     let (provider, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
@@ -187,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "tui")]
-    let (channel, tui_handle) = create_channel_with_tui(app.config()).await?;
+    let (channel, tui_handle) = create_channel_with_tui(app.config(), tui_active).await?;
     #[cfg(not(feature = "tui"))]
     let channel = create_channel(app.config()).await?;
 
@@ -828,18 +844,11 @@ struct TuiHandle {
 }
 
 #[cfg(feature = "tui")]
-fn is_tui_requested() -> bool {
-    std::env::args().any(|a| a == "--tui")
-        || std::env::var("ZEPH_TUI")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false)
-}
-
-#[cfg(feature = "tui")]
 async fn create_channel_with_tui(
     config: &Config,
+    tui_active: bool,
 ) -> anyhow::Result<(AppChannel, Option<TuiHandle>)> {
-    if is_tui_requested() {
+    if tui_active {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
         let agent_tx_clone = agent_tx.clone();
@@ -1124,6 +1133,39 @@ mod tests {
     fn cli_parse_config_flag() {
         let cli = Cli::try_parse_from(["zeph", "--config", "my.toml"]).unwrap();
         assert_eq!(cli.config.unwrap(), PathBuf::from("my.toml"));
+    }
+
+    #[test]
+    fn cli_parse_vault_flags() {
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "--vault",
+            "age",
+            "--vault-key",
+            "/k",
+            "--vault-path",
+            "/v",
+        ])
+        .unwrap();
+        assert_eq!(cli.vault.as_deref(), Some("age"));
+        assert_eq!(cli.vault_key.unwrap(), PathBuf::from("/k"));
+        assert_eq!(cli.vault_path.unwrap(), PathBuf::from("/v"));
+    }
+
+    #[test]
+    fn cli_parse_vault_defaults_to_none() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(cli.vault.is_none());
+        assert!(cli.vault_key.is_none());
+        assert!(cli.vault_path.is_none());
+    }
+
+    #[test]
+    fn cli_parse_vault_partial_flags() {
+        let cli = Cli::try_parse_from(["zeph", "--vault", "age"]).unwrap();
+        assert_eq!(cli.vault.as_deref(), Some("age"));
+        assert!(cli.vault_key.is_none());
+        assert!(cli.vault_path.is_none());
     }
 
     #[test]
