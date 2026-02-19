@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig, ProviderKind, SemanticConfig,
-    SlackConfig, TelegramConfig, VaultConfig,
+    CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig, OrchestratorConfig,
+    OrchestratorProviderConfig, ProviderKind, SemanticConfig, SlackConfig, TelegramConfig,
+    VaultConfig,
 };
 
 #[derive(Default)]
@@ -27,6 +28,17 @@ pub(crate) struct WizardState {
     pub(crate) slack_bot_token: Option<String>,
     pub(crate) slack_signing_secret: Option<String>,
     pub(crate) vault_backend: String,
+    // Orchestrator sub-provider fields
+    pub(crate) orchestrator_primary_provider: Option<ProviderKind>,
+    pub(crate) orchestrator_primary_model: Option<String>,
+    pub(crate) orchestrator_primary_base_url: Option<String>,
+    pub(crate) orchestrator_primary_api_key: Option<String>,
+    pub(crate) orchestrator_primary_compatible_name: Option<String>,
+    pub(crate) orchestrator_fallback_provider: Option<ProviderKind>,
+    pub(crate) orchestrator_fallback_model: Option<String>,
+    pub(crate) orchestrator_fallback_base_url: Option<String>,
+    pub(crate) orchestrator_fallback_api_key: Option<String>,
+    pub(crate) orchestrator_fallback_compatible_name: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -56,13 +68,123 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `(kind, base_url, model, api_key, compatible_name)` returned by `prompt_provider_config`.
+type ProviderConfig = (
+    ProviderKind,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+/// Prompts for a sub-provider configuration.
+/// `label` is shown to the user (e.g. "Primary" or "Fallback").
+/// Returns `(kind, base_url, model, api_key, compatible_name)`.
+fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
+    let sub_providers = [
+        "Ollama (local)",
+        "Claude (API)",
+        "OpenAI (API)",
+        "Compatible (custom)",
+    ];
+    let sel = Select::new()
+        .with_prompt(format!("{label} provider"))
+        .items(&sub_providers)
+        .default(0)
+        .interact()?;
+
+    match sel {
+        0 => {
+            let base_url = Input::new()
+                .with_prompt("Ollama base URL")
+                .default("http://localhost:11434".into())
+                .interact_text()?;
+            let model = Input::new()
+                .with_prompt("Model name")
+                .default("mistral:7b".into())
+                .interact_text()?;
+            Ok((ProviderKind::Ollama, Some(base_url), model, None, None))
+        }
+        1 => {
+            let raw = Password::new().with_prompt("Claude API key").interact()?;
+            let api_key = if raw.is_empty() { None } else { Some(raw) };
+            let model = Input::new()
+                .with_prompt("Model name")
+                .default("claude-sonnet-4-5-20250929".into())
+                .interact_text()?;
+            Ok((ProviderKind::Claude, None, model, api_key, None))
+        }
+        2 => {
+            let raw = Password::new().with_prompt("OpenAI API key").interact()?;
+            let api_key = if raw.is_empty() { None } else { Some(raw) };
+            let base_url = Input::new()
+                .with_prompt("Base URL")
+                .default("https://api.openai.com/v1".into())
+                .interact_text()?;
+            let model = Input::new()
+                .with_prompt("Model name")
+                .default("gpt-4o".into())
+                .interact_text()?;
+            Ok((ProviderKind::OpenAi, Some(base_url), model, api_key, None))
+        }
+        3 => {
+            let compatible_name: String =
+                Input::new().with_prompt("Provider name").interact_text()?;
+            let base_url = Input::new().with_prompt("Base URL").interact_text()?;
+            let model = Input::new().with_prompt("Model name").interact_text()?;
+            let raw = Password::new()
+                .with_prompt("API key (leave empty if none)")
+                .allow_empty_password(true)
+                .interact()?;
+            let api_key = if raw.is_empty() { None } else { Some(raw) };
+            Ok((
+                ProviderKind::Compatible,
+                Some(base_url),
+                model,
+                api_key,
+                Some(compatible_name),
+            ))
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 1/5: LLM Provider ==\n");
 
+    step_llm_provider(state)?;
+
+    state.embedding_model = Some(
+        Input::new()
+            .with_prompt("Embedding model")
+            .default("qwen3-embedding".into())
+            .interact_text()?,
+    );
+
+    if state.provider == Some(ProviderKind::Ollama) {
+        let use_vision = Confirm::new()
+            .with_prompt("Use a separate model for vision (image input)?")
+            .default(false)
+            .interact()?;
+        if use_vision {
+            state.vision_model = Some(
+                Input::new()
+                    .with_prompt("Vision model name (e.g. llava:13b)")
+                    .interact_text()?,
+            );
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
     let providers = [
         "Ollama (local)",
         "Claude (API)",
         "OpenAI (API)",
+        "Orchestrator (multi-model)",
         "Compatible (custom)",
     ];
     let selection = Select::new()
@@ -89,7 +211,8 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
         }
         1 => {
             state.provider = Some(ProviderKind::Claude);
-            state.api_key = Some(Password::new().with_prompt("Claude API key").interact()?);
+            let raw = Password::new().with_prompt("Claude API key").interact()?;
+            state.api_key = if raw.is_empty() { None } else { Some(raw) };
             state.model = Some(
                 Input::new()
                     .with_prompt("Model name")
@@ -99,7 +222,8 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
         }
         2 => {
             state.provider = Some(ProviderKind::OpenAi);
-            state.api_key = Some(Password::new().with_prompt("OpenAI API key").interact()?);
+            let raw = Password::new().with_prompt("OpenAI API key").interact()?;
+            state.api_key = if raw.is_empty() { None } else { Some(raw) };
             state.base_url = Some(
                 Input::new()
                     .with_prompt("Base URL")
@@ -114,6 +238,28 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
             );
         }
         3 => {
+            state.provider = Some(ProviderKind::Orchestrator);
+            println!("\nConfigure primary provider:");
+            let (pk, pb, pm, pa, pn) = prompt_provider_config("Primary")?;
+            state.orchestrator_primary_provider = Some(pk);
+            state.orchestrator_primary_base_url = pb;
+            state.orchestrator_primary_model = Some(pm);
+            state.orchestrator_primary_api_key = pa;
+            state.orchestrator_primary_compatible_name = pn;
+
+            println!("\nConfigure fallback provider:");
+            let (fk, fb, fm, fa, fn_) = prompt_provider_config("Fallback")?;
+            state.orchestrator_fallback_provider = Some(fk);
+            state.orchestrator_fallback_base_url = fb;
+            state.orchestrator_fallback_model = Some(fm);
+            state.orchestrator_fallback_api_key = fa;
+            state.orchestrator_fallback_compatible_name = fn_;
+
+            // Use primary model as the top-level model for display purposes
+            state.model = state.orchestrator_primary_model.clone();
+            state.base_url = state.orchestrator_primary_base_url.clone();
+        }
+        4 => {
             state.provider = Some(ProviderKind::Compatible);
             state.compatible_name =
                 Some(Input::new().with_prompt("Provider name").interact_text()?);
@@ -128,29 +274,6 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
         }
         _ => unreachable!(),
     }
-
-    state.embedding_model = Some(
-        Input::new()
-            .with_prompt("Embedding model")
-            .default("qwen3-embedding".into())
-            .interact_text()?,
-    );
-
-    if state.provider == Some(ProviderKind::Ollama) {
-        let use_vision = Confirm::new()
-            .with_prompt("Use a separate model for vision (image input)?")
-            .default(false)
-            .interact()?;
-        if use_vision {
-            state.vision_model = Some(
-                Input::new()
-                    .with_prompt("Vision model name (e.g. llava:13b)")
-                    .interact_text()?,
-            );
-        }
-    }
-
-    println!();
     Ok(())
 }
 
@@ -265,6 +388,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
+    let orchestrator = if provider == ProviderKind::Orchestrator {
+        build_orchestrator_config(state)
+    } else {
+        None
+    };
+
     config.llm = LlmConfig {
         provider,
         base_url: state
@@ -279,7 +408,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         cloud: None,
         openai: None,
         candle: None,
-        orchestrator: None,
+        orchestrator,
         compatible: if provider == ProviderKind::Compatible {
             Some(vec![CompatibleConfig {
                 name: state
@@ -351,6 +480,62 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config
 }
 
+fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> {
+    let primary_kind = state.orchestrator_primary_provider?;
+    let primary_model = state.orchestrator_primary_model.clone().unwrap_or_default();
+    let fallback_kind = state.orchestrator_fallback_provider?;
+    let fallback_model = state
+        .orchestrator_fallback_model
+        .clone()
+        .unwrap_or_default();
+
+    let primary_name = primary_kind.as_str().to_owned();
+    let fallback_name = if fallback_kind.as_str() == primary_name {
+        format!("{}-fallback", fallback_kind.as_str())
+    } else {
+        fallback_kind.as_str().to_owned()
+    };
+
+    let embed_model = state
+        .embedding_model
+        .clone()
+        .unwrap_or_else(|| "qwen3-embedding".into());
+
+    let default_route = format!("{primary_name}/{primary_model}");
+    let embed_route = format!("{primary_name}/{embed_model}");
+
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        primary_name.clone(),
+        OrchestratorProviderConfig {
+            provider_type: primary_kind.as_str().to_owned(),
+            model: Some(primary_model),
+            filename: None,
+            device: None,
+        },
+    );
+    providers.insert(
+        fallback_name.clone(),
+        OrchestratorProviderConfig {
+            provider_type: fallback_kind.as_str().to_owned(),
+            model: Some(fallback_model),
+            filename: None,
+            device: None,
+        },
+    );
+
+    let mut routes = std::collections::HashMap::new();
+    routes.insert("chat".to_owned(), vec![primary_name, fallback_name]);
+    routes.insert("embed".to_owned(), vec![embed_route]);
+
+    Some(OrchestratorConfig {
+        default: default_route,
+        embed: embed_model,
+        providers,
+        routes,
+    })
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
     println!("== Step 5/5: Review & Write ==\n");
 
@@ -394,31 +579,56 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     Ok(())
 }
 
-fn print_secrets_instructions(state: &WizardState) {
-    let mut secrets = Vec::new();
-
-    if let Some(ref key) = state.api_key
-        && !key.is_empty()
-    {
-        let var = match state.provider {
-            Some(ProviderKind::Claude) => "ZEPH_CLAUDE_API_KEY",
-            Some(ProviderKind::OpenAi) => "ZEPH_OPENAI_API_KEY",
-            Some(ProviderKind::Compatible) => {
-                let name = state
-                    .compatible_name
-                    .as_deref()
-                    .unwrap_or("custom")
-                    .to_uppercase();
-                // Leak is fine here: runs once at CLI exit
-                let var = format!("ZEPH_COMPATIBLE_{name}_API_KEY");
-                secrets.push(var);
-                secrets.last().map(String::as_str).unwrap_or_default()
-            }
-            _ => "",
-        };
-        if !var.is_empty() && !secrets.iter().any(|s| s == var) {
-            secrets.push(var.to_owned());
+fn api_key_env_var(kind: ProviderKind, name: Option<&str>) -> Option<String> {
+    match kind {
+        ProviderKind::Claude => Some("ZEPH_CLAUDE_API_KEY".to_owned()),
+        ProviderKind::OpenAi => Some("ZEPH_OPENAI_API_KEY".to_owned()),
+        ProviderKind::Compatible => {
+            let n = name.unwrap_or("custom").to_uppercase();
+            Some(format!("ZEPH_COMPATIBLE_{n}_API_KEY"))
         }
+        _ => None,
+    }
+}
+
+fn collect_provider_secret(
+    secrets: &mut Vec<String>,
+    kind: Option<ProviderKind>,
+    api_key: Option<&String>,
+    name: Option<&str>,
+) {
+    if let (Some(k), Some(key)) = (kind, api_key)
+        && !key.is_empty()
+        && let Some(var) = api_key_env_var(k, name)
+        && !secrets.contains(&var)
+    {
+        secrets.push(var);
+    }
+}
+
+fn print_secrets_instructions(state: &WizardState) {
+    let mut secrets: Vec<String> = Vec::new();
+
+    if state.provider == Some(ProviderKind::Orchestrator) {
+        collect_provider_secret(
+            &mut secrets,
+            state.orchestrator_primary_provider,
+            state.orchestrator_primary_api_key.as_ref(),
+            state.orchestrator_primary_compatible_name.as_deref(),
+        );
+        collect_provider_secret(
+            &mut secrets,
+            state.orchestrator_fallback_provider,
+            state.orchestrator_fallback_api_key.as_ref(),
+            state.orchestrator_fallback_compatible_name.as_deref(),
+        );
+    } else {
+        collect_provider_secret(
+            &mut secrets,
+            state.provider,
+            state.api_key.as_ref(),
+            state.compatible_name.as_deref(),
+        );
     }
 
     if state.telegram_token.is_some() {
@@ -454,4 +664,169 @@ fn print_next_steps(path: &std::path::Path) {
     println!("  1. Set required environment variables (see above)");
     println!("  2. Run: zeph --config {}", path.display());
     println!("  3. Or with TUI: zeph --tui --config {}", path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn orchestrator_state() -> WizardState {
+        WizardState {
+            provider: Some(ProviderKind::Orchestrator),
+            model: Some("claude-sonnet-4-5-20250929".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            orchestrator_primary_provider: Some(ProviderKind::Claude),
+            orchestrator_primary_model: Some("claude-sonnet-4-5-20250929".into()),
+            orchestrator_primary_api_key: Some("key-abc".into()),
+            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
+            orchestrator_fallback_model: Some("mistral:7b".into()),
+            orchestrator_fallback_base_url: Some("http://localhost:11434".into()),
+            vault_backend: "env".into(),
+            semantic_enabled: true,
+            ..WizardState::default()
+        }
+    }
+
+    #[test]
+    fn build_config_orchestrator_sets_provider() {
+        let state = orchestrator_state();
+        let config = build_config(&state);
+        assert_eq!(config.llm.provider, ProviderKind::Orchestrator);
+    }
+
+    #[test]
+    fn build_config_orchestrator_generates_orch_config() {
+        let state = orchestrator_state();
+        let config = build_config(&state);
+        let orch = config
+            .llm
+            .orchestrator
+            .expect("orchestrator config present");
+
+        assert!(orch.default.starts_with("claude/"));
+        assert!(orch.providers.contains_key("claude"));
+        assert!(orch.providers.contains_key("ollama"));
+
+        let claude = &orch.providers["claude"];
+        assert_eq!(claude.provider_type, "claude");
+        assert_eq!(claude.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+
+        let ollama = &orch.providers["ollama"];
+        assert_eq!(ollama.provider_type, "ollama");
+        assert_eq!(ollama.model.as_deref(), Some("mistral:7b"));
+
+        let chat_route = orch.routes.get("chat").expect("chat route exists");
+        assert!(chat_route.contains(&"claude".to_owned()));
+        assert!(chat_route.contains(&"ollama".to_owned()));
+    }
+
+    #[test]
+    fn build_config_orchestrator_embed_route() {
+        let state = orchestrator_state();
+        let config = build_config(&state);
+        let orch = config
+            .llm
+            .orchestrator
+            .expect("orchestrator config present");
+        assert!(orch.routes.contains_key("embed"));
+        assert_eq!(orch.embed, "qwen3-embedding");
+    }
+
+    #[test]
+    fn build_config_orchestrator_fallback_name_deduplicated() {
+        // When primary and fallback have the same provider kind, fallback gets a suffix
+        let state = WizardState {
+            provider: Some(ProviderKind::Orchestrator),
+            model: Some("mistral:7b".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            orchestrator_primary_provider: Some(ProviderKind::Ollama),
+            orchestrator_primary_model: Some("mistral:7b".into()),
+            orchestrator_primary_base_url: Some("http://localhost:11434".into()),
+            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
+            orchestrator_fallback_model: Some("llama3:8b".into()),
+            orchestrator_fallback_base_url: Some("http://localhost:11435".into()),
+            vault_backend: "env".into(),
+            semantic_enabled: false,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        let orch = config
+            .llm
+            .orchestrator
+            .expect("orchestrator config present");
+        assert!(
+            orch.providers.contains_key("ollama-fallback"),
+            "fallback key should have suffix when same as primary"
+        );
+    }
+
+    #[test]
+    fn build_config_non_orchestrator_has_no_orch_config() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Ollama),
+            model: Some("mistral:7b".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            base_url: Some("http://localhost:11434".into()),
+            vault_backend: "env".into(),
+            semantic_enabled: false,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.llm.orchestrator.is_none());
+    }
+
+    #[test]
+    fn api_key_env_var_returns_correct_vars() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Claude, None),
+            Some("ZEPH_CLAUDE_API_KEY".to_owned())
+        );
+        assert_eq!(
+            api_key_env_var(ProviderKind::OpenAi, None),
+            Some("ZEPH_OPENAI_API_KEY".to_owned())
+        );
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("myprovider")),
+            Some("ZEPH_COMPATIBLE_MYPROVIDER_API_KEY".to_owned())
+        );
+        assert_eq!(api_key_env_var(ProviderKind::Ollama, None), None);
+    }
+
+    #[test]
+    fn collect_provider_secret_skips_empty_key() {
+        let mut secrets: Vec<String> = Vec::new();
+        let empty = String::new();
+        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&empty), None);
+        assert!(secrets.is_empty(), "empty key must not add any secret");
+    }
+
+    #[test]
+    fn collect_provider_secret_deduplicates() {
+        let mut secrets: Vec<String> = Vec::new();
+        let key = "sk-test".to_owned();
+        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&key), None);
+        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&key), None);
+        assert_eq!(
+            secrets.len(),
+            1,
+            "duplicate provider should appear only once"
+        );
+        assert_eq!(secrets[0], "ZEPH_CLAUDE_API_KEY");
+    }
+
+    #[test]
+    fn build_orchestrator_config_returns_none_without_primary() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Orchestrator),
+            orchestrator_primary_provider: None,
+            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            config.llm.orchestrator.is_none(),
+            "missing primary provider must yield no OrchestratorConfig"
+        );
+    }
 }
