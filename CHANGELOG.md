@@ -6,10 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-02-19
+
 ### Added
 - Persistent CLI input history with rustyline: arrow key navigation, prefix search, line editing, SQLite-backed persistence across restarts (#604)
 - Clickable markdown links in TUI via OSC 8 hyperlinks — `[text](url)` renders as terminal-clickable link with URL sanitization and scheme allowlist (#580)
 - `@`-triggered fuzzy file picker in TUI input — type `@` to search project files by name/path/extension with real-time filtering (#600)
+- Command palette in TUI with read-only agent management commands (#599)
 - Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
 - `zeph vault` CLI subcommands: `init` (generate age keypair), `set` (store secret), `get` (retrieve secret), `list` (show keys), `rm` (remove secret) (#598)
 - Atomic file writes for vault operations with temp+rename strategy (#598)
@@ -966,7 +969,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/bug-ops/zeph/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bug-ops/zeph/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bug-ops/zeph/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/bug-ops/zeph/compare/v0.9.8...v0.9.9

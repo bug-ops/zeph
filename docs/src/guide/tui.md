@@ -24,7 +24,7 @@ ZEPH_TUI=true zeph
 
 ```text
 +-------------------------------------------------------------+
-| Zeph v0.9.8 | Provider: orchestrator | Model: claude-son... |
+| Zeph v0.11.1 | Provider: orchestrator | Model: claude-son... |
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |
@@ -77,6 +77,7 @@ ZEPH_TUI=true zeph
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
 | `Ctrl+K` | Clear message queue |
+| `Ctrl+P` | Open command palette |
 
 ### File Picker
 
@@ -91,6 +92,32 @@ Typing `@` in Insert mode opens a fuzzy file search popup above the input area. 
 | `Escape` | Close picker without inserting |
 
 All other keys are blocked while the picker is visible.
+
+### Command Palette
+
+Press `Ctrl+P` in Insert mode to open the command palette. The palette provides read-only agent management commands for inspecting runtime state without leaving the TUI.
+
+| Key | Action |
+|-----|--------|
+| Any character | Filter commands by substring match |
+| `Up` / `Down` | Navigate the command list |
+| `Enter` | Execute selected command |
+| `Backspace` | Remove last query character |
+| `Escape` | Close palette without executing |
+
+Available commands:
+
+| Command | Description |
+|---------|-------------|
+| `skill:list` | List loaded skills |
+| `mcp:list` | List MCP servers and tools |
+| `memory:stats` | Show memory statistics |
+| `view:cost` | Show cost breakdown |
+| `view:tools` | List available tools |
+| `view:config` | Show active configuration |
+| `view:autonomy` | Show autonomy/trust level |
+
+All commands are read-only and do not modify agent state. Results are displayed as system messages in the chat panel.
 
 ### Confirmation Modal
 

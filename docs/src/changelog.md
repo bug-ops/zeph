@@ -6,12 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) in the repository for the complete version history.
 
-## [Unreleased]
+## [0.11.1] - 2026-02-19
 
 ### Added
 - Persistent CLI input history with rustyline: arrow key navigation, prefix search, line editing, SQLite-backed persistence across restarts (#604)
+- Clickable markdown links in TUI via OSC 8 hyperlinks (#580)
 - `@`-triggered fuzzy file picker in TUI input (#600)
-- Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
+- Command palette in TUI with read-only agent management commands (#599)
+- Orchestrator provider option in `zeph init` wizard (#597)
+- `zeph vault` CLI subcommands: init, set, get, list, rm (#598)
+- Auto-update check via GitHub Releases API (#588)
+
+### Fixed
+- `--vault`, `--vault-key`, `--vault-path` CLI flags restored (#587)
 
 ## [0.11.0] - 2026-02-19
 
