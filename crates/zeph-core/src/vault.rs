@@ -206,6 +206,19 @@ impl AgeVaultProvider {
     }
 }
 
+/// Default vault directory: `$XDG_CONFIG_HOME/zeph`, `$APPDATA/zeph`, or `~/.config/zeph`.
+#[must_use]
+pub fn default_vault_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("zeph");
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("zeph");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join(".config").join("zeph")
+}
+
 fn parse_identity(key_str: &str) -> Result<age::x25519::Identity, AgeVaultError> {
     let key_line = key_str
         .lines()

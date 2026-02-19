@@ -316,14 +316,39 @@ pub fn parse_vault_args(
         .unwrap_or_else(|| config.vault.backend.clone());
 
     let env_key = std::env::var("ZEPH_VAULT_KEY").ok();
+    let default_dir = crate::vault::default_vault_dir();
     let key_path = cli_key_path
         .map(|p| p.to_string_lossy().into_owned())
-        .or(env_key);
+        .or(env_key)
+        .or_else(|| {
+            if backend == "age" {
+                Some(
+                    default_dir
+                        .join("vault-key.txt")
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            } else {
+                None
+            }
+        });
 
     let env_vault = std::env::var("ZEPH_VAULT_PATH").ok();
     let vault_path = cli_vault_path
         .map(|p| p.to_string_lossy().into_owned())
-        .or(env_vault);
+        .or(env_vault)
+        .or_else(|| {
+            if backend == "age" {
+                Some(
+                    default_dir
+                        .join("secrets.age")
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            } else {
+                None
+            }
+        });
 
     VaultArgs {
         backend,

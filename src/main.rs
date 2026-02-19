@@ -690,15 +690,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn default_vault_dir() -> PathBuf {
-    // XDG_CONFIG_HOME or ~/.config on Unix, %APPDATA% on Windows
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("zeph");
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("zeph");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-    PathBuf::from(home).join(".config").join("zeph")
+    zeph_core::vault::default_vault_dir()
 }
 
 fn handle_vault_command(
