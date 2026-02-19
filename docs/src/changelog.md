@@ -9,6 +9,7 @@ See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.
 ## [Unreleased]
 
 ### Added
+- Persistent CLI input history with rustyline: arrow key navigation, prefix search, line editing, SQLite-backed persistence across restarts (#604)
 - `@`-triggered fuzzy file picker in TUI input (#600)
 - Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
 
