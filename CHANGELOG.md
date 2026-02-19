@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Add `wait(true)` to Qdrant upsert and delete operations for read-after-write consistency, fixing flaky `ingested_chunks_have_correct_payload` integration test (#567)
+
 ## [0.11.1] - 2026-02-19
 
 ### Added
