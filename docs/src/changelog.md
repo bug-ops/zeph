@@ -8,6 +8,10 @@ See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.
 
 ## [Unreleased]
 
+### Fixed
+- TUI freezes during fast LLM streaming and parallel tool execution: biased event loop with input priority and agent event batching (#500)
+- Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
+
 ## [0.10.0] - 2026-02-18
 
 ### Fixed

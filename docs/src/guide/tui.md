@@ -235,6 +235,24 @@ If you send a message before warmup finishes, it is queued and processed automat
 
 > **Note:** In non-TUI modes (CLI, Telegram), warmup still runs synchronously before the agent loop starts.
 
+## Performance
+
+### Event Loop Batching
+
+The TUI render loop uses `biased` `tokio::select!` to guarantee input events are always processed before agent events. This prevents keyboard input from being starved during fast LLM streaming or parallel tool execution.
+
+Agent events (streaming chunks, tool output, status updates) are drained in a `try_recv` loop, batching all pending events into a single frame update. This avoids the pathological case where each streaming token triggers a separate redraw.
+
+### Render Cache
+
+Syntax highlighting (tree-sitter) and markdown parsing (pulldown-cmark) results are cached per message. The cache key is a content hash, so only messages whose content actually changed are re-rendered. Cache entries are invalidated on:
+
+- Content change (new streaming chunk appended)
+- Terminal resize
+- View mode toggle (compact/expanded)
+
+This eliminates redundant parsing work that previously re-processed every visible message on every frame.
+
 ## Architecture
 
 The TUI runs as three concurrent loops:

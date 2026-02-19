@@ -254,6 +254,7 @@ A full terminal UI powered by ratatui — not a separate monitoring tool, but an
 - Syntax-highlighted diff view for file edits (compact/expanded toggle)
 - Live metrics: token usage, filter savings, cost tracking, confidence distribution
 - Conversation history with message queueing
+- Responsive input handling during streaming with render cache and event batching
 - Deferred model warmup with progress indicator
 
 ```bash

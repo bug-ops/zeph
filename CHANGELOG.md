@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- TUI freezes during fast LLM streaming and parallel tool execution: biased event loop with input priority and agent event batching (#500)
+- Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
+
 ### Added
 - Interactive configuration wizard via `zeph init` subcommand with 5-step setup (LLM provider, memory, channels, secrets backend, config generation)
 - clap-based CLI argument parsing with `--help`, `--version` support

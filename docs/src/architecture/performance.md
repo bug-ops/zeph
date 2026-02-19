@@ -36,6 +36,13 @@ Context sources (summaries, cross-session recall, semantic recall, code RAG) are
 
 Context assembly and compaction pre-allocate output strings based on estimated final size, reducing intermediate allocations during prompt construction.
 
+## TUI Render Performance
+
+The TUI applies two optimizations to maintain responsive input during heavy streaming:
+
+- **Event loop batching**: `biased` `tokio::select!` prioritizes keyboard/mouse input over agent events. Agent events are drained via `try_recv` loop, coalescing multiple streaming chunks into a single frame redraw.
+- **Per-message render cache**: Syntax highlighting and markdown parsing results are cached with content-hash keys. Only messages with changed content are re-parsed. Cache invalidation triggers: content mutation, terminal resize, and view mode toggle.
+
 ## Tokio Runtime
 
 Tokio is imported with explicit features (`macros`, `rt-multi-thread`, `signal`, `sync`) instead of the `full` meta-feature, reducing compile time and binary size.
