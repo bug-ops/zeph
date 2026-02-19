@@ -37,7 +37,9 @@ impl SqliteStore {
 
         let opts = SqliteConnectOptions::from_str(&url)?
             .create_if_missing(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
@@ -63,5 +65,26 @@ impl SqliteStore {
     pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MemoryError> {
         sqlx::migrate!("../../migrations").run(pool).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn wal_journal_mode_enabled_on_file_db() {
+        let file = NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("valid path");
+
+        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
+
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(store.pool())
+            .await
+            .expect("PRAGMA query");
+
+        assert_eq!(mode, "wal", "expected WAL journal mode, got: {mode}");
     }
 }

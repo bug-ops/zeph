@@ -2,15 +2,23 @@ use tokio_stream::StreamExt;
 use zeph_llm::provider::{ChatResponse, LlmProvider, Message, MessagePart, Role, ToolDefinition};
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
+use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
-use zeph_memory::semantic::estimate_tokens;
-
-use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use tracing::Instrument;
 
 /// Strip volatile IDs from message content so doom-loop comparison is stable.
 /// Normalizes `[tool_result: <id>]` and `[tool_use: <name>(<id>)]` by removing unique IDs.
+// DefaultHasher output is not stable across Rust versions — do not persist or serialize
+// these hashes. They are used only for within-session equality comparison.
+fn doom_loop_hash(content: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let normalized = normalize_for_doom_loop(content);
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn normalize_for_doom_loop(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
@@ -86,11 +94,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
             // Context budget check at 80% threshold
             if let Some(ref budget) = self.context_state.budget {
-                let used: usize = self
-                    .messages
-                    .iter()
-                    .map(|m| estimate_tokens(&m.content))
-                    .sum();
+                let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
                     tracing::warn!(
@@ -147,10 +151,10 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             // Prune tool output bodies from older iterations to reduce context growth
             self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
 
-            // Doom-loop detection: compare last N outputs by string equality
+            // Doom-loop detection: compare last N outputs by content hash
             if let Some(last_msg) = self.messages.last() {
                 self.doom_loop_history
-                    .push(normalize_for_doom_loop(&last_msg.content));
+                    .push(doom_loop_hash(&last_msg.content));
                 if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
                     let recent =
                         &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
@@ -218,7 +222,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 });
                 self.record_cache_usage();
                 self.record_cost(prompt_estimate, completion_estimate_for_cost);
-                Ok(Some(r?))
+                let raw = r?;
+                // Redact secrets from the full response before it is persisted to history.
+                // Streaming chunks were already sent to the channel without per-chunk redaction
+                // (acceptable trade-off: ephemeral display vs allocation per chunk).
+                let redacted = self.maybe_redact(&raw).into_owned();
+                Ok(Some(redacted))
             } else {
                 self.channel
                     .send("LLM request timed out. Please try again.")
@@ -492,8 +501,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             };
             let chunk: String = chunk_result?;
             response.push_str(&chunk);
-            let display = self.maybe_redact(&chunk);
-            self.channel.send_chunk(&display).await?;
+            self.channel.send_chunk(&chunk).await?;
         }
 
         self.channel.flush_chunks().await?;
@@ -549,11 +557,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             self.channel.send_typing().await?;
 
             if let Some(ref budget) = self.context_state.budget {
-                let used: usize = self
-                    .messages
-                    .iter()
-                    .map(|m| estimate_tokens(&m.content))
-                    .sum();
+                let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
                     tracing::warn!(
@@ -716,11 +720,11 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         let calls: Vec<ToolCall> = tool_calls
             .iter()
             .map(|tc| {
-                let params: std::collections::HashMap<String, serde_json::Value> =
+                let params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
-                        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                        map.clone()
                     } else {
-                        std::collections::HashMap::new()
+                        serde_json::Map::new()
                     };
                 ToolCall {
                     tool_id: tc.name.clone(),
@@ -844,7 +848,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
     ) -> Result<bool, super::error::AgentError> {
         if let Some(last_msg) = self.messages.last() {
             self.doom_loop_history
-                .push(normalize_for_doom_loop(&last_msg.content));
+                .push(doom_loop_hash(&last_msg.content));
             if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
                 let recent =
                     &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
@@ -1044,7 +1048,7 @@ mod tests {
         (0..n)
             .map(|i| ToolCall {
                 tool_id: format!("tool-{i}"),
-                params: HashMap::new(),
+                params: serde_json::Map::new(),
             })
             .collect()
     }

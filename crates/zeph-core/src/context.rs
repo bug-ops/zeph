@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use zeph_memory::semantic::estimate_tokens;
 
 const BASE_PROMPT_HEADER: &str = "\
@@ -44,6 +46,26 @@ the user explicitly asks about a skill by name.\n\
 - Do not force-push to main/master branches.\n\
 - Do not execute commands that could cause data loss without confirmation.";
 
+static PROMPT_LEGACY: LazyLock<String> = LazyLock::new(|| {
+    let mut s = String::with_capacity(
+        BASE_PROMPT_HEADER.len() + TOOL_USE_LEGACY.len() + BASE_PROMPT_TAIL.len(),
+    );
+    s.push_str(BASE_PROMPT_HEADER);
+    s.push_str(TOOL_USE_LEGACY);
+    s.push_str(BASE_PROMPT_TAIL);
+    s
+});
+
+static PROMPT_NATIVE: LazyLock<String> = LazyLock::new(|| {
+    let mut s = String::with_capacity(
+        BASE_PROMPT_HEADER.len() + TOOL_USE_NATIVE.len() + BASE_PROMPT_TAIL.len(),
+    );
+    s.push_str(BASE_PROMPT_HEADER);
+    s.push_str(TOOL_USE_NATIVE);
+    s.push_str(BASE_PROMPT_TAIL);
+    s
+});
+
 #[must_use]
 pub fn build_system_prompt(
     skills_prompt: &str,
@@ -51,15 +73,20 @@ pub fn build_system_prompt(
     tool_catalog: Option<&str>,
     native_tools: bool,
 ) -> String {
-    let mut prompt = BASE_PROMPT_HEADER.to_string();
-
-    if native_tools {
-        prompt.push_str(TOOL_USE_NATIVE);
+    let base = if native_tools {
+        &*PROMPT_NATIVE
     } else {
-        prompt.push_str(TOOL_USE_LEGACY);
-    }
-
-    prompt.push_str(BASE_PROMPT_TAIL);
+        &*PROMPT_LEGACY
+    };
+    let dynamic_len = env.map_or(0, |e| e.format().len() + 2)
+        + tool_catalog.map_or(0, |c| if c.is_empty() { 0 } else { c.len() + 2 })
+        + if skills_prompt.is_empty() {
+            0
+        } else {
+            skills_prompt.len() + 2
+        };
+    let mut prompt = String::with_capacity(base.len() + dynamic_len);
+    prompt.push_str(base);
 
     if let Some(env) = env {
         prompt.push_str("\n\n");

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt;
 
 /// Data for rendering file diffs in the TUI.
@@ -13,7 +12,7 @@ pub struct DiffData {
 #[derive(Debug, Clone)]
 pub struct ToolCall {
     pub tool_id: String,
-    pub params: HashMap<String, serde_json::Value>,
+    pub params: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Cumulative filter statistics for a single tool execution.
@@ -153,16 +152,15 @@ pub enum ToolError {
     Execution(#[from] std::io::Error),
 }
 
-/// Deserialize tool call params from a `HashMap<String, Value>` into a typed struct.
+/// Deserialize tool call params from a `serde_json::Map<String, Value>` into a typed struct.
 ///
 /// # Errors
 ///
 /// Returns `ToolError::InvalidParams` when deserialization fails.
-pub fn deserialize_params<T: serde::de::DeserializeOwned, S: std::hash::BuildHasher>(
-    params: &HashMap<String, serde_json::Value, S>,
+pub fn deserialize_params<T: serde::de::DeserializeOwned>(
+    params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ToolError> {
-    let obj =
-        serde_json::Value::Object(params.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    let obj = serde_json::Value::Object(params.clone());
     serde_json::from_value(obj).map_err(|e| ToolError::InvalidParams {
         message: e.to_string(),
     })
@@ -292,7 +290,7 @@ mod tests {
             name: String,
             count: u32,
         }
-        let mut map = HashMap::new();
+        let mut map = serde_json::Map::new();
         map.insert("name".to_owned(), serde_json::json!("test"));
         map.insert("count".to_owned(), serde_json::json!(42));
         let p: P = deserialize_params(&map).unwrap();
@@ -312,8 +310,8 @@ mod tests {
             #[allow(dead_code)]
             name: String,
         }
-        let map: HashMap<String, serde_json::Value> = HashMap::new();
-        let err = deserialize_params::<P, _>(&map).unwrap_err();
+        let map = serde_json::Map::new();
+        let err = deserialize_params::<P>(&map).unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
     }
 
@@ -324,9 +322,9 @@ mod tests {
             #[allow(dead_code)]
             count: u32,
         }
-        let mut map = HashMap::new();
+        let mut map = serde_json::Map::new();
         map.insert("count".to_owned(), serde_json::json!("not a number"));
-        let err = deserialize_params::<P, _>(&map).unwrap_err();
+        let err = deserialize_params::<P>(&map).unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
     }
 
@@ -336,7 +334,7 @@ mod tests {
         struct P {
             name: Option<String>,
         }
-        let map: HashMap<String, serde_json::Value> = HashMap::new();
+        let map = serde_json::Map::new();
         let p: P = deserialize_params(&map).unwrap();
         assert_eq!(p, P { name: None });
     }
@@ -347,7 +345,7 @@ mod tests {
         struct P {
             name: String,
         }
-        let mut map = HashMap::new();
+        let mut map = serde_json::Map::new();
         map.insert("name".to_owned(), serde_json::json!("test"));
         map.insert("extra".to_owned(), serde_json::json!(true));
         let p: P = deserialize_params(&map).unwrap();
@@ -408,7 +406,7 @@ mod tests {
         let exec = DefaultExecutor;
         let call = ToolCall {
             tool_id: "anything".to_owned(),
-            params: std::collections::HashMap::new(),
+            params: serde_json::Map::new(),
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

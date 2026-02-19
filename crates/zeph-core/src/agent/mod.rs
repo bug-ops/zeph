@@ -51,22 +51,34 @@ const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
-    format!("[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}")
+    use std::fmt::Write;
+    let capacity = "[tool output: ".len()
+        + tool_name.len()
+        + "]\n```\n".len()
+        + body.len()
+        + TOOL_OUTPUT_SUFFIX.len();
+    let mut buf = String::with_capacity(capacity);
+    let _ = write!(
+        buf,
+        "[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}"
+    );
+    buf
 }
 
-fn detect_image_mime(filename: Option<&str>) -> String {
+fn detect_image_mime(filename: Option<&str>) -> &'static str {
     let ext = filename
         .and_then(|f| std::path::Path::new(f).extension())
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => "image/png",
+        .unwrap_or("");
+    if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
+        "image/jpeg"
+    } else if ext.eq_ignore_ascii_case("gif") {
+        "image/gif"
+    } else if ext.eq_ignore_ascii_case("webp") {
+        "image/webp"
+    } else {
+        "image/png"
     }
-    .to_owned()
 }
 
 struct QueuedMessage {
@@ -153,7 +165,7 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     message_queue: VecDeque<QueuedMessage>,
     summary_provider: Option<AnyProvider>,
     warmup_ready: Option<watch::Receiver<bool>>,
-    doom_loop_history: Vec<String>,
+    doom_loop_history: Vec<u64>,
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
     stt: Option<Box<dyn SpeechToText>>,
@@ -787,7 +799,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 );
                 continue;
             }
-            let mime_type = detect_image_mime(attachment.filename.as_deref());
+            let mime_type = detect_image_mime(attachment.filename.as_deref()).to_string();
             image_parts.push(MessagePart::Image {
                 data: attachment.data,
                 mime_type,
@@ -918,7 +930,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 .await?;
             return Ok(());
         }
-        let mime_type = detect_image_mime(Some(path));
+        let mime_type = detect_image_mime(Some(path)).to_string();
         extra_parts.push(MessagePart::Image { data, mime_type });
         self.channel
             .send(&format!("Image loaded: {path}. Send your message."))
@@ -2190,21 +2202,58 @@ pub(super) mod agent_tests {
 
     #[test]
     fn doom_loop_detection_triggers_on_identical_outputs() {
-        let s = "same output".to_owned();
-        let history = vec![s.clone(), s.clone(), s];
+        // doom_loop_history stores u64 hashes — identical content produces equal hashes
+        let h = 42u64;
+        let history: Vec<u64> = vec![h, h, h];
         let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
         assert!(recent.windows(2).all(|w| w[0] == w[1]));
     }
 
     #[test]
     fn doom_loop_detection_no_trigger_on_different_outputs() {
-        let history = vec![
-            "output a".to_owned(),
-            "output b".to_owned(),
-            "output c".to_owned(),
-        ];
+        let history: Vec<u64> = vec![1, 2, 3];
         let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
         assert!(!recent.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn format_tool_output_structure() {
+        let out = format_tool_output("bash", "hello world");
+        assert!(out.starts_with("[tool output: bash]\n```\n"));
+        assert!(out.ends_with(TOOL_OUTPUT_SUFFIX));
+        assert!(out.contains("hello world"));
+    }
+
+    #[test]
+    fn format_tool_output_empty_body() {
+        let out = format_tool_output("grep", "");
+        assert_eq!(out, "[tool output: grep]\n```\n\n```");
+    }
+
+    #[test]
+    fn detect_image_mime_standard() {
+        assert_eq!(detect_image_mime(Some("photo.jpg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("photo.jpeg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("anim.gif")), "image/gif");
+        assert_eq!(detect_image_mime(Some("img.webp")), "image/webp");
+        assert_eq!(detect_image_mime(Some("img.png")), "image/png");
+        assert_eq!(detect_image_mime(None), "image/png");
+    }
+
+    #[test]
+    fn detect_image_mime_uppercase() {
+        assert_eq!(detect_image_mime(Some("photo.JPG")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("photo.JPEG")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("anim.GIF")), "image/gif");
+        assert_eq!(detect_image_mime(Some("img.WEBP")), "image/webp");
+    }
+
+    #[test]
+    fn detect_image_mime_mixed_case() {
+        assert_eq!(detect_image_mime(Some("photo.Jpg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("photo.JpEg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("anim.Gif")), "image/gif");
+        assert_eq!(detect_image_mime(Some("img.WebP")), "image/webp");
     }
 
     #[tokio::test]

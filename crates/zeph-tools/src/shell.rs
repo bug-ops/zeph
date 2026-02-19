@@ -1730,7 +1730,7 @@ mod tests {
         let executor = ShellExecutor::new(&default_config());
         let call = ToolCall {
             tool_id: "bash".to_owned(),
-            params: std::collections::HashMap::new(),
+            params: serde_json::Map::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::InvalidParams { .. })));

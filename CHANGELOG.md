@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Blocked command matching extracts basename from absolute paths (`/usr/bin/sudo` now correctly blocked)
 - Transparent wrapper commands (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `xargs`) are skipped to detect the actual command
 - Default confirm patterns now include `$(` and backtick subshell expressions
+- Enable SQLite WAL mode with SYNCHRONOUS=NORMAL for 2-5x write throughput (#639)
+- Replace O(n*iterations) token scan with cached_prompt_tokens in budget checks (#640)
+- Defer maybe_redact to stream completion boundary instead of per-chunk (#641)
+- Replace format_tool_output string allocation with Write-into-buffer (#642)
+- Change ToolCall.params from HashMap to serde_json::Map, eliminating clone (#643)
+- Pre-join static system prompt sections into LazyLock<String> (#644)
+- Replace doom-loop string history with content hash comparison (#645)
+- Return &'static str from detect_image_mime with case-insensitive matching (#646)
+- Replace block_on in history persist with fire-and-forget async spawn (#647)
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)

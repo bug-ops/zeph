@@ -102,7 +102,6 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[derive(Debug)]
     struct MockExecutor;
@@ -128,12 +127,12 @@ mod tests {
     fn make_call(tool_id: &str) -> ToolCall {
         ToolCall {
             tool_id: tool_id.into(),
-            params: HashMap::new(),
+            params: serde_json::Map::new(),
         }
     }
 
     fn make_call_with_cmd(tool_id: &str, cmd: &str) -> ToolCall {
-        let mut params = HashMap::new();
+        let mut params = serde_json::Map::new();
         params.insert("command".into(), serde_json::Value::String(cmd.into()));
         ToolCall {
             tool_id: tool_id.into(),

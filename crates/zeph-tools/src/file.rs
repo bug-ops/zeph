@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -100,7 +99,7 @@ impl FileExecutor {
     pub fn execute_file_tool(
         &self,
         tool_id: &str,
-        params: &HashMap<String, serde_json::Value>,
+        params: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<ToolOutput>, ToolError> {
         match tool_id {
             "read" => {
@@ -386,7 +385,9 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
-    fn make_params(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
+    fn make_params(
+        pairs: &[(&str, serde_json::Value)],
+    ) -> serde_json::Map<String, serde_json::Value> {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn unknown_tool_returns_none() {
         let exec = FileExecutor::new(vec![]);
-        let params = HashMap::new();
+        let params = serde_json::Map::new();
         let result = exec.execute_file_tool("unknown", &params).unwrap();
         assert!(result.is_none());
     }
@@ -625,7 +626,7 @@ mod tests {
     fn missing_required_path_returns_invalid_params() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
-        let params = HashMap::new();
+        let params = serde_json::Map::new();
         let result = exec.execute_file_tool("read", &params);
         assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
     }

@@ -257,10 +257,12 @@ async fn main() -> anyhow::Result<()> {
         let persist: Box<dyn Fn(&str) + Send> = Box::new(move |text: &str| {
             let store = store.clone();
             let text = text.to_owned();
-            if let Ok(handle) = tokio::runtime::Handle::try_current()
-                && let Err(e) = handle.block_on(store.save_input_entry(&text))
-            {
-                tracing::warn!("failed to persist input history entry: {e}");
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    if let Err(e) = store.save_input_entry(&text).await {
+                        tracing::warn!("failed to persist input history entry: {e}");
+                    }
+                });
             }
         });
         Some((entries, persist))

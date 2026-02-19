@@ -210,7 +210,7 @@ mod tests {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
             tool_id: "read".to_owned(),
-            params: std::collections::HashMap::new(),
+            params: serde_json::Map::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "file_handler");
@@ -221,7 +221,7 @@ mod tests {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
             tool_id: "bash".to_owned(),
-            params: std::collections::HashMap::new(),
+            params: serde_json::Map::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "shell_handler");
@@ -232,7 +232,7 @@ mod tests {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
             tool_id: "unknown".to_owned(),
-            params: std::collections::HashMap::new(),
+            params: serde_json::Map::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
