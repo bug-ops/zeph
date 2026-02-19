@@ -9,6 +9,7 @@ See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.
 ## [0.11.1] - 2026-02-19
 
 ### Added
+- Persistent CLI input history with rustyline: arrow key navigation, prefix search, line editing, SQLite-backed persistence across restarts (#604)
 - Clickable markdown links in TUI via OSC 8 hyperlinks (#580)
 - `@`-triggered fuzzy file picker in TUI input (#600)
 - Command palette in TUI with read-only agent management commands (#599)

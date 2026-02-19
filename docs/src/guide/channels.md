@@ -22,6 +22,17 @@ The default channel. Reads from stdin, writes to stdout with immediate streaming
 
 No configuration required. Supports all slash commands (`/skills`, `/mcp`, `/reset`).
 
+### Input History
+
+CLI channel provides persistent input history powered by rustyline:
+
+- **Arrow keys** — Up/Down to navigate previous inputs
+- **Prefix search** — type partial text and press Up to find the most recent matching entry
+- **Line editing** — Emacs keybindings (Ctrl+A/E, Alt+B/F, Ctrl+W, etc.)
+- **Persistence** — history is stored in SQLite and available across restarts
+
+History is loaded automatically from the database on startup. Duplicate consecutive entries are suppressed.
+
 ## Telegram Channel
 
 Run Zeph as a Telegram bot with streaming responses, MarkdownV2 formatting, and user whitelisting.

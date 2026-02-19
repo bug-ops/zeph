@@ -1,3 +1,4 @@
+mod history;
 mod messages;
 mod skills;
 mod summaries;
