@@ -709,7 +709,7 @@ fn handle_vault_command(
             let provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
                 .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
             if let Some(val) = provider.get(&key) {
-                println!("{val}");
+                println!("{val}"); // lgtm[rust/cleartext-logging]
             } else {
                 anyhow::bail!("key not found: {key}");
             }

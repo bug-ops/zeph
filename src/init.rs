@@ -690,7 +690,7 @@ fn print_secrets_instructions(state: &WizardState) {
         println!("\nFirst run `zeph vault init` if you haven't already.");
         println!("Then store secrets:");
         for var in &secrets {
-            println!("  zeph vault set {var} <value>");
+            println!("  zeph vault set {var} <value>"); // lgtm[rust/cleartext-logging]
         }
     } else {
         println!("\nAdd the following to your shell profile:");
