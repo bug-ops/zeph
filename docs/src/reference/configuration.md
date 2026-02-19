@@ -82,8 +82,8 @@ model = "whisper-1"
 
 [skills]
 paths = ["./skills"]
-max_active_skills = 5  # Top-K skills per query via embedding similarity
-disambiguation_threshold = 0.05  # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
+max_active_skills = 5              # Top-K skills per query via embedding similarity
+disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
 
 [memory]
 sqlite_path = "./data/zeph.db"
@@ -114,21 +114,49 @@ confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "dro
 [tools.file]
 allowed_paths = []          # Directories file tools can access (empty = cwd only)
 
-# Pattern-based permissions per tool (optional; overrides legacy blocked_commands/confirm_patterns)
-# [tools.permissions.bash]
-# [[tools.permissions.bash]]
-# pattern = "*sudo*"
-# action = "deny"
-# [[tools.permissions.bash]]
-# pattern = "cargo *"
-# action = "allow"
-# [[tools.permissions.bash]]
-# pattern = "*"
-# action = "ask"
-
 [tools.scrape]
 timeout = 15
 max_body_bytes = 1048576  # 1MB
+
+[tools.filters]
+enabled = true              # Enable smart output filtering for tool results
+
+# [tools.filters.test]
+# enabled = true
+# max_failures = 10         # Truncate after N test failures
+# truncate_stack_trace = 50 # Max stack trace lines per failure
+
+# [tools.filters.git]
+# enabled = true
+# max_log_entries = 20      # Max git log entries
+# max_diff_lines = 500      # Max diff lines
+
+# [tools.filters.clippy]
+# enabled = true
+
+# [tools.filters.cargo_build]
+# enabled = true
+
+# [tools.filters.dir_listing]
+# enabled = true
+
+# [tools.filters.log_dedup]
+# enabled = true
+
+# [tools.filters.security]
+# enabled = true
+# extra_patterns = []       # Additional regex patterns to redact
+
+# Per-tool permission rules (glob patterns with allow/ask/deny actions).
+# Overrides legacy blocked_commands/confirm_patterns when set.
+# [tools.permissions]
+# shell = [
+#   { pattern = "/tmp/*", action = "allow" },
+#   { pattern = "/etc/*", action = "deny" },
+#   { pattern = "*sudo*", action = "deny" },
+#   { pattern = "cargo *", action = "allow" },
+#   { pattern = "*", action = "ask" },
+# ]
 
 [tools.audit]
 enabled = false             # Structured JSON audit log for tool executions
@@ -158,9 +186,37 @@ enabled = false
 host = "0.0.0.0"
 port = 8080
 # public_url = "https://agent.example.com"
-# auth_token = "secret"
+# auth_token = "secret"     # Bearer token for A2A authentication (from vault ZEPH_A2A_AUTH_TOKEN)
 rate_limit = 60
+
+[mcp]
+allowed_commands = ["npx", "uvx", "node", "python", "python3"]
+max_dynamic_servers = 10
+
+# [[mcp.servers]]
+# id = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = {}                  # Environment variables passed to the child process
+# timeout = 30
 ```
+
+### Orchestrator Sub-Providers
+
+When `provider = "orchestrator"`, each sub-provider under `[llm.orchestrator.providers.<name>]` accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Provider backend (`ollama`, `claude`, `openai`, `candle`, `compatible`) |
+| `model` | string? | Override chat model for this provider |
+| `base_url` | string? | Override API endpoint (Ollama / Compatible) |
+| `embedding_model` | string? | Override embedding model for this provider |
+| `filename` | string? | GGUF filename (Candle only) |
+| `device` | string? | Compute device (Candle only) |
+
+Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`) → global default. See [Orchestrator](../advanced/orchestrator.md) for details and examples.
+
+> **Note:** The TOML key is `type`, not `provider_type`. The Rust struct uses `#[serde(rename = "type")]`.
 
 ## Environment Variables
 
