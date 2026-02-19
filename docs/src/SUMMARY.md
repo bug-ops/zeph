@@ -28,6 +28,7 @@
 - [Tool System](guide/tools.md)
 - [Pipeline API](guide/pipeline.md)
 - [Audio Input](guide/audio-input.md)
+- [Vision (Image Input)](guide/vision.md)
 - [TUI Dashboard](guide/tui.md)
 - [Observability & Cost](guide/observability.md)
 - [Code Indexing](guide/code-indexing.md)

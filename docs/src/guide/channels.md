@@ -258,6 +258,8 @@ When the queue is full (10 messages), new input is silently dropped until space 
 
 `ChannelMessage` supports an optional `attachments` field carrying `Attachment` values with typed `AttachmentKind` variants (Audio, Image, Video, File). When the `stt` feature is enabled, audio attachments are automatically transcribed before entering the agent loop. The Telegram channel automatically downloads voice and audio messages and delivers them as attachments. The Slack channel detects audio file uploads and voice messages (`audio/*`, `video/webm`), downloads them via `url_private_download` with host validation (`.slack.com` only) and a 25 MB size limit, and delivers them as audio attachments. See [Audio Input](audio-input.md) for details.
 
+Image attachments are forwarded directly to the LLM as `MessagePart::Image` content. In CLI and TUI, use the `/image <path>` command to attach an image. In Telegram, send a photo directly. Images are subject to a 20 MB size limit. See [Vision](vision.md) for details.
+
 ## Channel Selection Logic
 
 Zeph selects the channel at startup based on the following priority:

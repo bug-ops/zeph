@@ -12,7 +12,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 |--------|-------------|
 | `agent` | `Agent` — main loop driving inference and tool execution |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
-| `channel` | `Channel` trait defining I/O adapters; `Attachment` / `AttachmentKind` for multimodal inputs |
+| `channel` | `Channel` trait defining I/O adapters; `Attachment` / `AttachmentKind` for multimodal inputs (images, audio) |
 | `config` | TOML config with `ZEPH_*` env overrides |
 | `context` | LLM context assembly from history, skills, memory |
 | `cost` | Token cost tracking and budgeting |

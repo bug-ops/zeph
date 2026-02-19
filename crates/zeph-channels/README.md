@@ -10,8 +10,8 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 
 | Module | Description |
 |--------|-------------|
-| `cli` | `CliChannel` — interactive terminal I/O |
-| `telegram` | Telegram adapter via teloxide with streaming; voice/audio message detection and file download |
+| `cli` | `CliChannel` — interactive terminal I/O with `/image` command for vision input |
+| `telegram` | Telegram adapter via teloxide with streaming; voice/audio message detection and file download; photo message support for vision input |
 | `discord` | Discord adapter (optional feature) |
 | `slack` | Slack adapter (optional feature); audio file detection and download with Bearer auth |
 | `any` | `AnyChannel` — enum dispatch over all channels |

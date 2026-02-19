@@ -23,7 +23,8 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 
 LLM provider abstraction and backend implementations.
 
-- `LlmProvider` trait — `chat()`, `chat_stream()`, `embed()`, `supports_streaming()`, `supports_embeddings()`
+- `LlmProvider` trait — `chat()`, `chat_stream()`, `embed()`, `supports_streaming()`, `supports_embeddings()`, `supports_vision()`
+- `MessagePart::Image` — image content part (raw bytes + MIME type) for multimodal input
 - `EmbedFuture` / `EmbedFn` — canonical type aliases for embedding closures, re-exported by downstream crates (`zeph-skills`, `zeph-mcp`)
 - `OllamaProvider` — local inference via ollama-rs
 - `ClaudeProvider` — Anthropic Messages API with SSE streaming

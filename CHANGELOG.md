@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Redundant syntax highlighting and markdown parsing on every TUI frame: per-message render cache with content-hash keying (#501)
 
 ### Added
+- Vision (image input) support across Claude, OpenAI, and Ollama providers (#490)
+- `MessagePart::Image` content type with base64 serialization
+- `LlmProvider::supports_vision()` trait method for runtime capability detection
+- Claude structured content with `AnthropicContentBlock::Image` variant
+- OpenAI array content format with `image_url` data-URI encoding
+- Ollama `with_images()` support with optional `vision_model` config for dedicated model routing
+- `/image <path>` command in CLI and TUI channels
+- Telegram photo message handling with pre-download size guard
+- `vision_model` field in `[llm.ollama]` config section and `--init` wizard update
+- 20 MB max image size limit and path traversal protection
 - Interactive configuration wizard via `zeph init` subcommand with 5-step setup (LLM provider, memory, channels, secrets backend, config generation)
 - clap-based CLI argument parsing with `--help`, `--version` support
 - `Serialize` derive on `Config` and all nested types for TOML generation

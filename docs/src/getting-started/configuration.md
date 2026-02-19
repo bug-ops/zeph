@@ -83,6 +83,7 @@ provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator,
 base_url = "http://localhost:11434"
 model = "mistral:7b"
 embedding_model = "qwen3-embedding"  # Model for text embeddings
+# vision_model = "llava:13b"        # Ollama only: dedicated model for image requests
 
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"
@@ -192,6 +193,7 @@ rate_limit = 60
 | `ZEPH_LLM_BASE_URL` | Ollama API endpoint |
 | `ZEPH_LLM_MODEL` | Model name for Ollama |
 | `ZEPH_LLM_EMBEDDING_MODEL` | Embedding model for Ollama (default: `qwen3-embedding`) |
+| `ZEPH_LLM_VISION_MODEL` | Vision model for Ollama image requests (optional) |
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
 | `ZEPH_OPENAI_API_KEY` | OpenAI API key (required for OpenAI provider) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
