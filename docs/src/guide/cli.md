@@ -13,6 +13,7 @@ zeph [OPTIONS] [COMMAND]
 | Command | Description |
 |---------|-------------|
 | `init`  | Interactive configuration wizard (see [Configuration](../getting-started/configuration.md)) |
+| `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](vault.md)) |
 
 When no subcommand is given, Zeph starts the agent loop.
 
@@ -30,6 +31,34 @@ Options:
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--output <PATH>` | `-o` | Output path for the generated config file |
+
+### `zeph vault`
+
+Manage age-encrypted secrets without manual `age` CLI invocations.
+
+| Subcommand | Description |
+|------------|-------------|
+| `vault init` | Generate an age keypair and empty encrypted vault |
+| `vault set <KEY> <VALUE>` | Encrypt and store a secret |
+| `vault get <KEY>` | Decrypt and print a secret value |
+| `vault list` | List stored secret keys (values are not printed) |
+| `vault rm <KEY>` | Remove a secret from the vault |
+
+Default paths (created by `vault init`):
+
+- Key file: `~/.config/zeph/vault-key.txt`
+- Vault file: `~/.config/zeph/secrets.age`
+
+Override with `--vault-key` and `--vault-path` global flags.
+
+```bash
+zeph vault init
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
+zeph vault set ZEPH_TELEGRAM_TOKEN 123:ABC
+zeph vault list
+zeph vault get ZEPH_CLAUDE_API_KEY
+zeph vault rm ZEPH_TELEGRAM_TOKEN
+```
 
 ## Global Options
 
@@ -55,8 +84,15 @@ zeph --config ~/.zeph/config.toml
 # Start with TUI dashboard
 zeph --tui
 
-# Start with age-encrypted secrets
+# Start with age-encrypted secrets (default paths)
+zeph --vault age
+
+# Start with age-encrypted secrets (custom paths)
 zeph --vault age --vault-key key.txt --vault-path secrets.age
+
+# Initialize vault and store a secret
+zeph vault init
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
 
 # Generate a new config interactively
 zeph init

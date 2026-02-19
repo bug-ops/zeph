@@ -4,10 +4,10 @@
 
 Run `zeph init` to generate a `config.toml` interactively. The wizard walks through five steps:
 
-1. **LLM Provider** -- select Ollama (local), Claude, OpenAI, Orchestrator (multi-model routing), or a compatible endpoint. Orchestrator prompts for a primary and fallback provider, enabling automatic failover. Provide the base URL, model name, and API key as needed. Choose an embedding model (default: `qwen3-embedding`).
-2. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
-3. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel.
-4. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file via `~/.zeph/vault.age`).
+1. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file). When `age` is selected, API key prompts are skipped in subsequent steps since secrets are stored via `zeph vault set` instead.
+2. **LLM Provider** -- select Ollama (local), Claude, OpenAI, Orchestrator (multi-model routing), or a compatible endpoint. Orchestrator prompts for a primary and fallback provider, enabling automatic failover. Provide the base URL, model name, and API key as needed (skipped for age backend). Choose an embedding model (default: `qwen3-embedding`).
+3. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
+4. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel (token prompts skipped for age backend).
 5. **Review and write** -- inspect the generated TOML, confirm the output path, and save.
 
 Specify the output path directly:
@@ -18,7 +18,7 @@ zeph init --output ~/.zeph/config.toml
 
 If the target file already exists, the wizard asks before overwriting.
 
-After writing, the wizard prints the environment variables you need to set (API keys, tokens) depending on the chosen secrets backend.
+After writing, the wizard prints the secrets you need to configure. For the `env` backend it shows `export` commands; for `age` it prints the corresponding `zeph vault init` and `zeph vault set` commands.
 
 ## Config File Resolution
 

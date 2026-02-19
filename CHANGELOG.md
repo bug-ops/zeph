@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
+- `zeph vault` CLI subcommands: `init` (generate age keypair), `set` (store secret), `get` (retrieve secret), `list` (show keys), `rm` (remove secret) (#598)
+- Atomic file writes for vault operations with temp+rename strategy (#598)
+- Default vault directory resolution via XDG_CONFIG_HOME / APPDATA / HOME (#598)
 
 ### Fixed
 - Restore `--vault`, `--vault-key`, `--vault-path` CLI flags lost during clap migration (#587)
@@ -16,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Refactor `AppBuilder::from_env()` to `AppBuilder::new()` with explicit CLI overrides
 - Eliminate redundant manual `std::env::args()` parsing in favor of clap
 - Add `ZEPH_VAULT_KEY` and `ZEPH_VAULT_PATH` environment variable support
+- Init wizard reordered: vault backend selection is now step 1 before LLM provider (#598)
+- API key and channel token prompts skipped when age vault backend is selected (#598)
 
 ## [0.11.0] - 2026-02-19
 

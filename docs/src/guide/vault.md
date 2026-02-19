@@ -37,7 +37,48 @@ export ZEPH_TELEGRAM_TOKEN=123:ABC
 
 ## Age Vault
 
-For production deployments, encrypt secrets with [age](https://age-encryption.org/):
+For production deployments, encrypt secrets with [age](https://age-encryption.org/).
+
+### Using `zeph vault` CLI (recommended)
+
+The built-in vault CLI manages the keypair and encrypted file so you do not need the `age` binary:
+
+```bash
+# Initialize keypair and empty vault
+zeph vault init
+
+# Store secrets
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
+zeph vault set ZEPH_TELEGRAM_TOKEN 123:ABC
+
+# Verify
+zeph vault list
+zeph vault get ZEPH_CLAUDE_API_KEY
+
+# Remove a secret
+zeph vault rm ZEPH_TELEGRAM_TOKEN
+
+# Run the agent (default paths are used automatically)
+zeph --vault age
+```
+
+Default file locations (created by `vault init`):
+
+| File | Default path |
+|------|-------------|
+| Identity (private key) | `~/.config/zeph/vault-key.txt` |
+| Encrypted secrets | `~/.config/zeph/secrets.age` |
+
+Override with `--vault-key` and `--vault-path`:
+
+```bash
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-... --vault-key /custom/key.txt --vault-path /custom/secrets.age
+zeph --vault age --vault-key /custom/key.txt --vault-path /custom/secrets.age
+```
+
+### Manual setup with `age` CLI
+
+Alternatively, use the `age` binary directly:
 
 ```bash
 # Generate an age identity key
@@ -48,7 +89,6 @@ echo '{"ZEPH_CLAUDE_API_KEY":"sk-...","ZEPH_TELEGRAM_TOKEN":"123:ABC"}' | \
   age -r $(grep 'public key' key.txt | awk '{print $NF}') -o secrets.age
 
 # Run with age vault
-cargo build --release --features vault-age
 ./target/release/zeph --vault age --vault-key key.txt --vault-path secrets.age
 ```
 

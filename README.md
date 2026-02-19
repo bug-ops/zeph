@@ -48,7 +48,7 @@ Pre-built binaries for Linux, macOS, and Windows: [GitHub Releases](https://gith
 ## Quick Start
 
 ```bash
-# Interactive setup wizard — generates config.toml with provider, memory, and channel settings
+# Interactive setup wizard — configures vault backend, provider, memory, and channel settings
 zeph init
 
 # Run the agent
@@ -93,6 +93,12 @@ zeph --vault-key <path>  Path to age identity key file
 zeph --vault-path <path> Path to age-encrypted vault file
 zeph --version           Print version
 zeph --help              Show help
+
+zeph vault init          Generate age keypair and empty encrypted vault
+zeph vault set KEY VAL   Encrypt and store a secret
+zeph vault get KEY       Decrypt and print a secret value
+zeph vault list          List stored secret keys (no values)
+zeph vault rm KEY        Remove a secret from the vault
 ```
 
 ## Automated Context Engineering
