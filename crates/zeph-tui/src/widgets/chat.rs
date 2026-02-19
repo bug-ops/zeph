@@ -11,7 +11,15 @@ use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
 
+/// A markdown link extracted during rendering: visible display text and target URL.
+#[derive(Clone, Debug)]
+pub struct MdLink {
+    pub text: String,
+    pub url: String,
+}
+
 /// Returns the maximum scroll offset for the rendered content.
+#[allow(clippy::too_many_lines)]
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCache) -> usize {
     if area.width == 0 || area.height == 0 {
         return 0;
@@ -23,6 +31,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     let wrap_width = area.width.saturating_sub(4) as usize;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut all_md_links: Vec<MdLink> = Vec::new();
 
     let tool_expanded = app.tool_expanded();
     let compact_tools = app.compact_tools();
@@ -58,8 +67,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
             show_labels,
         };
 
-        let msg_lines: Vec<Line<'static>> = if msg.streaming {
-            // Never cache streaming messages
+        // Streaming messages are never cached.
+        let (msg_lines, msg_md_links) = if msg.streaming {
             render_message_lines(
                 msg,
                 tool_expanded,
@@ -69,10 +78,10 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
                 wrap_width,
                 show_labels,
             )
-        } else if let Some(cached) = cache.get(idx, &cache_key) {
-            cached.to_vec()
+        } else if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
+            (cached_lines.to_vec(), cached_links.to_vec())
         } else {
-            let rendered = render_message_lines(
+            let (rendered, extracted) = render_message_lines(
                 msg,
                 tool_expanded,
                 compact_tools,
@@ -81,9 +90,11 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
                 wrap_width,
                 show_labels,
             );
-            cache.put(idx, cache_key, rendered.clone());
-            rendered
+            cache.put(idx, cache_key, rendered.clone(), extracted.clone());
+            (rendered, extracted)
         };
+
+        all_md_links.extend(msg_md_links);
 
         for mut line in msg_lines {
             line.spans.insert(0, Span::styled("\u{258e} ", accent));
@@ -116,7 +127,11 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
 
     frame.render_widget(paragraph, area);
 
-    app.set_hyperlinks(hyperlink::collect_from_buffer(frame.buffer_mut(), area));
+    app.set_hyperlinks(hyperlink::collect_from_buffer_with_md_links(
+        frame.buffer_mut(),
+        area,
+        &all_md_links,
+    ));
 
     if total > inner_height {
         render_scrollbar(
@@ -159,9 +174,9 @@ fn render_message_lines(
     theme: &Theme,
     wrap_width: usize,
     show_labels: bool,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<MdLink>) {
     let mut lines = Vec::new();
-    if msg.role == MessageRole::Tool {
+    let md_links = if msg.role == MessageRole::Tool {
         render_tool_message(
             msg,
             tool_expanded,
@@ -172,10 +187,11 @@ fn render_message_lines(
             show_labels,
             &mut lines,
         );
+        Vec::new()
     } else {
-        render_chat_message(msg, theme, wrap_width, show_labels, &mut lines);
-    }
-    lines
+        render_chat_message(msg, theme, wrap_width, show_labels, &mut lines)
+    };
+    (lines, md_links)
 }
 
 fn render_chat_message(
@@ -184,7 +200,7 @@ fn render_chat_message(
     wrap_width: usize,
     show_labels: bool,
     lines: &mut Vec<Line<'static>>,
-) {
+) -> Vec<MdLink> {
     let (prefix, base_style) = if show_labels {
         match msg.role {
             MessageRole::User => ("[user] ", theme.user_message),
@@ -204,7 +220,7 @@ fn render_chat_message(
     let indent = " ".repeat(prefix.len());
     let is_assistant = msg.role == MessageRole::Assistant;
 
-    let styled_lines = if is_assistant {
+    let (styled_lines, md_links) = if is_assistant {
         render_with_thinking(&msg.content, base_style, theme)
     } else {
         render_md(&msg.content, base_style, theme)
@@ -240,6 +256,8 @@ fn render_chat_message(
         }
         lines.extend(wrap_spans(pfx_spans, wrap_width));
     }
+
+    md_links
 }
 
 fn render_scrollbar(
@@ -409,8 +427,9 @@ fn render_with_thinking(
     content: &str,
     base_style: Style,
     theme: &Theme,
-) -> Vec<Vec<Span<'static>>> {
+) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
     let mut all_lines = Vec::new();
+    let mut md_links_buf: Vec<MdLink> = Vec::new();
     let mut remaining = content;
     let mut in_thinking = false;
 
@@ -419,33 +438,45 @@ fn render_with_thinking(
             if let Some(end) = remaining.find("</think>") {
                 let segment = &remaining[..end];
                 if !segment.trim().is_empty() {
-                    all_lines.extend(render_md(segment, theme.thinking_message, theme));
+                    let (rendered, collected) = render_md(segment, theme.thinking_message, theme);
+                    all_lines.extend(rendered);
+                    md_links_buf.extend(collected);
                 }
                 remaining = &remaining[end + "</think>".len()..];
                 in_thinking = false;
             } else {
                 if !remaining.trim().is_empty() {
-                    all_lines.extend(render_md(remaining, theme.thinking_message, theme));
+                    let (rendered, collected) = render_md(remaining, theme.thinking_message, theme);
+                    all_lines.extend(rendered);
+                    md_links_buf.extend(collected);
                 }
                 break;
             }
         } else if let Some(start) = remaining.find("<think>") {
             let segment = &remaining[..start];
             if !segment.trim().is_empty() {
-                all_lines.extend(render_md(segment, base_style, theme));
+                let (rendered, collected) = render_md(segment, base_style, theme);
+                all_lines.extend(rendered);
+                md_links_buf.extend(collected);
             }
             remaining = &remaining[start + "<think>".len()..];
             in_thinking = true;
         } else {
-            all_lines.extend(render_md(remaining, base_style, theme));
+            let (rendered, collected) = render_md(remaining, base_style, theme);
+            all_lines.extend(rendered);
+            md_links_buf.extend(collected);
             break;
         }
     }
 
-    all_lines
+    (all_lines, md_links_buf)
 }
 
-fn render_md(content: &str, base_style: Style, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+fn render_md(
+    content: &str,
+    base_style: Style,
+    theme: &Theme,
+) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
     let options = Options::ENABLE_STRIKETHROUGH;
     let parser = Parser::new_ext(content, options);
     let mut renderer = MdRenderer::new(base_style, theme);
@@ -464,6 +495,10 @@ struct MdRenderer<'t> {
     in_code_block: bool,
     code_lang: Option<String>,
     link_url: Option<String>,
+    /// Accumulated text content of the current link being parsed.
+    link_text_buf: String,
+    /// Collected markdown links for this render pass.
+    md_links: Vec<MdLink>,
 }
 
 impl<'t> MdRenderer<'t> {
@@ -477,9 +512,12 @@ impl<'t> MdRenderer<'t> {
             in_code_block: false,
             code_lang: None,
             link_url: None,
+            link_text_buf: String::new(),
+            md_links: Vec::new(),
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {
@@ -524,6 +562,9 @@ impl<'t> MdRenderer<'t> {
                 self.newline();
             }
             Event::Code(text) => {
+                if self.link_url.is_some() {
+                    self.link_text_buf.push_str(&text);
+                }
                 self.current
                     .push(Span::styled(text.to_string(), self.theme.code_inline));
             }
@@ -531,6 +572,9 @@ impl<'t> MdRenderer<'t> {
                 if self.in_code_block {
                     self.push_code_block_text(&text);
                 } else {
+                    if self.link_url.is_some() {
+                        self.link_text_buf.push_str(&text);
+                    }
                     let style = self.current_style();
                     for (i, segment) in text.split('\n').enumerate() {
                         if i > 0 {
@@ -558,10 +602,18 @@ impl<'t> MdRenderer<'t> {
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
                 self.link_url = Some(dest_url.to_string());
+                self.link_text_buf.clear();
                 self.push_style(self.theme.link);
             }
             Event::End(TagEnd::Link) => {
-                self.link_url = None;
+                if let Some(url) = self.link_url.take() {
+                    let text = std::mem::take(&mut self.link_text_buf);
+                    if !text.is_empty() {
+                        self.md_links.push(MdLink { text, url });
+                    }
+                } else {
+                    self.link_text_buf.clear();
+                }
                 self.pop_style();
             }
             Event::Start(Tag::BlockQuote(_)) => {
@@ -628,7 +680,7 @@ impl<'t> MdRenderer<'t> {
         self.lines.push(line);
     }
 
-    fn finish(mut self) -> Vec<Vec<Span<'static>>> {
+    fn finish(mut self) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
         if !self.current.is_empty() {
             self.newline();
         }
@@ -636,7 +688,7 @@ impl<'t> MdRenderer<'t> {
         while self.lines.last().is_some_and(Vec::is_empty) {
             self.lines.pop();
         }
-        self.lines
+        (self.lines, self.md_links)
     }
 }
 
@@ -696,16 +748,17 @@ mod tests {
     #[test]
     fn render_md_plain() {
         let theme = Theme::default();
-        let lines = render_md("hello world", theme.assistant_message, &theme);
+        let (lines, links) = render_md("hello world", theme.assistant_message, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0][0].content, "hello world");
+        assert!(links.is_empty());
     }
 
     #[test]
     fn render_md_bold() {
         let theme = Theme::default();
         let base = theme.assistant_message;
-        let lines = render_md("say **hello** now", base, &theme);
+        let (lines, _) = render_md("say **hello** now", base, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].len(), 3);
         assert_eq!(lines[0][0].content, "say ");
@@ -717,7 +770,7 @@ mod tests {
     #[test]
     fn render_md_inline_code() {
         let theme = Theme::default();
-        let lines = render_md("use `foo` here", theme.assistant_message, &theme);
+        let (lines, _) = render_md("use `foo` here", theme.assistant_message, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0][1].content, "foo");
         assert_eq!(lines[0][1].style, theme.code_inline);
@@ -726,7 +779,7 @@ mod tests {
     #[test]
     fn render_md_code_block() {
         let theme = Theme::default();
-        let lines = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
+        let (lines, _) = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
         assert!(lines.len() >= 2);
         // Language tag line
         assert!(lines[0][0].content.contains("rust"));
@@ -739,7 +792,7 @@ mod tests {
     #[test]
     fn render_md_list() {
         let theme = Theme::default();
-        let lines = render_md("- first\n- second", theme.assistant_message, &theme);
+        let (lines, _) = render_md("- first\n- second", theme.assistant_message, &theme);
         assert!(lines.len() >= 2);
         assert!(lines[0].iter().any(|s| s.content.contains('\u{2022}')));
     }
@@ -748,7 +801,7 @@ mod tests {
     fn render_md_heading() {
         let theme = Theme::default();
         let base = theme.assistant_message;
-        let lines = render_md("# Title", base, &theme);
+        let (lines, _) = render_md("# Title", base, &theme);
         assert!(!lines.is_empty());
         let heading_span = &lines[0][0];
         assert_eq!(heading_span.content, "Title");
@@ -759,10 +812,61 @@ mod tests {
     }
 
     #[test]
+    fn render_md_link_single() {
+        let theme = Theme::default();
+        let (lines, links) = render_md("[click](https://x.com)", theme.assistant_message, &theme);
+        assert!(!lines.is_empty());
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].text, "click");
+        assert_eq!(links[0].url, "https://x.com");
+    }
+
+    #[test]
+    fn render_md_link_bold_text() {
+        let theme = Theme::default();
+        let (lines, links) =
+            render_md("[**bold**](https://x.com)", theme.assistant_message, &theme);
+        assert!(!lines.is_empty());
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].text, "bold");
+        assert_eq!(links[0].url, "https://x.com");
+    }
+
+    #[test]
+    fn render_md_link_no_links() {
+        let theme = Theme::default();
+        let (_, links) = render_md("no links here", theme.assistant_message, &theme);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn render_md_link_multiple() {
+        let theme = Theme::default();
+        let (_, links) = render_md(
+            "[a](https://url1.com) and [b](https://url2.com)",
+            theme.assistant_message,
+            &theme,
+        );
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].text, "a");
+        assert_eq!(links[0].url, "https://url1.com");
+        assert_eq!(links[1].text, "b");
+        assert_eq!(links[1].url, "https://url2.com");
+    }
+
+    #[test]
+    fn render_md_link_empty_text() {
+        // [](url) — empty display text should produce no MdLink entry.
+        let theme = Theme::default();
+        let (_, links) = render_md("[](https://x.com)", theme.assistant_message, &theme);
+        assert!(links.is_empty());
+    }
+
+    #[test]
     fn render_with_thinking_segments() {
         let theme = Theme::default();
         let content = "<think>reasoning</think>result";
-        let lines = render_with_thinking(content, theme.assistant_message, &theme);
+        let (lines, _) = render_with_thinking(content, theme.assistant_message, &theme);
         assert!(lines.len() >= 2);
         // Thinking segment uses thinking style
         assert_eq!(lines[0][0].style, theme.thinking_message);
@@ -775,7 +879,7 @@ mod tests {
     fn render_with_thinking_streaming() {
         let theme = Theme::default();
         let content = "<think>still thinking";
-        let lines = render_with_thinking(content, theme.assistant_message, &theme);
+        let (lines, _) = render_with_thinking(content, theme.assistant_message, &theme);
         assert!(!lines.is_empty());
         assert_eq!(lines[0][0].style, theme.thinking_message);
     }

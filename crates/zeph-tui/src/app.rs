@@ -14,6 +14,7 @@ use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 use crate::widgets;
+use crate::widgets::chat::MdLink;
 use crate::widgets::command_palette::CommandPaletteState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub struct RenderCacheKey {
 pub struct RenderCacheEntry {
     pub key: RenderCacheKey,
     pub lines: Vec<Line<'static>>,
+    pub md_links: Vec<MdLink>,
 }
 
 #[derive(Default)]
@@ -36,19 +38,29 @@ pub struct RenderCache {
 }
 
 impl RenderCache {
-    pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<&[Line<'static>]> {
+    pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<(&[Line<'static>], &[MdLink])> {
         self.entries
             .get(idx)
             .and_then(Option::as_ref)
             .filter(|e| &e.key == key)
-            .map(|e| e.lines.as_slice())
+            .map(|e| (e.lines.as_slice(), e.md_links.as_slice()))
     }
 
-    pub fn put(&mut self, idx: usize, key: RenderCacheKey, lines: Vec<Line<'static>>) {
+    pub fn put(
+        &mut self,
+        idx: usize,
+        key: RenderCacheKey,
+        lines: Vec<Line<'static>>,
+        md_links: Vec<MdLink>,
+    ) {
         if idx >= self.entries.len() {
             self.entries.resize_with(idx + 1, || None);
         }
-        self.entries[idx] = Some(RenderCacheEntry { key, lines });
+        self.entries[idx] = Some(RenderCacheEntry {
+            key,
+            lines,
+            md_links,
+        });
     }
 
     pub fn invalidate(&mut self, idx: usize) {
@@ -1934,6 +1946,50 @@ mod tests {
             let output = draw_app(&mut app, 80, 24);
             assert!(!output.contains("Type a message"));
         }
+
+        #[test]
+        fn markdown_link_produces_hyperlink_span() {
+            let (mut app, _rx, _tx) = make_app();
+            app.show_splash = false;
+            app.messages.push(ChatMessage {
+                role: MessageRole::Assistant,
+                content: "See [docs](https://docs.rs) for details".into(),
+                streaming: false,
+                tool_name: None,
+                diff_data: None,
+                filter_stats: None,
+            });
+
+            let _ = draw_app(&mut app, 80, 24);
+            let links = app.take_hyperlinks();
+            let doc_link = links.iter().find(|s| s.url == "https://docs.rs");
+            assert!(
+                doc_link.is_some(),
+                "expected hyperlink span for markdown link, got: {links:?}"
+            );
+        }
+
+        #[test]
+        fn bare_url_still_produces_hyperlink_span() {
+            let (mut app, _rx, _tx) = make_app();
+            app.show_splash = false;
+            app.messages.push(ChatMessage {
+                role: MessageRole::Assistant,
+                content: "Visit https://example.com today".into(),
+                streaming: false,
+                tool_name: None,
+                diff_data: None,
+                filter_stats: None,
+            });
+
+            let _ = draw_app(&mut app, 80, 24);
+            let links = app.take_hyperlinks();
+            let bare = links.iter().find(|s| s.url == "https://example.com");
+            assert!(
+                bare.is_some(),
+                "expected hyperlink span for bare URL, got: {links:?}"
+            );
+        }
     }
 
     #[test]
@@ -2152,8 +2208,8 @@ mod tests {
             let mut cache = RenderCache::default();
             let key = make_key(42, 80);
             let lines = vec![Line::from(Span::raw("hello"))];
-            cache.put(0, key, lines.clone());
-            let result = cache.get(0, &key).unwrap();
+            cache.put(0, key, lines.clone(), vec![]);
+            let (result, _) = cache.get(0, &key).unwrap();
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].spans[0].content, "hello");
         }
@@ -2164,7 +2220,7 @@ mod tests {
             let key1 = make_key(1, 80);
             let key2 = make_key(2, 80);
             let lines = vec![Line::from(Span::raw("a"))];
-            cache.put(0, key1, lines);
+            cache.put(0, key1, lines, vec![]);
             assert!(cache.get(0, &key2).is_none());
         }
 
@@ -2174,7 +2230,7 @@ mod tests {
             let key80 = make_key(1, 80);
             let key100 = make_key(1, 100);
             let lines = vec![Line::from(Span::raw("b"))];
-            cache.put(0, key80, lines);
+            cache.put(0, key80, lines, vec![]);
             assert!(cache.get(0, &key100).is_none());
         }
 
@@ -2183,7 +2239,7 @@ mod tests {
             let mut cache = RenderCache::default();
             let key = make_key(1, 80);
             let lines = vec![Line::from(Span::raw("x"))];
-            cache.put(0, key, lines);
+            cache.put(0, key, lines, vec![]);
             assert!(cache.get(0, &key).is_some());
             cache.invalidate(0);
             assert!(cache.get(0, &key).is_none());
@@ -2200,8 +2256,8 @@ mod tests {
             let mut cache = RenderCache::default();
             let key0 = make_key(1, 80);
             let key1 = make_key(2, 80);
-            cache.put(0, key0, vec![Line::from(Span::raw("a"))]);
-            cache.put(1, key1, vec![Line::from(Span::raw("b"))]);
+            cache.put(0, key0, vec![Line::from(Span::raw("a"))], vec![]);
+            cache.put(1, key1, vec![Line::from(Span::raw("b"))], vec![]);
             cache.clear();
             assert!(cache.get(0, &key0).is_none());
             assert!(cache.get(1, &key1).is_none());
@@ -2212,8 +2268,8 @@ mod tests {
             let mut cache = RenderCache::default();
             let key = make_key(5, 80);
             let lines = vec![Line::from(Span::raw("z"))];
-            cache.put(5, key, lines);
-            let result = cache.get(5, &key).unwrap();
+            cache.put(5, key, lines, vec![]);
+            let (result, _) = cache.get(5, &key).unwrap();
             assert_eq!(result[0].spans[0].content, "z");
         }
     }
