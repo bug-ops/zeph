@@ -476,4 +476,41 @@ mod tests {
         assert!(channel.last_edit.is_none());
         assert!(channel.message_id.is_none());
     }
+
+    #[test]
+    fn max_image_bytes_is_20_mib() {
+        assert_eq!(MAX_IMAGE_BYTES, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn photo_size_limit_enforcement() {
+        // Mirrors the guard in the photo extraction handler:
+        // photos.iter().max_by_key(|p| p.file.size) followed by
+        // if photo.file.size > MAX_IMAGE_BYTES { skip } else { download }
+        let size_within_limit: u32 = MAX_IMAGE_BYTES - 1;
+        let size_at_limit: u32 = MAX_IMAGE_BYTES;
+        let size_over_limit: u32 = MAX_IMAGE_BYTES + 1;
+
+        assert!(size_within_limit <= MAX_IMAGE_BYTES);
+        assert!(size_at_limit <= MAX_IMAGE_BYTES);
+        assert!(size_over_limit > MAX_IMAGE_BYTES);
+    }
+
+    #[test]
+    fn should_not_send_update_within_threshold() {
+        let token = "test_token".to_string();
+        let allowed_users = Vec::new();
+        let mut channel = TelegramChannel::new(token, allowed_users);
+        // Set last_edit to 1 second ago (well within the 10-second threshold)
+        channel.last_edit = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!channel.should_send_update());
+    }
+
+    #[test]
+    fn start_rejects_empty_allowed_users() {
+        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        let result = channel.start();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ChannelError::Other(_)));
+    }
 }

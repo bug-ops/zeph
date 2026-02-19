@@ -33,6 +33,7 @@ harness = false
 
 [dev-dependencies]
 criterion.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
