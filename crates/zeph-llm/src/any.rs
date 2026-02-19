@@ -127,6 +127,10 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.supports_structured_output())
     }
 
+    fn supports_vision(&self) -> bool {
+        delegate_provider!(self, |p| p.supports_vision())
+    }
+
     fn supports_tool_use(&self) -> bool {
         delegate_provider!(self, |p| p.supports_tool_use())
     }
@@ -476,5 +480,34 @@ mod tests {
             "embed".into(),
         ));
         assert!(!provider.supports_structured_output());
+    }
+
+    #[test]
+    fn any_claude_supports_vision() {
+        let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn any_openai_supports_vision() {
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        ));
+        assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn any_ollama_supports_vision() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert!(provider.supports_vision());
     }
 }

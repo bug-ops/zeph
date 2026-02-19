@@ -15,6 +15,7 @@ cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cud
 metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [dependencies]
+base64.workspace = true
 thiserror.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }

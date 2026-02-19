@@ -517,11 +517,14 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvider> {
     match name {
         "ollama" => {
-            let provider = OllamaProvider::new(
+            let mut provider = OllamaProvider::new(
                 &config.llm.base_url,
                 config.llm.model.clone(),
                 config.llm.embedding_model.clone(),
             );
+            if let Some(ref vm) = config.llm.vision_model {
+                provider = provider.with_vision_model(vm.clone());
+            }
             Ok(AnyProvider::Ollama(provider))
         }
         "claude" => {

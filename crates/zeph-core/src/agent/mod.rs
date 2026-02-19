@@ -48,14 +48,31 @@ const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 fn format_tool_output(tool_name: &str, body: &str) -> String {
     format!("[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}")
 }
 
+fn detect_image_mime(filename: Option<&str>) -> String {
+    let ext = filename
+        .and_then(|f| std::path::Path::new(f).extension())
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+    .to_owned()
+}
+
 struct QueuedMessage {
     text: String,
     received_at: Instant,
+    image_parts: Vec<zeph_llm::provider::MessagePart>,
 }
 
 pub(super) struct MemoryState {
@@ -535,14 +552,20 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 self.message_queue.pop_back();
                 continue;
             }
-            self.enqueue_or_merge(msg.text);
+            self.enqueue_or_merge(msg.text, vec![]);
         }
     }
 
-    fn enqueue_or_merge(&mut self, text: String) {
+    fn enqueue_or_merge(
+        &mut self,
+        text: String,
+        image_parts: Vec<zeph_llm::provider::MessagePart>,
+    ) {
         let now = Instant::now();
         if let Some(last) = self.message_queue.back_mut()
             && now.duration_since(last.received_at) < MESSAGE_MERGE_WINDOW
+            && last.image_parts.is_empty()
+            && image_parts.is_empty()
         {
             last.text.push('\n');
             last.text.push_str(&text);
@@ -552,6 +575,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             self.message_queue.push_back(QueuedMessage {
                 text,
                 received_at: now,
+                image_parts,
             });
         } else {
             tracing::warn!("message queue full, dropping message");
@@ -615,9 +639,9 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         loop {
             self.drain_channel();
 
-            let text = if let Some(queued) = self.message_queue.pop_front() {
+            let (text, image_parts) = if let Some(queued) = self.message_queue.pop_front() {
                 self.notify_queue_count().await;
-                queued.text
+                (queued.text, queued.image_parts)
             } else {
                 let incoming = tokio::select! {
                     result = self.channel.recv() => result?,
@@ -636,7 +660,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 };
                 let Some(msg) = incoming else { break };
                 self.drain_channel();
-                self.resolve_message_text(msg).await
+                self.resolve_message(msg).await
             };
 
             let trimmed = text.trim();
@@ -650,14 +674,18 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 continue;
             }
 
-            self.process_user_message(text).await?;
+            self.process_user_message(text, image_parts).await?;
         }
 
         Ok(())
     }
 
-    async fn resolve_message_text(&self, msg: crate::channel::ChannelMessage) -> String {
+    async fn resolve_message(
+        &self,
+        msg: crate::channel::ChannelMessage,
+    ) -> (String, Vec<zeph_llm::provider::MessagePart>) {
         use crate::channel::AttachmentKind;
+        use zeph_llm::provider::MessagePart;
 
         let audio_attachments: Vec<_> = msg
             .attachments
@@ -665,59 +693,87 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .filter(|a| a.kind == AttachmentKind::Audio)
             .collect();
 
-        if audio_attachments.is_empty() {
-            return msg.text;
-        }
+        let image_attachments: Vec<_> = msg
+            .attachments
+            .iter()
+            .filter(|a| a.kind == AttachmentKind::Image)
+            .collect();
 
-        let Some(stt) = &self.stt else {
-            tracing::warn!(
-                count = audio_attachments.len(),
-                "audio attachments received but no STT provider configured, dropping"
-            );
-            return msg.text;
+        let text = if !audio_attachments.is_empty()
+            && let Some(stt) = self.stt.as_ref()
+        {
+            let mut transcribed_parts = Vec::new();
+            for attachment in &audio_attachments {
+                if attachment.data.len() > MAX_AUDIO_BYTES {
+                    tracing::warn!(
+                        size = attachment.data.len(),
+                        max = MAX_AUDIO_BYTES,
+                        "audio attachment exceeds size limit, skipping"
+                    );
+                    continue;
+                }
+                match stt
+                    .transcribe(&attachment.data, attachment.filename.as_deref())
+                    .await
+                {
+                    Ok(result) => {
+                        tracing::info!(
+                            len = result.text.len(),
+                            language = ?result.language,
+                            "audio transcribed"
+                        );
+                        transcribed_parts.push(result.text);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "audio transcription failed");
+                    }
+                }
+            }
+            if transcribed_parts.is_empty() {
+                msg.text.clone()
+            } else {
+                let transcribed = transcribed_parts.join("\n");
+                if msg.text.is_empty() {
+                    transcribed
+                } else {
+                    format!("[transcribed audio]\n{transcribed}\n\n{}", msg.text)
+                }
+            }
+        } else {
+            if !audio_attachments.is_empty() {
+                tracing::warn!(
+                    count = audio_attachments.len(),
+                    "audio attachments received but no STT provider configured, dropping"
+                );
+            }
+            msg.text.clone()
         };
 
-        let mut transcribed_parts = Vec::new();
-        for attachment in &audio_attachments {
-            if attachment.data.len() > MAX_AUDIO_BYTES {
+        let mut image_parts = Vec::new();
+        for attachment in image_attachments {
+            if attachment.data.len() > MAX_IMAGE_BYTES {
                 tracing::warn!(
                     size = attachment.data.len(),
-                    max = MAX_AUDIO_BYTES,
-                    "audio attachment exceeds size limit, skipping"
+                    max = MAX_IMAGE_BYTES,
+                    "image attachment exceeds size limit, skipping"
                 );
                 continue;
             }
-            match stt
-                .transcribe(&attachment.data, attachment.filename.as_deref())
-                .await
-            {
-                Ok(result) => {
-                    tracing::info!(
-                        len = result.text.len(),
-                        language = ?result.language,
-                        "audio transcribed"
-                    );
-                    transcribed_parts.push(result.text);
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "audio transcription failed");
-                }
-            }
+            let mime_type = detect_image_mime(attachment.filename.as_deref());
+            image_parts.push(MessagePart::Image {
+                data: attachment.data.clone(),
+                mime_type,
+            });
         }
 
-        if transcribed_parts.is_empty() {
-            return msg.text;
-        }
-
-        let transcribed = transcribed_parts.join("\n");
-        if msg.text.is_empty() {
-            transcribed
-        } else {
-            format!("[transcribed audio]\n{transcribed}\n\n{}", msg.text)
-        }
+        (text, image_parts)
     }
 
-    async fn process_user_message(&mut self, text: String) -> Result<(), error::AgentError> {
+    async fn process_user_message(
+        &mut self,
+        text: String,
+        image_parts: Vec<zeph_llm::provider::MessagePart>,
+    ) -> Result<(), error::AgentError> {
         self.cancel_token = CancellationToken::new();
         let signal = Arc::clone(&self.cancel_signal);
         let token = self.cancel_token.clone();
@@ -748,6 +804,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             return Ok(());
         }
 
+        if let Some(path) = trimmed.strip_prefix("/image ") {
+            return self
+                .handle_image_command(path.trim(), &mut image_parts.into_iter().collect())
+                .await;
+        }
+
         self.rebuild_system_prompt(&text).await;
 
         if let Err(e) = self.maybe_compact().await {
@@ -760,11 +822,24 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
         self.reflection_used = false;
 
-        self.push_message(Message {
-            role: Role::User,
-            content: text.clone(),
-            parts: vec![],
-        });
+        let user_msg = if !image_parts.is_empty() && self.provider.supports_vision() {
+            let mut parts = vec![zeph_llm::provider::MessagePart::Text { text: text.clone() }];
+            parts.extend(image_parts);
+            Message::from_parts(Role::User, parts)
+        } else {
+            if !image_parts.is_empty() {
+                tracing::warn!(
+                    count = image_parts.len(),
+                    "image attachments dropped: provider does not support vision"
+                );
+            }
+            Message {
+                role: Role::User,
+                content: text.clone(),
+                parts: vec![],
+            }
+        };
+        self.push_message(user_msg);
         self.persist_message(Role::User, &text).await;
 
         if let Err(e) = self.process_response().await {
@@ -775,6 +850,39 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             self.recompute_prompt_tokens();
         }
 
+        Ok(())
+    }
+
+    async fn handle_image_command(
+        &mut self,
+        path: &str,
+        extra_parts: &mut Vec<zeph_llm::provider::MessagePart>,
+    ) -> Result<(), error::AgentError> {
+        use zeph_llm::provider::MessagePart;
+
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.channel
+                    .send(&format!("Cannot read image {path}: {e}"))
+                    .await?;
+                return Ok(());
+            }
+        };
+        if data.len() > MAX_IMAGE_BYTES {
+            self.channel
+                .send(&format!(
+                    "Image {path} exceeds size limit ({} MB), skipping",
+                    MAX_IMAGE_BYTES / 1024 / 1024
+                ))
+                .await?;
+            return Ok(());
+        }
+        let mime_type = detect_image_mime(Some(path));
+        extra_parts.push(MessagePart::Image { data, mime_type });
+        self.channel
+            .send(&format!("Image loaded: {path}. Send your message."))
+            .await?;
         Ok(())
     }
 
@@ -981,7 +1089,7 @@ async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
 #[cfg(test)]
 pub(super) mod agent_tests {
     pub(crate) use super::*;
-    use crate::channel::ChannelMessage;
+    use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
     use std::sync::{Arc, Mutex};
     use zeph_llm::mock::MockProvider;
     use zeph_tools::executor::{ToolError, ToolOutput};
@@ -1889,7 +1997,7 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("hello".into());
+        agent.enqueue_or_merge("hello".into(), vec![]);
         assert_eq!(agent.message_queue.len(), 1);
         assert_eq!(agent.message_queue[0].text, "hello");
     }
@@ -1902,8 +2010,8 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("first".into());
-        agent.enqueue_or_merge("second".into());
+        agent.enqueue_or_merge("first".into(), vec![]);
+        agent.enqueue_or_merge("second".into(), vec![]);
         assert_eq!(agent.message_queue.len(), 1);
         assert_eq!(agent.message_queue[0].text, "first\nsecond");
     }
@@ -1919,8 +2027,9 @@ pub(super) mod agent_tests {
         agent.message_queue.push_back(QueuedMessage {
             text: "old".into(),
             received_at: Instant::now() - Duration::from_secs(2),
+            image_parts: vec![],
         });
-        agent.enqueue_or_merge("new".into());
+        agent.enqueue_or_merge("new".into(), vec![]);
         assert_eq!(agent.message_queue.len(), 2);
         assert_eq!(agent.message_queue[0].text, "old");
         assert_eq!(agent.message_queue[1].text, "new");
@@ -1938,9 +2047,10 @@ pub(super) mod agent_tests {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
+                image_parts: vec![],
             });
         }
-        agent.enqueue_or_merge("overflow".into());
+        agent.enqueue_or_merge("overflow".into(), vec![]);
         assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
     }
 
@@ -1952,11 +2062,11 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("a".into());
+        agent.enqueue_or_merge("a".into(), vec![]);
         // Wait past merge window
         agent.message_queue.back_mut().unwrap().received_at =
             Instant::now() - Duration::from_secs(1);
-        agent.enqueue_or_merge("b".into());
+        agent.enqueue_or_merge("b".into(), vec![]);
         assert_eq!(agent.message_queue.len(), 2);
 
         let count = agent.clear_queue();
@@ -1994,6 +2104,7 @@ pub(super) mod agent_tests {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("pre{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
+                image_parts: vec![],
             });
         }
         agent.drain_channel();
@@ -2013,6 +2124,7 @@ pub(super) mod agent_tests {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
+                image_parts: vec![],
             });
         }
 
@@ -2096,7 +2208,7 @@ pub(super) mod agent_tests {
         assert!(token2.is_cancelled());
     }
 
-    mod resolve_message_text_tests {
+    mod resolve_message_tests {
         use super::*;
         use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
         use std::future::Future;
@@ -2165,7 +2277,7 @@ pub(super) mod agent_tests {
                 text: "hello".into(),
                 attachments: vec![],
             };
-            assert_eq!(agent.resolve_message_text(msg).await, "hello");
+            assert_eq!(agent.resolve_message(msg).await.0, "hello");
         }
 
         #[tokio::test]
@@ -2175,7 +2287,7 @@ pub(super) mod agent_tests {
                 text: "hello".into(),
                 attachments: vec![audio_attachment(b"audio-data")],
             };
-            assert_eq!(agent.resolve_message_text(msg).await, "hello");
+            assert_eq!(agent.resolve_message(msg).await.0, "hello");
         }
 
         #[tokio::test]
@@ -2185,7 +2297,7 @@ pub(super) mod agent_tests {
                 text: "original".into(),
                 attachments: vec![audio_attachment(b"audio-data")],
             };
-            let result = agent.resolve_message_text(msg).await;
+            let (result, _) = agent.resolve_message(msg).await;
             assert!(result.contains("[transcribed audio]"));
             assert!(result.contains("transcribed text"));
             assert!(result.contains("original"));
@@ -2198,7 +2310,7 @@ pub(super) mod agent_tests {
                 text: String::new(),
                 attachments: vec![audio_attachment(b"audio-data")],
             };
-            let result = agent.resolve_message_text(msg).await;
+            let (result, _) = agent.resolve_message(msg).await;
             assert_eq!(result, "transcribed text");
         }
 
@@ -2209,7 +2321,7 @@ pub(super) mod agent_tests {
                 text: "original".into(),
                 attachments: vec![audio_attachment(b"audio-data")],
             };
-            assert_eq!(agent.resolve_message_text(msg).await, "original");
+            assert_eq!(agent.resolve_message(msg).await.0, "original");
         }
 
         #[tokio::test]
@@ -2223,7 +2335,7 @@ pub(super) mod agent_tests {
                     audio_attachment(b"a3"),
                 ],
             };
-            let result = agent.resolve_message_text(msg).await;
+            let (result, _) = agent.resolve_message(msg).await;
             assert_eq!(result, "chunk\nchunk\nchunk");
         }
 
@@ -2239,7 +2351,78 @@ pub(super) mod agent_tests {
                     filename: None,
                 }],
             };
-            assert_eq!(agent.resolve_message_text(msg).await, "original");
+            assert_eq!(agent.resolve_message(msg).await.0, "original");
         }
+    }
+
+    #[test]
+    fn detect_image_mime_jpeg() {
+        assert_eq!(detect_image_mime(Some("photo.jpg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("photo.jpeg")), "image/jpeg");
+    }
+
+    #[test]
+    fn detect_image_mime_gif() {
+        assert_eq!(detect_image_mime(Some("anim.gif")), "image/gif");
+    }
+
+    #[test]
+    fn detect_image_mime_webp() {
+        assert_eq!(detect_image_mime(Some("img.webp")), "image/webp");
+    }
+
+    #[test]
+    fn detect_image_mime_unknown_defaults_png() {
+        assert_eq!(detect_image_mime(Some("file.bmp")), "image/png");
+        assert_eq!(detect_image_mime(None), "image/png");
+    }
+
+    #[tokio::test]
+    async fn resolve_message_extracts_image_attachment() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let msg = ChannelMessage {
+            text: "look at this".into(),
+            attachments: vec![Attachment {
+                kind: AttachmentKind::Image,
+                data: vec![0u8; 16],
+                filename: Some("test.jpg".into()),
+            }],
+        };
+        let (text, parts) = agent.resolve_message(msg).await;
+        assert_eq!(text, "look at this");
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            zeph_llm::provider::MessagePart::Image { mime_type, data } => {
+                assert_eq!(mime_type, "image/jpeg");
+                assert_eq!(data.len(), 16);
+            }
+            _ => panic!("expected Image part"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_message_drops_oversized_image() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let msg = ChannelMessage {
+            text: "big image".into(),
+            attachments: vec![Attachment {
+                kind: AttachmentKind::Image,
+                data: vec![0u8; MAX_IMAGE_BYTES + 1],
+                filename: Some("huge.png".into()),
+            }],
+        };
+        let (text, parts) = agent.resolve_message(msg).await;
+        assert_eq!(text, "big image");
+        assert!(parts.is_empty());
     }
 }

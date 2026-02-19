@@ -115,6 +115,8 @@ pub struct LlmConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<RouterConfig>,
     pub stt: Option<SttConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_model: Option<String>,
 }
 
 fn default_embedding_model() -> String {
@@ -995,6 +997,7 @@ impl Default for Config {
                 compatible: None,
                 router: None,
                 stt: None,
+                vision_model: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

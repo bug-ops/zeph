@@ -1,4 +1,4 @@
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
 /// CLI channel that reads from stdin and writes to stdout.
 #[derive(Debug)]
@@ -53,6 +53,33 @@ impl Channel for CliChannel {
 
         // Reset accumulated for new response
         self.accumulated.clear();
+
+        // Handle /image <path> command by reading the file into an attachment
+        if let Some(path) = trimmed.strip_prefix("/image").map(str::trim) {
+            if path.is_empty() {
+                println!("Usage: /image <path>");
+                return Ok(Some(ChannelMessage {
+                    text: String::new(),
+                    attachments: vec![],
+                }));
+            }
+            let path_owned = path.to_owned();
+            let data = tokio::fs::read(&path_owned)
+                .await
+                .map_err(ChannelError::Io)?;
+            let filename = std::path::Path::new(&path_owned)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_owned);
+            return Ok(Some(ChannelMessage {
+                text: String::new(),
+                attachments: vec![Attachment {
+                    kind: AttachmentKind::Image,
+                    data,
+                    filename,
+                }],
+            }));
+        }
 
         Ok(Some(ChannelMessage {
             text: trimmed.to_string(),

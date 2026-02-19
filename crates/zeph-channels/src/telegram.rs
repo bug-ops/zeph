@@ -105,6 +105,24 @@ impl TelegramChannel {
                         }
                     }
 
+                    // Handle photo attachments (pick the largest available size)
+                    if let Some(photos) = msg.photo()
+                        && let Some(photo) = photos.iter().max_by_key(|p| p.file.size)
+                    {
+                        match download_file(&bot, photo.file.id.0.clone()).await {
+                            Ok(data) => {
+                                attachments.push(Attachment {
+                                    kind: AttachmentKind::Image,
+                                    data,
+                                    filename: None,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to download photo attachment: {e}");
+                            }
+                        }
+                    }
+
                     if text.is_empty() && attachments.is_empty() {
                         return respond(());
                     }

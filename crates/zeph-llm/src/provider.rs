@@ -93,6 +93,31 @@ pub enum MessagePart {
         #[serde(default)]
         is_error: bool,
     },
+    Image {
+        #[serde(with = "serde_bytes_base64")]
+        data: Vec<u8>,
+        mime_type: String,
+    },
+}
+
+mod serde_bytes_base64 {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        STANDARD.decode(&s).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -166,6 +191,9 @@ impl Message {
                 } => {
                     let _ = write!(out, "[tool_result: {tool_use_id}]\n{content}");
                 }
+                MessagePart::Image { data, mime_type } => {
+                    let _ = write!(out, "[image: {mime_type}, {} bytes]", data.len());
+                }
             }
         }
         out
@@ -212,6 +240,11 @@ pub trait LlmProvider: Send + Sync {
 
     /// Provider name for logging and identification.
     fn name(&self) -> &'static str;
+
+    /// Whether this provider supports image input (vision).
+    fn supports_vision(&self) -> bool {
+        false
+    }
 
     /// Whether this provider supports native `tool_use` / function calling.
     fn supports_tool_use(&self) -> bool {
@@ -950,5 +983,49 @@ mod tests {
             err.to_string(),
             "structured output parse failed: test error"
         );
+    }
+
+    #[test]
+    fn message_part_image_roundtrip_json() {
+        let part = MessagePart::Image {
+            data: vec![1, 2, 3, 4],
+            mime_type: "image/jpeg".into(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let decoded: MessagePart = serde_json::from_str(&json).unwrap();
+        match decoded {
+            MessagePart::Image { data, mime_type } => {
+                assert_eq!(data, vec![1, 2, 3, 4]);
+                assert_eq!(mime_type, "image/jpeg");
+            }
+            _ => panic!("expected Image variant"),
+        }
+    }
+
+    #[test]
+    fn flatten_parts_includes_image_placeholder() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::Text {
+                    text: "see this".into(),
+                },
+                MessagePart::Image {
+                    data: vec![0u8; 100],
+                    mime_type: "image/png".into(),
+                },
+            ],
+        );
+        let content = msg.to_llm_content();
+        assert!(content.contains("see this"));
+        assert!(content.contains("[image: image/png"));
+    }
+
+    #[test]
+    fn supports_vision_default_false() {
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(!provider.supports_vision());
     }
 }

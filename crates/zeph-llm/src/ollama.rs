@@ -1,12 +1,14 @@
 use ollama_rs::Ollama;
 
 use crate::error::LlmError;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
+use ollama_rs::generation::images::Image as OllamaImage;
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, Role};
+use crate::provider::{ChatStream, LlmProvider, Message, MessagePart, Role};
 
 #[derive(Debug)]
 pub struct ModelInfo {
@@ -19,6 +21,7 @@ pub struct OllamaProvider {
     model: String,
     embedding_model: String,
     context_window_size: Option<usize>,
+    vision_model: Option<String>,
 }
 
 impl OllamaProvider {
@@ -30,7 +33,14 @@ impl OllamaProvider {
             model,
             embedding_model,
             context_window_size: None,
+            vision_model: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_vision_model(mut self, model: String) -> Self {
+        self.vision_model = Some(model);
+        self
     }
 
     /// Set context window size (typically from /api/show response).
@@ -101,10 +111,24 @@ impl LlmProvider for OllamaProvider {
         self.context_window_size
     }
 
+    fn supports_vision(&self) -> bool {
+        true
+    }
+
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
+        let has_images = messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image { .. }))
+        });
+        let model = if has_images {
+            self.vision_model.as_deref().unwrap_or(&self.model)
+        } else {
+            &self.model
+        };
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
 
-        let request = ChatMessageRequest::new(self.model.clone(), ollama_messages);
+        let request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
 
         let response = self
             .client
@@ -116,8 +140,18 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+        let has_images = messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image { .. }))
+        });
+        let model = if has_images {
+            self.vision_model.as_deref().unwrap_or(&self.model)
+        } else {
+            &self.model
+        };
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
-        let request = ChatMessageRequest::new(self.model.clone(), ollama_messages);
+        let request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
 
         let stream = self
             .client
@@ -166,10 +200,29 @@ impl LlmProvider for OllamaProvider {
 }
 
 fn convert_message(msg: &Message) -> ChatMessage {
+    let images: Vec<OllamaImage> = msg
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            MessagePart::Image { data, .. } => {
+                Some(OllamaImage::from_base64(STANDARD.encode(data)))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let text = msg.to_llm_content().to_string();
+
     match msg.role {
-        Role::System => ChatMessage::system(msg.to_llm_content().to_string()),
-        Role::User => ChatMessage::user(msg.to_llm_content().to_string()),
-        Role::Assistant => ChatMessage::assistant(msg.to_llm_content().to_string()),
+        Role::System => ChatMessage::system(text),
+        Role::Assistant => ChatMessage::assistant(text),
+        Role::User => {
+            if images.is_empty() {
+                ChatMessage::user(text)
+            } else {
+                ChatMessage::user(text).with_images(images)
+            }
+        }
     }
 }
 

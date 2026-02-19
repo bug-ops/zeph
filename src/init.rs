@@ -13,6 +13,7 @@ pub(crate) struct WizardState {
     pub(crate) base_url: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) embedding_model: Option<String>,
+    pub(crate) vision_model: Option<String>,
     pub(crate) api_key: Option<String>,
     pub(crate) compatible_name: Option<String>,
     pub(crate) sqlite_path: Option<String>,
@@ -134,6 +135,20 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
             .default("qwen3-embedding".into())
             .interact_text()?,
     );
+
+    if state.provider == Some(ProviderKind::Ollama) {
+        let use_vision = Confirm::new()
+            .with_prompt("Use a separate model for vision (image input)?")
+            .default(false)
+            .interact()?;
+        if use_vision {
+            state.vision_model = Some(
+                Input::new()
+                    .with_prompt("Vision model name (e.g. llava:13b)")
+                    .interact_text()?,
+            );
+        }
+    }
 
     println!();
     Ok(())
@@ -281,6 +296,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         },
         router: None,
         stt: None,
+        vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
     };
 
     config.memory = MemoryConfig {

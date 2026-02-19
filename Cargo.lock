@@ -8941,6 +8941,7 @@ name = "zeph-llm"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "candle-core",
  "candle-nn",
  "candle-transformers",
