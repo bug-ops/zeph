@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-02-19
+
 ### Added
 - `base_url` and `language` fields in `[llm.stt]` config for OpenAI-compatible local whisper servers (e.g. whisper.cpp)
 - `ZEPH_STT_BASE_URL` and `ZEPH_STT_LANGUAGE` environment variable overrides
@@ -987,7 +989,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/bug-ops/zeph/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bug-ops/zeph/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bug-ops/zeph/compare/v0.9.9...v0.10.0
