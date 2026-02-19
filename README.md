@@ -275,6 +275,7 @@ A full terminal UI powered by ratatui — not a separate monitoring tool, but an
 
 - Tree-sitter syntax highlighting and markdown rendering
 - Syntax-highlighted diff view for file edits (compact/expanded toggle)
+- `@`-triggered fuzzy file picker with real-time filtering (nucleo-matcher)
 - Live metrics: token usage, filter savings, cost tracking, confidence distribution
 - Conversation history with message queueing
 - Responsive input handling during streaming with render cache and event batching

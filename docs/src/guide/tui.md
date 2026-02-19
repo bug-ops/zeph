@@ -72,10 +72,25 @@ ZEPH_TUI=true zeph
 |-----|--------|
 | `Enter` | Submit input to agent |
 | `Shift+Enter` | Insert newline (multiline input) |
+| `@` | Open file picker (fuzzy file search) |
 | `Escape` | Switch to Normal mode |
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
 | `Ctrl+K` | Clear message queue |
+
+### File Picker
+
+Typing `@` in Insert mode opens a fuzzy file search popup above the input area. The picker indexes all project files (respecting `.gitignore`) and filters them in real time as you type.
+
+| Key | Action |
+|-----|--------|
+| Any character | Filter files by fuzzy match |
+| `Up` / `Down` | Navigate the result list |
+| `Enter` / `Tab` | Insert selected file path at cursor and close |
+| `Backspace` | Remove last query character (dismisses if query is empty) |
+| `Escape` | Close picker without inserting |
+
+All other keys are blocked while the picker is visible.
 
 ### Confirmation Modal
 
@@ -158,6 +173,30 @@ Alternatively, send the `/clear-queue` command to clear the queue programmatical
 ### Queue Limits
 
 The queue holds a maximum of 10 messages. When full, new input is silently dropped until the agent drains the queue by processing pending messages.
+
+## File Picker
+
+The `@` file picker provides fast file reference insertion without leaving the input area. It uses `nucleo-matcher` (the same fuzzy engine as the Helix editor) for matching and the `ignore` crate for file discovery.
+
+### How It Works
+
+1. Type `@` in Insert mode — a popup appears above the input area
+2. Continue typing to narrow results (e.g., `@main.rs`, `@src/app`)
+3. The top 10 matches update on every keystroke
+4. Press `Enter` or `Tab` to insert the relative file path at the cursor position
+5. Press `Escape` to dismiss without inserting
+
+### File Index
+
+The picker walks the project directory on first use and caches the result for 30 seconds. Subsequent `@` triggers within the TTL reuse the cached index. The index:
+
+- Respects `.gitignore` rules via the `ignore` crate
+- Excludes hidden files and directories (dotfiles)
+- Caps at 50,000 paths to prevent memory spikes in large repositories
+
+### Fuzzy Matching
+
+Matches are scored against the full relative path, so you can search by directory name, file name, or extension. The query `src/app` matches `crates/zeph-tui/src/app.rs` as well as `src/app/mod.rs`.
 
 ## Responsive Layout
 

@@ -9,6 +9,7 @@ See the full [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.
 ## [Unreleased]
 
 ### Added
+- `@`-triggered fuzzy file picker in TUI input (#600)
 - Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
 
 ## [0.11.0] - 2026-02-19
