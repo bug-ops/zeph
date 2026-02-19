@@ -46,6 +46,12 @@ pub enum McpError {
 
     #[error("embedding error: {0}")]
     Embedding(String),
+
+    #[error("MCP command '{command}' not allowed")]
+    CommandNotAllowed { command: String },
+
+    #[error("env var '{var_name}' is blocked for MCP server processes")]
+    EnvVarBlocked { var_name: String },
 }
 
 #[cfg(test)]

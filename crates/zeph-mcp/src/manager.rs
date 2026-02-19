@@ -33,6 +33,7 @@ pub struct ServerEntry {
 
 pub struct McpManager {
     configs: Vec<ServerEntry>,
+    allowed_commands: Vec<String>,
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
 }
 
@@ -46,9 +47,10 @@ impl std::fmt::Debug for McpManager {
 
 impl McpManager {
     #[must_use]
-    pub fn new(configs: Vec<ServerEntry>) -> Self {
+    pub fn new(configs: Vec<ServerEntry>, allowed_commands: Vec<String>) -> Self {
         Self {
             configs,
+            allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -58,9 +60,11 @@ impl McpManager {
     pub async fn connect_all(&self) -> Vec<McpTool> {
         let mut join_set = JoinSet::new();
 
+        let allowed = self.allowed_commands.clone();
         for config in self.configs.clone() {
+            let allowed = allowed.clone();
             join_set.spawn(async move {
-                let result = connect_entry(&config).await;
+                let result = connect_entry(&config, &allowed).await;
                 (config.id, result)
             });
         }
@@ -131,7 +135,7 @@ impl McpManager {
             }
         }
 
-        let client = connect_entry(entry).await?;
+        let client = connect_entry(entry, &self.allowed_commands).await?;
         let tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(e) => {
@@ -208,10 +212,21 @@ impl McpManager {
     }
 }
 
-async fn connect_entry(entry: &ServerEntry) -> Result<McpClient, McpError> {
+async fn connect_entry(
+    entry: &ServerEntry,
+    allowed_commands: &[String],
+) -> Result<McpClient, McpError> {
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
-            McpClient::connect(&entry.id, command, args, env, entry.timeout).await
+            McpClient::connect(
+                &entry.id,
+                command,
+                args,
+                env,
+                allowed_commands,
+                entry.timeout,
+            )
+            .await
         }
         McpTransport::Http { url } => McpClient::connect_url(&entry.id, url, entry.timeout).await,
     }
@@ -235,13 +250,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_servers_empty() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         assert!(mgr.list_servers().await.is_empty());
     }
 
     #[tokio::test]
     async fn remove_server_not_found_returns_error() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         let err = mgr.remove_server("nonexistent").await.unwrap_err();
         assert!(
             matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent")
@@ -250,16 +265,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_server_nonexistent_binary_returns_connection_error() {
-        let mgr = McpManager::new(vec![]);
+    async fn add_server_nonexistent_binary_returns_command_not_allowed() {
+        let mgr = McpManager::new(vec![], vec![]);
         let entry = make_entry("test-server");
         let err = mgr.add_server(&entry).await.unwrap_err();
-        assert!(matches!(err, McpError::Connection { .. }));
+        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
     }
 
     #[tokio::test]
     async fn connect_all_skips_failing_servers() {
-        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")]);
+        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")], vec![]);
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
@@ -267,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_server_not_found() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         let err = mgr
             .call_tool("missing", "some_tool", serde_json::json!({}))
             .await
@@ -294,7 +309,7 @@ mod tests {
 
     #[test]
     fn manager_debug() {
-        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")]);
+        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")], vec![]);
         let dbg = format!("{mgr:?}");
         assert!(dbg.contains("server_count"));
         assert!(dbg.contains("2"));
@@ -302,7 +317,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_servers_returns_sorted() {
-        let mgr = McpManager::new(vec![make_entry("z"), make_entry("a"), make_entry("m")]);
+        let mgr = McpManager::new(
+            vec![make_entry("z"), make_entry("a"), make_entry("m")],
+            vec![],
+        );
         // No servers connected (all fail), so list is empty
         mgr.connect_all().await;
         let ids = mgr.list_servers().await;
@@ -318,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_server_preserves_other_entries() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         // With no connected servers, remove always returns ServerNotFound
         assert!(mgr.remove_server("a").await.is_err());
         assert!(mgr.remove_server("b").await.is_err());
@@ -326,13 +344,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_server_connection_error_preserves_message() {
-        let mgr = McpManager::new(vec![]);
+    async fn add_server_command_not_allowed_preserves_message() {
+        let mgr = McpManager::new(vec![], vec![]);
         let entry = make_entry("my-server");
         let err = mgr.add_server(&entry).await.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("my-server"));
-        assert!(msg.contains("connection failed"));
+        assert!(msg.contains("nonexistent-mcp-binary"));
+        assert!(msg.contains("not allowed"));
     }
 
     #[test]
@@ -402,7 +420,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_server_http_nonexistent_returns_connection_error() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         let entry = make_http_entry("http-test");
         let err = mgr.add_server(&entry).await.unwrap_err();
         assert!(matches!(
@@ -413,14 +431,17 @@ mod tests {
 
     #[test]
     fn manager_new_stores_configs() {
-        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b"), make_entry("c")]);
+        let mgr = McpManager::new(
+            vec![make_entry("a"), make_entry("b"), make_entry("c")],
+            vec![],
+        );
         let dbg = format!("{mgr:?}");
         assert!(dbg.contains("3"));
     }
 
     #[tokio::test]
     async fn call_tool_different_missing_servers() {
-        let mgr = McpManager::new(vec![]);
+        let mgr = McpManager::new(vec![], vec![]);
         for id in &["server-a", "server-b", "server-c"] {
             let err = mgr
                 .call_tool(id, "tool", serde_json::json!({}))
@@ -436,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_all_with_http_entries_skips_failing() {
-        let mgr = McpManager::new(vec![make_http_entry("x"), make_http_entry("y")]);
+        let mgr = McpManager::new(vec![make_http_entry("x"), make_http_entry("y")], vec![]);
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());

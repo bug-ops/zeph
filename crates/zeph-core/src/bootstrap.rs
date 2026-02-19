@@ -849,7 +849,7 @@ pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
             }
         })
         .collect();
-    zeph_mcp::McpManager::new(entries)
+    zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone())
 }
 
 pub async fn create_mcp_registry(

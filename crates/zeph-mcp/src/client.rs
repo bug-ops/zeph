@@ -42,8 +42,12 @@ impl McpClient {
         command: &str,
         args: &[String],
         env: &std::collections::HashMap<String, String>,
+        allowed_commands: &[String],
         timeout: Duration,
     ) -> Result<Self, McpError> {
+        crate::security::validate_command(command, allowed_commands)?;
+        crate::security::validate_env(env)?;
+
         let mut cmd = Command::new(command);
         cmd.args(args);
         for (k, v) in env {

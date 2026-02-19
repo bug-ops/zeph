@@ -6,6 +6,7 @@ pub mod executor;
 pub mod manager;
 pub mod prompt;
 pub mod registry;
+pub mod security;
 pub mod tool;
 
 pub use error::McpError;

@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn executor_construction() {
-        let mgr = Arc::new(McpManager::new(vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
         let executor = McpToolExecutor::new(mgr);
         let dbg = format!("{executor:?}");
         assert!(dbg.contains("McpToolExecutor"));
@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_no_blocks_returns_none() {
-        let mgr = Arc::new(McpManager::new(vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
         let executor = McpToolExecutor::new(mgr);
         let result = executor.execute("no mcp blocks here").await.unwrap();
         assert!(result.is_none());
@@ -219,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_invalid_json_block_returns_error() {
-        let mgr = Arc::new(McpManager::new(vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
         let executor = McpToolExecutor::new(mgr);
         let text = "```mcp\nnot json\n```";
         let result = executor.execute(text).await;
@@ -228,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_valid_block_server_not_connected() {
-        let mgr = Arc::new(McpManager::new(vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
         let executor = McpToolExecutor::new(mgr);
         let text = "```mcp\n{\"server\":\"missing\",\"tool\":\"t\"}\n```";
         let result = executor.execute(text).await;
