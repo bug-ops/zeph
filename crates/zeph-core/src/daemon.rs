@@ -150,7 +150,7 @@ pub fn remove_pid_file(path: &str) -> std::io::Result<()> {
 
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
+        && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
     {
         return format!("{}/{rest}", home.to_string_lossy());
     }
