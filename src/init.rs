@@ -39,6 +39,7 @@ pub(crate) struct WizardState {
     pub(crate) orchestrator_fallback_base_url: Option<String>,
     pub(crate) orchestrator_fallback_api_key: Option<String>,
     pub(crate) orchestrator_fallback_compatible_name: Option<String>,
+    pub(crate) auto_update_check: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -56,6 +57,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     let mut state = WizardState {
         vault_backend: "env".into(),
         semantic_enabled: true,
+        auto_update_check: true,
         ..WizardState::default()
     };
 
@@ -63,6 +65,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_llm(&mut state)?;
     step_memory(&mut state)?;
     step_channel(&mut state)?;
+    step_update_check(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -150,7 +153,7 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
 }
 
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 2/5: LLM Provider ==\n");
+    println!("== Step 2/6: LLM Provider ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -286,7 +289,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
 }
 
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 3/5: Memory ==\n");
+    println!("== Step 3/6: Memory ==\n");
 
     state.sqlite_path = Some(
         Input::new()
@@ -314,7 +317,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 4/5: Channel ==\n");
+    println!("== Step 4/6: Channel ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -381,7 +384,7 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 1/5: Secrets Backend ==\n");
+    println!("== Step 1/6: Secrets Backend ==\n");
 
     let backends = ["env (environment variables)", "age (encrypted file)"];
     let selection = Select::new()
@@ -402,6 +405,7 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
 
 pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
+    config.agent.auto_update_check = state.auto_update_check;
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
     let orchestrator = if provider == ProviderKind::Orchestrator {
@@ -552,8 +556,20 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
     })
 }
 
+fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 5/6: Update Check ==\n");
+
+    state.auto_update_check = Confirm::new()
+        .with_prompt("Enable automatic update checks?")
+        .default(true)
+        .interact()?;
+
+    println!();
+    Ok(())
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
-    println!("== Step 5/5: Review & Write ==\n");
+    println!("== Step 6/6: Review & Write ==\n");
 
     let config = build_config(state);
     let toml_str = toml::to_string_pretty(&config)?;

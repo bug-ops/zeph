@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph vault` CLI subcommands: `init` (generate age keypair), `set` (store secret), `get` (retrieve secret), `list` (show keys), `rm` (remove secret) (#598)
 - Atomic file writes for vault operations with temp+rename strategy (#598)
 - Default vault directory resolution via XDG_CONFIG_HOME / APPDATA / HOME (#598)
+- Auto-update check via GitHub Releases API with configurable scheduler task (#588)
+- `auto_update_check` config field (default: true) with `ZEPH_AUTO_UPDATE_CHECK` env override
+- `TaskKind::UpdateCheck` variant and `UpdateCheckHandler` in zeph-scheduler
+- One-shot update check at startup when scheduler feature is disabled
+- `--init` wizard step for auto-update check configuration
 
 ### Fixed
 - Restore `--vault`, `--vault-key`, `--vault-path` CLI flags lost during clap migration (#587)

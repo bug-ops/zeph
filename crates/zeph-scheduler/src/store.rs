@@ -12,6 +12,16 @@ impl JobStore {
         Self { pool }
     }
 
+    /// Open (or create) a `JobStore` from a `SQLite` file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SchedulerError::Database` if the connection cannot be established.
+    pub async fn open(path: &str) -> Result<Self, SchedulerError> {
+        let pool = SqlitePool::connect(&format!("sqlite:{path}?mode=rwc")).await?;
+        Ok(Self { pool })
+    }
+
     /// Initialize the `scheduled_jobs` table.
     ///
     /// # Errors

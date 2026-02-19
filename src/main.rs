@@ -7,7 +7,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use zeph_core::vault::AgeVaultProvider;
 
-#[cfg(any(feature = "a2a", feature = "tui"))]
+#[cfg(any(feature = "a2a", feature = "tui", feature = "scheduler"))]
 use tokio::sync::watch;
 use zeph_channels::AnyChannel;
 use zeph_channels::CliChannel;
@@ -35,6 +35,8 @@ use zeph_index::{
 use zeph_llm::any::AnyProvider;
 #[cfg(feature = "index")]
 use zeph_llm::provider::LlmProvider;
+#[cfg(feature = "scheduler")]
+use zeph_scheduler::{JobStore, ScheduledTask, Scheduler, TaskKind, UpdateCheckHandler};
 #[cfg(feature = "tui")]
 use zeph_tui::{App, EventReader, TuiChannel};
 
@@ -479,6 +481,9 @@ async fn main() -> anyhow::Result<()> {
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_learning(config.skills.learning.clone());
+
+    #[cfg(feature = "scheduler")]
+    let agent = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
 
     #[cfg(feature = "candle")]
     let agent = if config
@@ -1037,6 +1042,77 @@ async fn create_channel_with_tui(
 #[cfg_attr(feature = "tui", allow(dead_code))]
 async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
     create_channel_inner(config).await
+}
+
+#[cfg(feature = "scheduler")]
+async fn bootstrap_scheduler<C, T>(
+    agent: zeph_core::agent::Agent<C, T>,
+    config: &Config,
+    shutdown_rx: watch::Receiver<bool>,
+) -> zeph_core::agent::Agent<C, T>
+where
+    C: zeph_core::channel::Channel,
+    T: zeph_tools::executor::ToolExecutor,
+{
+    if !config.scheduler.enabled {
+        if config.agent.auto_update_check {
+            // Fire-and-forget single check at startup when scheduler is disabled.
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let handler = UpdateCheckHandler::new(env!("CARGO_PKG_VERSION"), tx);
+            tokio::spawn(async move {
+                let _ = handler.execute(&serde_json::Value::Null).await;
+            });
+            return agent.with_update_notifications(rx);
+        }
+        return agent;
+    }
+
+    let store = match JobStore::open(&config.memory.sqlite_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("scheduler: failed to open store: {e}");
+            return agent;
+        }
+    };
+
+    let mut scheduler = Scheduler::new(store, shutdown_rx);
+
+    let agent = if config.agent.auto_update_check {
+        let (update_tx, update_rx) = tokio::sync::mpsc::channel(4);
+        let update_task = match ScheduledTask::new(
+            "update_check",
+            "0 0 9 * * *",
+            TaskKind::UpdateCheck,
+            serde_json::Value::Null,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("scheduler: invalid update_check cron: {e}");
+                return agent;
+            }
+        };
+        scheduler.add_task(update_task);
+        scheduler.register_handler(
+            &TaskKind::UpdateCheck,
+            Box::new(UpdateCheckHandler::new(
+                env!("CARGO_PKG_VERSION"),
+                update_tx,
+            )),
+        );
+        agent.with_update_notifications(update_rx)
+    } else {
+        agent
+    };
+
+    if let Err(e) = scheduler.init().await {
+        tracing::warn!("scheduler init failed: {e}");
+        return agent;
+    }
+
+    tokio::spawn(async move { scheduler.run().await });
+    tracing::info!("scheduler started");
+
+    agent
 }
 
 #[cfg(not(feature = "tui"))]

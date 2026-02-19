@@ -5,7 +5,7 @@ use serial_test::serial;
 
 use super::*;
 
-const ENV_KEYS: [&str; 49] = [
+const ENV_KEYS: [&str; 50] = [
     "ZEPH_LLM_PROVIDER",
     "ZEPH_LLM_BASE_URL",
     "ZEPH_LLM_MODEL",
@@ -55,6 +55,7 @@ const ENV_KEYS: [&str; 49] = [
     "ZEPH_INDEX_REPO_MAP_TOKENS",
     "ZEPH_STT_PROVIDER",
     "ZEPH_STT_MODEL",
+    "ZEPH_AUTO_UPDATE_CHECK",
 ];
 
 fn clear_env() {
@@ -2366,4 +2367,52 @@ fn env_override_stt_provider_only() {
     let stt = config.llm.stt.unwrap();
     assert_eq!(stt.provider, "whisper");
     assert_eq!(stt.model, "whisper-1");
+}
+
+#[test]
+fn config_default_auto_update_check_is_true() {
+    let config = Config::default();
+    assert!(config.agent.auto_update_check);
+}
+
+#[test]
+#[serial]
+fn env_override_auto_update_check_false() {
+    clear_env();
+    let mut config = Config::default();
+    assert!(config.agent.auto_update_check);
+
+    unsafe { std::env::set_var("ZEPH_AUTO_UPDATE_CHECK", "false") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_AUTO_UPDATE_CHECK") };
+
+    assert!(!config.agent.auto_update_check);
+}
+
+#[test]
+#[serial]
+fn env_override_auto_update_check_true() {
+    clear_env();
+    let mut config = Config::default();
+    config.agent.auto_update_check = false;
+
+    unsafe { std::env::set_var("ZEPH_AUTO_UPDATE_CHECK", "true") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_AUTO_UPDATE_CHECK") };
+
+    assert!(config.agent.auto_update_check);
+}
+
+#[test]
+#[serial]
+fn env_override_auto_update_check_invalid_ignored() {
+    clear_env();
+    let mut config = Config::default();
+    assert!(config.agent.auto_update_check);
+
+    unsafe { std::env::set_var("ZEPH_AUTO_UPDATE_CHECK", "not-a-bool") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_AUTO_UPDATE_CHECK") };
+
+    assert!(config.agent.auto_update_check);
 }

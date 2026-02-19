@@ -11,6 +11,7 @@ pub enum TaskKind {
     MemoryCleanup,
     SkillRefresh,
     HealthCheck,
+    UpdateCheck,
     Custom(String),
 }
 
@@ -21,6 +22,7 @@ impl TaskKind {
             "memory_cleanup" => Self::MemoryCleanup,
             "skill_refresh" => Self::SkillRefresh,
             "health_check" => Self::HealthCheck,
+            "update_check" => Self::UpdateCheck,
             other => Self::Custom(other.to_owned()),
         }
     }
@@ -31,6 +33,7 @@ impl TaskKind {
             Self::MemoryCleanup => "memory_cleanup",
             Self::SkillRefresh => "skill_refresh",
             Self::HealthCheck => "health_check",
+            Self::UpdateCheck => "update_check",
             Self::Custom(s) => s,
         }
     }
@@ -85,9 +88,19 @@ mod tests {
         );
         assert_eq!(TaskKind::MemoryCleanup.as_str(), "memory_cleanup");
         assert_eq!(
+            TaskKind::from_str_kind("skill_refresh"),
+            TaskKind::SkillRefresh
+        );
+        assert_eq!(TaskKind::SkillRefresh.as_str(), "skill_refresh");
+        assert_eq!(
             TaskKind::from_str_kind("health_check"),
             TaskKind::HealthCheck
         );
+        assert_eq!(
+            TaskKind::from_str_kind("update_check"),
+            TaskKind::UpdateCheck
+        );
+        assert_eq!(TaskKind::UpdateCheck.as_str(), "update_check");
         assert_eq!(
             TaskKind::from_str_kind("custom_job"),
             TaskKind::Custom("custom_job".into())

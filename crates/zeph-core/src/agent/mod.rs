@@ -156,6 +156,7 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
     stt: Option<Box<dyn SpeechToText>>,
+    update_notify_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl<C: Channel, T: ToolExecutor> Agent<C, T> {
@@ -253,12 +254,19 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             cost_tracker: None,
             cached_prompt_tokens: initial_prompt_tokens,
             stt: None,
+            update_notify_rx: None,
         }
     }
 
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn SpeechToText>) -> Self {
         self.stt = Some(stt);
+        self
+    }
+
+    #[must_use]
+    pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
+        self.update_notify_rx = Some(rx);
         self
     }
 
@@ -655,6 +663,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                     }
                     Some(_) = recv_optional(&mut self.config_reload_rx) => {
                         self.reload_config();
+                        continue;
+                    }
+                    Some(msg) = recv_optional(&mut self.update_notify_rx) => {
+                        if let Err(e) = self.channel.send(&msg).await {
+                            tracing::warn!("failed to send update notification: {e}");
+                        }
                         continue;
                     }
                 };
@@ -1088,7 +1102,14 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
 
 async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
     match rx {
-        Some(rx) => rx.recv().await,
+        Some(inner) => {
+            if let Some(v) = inner.recv().await {
+                Some(v)
+            } else {
+                *rx = None;
+                std::future::pending().await
+            }
+        }
         None => std::future::pending().await,
     }
 }

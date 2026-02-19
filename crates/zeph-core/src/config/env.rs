@@ -151,6 +151,11 @@ impl Config {
             });
             stt.model = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_AUTO_UPDATE_CHECK")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.agent.auto_update_check = enabled;
+        }
         if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {

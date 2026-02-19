@@ -52,6 +52,10 @@ fn default_max_tool_iterations() -> usize {
     10
 }
 
+fn default_auto_update_check() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -59,6 +63,8 @@ pub struct AgentConfig {
     pub max_tool_iterations: usize,
     #[serde(default)]
     pub summary_model: Option<String>,
+    #[serde(default = "default_auto_update_check")]
+    pub auto_update_check: bool,
 }
 
 /// LLM provider backend selector.
@@ -984,6 +990,7 @@ impl Default for Config {
                 name: "Zeph".into(),
                 max_tool_iterations: 10,
                 summary_model: None,
+                auto_update_check: default_auto_update_check(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
@@ -1055,5 +1062,6 @@ mod tests {
         assert_eq!(back.memory.sqlite_path, config.memory.sqlite_path);
         assert_eq!(back.memory.history_limit, config.memory.history_limit);
         assert_eq!(back.vault.backend, config.vault.backend);
+        assert_eq!(back.agent.auto_update_check, config.agent.auto_update_check);
     }
 }
