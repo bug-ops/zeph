@@ -18,6 +18,8 @@ fn default_confirm_patterns() -> Vec<String> {
         "drop table".into(),
         "drop database".into(),
         "truncate ".into(),
+        "$(".into(),
+        "`".into(),
     ]
 }
 

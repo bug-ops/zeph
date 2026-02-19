@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Shell command detection rewritten from substring matching to tokenizer-based pipeline with escape normalization, eliminating bypass vectors via backslash insertion, hex/octal escapes, quote splitting, and pipe chains
+- Shell sandbox path validation now uses `std::path::absolute()` as fallback when `canonicalize()` fails on non-existent paths
+- Blocked command matching extracts basename from absolute paths (`/usr/bin/sudo` now correctly blocked)
+- Transparent wrapper commands (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `xargs`) are skipped to detect the actual command
+- Default confirm patterns now include `$(` and backtick subshell expressions
+
+### Fixed
+- False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)
+
 ## [0.11.2] - 2026-02-19
 
 ### Added
