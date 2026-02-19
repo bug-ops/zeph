@@ -157,6 +157,7 @@ zeph-tui = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 
 [dev-dependencies]
+serial_test.workspace = true
 tempfile.workspace = true
 tokio-stream.workspace = true
 zeph-core.workspace = true

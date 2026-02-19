@@ -59,10 +59,10 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         ..WizardState::default()
     };
 
+    step_vault(&mut state)?;
     step_llm(&mut state)?;
     step_memory(&mut state)?;
     step_channel(&mut state)?;
-    step_vault(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -150,9 +150,11 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
 }
 
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 1/5: LLM Provider ==\n");
+    println!("== Step 2/5: LLM Provider ==\n");
 
-    step_llm_provider(state)?;
+    let use_age = state.vault_backend == "age";
+
+    step_llm_provider(state, use_age)?;
 
     state.embedding_model = Some(
         Input::new()
@@ -179,7 +181,7 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
+fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
     let providers = [
         "Ollama (local)",
         "Claude (API)",
@@ -211,8 +213,10 @@ fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
         }
         1 => {
             state.provider = Some(ProviderKind::Claude);
-            let raw = Password::new().with_prompt("Claude API key").interact()?;
-            state.api_key = if raw.is_empty() { None } else { Some(raw) };
+            if !use_age {
+                let raw = Password::new().with_prompt("Claude API key").interact()?;
+                state.api_key = if raw.is_empty() { None } else { Some(raw) };
+            }
             state.model = Some(
                 Input::new()
                     .with_prompt("Model name")
@@ -222,8 +226,10 @@ fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
         }
         2 => {
             state.provider = Some(ProviderKind::OpenAi);
-            let raw = Password::new().with_prompt("OpenAI API key").interact()?;
-            state.api_key = if raw.is_empty() { None } else { Some(raw) };
+            if !use_age {
+                let raw = Password::new().with_prompt("OpenAI API key").interact()?;
+                state.api_key = if raw.is_empty() { None } else { Some(raw) };
+            }
             state.base_url = Some(
                 Input::new()
                     .with_prompt("Base URL")
@@ -265,12 +271,14 @@ fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
                 Some(Input::new().with_prompt("Provider name").interact_text()?);
             state.base_url = Some(Input::new().with_prompt("Base URL").interact_text()?);
             state.model = Some(Input::new().with_prompt("Model name").interact_text()?);
-            state.api_key = Some(
-                Password::new()
-                    .with_prompt("API key (leave empty if none)")
-                    .allow_empty_password(true)
-                    .interact()?,
-            );
+            if !use_age {
+                state.api_key = Some(
+                    Password::new()
+                        .with_prompt("API key (leave empty if none)")
+                        .allow_empty_password(true)
+                        .interact()?,
+                );
+            }
         }
         _ => unreachable!(),
     }
@@ -278,7 +286,7 @@ fn step_llm_provider(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 2/5: Memory ==\n");
+    println!("== Step 3/5: Memory ==\n");
 
     state.sqlite_path = Some(
         Input::new()
@@ -306,7 +314,9 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 3/5: Channel ==\n");
+    println!("== Step 4/5: Channel ==\n");
+
+    let use_age = state.vault_backend == "age";
 
     let channels = ["CLI only (default)", "Telegram", "Discord", "Slack"];
     let selection = Select::new()
@@ -319,11 +329,13 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
         0 => state.channel = ChannelChoice::Cli,
         1 => {
             state.channel = ChannelChoice::Telegram;
-            state.telegram_token = Some(
-                Password::new()
-                    .with_prompt("Telegram bot token")
-                    .interact()?,
-            );
+            if !use_age {
+                state.telegram_token = Some(
+                    Password::new()
+                        .with_prompt("Telegram bot token")
+                        .interact()?,
+                );
+            }
             let users: String = Input::new()
                 .with_prompt("Allowed usernames (comma-separated)")
                 .default(String::new())
@@ -336,11 +348,13 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
         }
         2 => {
             state.channel = ChannelChoice::Discord;
-            state.discord_token = Some(
-                Password::new()
-                    .with_prompt("Discord bot token")
-                    .interact()?,
-            );
+            if !use_age {
+                state.discord_token = Some(
+                    Password::new()
+                        .with_prompt("Discord bot token")
+                        .interact()?,
+                );
+            }
             state.discord_app_id = Some(
                 Input::new()
                     .with_prompt("Discord application ID")
@@ -349,13 +363,15 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
         }
         3 => {
             state.channel = ChannelChoice::Slack;
-            state.slack_bot_token =
-                Some(Password::new().with_prompt("Slack bot token").interact()?);
-            state.slack_signing_secret = Some(
-                Password::new()
-                    .with_prompt("Slack signing secret")
-                    .interact()?,
-            );
+            if !use_age {
+                state.slack_bot_token =
+                    Some(Password::new().with_prompt("Slack bot token").interact()?);
+                state.slack_signing_secret = Some(
+                    Password::new()
+                        .with_prompt("Slack signing secret")
+                        .interact()?,
+                );
+            }
         }
         _ => unreachable!(),
     }
@@ -365,7 +381,7 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 4/5: Secrets Backend ==\n");
+    println!("== Step 1/5: Secrets Backend ==\n");
 
     let backends = ["env (environment variables)", "age (encrypted file)"];
     let selection = Select::new()
@@ -574,7 +590,7 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     println!("Config written to {}", path.display());
 
     print_secrets_instructions(state);
-    print_next_steps(&path);
+    print_next_steps(state, &path);
 
     Ok(())
 }
@@ -596,17 +612,25 @@ fn collect_provider_secret(
     kind: Option<ProviderKind>,
     api_key: Option<&String>,
     name: Option<&str>,
+    use_age: bool,
 ) {
-    if let (Some(k), Some(key)) = (kind, api_key)
-        && !key.is_empty()
+    if let Some(k) = kind
         && let Some(var) = api_key_env_var(k, name)
         && !secrets.contains(&var)
     {
-        secrets.push(var);
+        let include = if use_age {
+            true
+        } else {
+            api_key.is_some_and(|key| !key.is_empty())
+        };
+        if include {
+            secrets.push(var);
+        }
     }
 }
 
 fn print_secrets_instructions(state: &WizardState) {
+    let use_age = state.vault_backend == "age";
     let mut secrets: Vec<String> = Vec::new();
 
     if state.provider == Some(ProviderKind::Orchestrator) {
@@ -615,12 +639,14 @@ fn print_secrets_instructions(state: &WizardState) {
             state.orchestrator_primary_provider,
             state.orchestrator_primary_api_key.as_ref(),
             state.orchestrator_primary_compatible_name.as_deref(),
+            use_age,
         );
         collect_provider_secret(
             &mut secrets,
             state.orchestrator_fallback_provider,
             state.orchestrator_fallback_api_key.as_ref(),
             state.orchestrator_fallback_compatible_name.as_deref(),
+            use_age,
         );
     } else {
         collect_provider_secret(
@@ -628,19 +654,31 @@ fn print_secrets_instructions(state: &WizardState) {
             state.provider,
             state.api_key.as_ref(),
             state.compatible_name.as_deref(),
+            use_age,
         );
     }
 
-    if state.telegram_token.is_some() {
+    let include_telegram = use_age && matches!(state.channel, ChannelChoice::Telegram)
+        || state.telegram_token.is_some();
+    if include_telegram {
         secrets.push("ZEPH_TELEGRAM_TOKEN".into());
     }
-    if state.discord_token.is_some() {
+
+    let include_discord =
+        use_age && matches!(state.channel, ChannelChoice::Discord) || state.discord_token.is_some();
+    if include_discord {
         secrets.push("ZEPH_DISCORD_TOKEN".into());
     }
-    if state.slack_bot_token.is_some() {
+
+    let include_slack =
+        use_age && matches!(state.channel, ChannelChoice::Slack) || state.slack_bot_token.is_some();
+    if include_slack {
         secrets.push("ZEPH_SLACK_BOT_TOKEN".into());
     }
-    if state.slack_signing_secret.is_some() {
+
+    let include_slack_secret = use_age && matches!(state.channel, ChannelChoice::Slack)
+        || state.slack_signing_secret.is_some();
+    if include_slack_secret && !secrets.contains(&"ZEPH_SLACK_SIGNING_SECRET".to_owned()) {
         secrets.push("ZEPH_SLACK_SIGNING_SECRET".into());
     }
 
@@ -648,20 +686,27 @@ fn print_secrets_instructions(state: &WizardState) {
         return;
     }
 
-    if state.vault_backend == "env" {
+    if use_age {
+        println!("\nFirst run `zeph vault init` if you haven't already.");
+        println!("Then store secrets:");
+        for var in &secrets {
+            println!("  zeph vault set {var} <value>");
+        }
+    } else {
         println!("\nAdd the following to your shell profile:");
         for var in &secrets {
             println!("  export {var}=\"<your-secret>\"");
         }
-    } else {
-        println!("\nStore secrets via: zeph vault set <KEY> <VALUE>");
-        println!("Required keys: {}", secrets.join(", "));
     }
 }
 
-fn print_next_steps(path: &std::path::Path) {
+fn print_next_steps(state: &WizardState, path: &std::path::Path) {
     println!("\nNext steps:");
-    println!("  1. Set required environment variables (see above)");
+    if state.vault_backend == "age" {
+        println!("  1. Store secrets (see above)");
+    } else {
+        println!("  1. Set required environment variables (see above)");
+    }
     println!("  2. Run: zeph --config {}", path.display());
     println!("  3. Or with TUI: zeph --tui --config {}", path.display());
 }
@@ -796,7 +841,13 @@ mod tests {
     fn collect_provider_secret_skips_empty_key() {
         let mut secrets: Vec<String> = Vec::new();
         let empty = String::new();
-        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&empty), None);
+        collect_provider_secret(
+            &mut secrets,
+            Some(ProviderKind::Claude),
+            Some(&empty),
+            None,
+            false,
+        );
         assert!(secrets.is_empty(), "empty key must not add any secret");
     }
 
@@ -804,8 +855,20 @@ mod tests {
     fn collect_provider_secret_deduplicates() {
         let mut secrets: Vec<String> = Vec::new();
         let key = "sk-test".to_owned();
-        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&key), None);
-        collect_provider_secret(&mut secrets, Some(ProviderKind::Claude), Some(&key), None);
+        collect_provider_secret(
+            &mut secrets,
+            Some(ProviderKind::Claude),
+            Some(&key),
+            None,
+            false,
+        );
+        collect_provider_secret(
+            &mut secrets,
+            Some(ProviderKind::Claude),
+            Some(&key),
+            None,
+            false,
+        );
         assert_eq!(
             secrets.len(),
             1,

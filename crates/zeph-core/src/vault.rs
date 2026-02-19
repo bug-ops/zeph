@@ -1,12 +1,13 @@
 use std::fmt;
 use std::future::Future;
+use std::io::Write as _;
 use std::pin::Pin;
 
 use std::collections::HashMap;
 
 use std::io::Read as _;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -73,16 +74,26 @@ pub enum AgeVaultError {
     Io(std::io::Error),
     #[error("invalid JSON in vault: {0}")]
     Json(serde_json::Error),
+    #[error("age encryption failed: {0}")]
+    Encrypt(String),
+    #[error("failed to write vault file: {0}")]
+    VaultWrite(std::io::Error),
+    #[error("failed to write key file: {0}")]
+    KeyWrite(std::io::Error),
 }
 
 pub struct AgeVaultProvider {
     secrets: HashMap<String, String>,
+    key_path: PathBuf,
+    vault_path: PathBuf,
 }
 
 impl fmt::Debug for AgeVaultProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgeVaultProvider")
             .field("secrets", &format_args!("[{} secrets]", self.secrets.len()))
+            .field("key_path", &self.key_path)
+            .field("vault_path", &self.vault_path)
             .finish()
     }
 }
@@ -97,28 +108,175 @@ impl AgeVaultProvider {
     ///
     /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
     pub fn new(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
-        let key_str = std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?;
-        let key_line = key_str
-            .lines()
-            .find(|l| !l.starts_with('#') && !l.trim().is_empty())
-            .ok_or_else(|| AgeVaultError::KeyParse("no identity line found".into()))?;
-        let identity: age::x25519::Identity = key_line
-            .trim()
-            .parse()
-            .map_err(|e: &str| AgeVaultError::KeyParse(e.to_owned()))?;
-        let ciphertext = std::fs::read(vault_path).map_err(AgeVaultError::VaultRead)?;
-        let decryptor = age::Decryptor::new(&ciphertext[..]).map_err(AgeVaultError::Decrypt)?;
-        let mut reader = decryptor
-            .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(AgeVaultError::Decrypt)?;
-        let mut plaintext = Vec::new();
-        reader
-            .read_to_end(&mut plaintext)
-            .map_err(AgeVaultError::Io)?;
-        let secrets: HashMap<String, String> =
-            serde_json::from_slice(&plaintext).map_err(AgeVaultError::Json)?;
-        Ok(Self { secrets })
+        Self::load(key_path, vault_path)
     }
+
+    /// Load vault from disk, storing paths for subsequent write operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
+    pub fn load(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
+        let key_str = std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?;
+        let identity = parse_identity(&key_str)?;
+        let ciphertext = std::fs::read(vault_path).map_err(AgeVaultError::VaultRead)?;
+        let secrets = decrypt_secrets(&identity, &ciphertext)?;
+        Ok(Self {
+            secrets,
+            key_path: key_path.to_owned(),
+            vault_path: vault_path.to_owned(),
+        })
+    }
+
+    /// Serialize and re-encrypt secrets to vault file using atomic write (temp + rename).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError`] on encryption or write failure.
+    ///
+    /// Note: re-reads and re-parses the key file on each call. For CLI one-shot use this
+    /// is acceptable; if used in a long-lived context consider caching the parsed identity.
+    pub fn save(&self) -> Result<(), AgeVaultError> {
+        let key_str = std::fs::read_to_string(&self.key_path).map_err(AgeVaultError::KeyRead)?;
+        let identity = parse_identity(&key_str)?;
+        let ciphertext = encrypt_secrets(&identity, &self.secrets)?;
+        atomic_write(&self.vault_path, &ciphertext)
+    }
+
+    /// Insert or update a secret in the in-memory map.
+    pub fn set_secret_mut(&mut self, key: String, value: String) {
+        self.secrets.insert(key, value);
+    }
+
+    /// Remove a secret from the in-memory map. Returns `true` if the key existed.
+    pub fn remove_secret_mut(&mut self, key: &str) -> bool {
+        self.secrets.remove(key).is_some()
+    }
+
+    /// Return sorted list of secret keys (no values exposed).
+    #[must_use]
+    pub fn list_keys(&self) -> Vec<&str> {
+        let mut keys: Vec<&str> = self.secrets.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// Look up a secret value by key, returning `None` if not present.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.secrets.get(key).map(String::as_str)
+    }
+
+    /// Generate a new x25519 keypair, write key file (mode 0600), and create an empty encrypted vault.
+    ///
+    /// Outputs:
+    /// - `<dir>/vault-key.txt` — age identity (private + public key comment)
+    /// - `<dir>/secrets.age`  — age-encrypted empty JSON object
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError`] on key/vault write failure or encryption failure.
+    pub fn init_vault(dir: &Path) -> Result<(), AgeVaultError> {
+        use age::secrecy::ExposeSecret as _;
+
+        std::fs::create_dir_all(dir).map_err(AgeVaultError::KeyWrite)?;
+
+        let identity = age::x25519::Identity::generate();
+        let public_key = identity.to_public();
+
+        let key_content = format!(
+            "# public key: {}\n{}\n",
+            public_key,
+            identity.to_string().expose_secret()
+        );
+
+        let key_path = dir.join("vault-key.txt");
+        write_private_file(&key_path, key_content.as_bytes())?;
+
+        let vault_path = dir.join("secrets.age");
+        let empty: HashMap<String, String> = HashMap::new();
+        let ciphertext = encrypt_secrets(&identity, &empty)?;
+        atomic_write(&vault_path, &ciphertext)?;
+
+        println!("Vault initialized:");
+        println!("  Key:   {}", key_path.display());
+        println!("  Vault: {}", vault_path.display());
+
+        Ok(())
+    }
+}
+
+fn parse_identity(key_str: &str) -> Result<age::x25519::Identity, AgeVaultError> {
+    let key_line = key_str
+        .lines()
+        .find(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .ok_or_else(|| AgeVaultError::KeyParse("no identity line found".into()))?;
+    key_line
+        .trim()
+        .parse()
+        .map_err(|e: &str| AgeVaultError::KeyParse(e.to_owned()))
+}
+
+fn decrypt_secrets(
+    identity: &age::x25519::Identity,
+    ciphertext: &[u8],
+) -> Result<HashMap<String, String>, AgeVaultError> {
+    let decryptor = age::Decryptor::new(ciphertext).map_err(AgeVaultError::Decrypt)?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(AgeVaultError::Decrypt)?;
+    let mut plaintext = Vec::with_capacity(ciphertext.len());
+    reader
+        .read_to_end(&mut plaintext)
+        .map_err(AgeVaultError::Io)?;
+    // TODO: zeroize plaintext buffer after use once zeroize is added to workspace deps.
+    serde_json::from_slice(&plaintext).map_err(AgeVaultError::Json)
+}
+
+fn encrypt_secrets(
+    identity: &age::x25519::Identity,
+    secrets: &HashMap<String, String>,
+) -> Result<Vec<u8>, AgeVaultError> {
+    let recipient = identity.to_public();
+    let encryptor =
+        age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+            .map_err(|e| AgeVaultError::Encrypt(e.to_string()))?;
+    let json = serde_json::to_vec(secrets).map_err(AgeVaultError::Json)?;
+    let mut ciphertext = Vec::with_capacity(json.len() + 64);
+    let mut writer = encryptor
+        .wrap_output(&mut ciphertext)
+        .map_err(|e| AgeVaultError::Encrypt(e.to_string()))?;
+    writer.write_all(&json).map_err(AgeVaultError::Io)?;
+    writer
+        .finish()
+        .map_err(|e| AgeVaultError::Encrypt(e.to_string()))?;
+    Ok(ciphertext)
+}
+
+fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
+    let tmp_path = path.with_extension("age.tmp");
+    std::fs::write(&tmp_path, data).map_err(AgeVaultError::VaultWrite)?;
+    std::fs::rename(&tmp_path, path).map_err(AgeVaultError::VaultWrite)
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(AgeVaultError::KeyWrite)?;
+    file.write_all(data).map_err(AgeVaultError::KeyWrite)
+}
+
+// TODO: Windows does not enforce file permissions via mode bits; the key file is created
+// without access control restrictions. Consider using Windows ACLs in a follow-up.
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
+    std::fs::write(path, data).map_err(AgeVaultError::KeyWrite)
 }
 
 impl VaultProvider for AgeVaultProvider {
@@ -451,5 +609,75 @@ mod age_tests {
         let vault_err =
             AgeVaultError::VaultRead(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
         assert!(vault_err.to_string().contains("failed to read vault file"));
+
+        let enc_err = AgeVaultError::Encrypt("bad".into());
+        assert!(enc_err.to_string().contains("age encryption failed"));
+
+        let write_err = AgeVaultError::VaultWrite(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "test",
+        ));
+        assert!(write_err.to_string().contains("failed to write vault file"));
+    }
+
+    #[test]
+    fn age_vault_set_and_list_keys() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"A": "1"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("B".to_owned(), "2".to_owned());
+        vault.set_secret_mut("C".to_owned(), "3".to_owned());
+
+        let keys = vault.list_keys();
+        assert_eq!(keys, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn age_vault_remove_secret() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"X": "val", "Y": "val2"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert!(vault.remove_secret_mut("X"));
+        assert!(!vault.remove_secret_mut("NONEXISTENT"));
+        assert_eq!(vault.list_keys(), vec!["Y"]);
+    }
+
+    #[tokio::test]
+    async fn age_vault_save_roundtrip() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"ORIG": "value"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("NEW_KEY".to_owned(), "new_value".to_owned());
+        vault.save().unwrap();
+
+        let reloaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        let result = reloaded.get_secret("NEW_KEY").await.unwrap();
+        assert_eq!(result.as_deref(), Some("new_value"));
+
+        let orig = reloaded.get_secret("ORIG").await.unwrap();
+        assert_eq!(orig.as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn age_vault_init_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        assert!(key_path.exists());
+        assert!(vault_path.exists());
+
+        let vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(vault.list_keys(), Vec::<&str>::new());
     }
 }

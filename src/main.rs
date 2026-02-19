@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use zeph_core::vault::AgeVaultProvider;
 
 #[cfg(any(feature = "a2a", feature = "tui"))]
 use tokio::sync::watch;
@@ -146,6 +147,38 @@ enum Command {
         #[arg(long, short, value_name = "PATH")]
         output: Option<PathBuf>,
     },
+    /// Manage the age-encrypted secrets vault
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum VaultCommand {
+    /// Generate age keypair and empty encrypted vault
+    Init,
+    /// Encrypt and store a secret.
+    /// Note: VALUE is visible in process listing (ps/history). For sensitive values
+    /// prefer setting the variable in the shell and passing via env instead.
+    Set {
+        #[arg()]
+        key: String,
+        #[arg()]
+        value: String,
+    },
+    /// Decrypt and print a secret value
+    Get {
+        #[arg()]
+        key: String,
+    },
+    /// List stored secret keys (no values)
+    List,
+    /// Remove a secret
+    Rm {
+        #[arg()]
+        key: String,
+    },
 }
 
 #[tokio::main]
@@ -153,8 +186,16 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Command::Init { output }) = cli.command {
-        return init::run(output);
+    match cli.command {
+        Some(Command::Init { output }) => return init::run(output),
+        Some(Command::Vault { command: vault_cmd }) => {
+            return handle_vault_command(
+                vault_cmd,
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
+            );
+        }
+        None => {}
     }
 
     #[cfg(feature = "tui")]
@@ -630,6 +671,71 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
+fn default_vault_dir() -> PathBuf {
+    // XDG_CONFIG_HOME or ~/.config on Unix, %APPDATA% on Windows
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("zeph");
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("zeph");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join(".config").join("zeph")
+}
+
+fn handle_vault_command(
+    cmd: VaultCommand,
+    key_path: Option<&std::path::Path>,
+    vault_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let dir = default_vault_dir();
+    let key_path_owned = key_path.map_or_else(|| dir.join("vault-key.txt"), PathBuf::from);
+    let vault_path_owned = vault_path.map_or_else(|| dir.join("secrets.age"), PathBuf::from);
+
+    match cmd {
+        VaultCommand::Init => {
+            AgeVaultProvider::init_vault(&dir)
+                .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+        }
+        VaultCommand::Set { key, value } => {
+            let mut provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
+                .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+            provider.set_secret_mut(key, value);
+            provider
+                .save()
+                .map_err(|e| anyhow::anyhow!("failed to save vault: {e}"))?;
+        }
+        VaultCommand::Get { key } => {
+            let provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
+                .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+            if let Some(val) = provider.get(&key) {
+                println!("{val}");
+            } else {
+                anyhow::bail!("key not found: {key}");
+            }
+        }
+        VaultCommand::List => {
+            let provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
+                .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+            for key in provider.list_keys() {
+                println!("{key}");
+            }
+        }
+        VaultCommand::Rm { key } => {
+            let mut provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
+                .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+            if !provider.remove_secret_mut(&key) {
+                anyhow::bail!("key not found: {key}");
+            }
+            provider
+                .save()
+                .map_err(|e| anyhow::anyhow!("failed to save vault: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
     while let Some(msg) = rx.recv().await {
         eprintln!("[status] {msg}");
@@ -1003,6 +1109,7 @@ fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::path::Path;
     use zeph_core::channel::Channel;
     use zeph_core::config::ProviderKind;
@@ -1359,5 +1466,180 @@ mod tests {
             system_prompt: "test prompt".into(),
         };
         assert!(!processor.system_prompt.is_empty());
+    }
+
+    // R-02: default_vault_dir() env var code paths
+    #[test]
+    #[serial]
+    fn default_vault_dir_xdg_config_home() {
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-test");
+        }
+        let dir = default_vault_dir();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        assert_eq!(dir, PathBuf::from("/tmp/xdg-test/zeph"));
+    }
+
+    #[test]
+    #[serial]
+    fn default_vault_dir_appdata() {
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::set_var("APPDATA", "/tmp/appdata-test");
+        }
+        let dir = default_vault_dir();
+        unsafe {
+            std::env::remove_var("APPDATA");
+        }
+        assert_eq!(dir, PathBuf::from("/tmp/appdata-test/zeph"));
+    }
+
+    #[test]
+    #[serial]
+    fn default_vault_dir_home_fallback() {
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("APPDATA");
+            std::env::set_var("HOME", "/tmp/home-test");
+        }
+        let dir = default_vault_dir();
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        assert_eq!(dir, PathBuf::from("/tmp/home-test/.config/zeph"));
+    }
+
+    // R-03: VaultCommand CLI parsing
+    #[test]
+    fn cli_parse_vault_init() {
+        let cli = Cli::try_parse_from(["zeph", "vault", "init"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Vault {
+                command: VaultCommand::Init
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parse_vault_set() {
+        let cli = Cli::try_parse_from(["zeph", "vault", "set", "MY_KEY", "MY_VAL"]).unwrap();
+        match cli.command {
+            Some(Command::Vault {
+                command: VaultCommand::Set { key, value },
+            }) => {
+                assert_eq!(key, "MY_KEY");
+                assert_eq!(value, "MY_VAL");
+            }
+            _ => panic!("expected VaultCommand::Set"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_vault_get() {
+        let cli = Cli::try_parse_from(["zeph", "vault", "get", "MY_KEY"]).unwrap();
+        match cli.command {
+            Some(Command::Vault {
+                command: VaultCommand::Get { key },
+            }) => assert_eq!(key, "MY_KEY"),
+            _ => panic!("expected VaultCommand::Get"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_vault_list() {
+        let cli = Cli::try_parse_from(["zeph", "vault", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Vault {
+                command: VaultCommand::List
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parse_vault_rm() {
+        let cli = Cli::try_parse_from(["zeph", "vault", "rm", "MY_KEY"]).unwrap();
+        match cli.command {
+            Some(Command::Vault {
+                command: VaultCommand::Rm { key },
+            }) => assert_eq!(key, "MY_KEY"),
+            _ => panic!("expected VaultCommand::Rm"),
+        }
+    }
+
+    // R-01: handle_vault_command() dispatch branches
+    #[test]
+    fn handle_vault_command_set_get_list_rm() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "bar".into(),
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        handle_vault_command(VaultCommand::List, Some(&key_path), Some(&vault_path)).unwrap();
+
+        handle_vault_command(
+            VaultCommand::Get { key: "FOO".into() },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        handle_vault_command(
+            VaultCommand::Rm { key: "FOO".into() },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+    }
+
+    // R-04: Get/Rm missing-key error paths
+    #[test]
+    fn handle_vault_command_get_missing_key_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        let err = handle_vault_command(
+            VaultCommand::Get {
+                key: "NONEXISTENT".into(),
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("key not found"));
+    }
+
+    #[test]
+    fn handle_vault_command_rm_missing_key_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        let err = handle_vault_command(
+            VaultCommand::Rm {
+                key: "NONEXISTENT".into(),
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("key not found"));
     }
 }
