@@ -36,7 +36,9 @@ use zeph_llm::any::AnyProvider;
 #[cfg(feature = "index")]
 use zeph_llm::provider::LlmProvider;
 #[cfg(feature = "scheduler")]
-use zeph_scheduler::{JobStore, ScheduledTask, Scheduler, TaskKind, UpdateCheckHandler};
+use zeph_scheduler::{
+    JobStore, ScheduledTask, Scheduler, TaskHandler, TaskKind, UpdateCheckHandler,
+};
 #[cfg(feature = "tui")]
 use zeph_tui::{App, EventReader, TuiChannel};
 
@@ -402,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
         config.memory.compaction_preserve_tail,
         config.memory.prune_protect_tokens,
     )
-    .with_shutdown(shutdown_rx)
+    .with_shutdown(shutdown_rx.clone())
     .with_security(config.security, config.timeouts)
     .with_tool_summarization(config.tools.summarize_output)
     .with_permission_policy(permission_policy.clone())
@@ -1182,7 +1184,7 @@ fn init_subscriber(config_path: &std::path::Path) {
         .init();
 }
 
-#[cfg(feature = "otel")]
+#[cfg(all(feature = "otel", not(feature = "tui")))]
 fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace::SdkTracer> {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_otlp::WithExportConfig;

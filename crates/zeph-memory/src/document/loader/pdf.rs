@@ -35,12 +35,12 @@ impl DocumentLoader for PdfLoader {
             }
 
             let source = path.display().to_string();
-            let path_buf = path.to_path_buf();
+            let path_buf = path.clone();
             let content = tokio::task::spawn_blocking(move || {
                 pdf_extract::extract_text(&path_buf).map_err(|e| DocumentError::Pdf(e.to_string()))
             })
             .await
-            .map_err(|e| DocumentError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+            .map_err(|e| DocumentError::Io(std::io::Error::other(e)))??;
 
             Ok(vec![Document {
                 content,

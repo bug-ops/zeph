@@ -33,7 +33,7 @@ impl std::fmt::Debug for WhisperProvider {
         f.debug_struct("WhisperProvider")
             .field("base_url", &self.base_url)
             .field("model", &self.model)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -8896,6 +8896,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest 0.13.2",
+ "serde_json",
  "serial_test",
  "sqlx",
  "tempfile",
