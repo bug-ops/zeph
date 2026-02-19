@@ -98,7 +98,7 @@ impl QdrantOps {
     /// Returns an error if the upsert fails.
     pub async fn upsert(&self, collection: &str, points: Vec<PointStruct>) -> QdrantResult<()> {
         self.client
-            .upsert_points(UpsertPointsBuilder::new(collection, points))
+            .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
             .await
             .map_err(Box::new)?;
         Ok(())
@@ -134,7 +134,11 @@ impl QdrantOps {
             return Ok(());
         }
         self.client
-            .delete_points(DeletePointsBuilder::new(collection).points(PointsIdsList { ids }))
+            .delete_points(
+                DeletePointsBuilder::new(collection)
+                    .points(PointsIdsList { ids })
+                    .wait(true),
+            )
             .await
             .map_err(Box::new)?;
         Ok(())
