@@ -883,7 +883,6 @@ fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
