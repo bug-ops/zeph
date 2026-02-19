@@ -75,11 +75,10 @@ pub async fn jsonrpc_handler(
         ),
         METHOD_GET_TASK => handle_get_task(state, id.clone(), raw.params).await,
         METHOD_CANCEL_TASK => handle_cancel_task(state, id.clone(), raw.params).await,
-        _ => error_response(
-            id.clone(),
-            ERR_METHOD_NOT_FOUND,
-            format!("unknown method: {}", raw.method),
-        ),
+        _ => {
+            tracing::warn!(method = %raw.method, "unknown JSON-RPC method");
+            error_response(id.clone(), ERR_METHOD_NOT_FOUND, "method not found")
+        }
     };
 
     Json(response)
@@ -92,7 +91,10 @@ async fn handle_send_message(
 ) -> JsonRpcResponse<serde_json::Value> {
     let params: SendMessageParams = match serde_json::from_value(params) {
         Ok(p) => p,
-        Err(e) => return error_response(id, ERR_INVALID_PARAMS, format!("invalid params: {e}")),
+        Err(e) => {
+            tracing::warn!("invalid params in send_message: {e}");
+            return error_response(id, ERR_INVALID_PARAMS, "invalid parameters");
+        }
     };
 
     let task = state.task_manager.create_task(params.message.clone()).await;
@@ -142,7 +144,10 @@ async fn handle_get_task(
 ) -> JsonRpcResponse<serde_json::Value> {
     let params: TaskIdParams = match serde_json::from_value(params) {
         Ok(p) => p,
-        Err(e) => return error_response(id, ERR_INVALID_PARAMS, format!("invalid params: {e}")),
+        Err(e) => {
+            tracing::warn!("invalid params in get_task: {e}");
+            return error_response(id, ERR_INVALID_PARAMS, "invalid parameters");
+        }
     };
 
     match state
@@ -162,7 +167,10 @@ async fn handle_cancel_task(
 ) -> JsonRpcResponse<serde_json::Value> {
     let params: TaskIdParams = match serde_json::from_value(params) {
         Ok(p) => p,
-        Err(e) => return error_response(id, ERR_INVALID_PARAMS, format!("invalid params: {e}")),
+        Err(e) => {
+            tracing::warn!("invalid params in cancel_task: {e}");
+            return error_response(id, ERR_INVALID_PARAMS, "invalid parameters");
+        }
     };
 
     match state.task_manager.cancel_task(&params.id).await {
@@ -312,5 +320,94 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
                 ))
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use super::super::router::build_router_with_config;
+    use super::super::testing::test_state;
+
+    fn make_rpc_request(method: &str, params: serde_json::Value) -> axum::http::Request<Body> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": method,
+            "params": params,
+        });
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/a2a")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    }
+
+    async fn get_rpc_body(resp: axum::http::Response<Body>) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unknown_method_does_not_echo_method_name() {
+        let app = build_router_with_config(test_state(), None, 0);
+        let req = make_rpc_request("tasks/evil_probe", serde_json::json!({}));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(msg, "method not found", "must not echo method name");
+        assert!(
+            !msg.contains("evil_probe"),
+            "method name must not appear in error"
+        );
+        assert!(
+            !msg.contains("unknown"),
+            "must not leak 'unknown method' phrasing"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_params_send_message_no_serde_details() {
+        let app = build_router_with_config(test_state(), None, 0);
+        // Pass wrong type for message to trigger serde deserialization error
+        let req = make_rpc_request("message/send", serde_json::json!({"message": 42}));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(msg, "invalid parameters");
+        // Serde error text like "invalid type" or field names must not leak
+        assert!(!msg.contains("invalid type"), "serde details must not leak");
+        assert!(!msg.contains("expected"), "serde details must not leak");
+    }
+
+    #[tokio::test]
+    async fn invalid_params_get_task_no_serde_details() {
+        let app = build_router_with_config(test_state(), None, 0);
+        // Pass wrong type for id field
+        let req = make_rpc_request("tasks/get", serde_json::json!({"id": [1, 2, 3]}));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(msg, "invalid parameters");
+        assert!(!msg.contains("invalid type"), "serde details must not leak");
+    }
+
+    #[tokio::test]
+    async fn invalid_params_cancel_task_no_serde_details() {
+        let app = build_router_with_config(test_state(), None, 0);
+        let req = make_rpc_request("tasks/cancel", serde_json::json!({"id": false}));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(msg, "invalid parameters");
+        assert!(!msg.contains("invalid type"), "serde details must not leak");
     }
 }

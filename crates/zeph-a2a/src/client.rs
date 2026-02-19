@@ -76,7 +76,13 @@ impl A2aClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(A2aError::Stream(format!("HTTP {status}: {body}")));
+            // Truncate body to avoid leaking large upstream error responses.
+            let truncated = if body.len() > 256 {
+                format!("{}…", &body[..256])
+            } else {
+                body
+            };
+            return Err(A2aError::Stream(format!("HTTP {status}: {truncated}")));
         }
 
         let event_stream = resp.bytes_stream().eventsource();
@@ -182,9 +188,38 @@ impl A2aClient {
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            let seg = v6.segments();
+            // fe80::/10 — link-local
+            if seg[0] & 0xffc0 == 0xfe80 {
+                return true;
+            }
+            // fc00::/7 — unique local
+            if seg[0] & 0xfe00 == 0xfc00 {
+                return true;
+            }
+            // ::ffff:x.x.x.x — IPv4-mapped, check inner IPv4
+            if seg[0..6] == [0, 0, 0, 0, 0, 0xffff] {
+                let v4 = v6
+                    .to_ipv4_mapped()
+                    .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
+                return v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast();
+            }
+            false
+        }
     }
 }
 

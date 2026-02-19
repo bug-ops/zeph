@@ -32,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replace double `AnyProvider::clone()` in `embed_fn()` with single `Arc` clone (#636)
 - Add `with_client()` builder to ClaudeProvider and OpenAiProvider for shared `reqwest::Client` (#637)
 - Cache `JsonSchema` per `TypeId` in `chat_typed` to avoid per-call schema generation (#638)
+- Scrape executor performs post-DNS resolution validation against private/loopback IPs with pinned address client to prevent SSRF via DNS rebinding
+- Private host detection expanded to block `*.localhost`, `*.internal`, `*.local` domains
+- A2A error responses sanitized: serde details and method names no longer exposed to clients
+- Rate limiter rejects new clients with 429 when entry map is at capacity after stale eviction
+- Secret redaction regex-based pattern matching replaces whitespace tokenizer, detecting secrets in URLs, JSON, and quoted strings
+- Added `hf_`, `npm_`, `dckr_pat_` to secret redaction prefixes
+- A2A client stream errors truncate upstream body to 256 bytes
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)

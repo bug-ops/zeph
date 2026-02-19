@@ -1,4 +1,7 @@
 use std::borrow::Cow;
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 const SECRET_PREFIXES: &[&str] = &[
     "sk-",
@@ -11,44 +14,59 @@ const SECRET_PREFIXES: &[&str] = &[
     "xoxb-",
     "xoxp-",
     "AIza",
-    "ya29.",
+    "ya29\\.",
     "glpat-",
+    "hf_",
+    "npm_",
+    "dckr_pat_",
 ];
+
+// Matches any secret prefix followed by non-whitespace characters.
+// Using alternation so a single pass covers all prefixes.
+static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    let pattern = SECRET_PREFIXES.join("|");
+    let full = format!("(?:{pattern})[^\\s\"'`,;{{}}\\[\\]]*");
+    Regex::new(&full).expect("secret redaction regex is valid")
+});
+
+static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;{}\[\]]*"#)
+        .expect("path redaction regex is valid")
+});
 
 /// Replace tokens containing known secret patterns with `[REDACTED]`.
 ///
-/// Preserves all original whitespace (newlines, tabs, indentation).
+/// Detects secrets embedded in URLs, JSON values, and quoted strings.
 /// Returns `Cow::Borrowed` when no secrets found (zero-allocation fast path).
 #[must_use]
 pub fn redact_secrets(text: &str) -> Cow<'_, str> {
-    if !SECRET_PREFIXES.iter().any(|p| text.contains(p)) {
+    // Fast path: check for any prefix substring before running regex.
+    let raw_prefixes = &[
+        "sk-",
+        "sk_live_",
+        "sk_test_",
+        "AKIA",
+        "ghp_",
+        "gho_",
+        "-----BEGIN",
+        "xoxb-",
+        "xoxp-",
+        "AIza",
+        "ya29.",
+        "glpat-",
+        "hf_",
+        "npm_",
+        "dckr_pat_",
+    ];
+    if !raw_prefixes.iter().any(|p| text.contains(p)) {
         return Cow::Borrowed(text);
     }
 
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut result = String::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        if bytes[i].is_ascii_whitespace() {
-            result.push(bytes[i] as char);
-            i += 1;
-        } else {
-            let start = i;
-            while i < len && !bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            let token = &text[start..i];
-            if SECRET_PREFIXES.iter().any(|prefix| token.contains(prefix)) {
-                result.push_str("[REDACTED]");
-            } else {
-                result.push_str(token);
-            }
-        }
+    let result = SECRET_REGEX.replace_all(text, "[REDACTED]");
+    match result {
+        Cow::Borrowed(_) => Cow::Borrowed(text),
+        Cow::Owned(s) => Cow::Owned(s),
     }
-
-    Cow::Owned(result)
 }
 
 /// Replace absolute filesystem paths with `[PATH]` to prevent information disclosure.
@@ -60,30 +78,11 @@ pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
 
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut result = String::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        if bytes[i].is_ascii_whitespace() {
-            result.push(bytes[i] as char);
-            i += 1;
-        } else {
-            let start = i;
-            while i < len && !bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            let token = &text[start..i];
-            if PATH_PREFIXES.iter().any(|prefix| token.contains(prefix)) {
-                result.push_str("[PATH]");
-            } else {
-                result.push_str(token);
-            }
-        }
+    let result = PATH_REGEX.replace_all(text, "[PATH]");
+    match result {
+        Cow::Borrowed(_) => Cow::Borrowed(text),
+        Cow::Owned(s) => Cow::Owned(s),
     }
-
-    Cow::Owned(result)
 }
 
 #[cfg(test)]
@@ -206,11 +205,27 @@ mod tests {
 
     #[test]
     fn all_secret_prefixes_tested() {
-        for prefix in super::SECRET_PREFIXES {
+        for prefix in &[
+            "sk-",
+            "sk_live_",
+            "sk_test_",
+            "AKIA",
+            "ghp_",
+            "gho_",
+            "-----BEGIN",
+            "xoxb-",
+            "xoxp-",
+            "AIza",
+            "ya29.",
+            "glpat-",
+            "hf_",
+            "npm_",
+            "dckr_pat_",
+        ] {
             let text = format!("token: {prefix}abc123");
             let result = redact_secrets(&text);
             assert!(result.contains("[REDACTED]"), "Failed for prefix: {prefix}");
-            assert!(!result.contains(prefix), "Prefix not redacted: {prefix}");
+            assert!(!result.contains(*prefix), "Prefix not redacted: {prefix}");
         }
     }
 
@@ -251,6 +266,22 @@ mod tests {
     }
 
     #[test]
+    fn redacts_secret_in_url() {
+        let text = "https://api.example.com?key=sk-abc123xyz";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("sk-abc123xyz"));
+    }
+
+    #[test]
+    fn redacts_secret_in_json() {
+        let text = r#"{"api_key":"sk-abc123def456"}"#;
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("sk-abc123def456"));
+    }
+
+    #[test]
     fn sanitize_home_path() {
         let text = "error at /home/user/project/src/main.rs:42";
         let result = sanitize_paths(text);
@@ -270,5 +301,29 @@ mod tests {
         let text = "normal error message";
         let result = sanitize_paths(text);
         assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn redacts_huggingface_token() {
+        let text = "HuggingFace token: hf_abcdefghijklmnopqrstuvwxyz";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("hf_"));
+    }
+
+    #[test]
+    fn redacts_npm_token() {
+        let text = "NPM token npm_abc123XYZ";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("npm_abc"));
+    }
+
+    #[test]
+    fn redacts_docker_pat() {
+        let text = "Docker token: dckr_pat_xxxxxxxxxxxx";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("dckr_pat_"));
     }
 }

@@ -142,8 +142,9 @@ async fn rate_limit_middleware(
                 before = before_eviction,
                 after = after_eviction,
                 limit = MAX_RATE_LIMIT_ENTRIES,
-                "rate limiter still at capacity after stale entry eviction"
+                "rate limiter at capacity after stale entry eviction, rejecting new IP"
             );
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
         }
     }
 
@@ -363,10 +364,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_entries_cap_clears_map() {
+    async fn max_entries_cap_rejects_when_all_entries_fresh() {
+        // Fill map with fresh entries (within RATE_WINDOW) so retain() keeps them all.
+        // After retain() the map is still at capacity, so the middleware returns 429.
         let counters = Arc::new(Mutex::new(HashMap::new()));
         {
             let mut map = counters.lock().await;
+            let fresh = Instant::now();
             for i in 0..MAX_RATE_LIMIT_ENTRIES {
                 let ip = IpAddr::V4(std::net::Ipv4Addr::new(
                     ((i >> 16) & 0xFF) as u8,
@@ -374,25 +378,53 @@ mod tests {
                     (i & 0xFF) as u8,
                     1,
                 ));
-                map.insert(ip, (1, Instant::now()));
+                map.insert(ip, (1, fresh));
             }
             assert_eq!(map.len(), MAX_RATE_LIMIT_ENTRIES);
         }
 
-        let state = RateLimitState {
-            limit: 10,
-            counters,
-        };
-
         let new_ip = IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255));
-        assert!(!state.counters.lock().await.contains_key(&new_ip));
 
-        // Simulate what the middleware does when cap is exceeded
-        let mut map = state.counters.lock().await;
-        if map.len() >= MAX_RATE_LIMIT_ENTRIES && !map.contains_key(&new_ip) {
-            map.clear();
+        // Simulate middleware logic: cap exceeded, run retain(), still full → 429
+        let now = Instant::now();
+        let mut map = counters.lock().await;
+        let before = map.len();
+        map.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
+        let after = map.len();
+
+        // All entries are fresh so retain() must not remove any
+        assert_eq!(after, before, "retain must preserve fresh entries");
+        // Map still at capacity: a new IP would be rejected
+        assert!(
+            after >= MAX_RATE_LIMIT_ENTRIES && !map.contains_key(&new_ip),
+            "new IP should be rejected when map is still at capacity after eviction"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_entries_cap_allows_after_stale_eviction() {
+        // Fill map with stale entries. After retain() the map is empty, new IP is accepted.
+        let counters = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let mut map = counters.lock().await;
+            let stale = Instant::now() - Duration::from_secs(120);
+            for i in 0..MAX_RATE_LIMIT_ENTRIES {
+                let ip = IpAddr::V4(std::net::Ipv4Addr::new(
+                    ((i >> 16) & 0xFF) as u8,
+                    ((i >> 8) & 0xFF) as u8,
+                    (i & 0xFF) as u8,
+                    1,
+                ));
+                map.insert(ip, (1, stale));
+            }
         }
-        assert_eq!(map.len(), 0);
+
+        let now = Instant::now();
+        let mut map = counters.lock().await;
+        map.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
+
+        // All entries were stale; map should now be empty
+        assert_eq!(map.len(), 0, "stale entries must be evicted by retain");
     }
 
     #[tokio::test]

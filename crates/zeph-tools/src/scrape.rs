@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -50,23 +51,25 @@ impl ExtractMode {
 /// fetches the URL, and parses HTML with `scrape-core`.
 #[derive(Debug)]
 pub struct WebScrapeExecutor {
-    client: reqwest::Client,
+    timeout: Duration,
     max_body_bytes: usize,
 }
 
 impl WebScrapeExecutor {
     #[must_use]
     pub fn new(config: &ScrapeConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout))
-            .redirect(reqwest::redirect::Policy::limited(3))
-            .build()
-            .unwrap_or_default();
-
         Self {
-            client,
+            timeout: Duration::from_secs(config.timeout),
             max_body_bytes: config.max_body_bytes,
         }
+    }
+
+    fn build_client(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
+        let mut builder = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::limited(3));
+        builder = builder.resolve_to_addrs(host, addrs);
+        builder.build().unwrap_or_default()
     }
 }
 
@@ -136,8 +139,12 @@ impl WebScrapeExecutor {
         &self,
         instruction: &ScrapeInstruction,
     ) -> Result<String, ToolError> {
-        validate_url(&instruction.url)?;
-        let html = self.fetch_html(&instruction.url).await?;
+        let parsed = validate_url(&instruction.url)?;
+        let (host, addrs) = resolve_and_validate(&parsed).await?;
+        // Build a per-request client pinned to the validated addresses, eliminating
+        // TOCTOU between DNS validation and the actual HTTP connection.
+        let client = self.build_client(&host, &addrs);
+        let html = self.fetch_html(&client, &instruction.url).await?;
         let selector = instruction.select.clone();
         let extract = ExtractMode::parse(&instruction.extract);
         let limit = instruction.limit.unwrap_or(10);
@@ -146,9 +153,8 @@ impl WebScrapeExecutor {
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
     }
 
-    async fn fetch_html(&self, url: &str) -> Result<String, ToolError> {
-        let resp = self
-            .client
+    async fn fetch_html(&self, client: &reqwest::Client, url: &str) -> Result<String, ToolError> {
+        let resp = client
             .get(url)
             .send()
             .await
@@ -183,7 +189,7 @@ fn extract_scrape_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "scrape")
 }
 
-fn validate_url(raw: &str) -> Result<(), ToolError> {
+fn validate_url(raw: &str) -> Result<Url, ToolError> {
     let parsed = Url::parse(raw).map_err(|_| ToolError::Blocked {
         command: format!("invalid URL: {raw}"),
     })?;
@@ -205,20 +211,19 @@ fn validate_url(raw: &str) -> Result<(), ToolError> {
         });
     }
 
-    Ok(())
+    Ok(parsed)
 }
 
-fn is_private_host(host: &url::Host<&str>) -> bool {
-    match host {
-        url::Host::Domain(d) => *d == "localhost",
-        url::Host::Ipv4(v4) => {
+pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
         }
-        url::Host::Ipv6(v6) => {
+        IpAddr::V6(v6) => {
             if v6.is_loopback() || v6.is_unspecified() {
                 return true;
             }
@@ -245,6 +250,50 @@ fn is_private_host(host: &url::Host<&str>) -> bool {
             false
         }
     }
+}
+
+fn is_private_host(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(d) => {
+            // Exact match or subdomain of localhost (e.g. foo.localhost)
+            // and .internal/.local TLDs used in cloud/k8s environments.
+            #[allow(clippy::case_sensitive_file_extension_comparisons)]
+            {
+                *d == "localhost"
+                    || d.ends_with(".localhost")
+                    || d.ends_with(".internal")
+                    || d.ends_with(".local")
+            }
+        }
+        url::Host::Ipv4(v4) => is_private_ip(IpAddr::V4(*v4)),
+        url::Host::Ipv6(v6) => is_private_ip(IpAddr::V6(*v6)),
+    }
+}
+
+/// Resolves DNS for the URL host, validates all resolved IPs against private ranges,
+/// and returns the hostname and validated socket addresses.
+///
+/// Returning the addresses allows the caller to pin the HTTP client to these exact
+/// addresses, eliminating TOCTOU between DNS validation and the actual connection.
+async fn resolve_and_validate(url: &Url) -> Result<(String, Vec<SocketAddr>), ToolError> {
+    let Some(host) = url.host_str() else {
+        return Ok((String::new(), vec![]));
+    };
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
+        .await
+        .map_err(|e| ToolError::Blocked {
+            command: format!("DNS resolution failed: {e}"),
+        })?
+        .collect();
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(ToolError::Blocked {
+                command: format!("SSRF protection: private IP {} for host {host}", addr.ip()),
+            });
+        }
+    }
+    Ok((host.to_owned(), addrs))
 }
 
 fn parse_and_extract(
@@ -836,5 +885,96 @@ mod tests {
         assert!(req.iter().any(|v| v.as_str() == Some("url")));
         assert!(req.iter().any(|v| v.as_str() == Some("select")));
         assert!(!req.iter().any(|v| v.as_str() == Some("extract")));
+    }
+
+    // --- is_private_host: new domain checks (AUD-02) ---
+
+    #[test]
+    fn subdomain_localhost_blocked() {
+        let host: url::Host<&str> = url::Host::Domain("foo.localhost");
+        assert!(is_private_host(&host));
+    }
+
+    #[test]
+    fn internal_tld_blocked() {
+        let host: url::Host<&str> = url::Host::Domain("service.internal");
+        assert!(is_private_host(&host));
+    }
+
+    #[test]
+    fn local_tld_blocked() {
+        let host: url::Host<&str> = url::Host::Domain("printer.local");
+        assert!(is_private_host(&host));
+    }
+
+    #[test]
+    fn public_domain_not_blocked() {
+        let host: url::Host<&str> = url::Host::Domain("example.com");
+        assert!(!is_private_host(&host));
+    }
+
+    // --- resolve_and_validate: private IP rejection ---
+
+    #[tokio::test]
+    async fn resolve_loopback_rejected() {
+        // 127.0.0.1 resolves directly (literal IP in DNS query)
+        let url = url::Url::parse("https://127.0.0.1/path").unwrap();
+        // validate_url catches this before resolve_and_validate, but test directly
+        let result = resolve_and_validate(&url).await;
+        assert!(
+            result.is_err(),
+            "loopback IP must be rejected by resolve_and_validate"
+        );
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::executor::ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn resolve_private_10_rejected() {
+        let url = url::Url::parse("https://10.0.0.1/path").unwrap();
+        let result = resolve_and_validate(&url).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::executor::ToolError::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_private_192_rejected() {
+        let url = url::Url::parse("https://192.168.1.1/path").unwrap();
+        let result = resolve_and_validate(&url).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::executor::ToolError::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_ipv6_loopback_rejected() {
+        let url = url::Url::parse("https://[::1]/path").unwrap();
+        let result = resolve_and_validate(&url).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::executor::ToolError::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_no_host_returns_ok() {
+        // URL without a resolvable host — should pass through
+        let url = url::Url::parse("https://example.com/path").unwrap();
+        // We can't do a live DNS test, but we can verify a URL with no host
+        let url_no_host = url::Url::parse("data:text/plain,hello").unwrap();
+        // data: URLs have no host; resolve_and_validate should return Ok with empty addrs
+        let result = resolve_and_validate(&url_no_host).await;
+        assert!(result.is_ok());
+        let (host, addrs) = result.unwrap();
+        assert!(host.is_empty());
+        assert!(addrs.is_empty());
+        drop(url);
+        drop(url_no_host);
     }
 }
