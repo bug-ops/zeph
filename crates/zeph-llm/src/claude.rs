@@ -1718,4 +1718,75 @@ mod tests {
             Duration::from_secs(4)
         );
     }
+
+    #[test]
+    fn anthropic_content_block_image_serializes_correctly() {
+        let block = AnthropicContentBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_owned(),
+                media_type: "image/jpeg".to_owned(),
+                data: "abc123".to_owned(),
+            },
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "image");
+        assert_eq!(json["source"]["type"], "base64");
+        assert_eq!(json["source"]["media_type"], "image/jpeg");
+        assert_eq!(json["source"]["data"], "abc123");
+    }
+
+    #[test]
+    fn split_messages_structured_produces_image_block() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let data = vec![0xFFu8, 0xD8, 0xFF];
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::Text {
+                    text: "look at this".into(),
+                },
+                MessagePart::Image {
+                    data: data.clone(),
+                    mime_type: "image/jpeg".into(),
+                },
+            ],
+        );
+        let (system, chat) = split_messages_structured(&[msg]);
+        assert!(system.is_none());
+        assert_eq!(chat.len(), 1);
+        assert_eq!(chat[0].role, "user");
+        match &chat[0].content {
+            StructuredContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    AnthropicContentBlock::Text { text } => assert_eq!(text, "look at this"),
+                    _ => panic!("expected Text block first"),
+                }
+                match &blocks[1] {
+                    AnthropicContentBlock::Image { source } => {
+                        assert_eq!(source.source_type, "base64");
+                        assert_eq!(source.media_type, "image/jpeg");
+                        assert_eq!(source.data, STANDARD.encode(&data));
+                    }
+                    _ => panic!("expected Image block second"),
+                }
+            }
+            _ => panic!("expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn has_image_parts_detects_image_in_messages() {
+        let with_image = Message::from_parts(
+            Role::User,
+            vec![MessagePart::Image {
+                data: vec![1],
+                mime_type: "image/png".into(),
+            }],
+        );
+        let without_image = Message::from_legacy(Role::User, "plain text");
+        assert!(ClaudeProvider::has_image_parts(&[with_image]));
+        assert!(!ClaudeProvider::has_image_parts(&[without_image]));
+    }
 }

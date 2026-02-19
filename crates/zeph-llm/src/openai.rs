@@ -538,24 +538,21 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
                 .any(|p| matches!(p, MessagePart::Image { .. }));
             if has_images {
                 let mut parts = Vec::new();
-                let text = msg.to_llm_content();
-                if !text.is_empty() {
-                    let text_str: String = msg
-                        .parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            MessagePart::Text { text }
-                            | MessagePart::Recall { text }
-                            | MessagePart::CodeContext { text }
-                            | MessagePart::Summary { text }
-                            | MessagePart::CrossSession { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    if !text_str.is_empty() {
-                        parts.push(OpenAiContentPart::Text { text: text_str });
-                    }
+                let text_str: String = msg
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::Text { text }
+                        | MessagePart::Recall { text }
+                        | MessagePart::CodeContext { text }
+                        | MessagePart::Summary { text }
+                        | MessagePart::CrossSession { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text_str.is_empty() {
+                    parts.push(OpenAiContentPart::Text { text: text_str });
                 }
                 for part in &msg.parts {
                     if let MessagePart::Image { data, mime_type } = part {
@@ -1573,5 +1570,90 @@ mod tests {
         assert!(p.last_cache_usage().is_some());
         let cloned = p.clone();
         assert!(cloned.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn has_image_parts_detects_image() {
+        let msg_with_image = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::Text {
+                    text: "look".into(),
+                },
+                MessagePart::Image {
+                    data: vec![1, 2, 3],
+                    mime_type: "image/png".into(),
+                },
+            ],
+        );
+        let msg_text_only = Message::from_legacy(Role::User, "plain");
+        assert!(has_image_parts(&[msg_with_image]));
+        assert!(!has_image_parts(&[msg_text_only]));
+        assert!(!has_image_parts(&[]));
+    }
+
+    #[test]
+    fn convert_messages_vision_produces_data_uri() {
+        let data = vec![0xFFu8, 0xD8, 0xFF]; // JPEG magic bytes
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::Text {
+                    text: "describe this".into(),
+                },
+                MessagePart::Image {
+                    data: data.clone(),
+                    mime_type: "image/jpeg".into(),
+                },
+            ],
+        );
+        let converted = convert_messages_vision(&[msg]);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+        // Should have text part + image_url part
+        assert_eq!(converted[0].content.len(), 2);
+        match &converted[0].content[0] {
+            OpenAiContentPart::Text { text } => assert_eq!(text, "describe this"),
+            _ => panic!("expected Text part first"),
+        }
+        match &converted[0].content[1] {
+            OpenAiContentPart::ImageUrl { image_url } => {
+                use base64::{Engine, engine::general_purpose::STANDARD};
+                let expected = format!("data:image/jpeg;base64,{}", STANDARD.encode(&data));
+                assert_eq!(image_url.url, expected);
+            }
+            _ => panic!("expected ImageUrl part second"),
+        }
+    }
+
+    #[test]
+    fn convert_messages_vision_text_only_message() {
+        let msg = Message::from_legacy(Role::System, "system prompt");
+        let converted = convert_messages_vision(&[msg]);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "system");
+        assert_eq!(converted[0].content.len(), 1);
+        match &converted[0].content[0] {
+            OpenAiContentPart::Text { text } => assert_eq!(text, "system prompt"),
+            _ => panic!("expected Text part"),
+        }
+    }
+
+    #[test]
+    fn convert_messages_vision_image_only_no_text_part() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::Image {
+                data: vec![1],
+                mime_type: "image/png".into(),
+            }],
+        );
+        let converted = convert_messages_vision(&[msg]);
+        // No text parts collected → only image_url
+        assert_eq!(converted[0].content.len(), 1);
+        assert!(matches!(
+            &converted[0].content[0],
+            OpenAiContentPart::ImageUrl { .. }
+        ));
     }
 }

@@ -684,20 +684,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         &self,
         msg: crate::channel::ChannelMessage,
     ) -> (String, Vec<zeph_llm::provider::MessagePart>) {
-        use crate::channel::AttachmentKind;
+        use crate::channel::{Attachment, AttachmentKind};
         use zeph_llm::provider::MessagePart;
 
-        let audio_attachments: Vec<_> = msg
-            .attachments
-            .iter()
-            .filter(|a| a.kind == AttachmentKind::Audio)
-            .collect();
+        let text_base = msg.text.clone();
 
-        let image_attachments: Vec<_> = msg
+        let (audio_attachments, image_attachments): (Vec<Attachment>, Vec<Attachment>) = msg
             .attachments
-            .iter()
-            .filter(|a| a.kind == AttachmentKind::Image)
-            .collect();
+            .into_iter()
+            .partition(|a| a.kind == AttachmentKind::Audio);
 
         let text = if !audio_attachments.is_empty()
             && let Some(stt) = self.stt.as_ref()
@@ -730,13 +725,13 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 }
             }
             if transcribed_parts.is_empty() {
-                msg.text.clone()
+                text_base
             } else {
                 let transcribed = transcribed_parts.join("\n");
-                if msg.text.is_empty() {
+                if text_base.is_empty() {
                     transcribed
                 } else {
-                    format!("[transcribed audio]\n{transcribed}\n\n{}", msg.text)
+                    format!("[transcribed audio]\n{transcribed}\n\n{text_base}")
                 }
             }
         } else {
@@ -746,7 +741,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                     "audio attachments received but no STT provider configured, dropping"
                 );
             }
-            msg.text.clone()
+            text_base
         };
 
         let mut image_parts = Vec::new();
@@ -761,7 +756,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             }
             let mime_type = detect_image_mime(attachment.filename.as_deref());
             image_parts.push(MessagePart::Image {
-                data: attachment.data.clone(),
+                data: attachment.data,
                 mime_type,
             });
         }
@@ -858,7 +853,19 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         path: &str,
         extra_parts: &mut Vec<zeph_llm::provider::MessagePart>,
     ) -> Result<(), error::AgentError> {
+        use std::path::Component;
         use zeph_llm::provider::MessagePart;
+
+        // Reject paths that traverse outside the current directory.
+        let has_parent_dir = std::path::Path::new(path)
+            .components()
+            .any(|c| c == Component::ParentDir);
+        if has_parent_dir {
+            self.channel
+                .send("Invalid image path: path traversal not allowed")
+                .await?;
+            return Ok(());
+        }
 
         let data = match std::fs::read(path) {
             Ok(d) => d,
@@ -1126,6 +1133,10 @@ pub(super) mod agent_tests {
         fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
             self.confirmations = Arc::new(Mutex::new(confirmations));
             self
+        }
+
+        pub(super) fn sent_messages(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
         }
     }
 
@@ -2424,5 +2435,75 @@ pub(super) mod agent_tests {
         let (text, parts) = agent.resolve_message(msg).await;
         assert_eq!(text, "big image");
         assert!(parts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_rejects_path_traversal() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut parts = Vec::new();
+        let result = agent
+            .handle_image_command("../../etc/passwd", &mut parts)
+            .await;
+        assert!(result.is_ok());
+        assert!(parts.is_empty());
+        // Channel should have received an error message
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("traversal")));
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_missing_file_sends_error() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut parts = Vec::new();
+        let result = agent
+            .handle_image_command("/nonexistent/image.png", &mut parts)
+            .await;
+        assert!(result.is_ok());
+        assert!(parts.is_empty());
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("Cannot read image")));
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_loads_valid_file() {
+        use std::io::Write;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Write a small temp image
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".jpg").unwrap();
+        let data = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        tmp.write_all(&data).unwrap();
+        let path = tmp.path().to_str().unwrap().to_owned();
+
+        let mut parts = Vec::new();
+        let result = agent.handle_image_command(&path, &mut parts).await;
+        assert!(result.is_ok());
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            zeph_llm::provider::MessagePart::Image {
+                data: img_data,
+                mime_type,
+            } => {
+                assert_eq!(img_data, &data);
+                assert_eq!(mime_type, "image/jpeg");
+            }
+            _ => panic!("expected Image part"),
+        }
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("Image loaded")));
     }
 }
