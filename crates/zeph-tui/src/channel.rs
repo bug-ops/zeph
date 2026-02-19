@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn try_recv_command_returns_none_when_empty() {
-        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        let (ch, _user_tx, _agent_rx) = make_channel();
         let (_cmd_tx, cmd_rx) = mpsc::channel(16);
         let mut ch = ch.with_command_rx(cmd_rx);
         assert!(ch.try_recv_command().is_none());
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn try_recv_command_returns_sent_command() {
-        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        let (ch, _user_tx, _agent_rx) = make_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         cmd_tx.try_send(TuiCommand::SkillList).unwrap();
         let mut ch = ch.with_command_rx(cmd_rx);
