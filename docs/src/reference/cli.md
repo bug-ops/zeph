@@ -12,10 +12,10 @@ zeph [OPTIONS] [COMMAND]
 
 | Command | Description |
 |---------|-------------|
-| `init`  | Interactive configuration wizard (see [Configuration](../getting-started/configuration.md)) |
-| `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](vault.md)) |
+| `init`  | Interactive configuration wizard (see [Configuration Wizard](../getting-started/wizard.md)) |
+| `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 
-When no subcommand is given, Zeph starts the agent loop with persistent input history (arrow keys to navigate, prefix search with Ctrl+R, line editing via rustyline). History is stored in SQLite and persists across restarts.
+When no subcommand is given, Zeph starts the agent loop.
 
 ### `zeph init`
 

@@ -1,31 +1,10 @@
-# Configuration
+# Configuration Reference
 
-## Configuration Wizard
-
-Run `zeph init` to generate a `config.toml` interactively. The wizard walks through six steps:
-
-1. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file). When `age` is selected, API key prompts are skipped in subsequent steps since secrets are stored via `zeph vault set` instead.
-2. **LLM Provider** -- select Ollama (local), Claude, OpenAI, Orchestrator (multi-model routing), or a compatible endpoint. Orchestrator prompts for a primary and fallback provider, enabling automatic failover. Provide the base URL, model name, and API key as needed (skipped for age backend). Choose an embedding model (default: `qwen3-embedding`).
-3. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
-4. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel (token prompts skipped for age backend).
-5. **Update check** -- choose whether to enable automatic version checks against GitHub Releases (default: enabled).
-6. **Review and write** -- inspect the generated TOML, confirm the output path, and save.
-
-Specify the output path directly:
-
-```bash
-zeph init --output ~/.zeph/config.toml
-```
-
-If the target file already exists, the wizard asks before overwriting.
-
-After writing, the wizard prints the secrets you need to configure. For the `env` backend it shows `export` commands; for `age` it prints the corresponding `zeph vault init` and `zeph vault set` commands.
+Complete reference for the Zeph configuration file and environment variables. For the interactive setup wizard, see [Configuration Wizard](../getting-started/wizard.md).
 
 ## Config File Resolution
 
 Zeph loads `config/default.toml` at startup and applies environment variable overrides.
-
-The config path can be overridden via CLI argument or environment variable:
 
 ```bash
 # CLI argument (highest priority)
@@ -54,9 +33,9 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 
 ## Hot-Reload
 
-Zeph watches the config file for changes and applies runtime-safe fields without restart. The file watcher uses 500ms debounce to avoid redundant reloads.
+Zeph watches the config file for changes and applies runtime-safe fields without restart (500ms debounce).
 
-**Reloadable fields** (applied immediately):
+**Reloadable fields:**
 
 | Section | Fields |
 |---------|--------|
@@ -69,8 +48,6 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[skills]` | `max_active_skills` |
 
 **Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, Telegram token, MCP servers, A2A config, skill paths.
-
-Check for `config reloaded` in the log to confirm a successful reload.
 
 ## Configuration File
 
@@ -184,8 +161,6 @@ port = 8080
 # auth_token = "secret"
 rate_limit = 60
 ```
-
-> Shell commands are sandboxed with path restrictions, network control, and destructive command confirmation. See [Security](../security.md) for details.
 
 ## Environment Variables
 

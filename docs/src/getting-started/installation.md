@@ -66,4 +66,4 @@ docker pull ghcr.io/bug-ops/zeph:v0.9.8
 
 Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
 
-See [Docker Deployment](../guide/docker.md) for full deployment options including GPU support and age vault.
+See [Docker Deployment](../guides/docker.md) for full deployment options including GPU support and age vault.

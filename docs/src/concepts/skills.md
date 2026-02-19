@@ -1,0 +1,45 @@
+# Skills
+
+Skills give Zeph specialized knowledge for specific tasks. Each skill is a markdown file (`SKILL.md`) containing instructions and examples that are injected into the LLM prompt when relevant.
+
+Instead of loading all skills into every prompt, Zeph selects only the top-K most relevant (default: 5) via embedding similarity. This keeps prompt size constant regardless of how many skills are installed.
+
+## How Matching Works
+
+1. You send a message — for example, "check disk usage on this server"
+2. Zeph embeds your query using the configured embedding model
+3. The top 5 most relevant skills are selected by cosine similarity
+4. Selected skills are injected into the system prompt
+5. Zeph responds using the matched skills
+
+This happens automatically on every message. You never activate skills manually.
+
+## Bundled Skills
+
+| Skill | Description |
+|-------|-------------|
+| `api-request` | HTTP API requests using curl |
+| `docker` | Docker container operations |
+| `file-ops` | File system operations — list, search, read, analyze |
+| `git` | Git version control — status, log, diff, commit, branch |
+| `mcp-generate` | Generate MCP-to-skill bridges |
+| `setup-guide` | Configuration reference |
+| `skill-audit` | Spec compliance and security review |
+| `skill-creator` | Create new skills |
+| `system-info` | System diagnostics — OS, disk, memory, processes |
+| `web-scrape` | Extract data from web pages |
+| `web-search` | Search the internet |
+
+Use `/skills` in chat to see active skills and their usage statistics.
+
+## Key Properties
+
+- **Progressive loading**: only metadata (~100 tokens per skill) is loaded at startup. Full body is loaded on first activation and cached
+- **Hot-reload**: edit a `SKILL.md` file, changes apply without restart
+- **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash)
+
+## Deep Dives
+
+- [Add Custom Skills](../guides/custom-skills.md) — create your own skills
+- [Self-Learning Skills](../advanced/self-learning.md) — how skills evolve through failure detection
+- [Skill Trust Levels](../advanced/skill-trust.md) — security model for imported skills

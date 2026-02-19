@@ -67,7 +67,7 @@ For production deployments, consider restricting which MCP tools can be invoked.
 
 ## Environment Variables
 
-MCP servers inherit environment variables from their configuration. Never store secrets directly in `config.toml` — use the [Vault](../guide/vault.md) integration instead:
+MCP servers inherit environment variables from their configuration. Never store secrets directly in `config.toml` — use the [Vault](../security.md#age-vault) integration instead:
 
 ```toml
 [[mcp.servers]]

@@ -86,7 +86,7 @@ autonomy_level = "supervised"  # readonly, supervised, full
 
 ## Permission Policy
 
-The `[tools.permissions]` config section provides fine-grained, pattern-based access control for each tool. Rules are evaluated in order (first match wins) using case-insensitive glob patterns against the tool input. See [Tool System — Permissions](guide/tools.md#permissions) for configuration details.
+The `[tools.permissions]` config section provides fine-grained, pattern-based access control for each tool. Rules are evaluated in order (first match wins) using case-insensitive glob patterns against the tool input. See [Tool System — Permissions](../advanced/tools.md#permissions) for configuration details.
 
 Key security properties:
 - Tools with all-deny rules are excluded from the LLM system prompt, preventing the model from attempting to use them

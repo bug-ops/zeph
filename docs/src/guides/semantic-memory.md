@@ -2,7 +2,7 @@
 
 Enable semantic search to retrieve contextually relevant messages from conversation history using vector similarity.
 
-Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claude API does not support embeddings natively — use the [orchestrator](orchestrator.md) to route embeddings through Ollama while using Claude for chat.
+Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claude API does not support embeddings natively — use the [orchestrator](../advanced/orchestrator.md) to route embeddings through Ollama while using Claude for chat.
 
 ## Setup
 

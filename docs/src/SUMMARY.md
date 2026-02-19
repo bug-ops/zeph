@@ -1,48 +1,63 @@
 # Summary
 
 [Introduction](introduction.md)
+[Why Zeph?](why-zeph.md)
 
 # Getting Started
 
 - [Installation](getting-started/installation.md)
-- [Quick Start](getting-started/quick-start.md)
-- [Configuration](getting-started/configuration.md)
+- [First Conversation](getting-started/first-conversation.md)
+- [Configuration Wizard](getting-started/wizard.md)
 
-# Guide
+# Core Concepts
 
-- [CLI Reference](guide/cli.md)
-- [Skills](guide/skills.md)
-- [Semantic Memory](guide/semantic-memory.md)
-- [Context Engineering](guide/context.md)
-- [Conversation Summarization](guide/summarization.md)
-- [Docker Deployment](guide/docker.md)
-- [MCP Integration](guide/mcp.md)
-- [OpenAI Provider](guide/openai.md)
-- [Local Inference (Candle)](guide/candle.md)
-- [Model Orchestrator](guide/orchestrator.md)
-- [Self-Learning Skills](guide/self-learning.md)
-- [Skill Trust Levels](guide/skill-trust.md)
-- [A2A Protocol](guide/a2a.md)
-- [Secrets Management](guide/vault.md)
-- [Channels (CLI, Telegram, TUI)](guide/channels.md)
-- [Tool System](guide/tools.md)
-- [Pipeline API](guide/pipeline.md)
-- [Audio Input](guide/audio-input.md)
-- [Vision (Image Input)](guide/vision.md)
-- [TUI Dashboard](guide/tui.md)
-- [Observability & Cost](guide/observability.md)
-- [Code Indexing](guide/code-indexing.md)
-- [HTTP Gateway](guide/gateway.md)
-- [Daemon Supervisor](guide/daemon.md)
-- [Cron Scheduler](guide/scheduler.md)
-- [Document Loaders](guide/document-loaders.md)
+- [Skills](concepts/skills.md)
+- [Memory & Context](concepts/memory.md)
+- [LLM Providers](concepts/providers.md)
+- [Tools](concepts/tools.md)
+
+# Guides
+
+- [Use a Cloud Provider](guides/cloud-provider.md)
+- [Run via Telegram](guides/telegram.md)
+- [Add Custom Skills](guides/custom-skills.md)
+- [Connect MCP Servers](guides/mcp.md)
+- [Set Up Semantic Memory](guides/semantic-memory.md)
+- [Deploy with Docker](guides/docker.md)
+
+# Advanced
+
+- [Model Orchestrator](advanced/orchestrator.md)
+- [Self-Learning Skills](advanced/self-learning.md)
+- [Skill Trust & Security](advanced/skill-trust.md)
+- [A2A Protocol](advanced/a2a.md)
+- [Code Indexing](advanced/code-indexing.md)
+- [Pipeline API](advanced/pipeline.md)
+- [Context Engineering](advanced/context.md)
+- [Audio & Vision](advanced/multimodal.md)
+- [TUI Dashboard](advanced/tui.md)
+- [HTTP Gateway](advanced/gateway.md)
+- [Daemon & Scheduler](advanced/daemon.md)
+- [Document Loaders](advanced/document-loaders.md)
+- [Observability & Cost](advanced/observability.md)
+- [Channels](advanced/channels.md)
+- [Tool System](advanced/tools.md)
+- [Local Inference (Candle)](advanced/candle.md)
 
 # Architecture
 
 - [Overview](architecture/overview.md)
-- [Crates](architecture/crates.md)
+- [Crate Map](architecture/crates.md)
 - [Token Efficiency](architecture/token-efficiency.md)
 - [Performance](architecture/performance.md)
+
+# Reference
+
+- [CLI Reference](reference/cli.md)
+- [Configuration](reference/configuration.md)
+- [Feature Flags](reference/feature-flags.md)
+- [Security](reference/security.md)
+  - [MCP Security](reference/security/mcp.md)
 
 # Development
 
@@ -51,8 +66,5 @@
 
 ---
 
-- [Security](security.md)
-  - [MCP Security](security/mcp.md)
-- [Feature Flags](feature-flags.md)
 - [Contributing](contributing.md)
 - [Changelog](changelog.md)

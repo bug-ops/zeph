@@ -67,7 +67,7 @@ Typical savings by command type:
 | `cargo clippy` (many warnings) | ~200 | ~50 | ~75% |
 | `git log --oneline -50` | 50 | 20 | 60% |
 
-After each filtered execution, CLI mode prints a one-line stats summary and TUI mode accumulates the savings in the Resources panel. See [Tool System — Output Filter Pipeline](../guide/tools.md#output-filter-pipeline) for configuration details.
+After each filtered execution, CLI mode prints a one-line stats summary and TUI mode accumulates the savings in the Resources panel. See [Tool System — Output Filter Pipeline](../advanced/tools.md#output-filter-pipeline) for configuration details.
 
 ### Token Savings Tracking
 
@@ -77,11 +77,11 @@ After each filtered execution, CLI mode prints a one-line stats summary and TUI 
 - `filter_total_commands` / `filter_filtered_commands` — hit rate denominator/numerator
 - `filter_confidence_full/partial/fallback` — distribution of filter confidence levels
 
-These feed into the [TUI filter metrics display](../guide/tui.md#filter-metrics) and are emitted as `tracing::debug!` every 50 commands.
+These feed into the [TUI filter metrics display](../advanced/tui.md#filter-metrics) and are emitted as `tracing::debug!` every 50 commands.
 
 ### Two-Tier Context Pruning
 
-Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to full LLM compaction only when Tier 1 is insufficient. See [Context Engineering](../guide/context.md) for details.
+Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to full LLM compaction only when Tier 1 is insufficient. See [Context Engineering](../advanced/context.md) for details.
 
 ## Configuration
 

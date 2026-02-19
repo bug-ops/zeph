@@ -25,7 +25,7 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 - `glob` results are filtered post-match to exclude files outside the sandbox.
 - `grep` validates the search directory before scanning.
 
-See [Security](../security.md#file-executor-sandbox) for details on the path validation mechanism.
+See [Security](../reference/security.md#file-executor-sandbox) for details on the path validation mechanism.
 
 ## Native Tool Use
 
