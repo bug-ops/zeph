@@ -25,15 +25,25 @@ Zeph takes the opposite approach: **automated context engineering**. Only releva
 
 ## Installation
 
-```bash
-# One-liner (Linux and macOS)
-curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh
+> [!TIP]
+> ```bash
+> curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh
+> ```
 
+<details>
+<summary>Other installation methods</summary>
+
+```bash
 # From source
 cargo install --git https://github.com/bug-ops/zeph
+
+# Docker
+docker pull ghcr.io/bug-ops/zeph:latest
 ```
 
 Pre-built binaries for Linux, macOS, and Windows: [GitHub Releases](https://github.com/bug-ops/zeph/releases/latest) · [Docker](https://bug-ops.github.io/zeph/guide/docker.html)
+
+</details>
 
 ## Quick Start
 
