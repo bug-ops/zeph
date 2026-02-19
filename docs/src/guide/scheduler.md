@@ -48,8 +48,32 @@ Standard cron features are supported: ranges (`1-5`), lists (`1,3,5`), steps (`*
 | `memory_cleanup` | Remove old conversation history entries |
 | `skill_refresh` | Re-scan skill directories for changes |
 | `health_check` | Internal health verification |
+| `update_check` | Query GitHub Releases API for a newer version |
 
 Custom kinds are also supported. Register a handler implementing the `TaskHandler` trait for any custom `kind` string.
+
+## Update Check
+
+The `update_check` task uses `UpdateCheckHandler` to query the GitHub Releases API and compare the running version against the latest release. When a newer version is detected, a notification message is emitted to the agent channel.
+
+The update check is controlled by `auto_update_check` in `[agent]` (default: `true`). It is independent of the scheduler feature flag:
+
+- **With `scheduler` feature enabled**: the check runs daily at 09:00 UTC via a cron task (`0 0 9 * * *`).
+- **Without `scheduler` feature**: a single one-shot check is performed at startup.
+
+To add the update check to the scheduler task list explicitly:
+
+```toml
+[agent]
+auto_update_check = true  # default; set to false to disable entirely
+
+[[scheduler.tasks]]
+name = "update_check"
+cron = "0 0 9 * * *"      # daily at 09:00 UTC
+kind = "update_check"
+```
+
+The handler uses a 10-second HTTP timeout and caps the response body at 64 KB. Network errors and non-2xx responses are logged as warnings and treated as no-ops, so a failed check never interrupts normal agent operation.
 
 ## TaskHandler Trait
 

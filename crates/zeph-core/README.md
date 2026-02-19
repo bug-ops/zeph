@@ -26,6 +26,24 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 
 **Re-exports:** `Agent`
 
+## Configuration
+
+Key `AgentConfig` fields (TOML section `[agent]`):
+
+| Field | Type | Default | Env override | Description |
+|-------|------|---------|--------------|-------------|
+| `name` | string | `"zeph"` | — | Agent display name |
+| `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
+| `summary_model` | string? | `null` | — | Model used for context summarization |
+| `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
+
+```toml
+[agent]
+auto_update_check = true   # set to false to disable update notifications
+```
+
+Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable without changing the config file.
+
 ## Usage
 
 ```toml

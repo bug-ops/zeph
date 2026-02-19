@@ -2,13 +2,14 @@
 
 ## Configuration Wizard
 
-Run `zeph init` to generate a `config.toml` interactively. The wizard walks through five steps:
+Run `zeph init` to generate a `config.toml` interactively. The wizard walks through six steps:
 
 1. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file). When `age` is selected, API key prompts are skipped in subsequent steps since secrets are stored via `zeph vault set` instead.
 2. **LLM Provider** -- select Ollama (local), Claude, OpenAI, Orchestrator (multi-model routing), or a compatible endpoint. Orchestrator prompts for a primary and fallback provider, enabling automatic failover. Provide the base URL, model name, and API key as needed (skipped for age backend). Choose an embedding model (default: `qwen3-embedding`).
 3. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
 4. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel (token prompts skipped for age backend).
-5. **Review and write** -- inspect the generated TOML, confirm the output path, and save.
+5. **Update check** -- choose whether to enable automatic version checks against GitHub Releases (default: enabled).
+6. **Review and write** -- inspect the generated TOML, confirm the output path, and save.
 
 Specify the output path directly:
 
@@ -77,6 +78,7 @@ Check for `config reloaded` in the log to confirm a successful reload.
 [agent]
 name = "Zeph"
 max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
+auto_update_check = true  # Query GitHub Releases API for newer versions (default: true)
 
 [llm]
 provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator, router
@@ -239,3 +241,4 @@ rate_limit = 60
 | `ZEPH_STT_MODEL` | STT model name (default: `whisper-1`) |
 | `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
 | `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |
+| `ZEPH_AUTO_UPDATE_CHECK` | Enable automatic update checks: `true` or `false` (default: `true`) |

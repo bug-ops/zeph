@@ -166,6 +166,7 @@ Automatic prompt caching for Anthropic and OpenAI providers. Repeated system pro
 - **Parallel context preparation** via `try_join!` — skills, memory, code context fetched concurrently
 - **Byte-length token estimation** — fast approximation without tokenizer overhead
 - **Config hot-reload** — change runtime parameters without restarting the agent
+- **Auto-update check** — optional daily check against GitHub releases; notification delivered to the active channel (`ZEPH_AUTO_UPDATE_CHECK=false` to disable)
 - **Pipeline API** — composable, type-safe step chains for LLM calls, vector retrieval, JSON extraction, and parallel execution
 
 [Token efficiency deep dive →](https://bug-ops.github.io/zeph/architecture/token-efficiency.html)
@@ -382,7 +383,7 @@ Always compiled in: `openai`, `compatible`, `orchestrator`, `router`, `self-lear
 | `daemon` | Component supervisor |
 | `pdf` | PDF document loading for RAG |
 | `stt` | Speech-to-text via OpenAI Whisper API |
-| `scheduler` | Cron-based periodic tasks |
+| `scheduler` | Cron-based periodic tasks; auto-update check runs daily at 09:00 |
 | `otel` | OpenTelemetry OTLP export |
 | `full` | Everything above |
 
