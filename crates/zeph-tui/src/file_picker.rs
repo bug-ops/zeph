@@ -40,7 +40,8 @@ impl FileIndex {
                 let path = entry.path();
                 let rel = path.strip_prefix(root).unwrap_or(path);
                 if let Some(s) = rel.to_str() {
-                    paths.push(s.to_owned());
+                    // Normalize Windows backslashes to forward slashes
+                    paths.push(s.replace('\\', "/"));
                 }
                 if paths.len() >= MAX_INDEXED {
                     tracing::warn!(
