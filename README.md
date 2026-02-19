@@ -274,9 +274,10 @@ Skills **evolve**: failure detection triggers self-reflection, and the agent gen
 
 A full terminal UI powered by ratatui — not a separate monitoring tool, but an integrated experience:
 
-- Tree-sitter syntax highlighting and markdown rendering
+- Tree-sitter syntax highlighting and markdown rendering with clickable hyperlinks (OSC 8)
 - Syntax-highlighted diff view for file edits (compact/expanded toggle)
 - `@`-triggered fuzzy file picker with real-time filtering (nucleo-matcher)
+- Command palette for quick access to agent actions
 - Live metrics: token usage, filter savings, cost tracking, confidence distribution
 - Conversation history with message queueing
 - Responsive input handling during streaming with render cache and event batching
