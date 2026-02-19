@@ -15,6 +15,8 @@ pub struct UpdateCheckHandler {
     current_version: &'static str,
     notify_tx: mpsc::Sender<String>,
     http_client: reqwest::Client,
+    /// Base URL for the GitHub releases API. Configurable for testing.
+    base_url: String,
 }
 
 #[derive(Deserialize)]
@@ -42,7 +44,15 @@ impl UpdateCheckHandler {
             current_version,
             notify_tx,
             http_client,
+            base_url: GITHUB_RELEASES_URL.to_owned(),
         }
+    }
+
+    /// Override the releases API URL. Intended for tests only.
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
     }
 
     /// Extract and compare versions; returns `Some(remote_version_str)` when remote > current.
@@ -69,7 +79,7 @@ impl TaskHandler for UpdateCheckHandler {
         Box::pin(async move {
             let resp = self
                 .http_client
-                .get(GITHUB_RELEASES_URL)
+                .get(&self.base_url)
                 .header("Accept", "application/vnd.github+json")
                 .send()
                 .await;
@@ -139,7 +149,18 @@ impl TaskHandler for UpdateCheckHandler {
 
 #[cfg(test)]
 mod tests {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use super::*;
+
+    fn make_handler(
+        current_version: &'static str,
+        tx: mpsc::Sender<String>,
+        server_url: &str,
+    ) -> UpdateCheckHandler {
+        UpdateCheckHandler::new(current_version, tx).with_base_url(server_url)
+    }
 
     #[test]
     fn newer_version_detects_upgrade() {
@@ -200,6 +221,177 @@ mod tests {
         assert_eq!(
             UpdateCheckHandler::newer_version("0.11.0", "v0.12.0-rc.1"),
             Some("0.12.0-rc.1".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_newer_version_sends_notification() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tag_name": "v99.0.0"
+            })))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        handler
+            .execute(&serde_json::Value::Null)
+            .await
+            .expect("handler must not return an error");
+
+        let msg = rx.try_recv().expect("notification must be sent");
+        assert!(
+            msg.contains("99.0.0"),
+            "notification should mention new version"
+        );
+        assert!(
+            msg.contains("0.11.0"),
+            "notification should mention current version"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_same_version_no_notification() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tag_name": "v0.11.0"
+            })))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        handler
+            .execute(&serde_json::Value::Null)
+            .await
+            .expect("handler must not return an error");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification expected for same version"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_http_404_no_notification_no_panic() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok on 404");
+        assert!(rx.try_recv().is_err(), "no notification expected on 404");
+    }
+
+    #[tokio::test]
+    async fn test_execute_http_429_rate_limit_graceful() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok on 429");
+        assert!(rx.try_recv().is_err(), "no notification expected on 429");
+    }
+
+    #[tokio::test]
+    async fn test_execute_http_500_server_error_graceful() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok on 500");
+        assert!(rx.try_recv().is_err(), "no notification expected on 500");
+    }
+
+    #[tokio::test]
+    async fn test_execute_malformed_json_graceful() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("this is not json {{{"))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok on malformed JSON");
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification expected for malformed JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_missing_tag_name_graceful() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "Latest Release",
+                "published_at": "2024-01-01"
+            })))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok on missing tag_name");
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification expected for missing tag_name"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_oversized_body_graceful() {
+        let server = MockServer::start().await;
+        // Body larger than MAX_RESPONSE_BYTES (64 KB): 65 537 bytes
+        let large_body = "x".repeat(MAX_RESPONSE_BYTES + 1);
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(large_body))
+            .mount(&server)
+            .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handler = make_handler("0.11.0", tx, &server.uri());
+
+        let result = handler.execute(&serde_json::Value::Null).await;
+        assert!(result.is_ok(), "handler must return Ok for oversized body");
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification expected for oversized body"
         );
     }
 }
