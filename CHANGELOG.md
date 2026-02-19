@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Clickable markdown links in TUI via OSC 8 hyperlinks — `[text](url)` renders as terminal-clickable link with URL sanitization and scheme allowlist (#580)
 - `@`-triggered fuzzy file picker in TUI input — type `@` to search project files by name/path/extension with real-time filtering (#600)
 - Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
 - `zeph vault` CLI subcommands: `init` (generate age keypair), `set` (store secret), `get` (retrieve secret), `list` (show keys), `rm` (remove secret) (#598)

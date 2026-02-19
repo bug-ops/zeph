@@ -118,6 +118,15 @@ Chat messages are rendered with full markdown support via `pulldown-cmark`:
 | `> blockquote` | Dimmed vertical bar (│) prefix |
 | `~~strikethrough~~` | Crossed-out modifier |
 | `---` | Horizontal rule (─) |
+| `[text](url)` | Clickable OSC 8 hyperlink (cyan + underline) |
+
+### Clickable Links
+
+Markdown links (`[text](url)`) are rendered as clickable [OSC 8 hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5fede) in supported terminals. The link display text is styled with the link theme (cyan + underline) and the URL is emitted as an OSC 8 escape sequence so the terminal makes it clickable.
+
+Bare URLs (e.g. `https://github.com/...`) are also detected via regex and rendered as clickable hyperlinks.
+
+Security: only `http://` and `https://` schemes are allowed for markdown link URLs. Other schemes (`javascript:`, `data:`, `file:`) are silently filtered. URLs are sanitized to strip ASCII control characters before terminal output.
 
 ## Diff View
 

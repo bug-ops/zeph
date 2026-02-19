@@ -13,6 +13,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **event** — `AgentEvent`, `AppEvent`, `EventReader` for async event dispatch
 - **file_picker** — `@`-triggered fuzzy file search with `nucleo-matcher` and `ignore` crate
 - **highlight** — syntax highlighting for code blocks
+- **hyperlink** — OSC 8 clickable hyperlinks for bare URLs and markdown links
 - **layout** — panel arrangement and responsive grid
 - **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry
 - **theme** — color palette and style definitions
