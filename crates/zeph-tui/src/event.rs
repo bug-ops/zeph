@@ -27,9 +27,9 @@ impl EventSource for CrosstermEventSource {
                 Ok(CrosstermEvent::Mouse(mouse)) => match mouse.kind {
                     MouseEventKind::ScrollUp => Some(AppEvent::MouseScroll(1)),
                     MouseEventKind::ScrollDown => Some(AppEvent::MouseScroll(-1)),
-                    _ => None,
+                    _ => Some(AppEvent::Tick),
                 },
-                _ => None,
+                _ => Some(AppEvent::Tick),
             }
         } else {
             Some(AppEvent::Tick)
