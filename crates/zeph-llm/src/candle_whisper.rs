@@ -18,6 +18,7 @@ pub struct CandleWhisperProvider {
     mel_filters: Vec<f32>,
     tokenizer: Arc<Tokenizer>,
     device: Device,
+    language: String,
 }
 
 impl std::fmt::Debug for CandleWhisperProvider {
@@ -58,7 +59,7 @@ impl CandleWhisperProvider {
     /// # Errors
     ///
     /// Returns `LlmError::ModelLoad` if downloading or loading fails.
-    pub fn load(repo_id: &str, device: Option<Device>) -> Result<Self, LlmError> {
+    pub fn load(repo_id: &str, device: Option<Device>, language: &str) -> Result<Self, LlmError> {
         let device = device.unwrap_or_else(detect_device);
         tracing::info!(
             repo = repo_id,
@@ -117,6 +118,7 @@ impl CandleWhisperProvider {
             mel_filters,
             tokenizer: Arc::new(tokenizer),
             device,
+            language: language.to_string(),
         })
     }
 
@@ -145,8 +147,15 @@ impl CandleWhisperProvider {
             .token_to_id(m::EOT_TOKEN)
             .ok_or_else(|| LlmError::TranscriptionFailed("missing EOT token".into()))?;
 
-        let language_token = self.tokenizer.token_to_id("<|en|>").ok_or_else(|| {
-            LlmError::TranscriptionFailed("language token not found in tokenizer".into())
+        let lang_tag = if self.language == "auto" {
+            "<|en|>".to_string()
+        } else {
+            format!("<|{}|>", self.language)
+        };
+        let language_token = self.tokenizer.token_to_id(&lang_tag).ok_or_else(|| {
+            LlmError::TranscriptionFailed(format!(
+                "language token {lang_tag} not found in tokenizer"
+            ))
         })?;
 
         let mut model = self
@@ -189,7 +198,14 @@ impl CandleWhisperProvider {
 
         Ok(Transcription {
             text: text.trim().to_string(),
-            language: Some("en".into()),
+            language: Some(
+                if self.language == "auto" {
+                    "en"
+                } else {
+                    &self.language
+                }
+                .into(),
+            ),
             duration_secs: Some(pcm.len() as f32 / m::SAMPLE_RATE as f32),
         })
     }

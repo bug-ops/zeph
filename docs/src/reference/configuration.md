@@ -78,7 +78,10 @@ max_tokens = 4096
 [llm.stt]
 provider = "whisper"
 model = "whisper-1"
-# Requires `stt` feature. Uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
+# base_url = "http://127.0.0.1:8080/v1"  # optional: OpenAI-compatible server
+# language = "en"                          # optional: ISO-639-1 code or "auto"
+# Requires `stt` feature. When base_url is set, targets a local server (no API key needed).
+# When omitted, uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
 
 [skills]
 paths = ["./skills"]
@@ -270,6 +273,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_COST_MAX_DAILY_CENTS` | Daily spending limit in cents (default: 500) |
 | `ZEPH_STT_PROVIDER` | STT provider: `whisper` or `candle-whisper` (default: `whisper`, requires `stt` feature) |
 | `ZEPH_STT_MODEL` | STT model name (default: `whisper-1`) |
+| `ZEPH_STT_BASE_URL` | STT server base URL (e.g. `http://127.0.0.1:8080/v1` for local whisper.cpp) |
+| `ZEPH_STT_LANGUAGE` | STT language: ISO-639-1 code or `auto` (default: `auto`) |
 | `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
 | `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |
 | `ZEPH_AUTO_UPDATE_CHECK` | Enable automatic update checks: `true` or `false` (default: `true`) |

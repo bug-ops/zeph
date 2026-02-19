@@ -135,6 +135,10 @@ pub struct SttConfig {
     pub provider: String,
     #[serde(default = "default_stt_model")]
     pub model: String,
+    #[serde(default = "default_stt_language")]
+    pub language: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 pub(crate) fn default_stt_provider() -> String {
@@ -143,6 +147,10 @@ pub(crate) fn default_stt_provider() -> String {
 
 pub(crate) fn default_stt_model() -> String {
     "whisper-1".into()
+}
+
+pub(crate) fn default_stt_language() -> String {
+    "auto".into()
 }
 
 #[derive(Debug, Deserialize, Serialize)]

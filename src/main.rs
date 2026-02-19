@@ -514,12 +514,10 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|s| s.provider == "candle-whisper")
     {
-        let model = config
-            .llm
-            .stt
-            .as_ref()
-            .map_or("openai/whisper-tiny", |s| s.model.as_str());
-        match zeph_llm::candle_whisper::CandleWhisperProvider::load(model, None) {
+        let stt_cfg = config.llm.stt.as_ref();
+        let model = stt_cfg.map_or("openai/whisper-tiny", |s| s.model.as_str());
+        let language = stt_cfg.map_or("auto", |s| s.language.as_str());
+        match zeph_llm::candle_whisper::CandleWhisperProvider::load(model, None, language) {
             Ok(provider) => {
                 tracing::info!("STT enabled via candle-whisper (model: {model})");
                 agent.with_stt(Box::new(provider))
@@ -534,34 +532,35 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "stt")]
-    let agent = if config
-        .llm
-        .stt
-        .as_ref()
-        .is_some_and(|s| s.provider != "candle-whisper")
-    {
-        if let Some(ref api_key) = config.secrets.openai_api_key {
-            let base_url = config
-                .llm
-                .openai
+    let agent = if let Some(ref stt_cfg) = config.llm.stt {
+        if stt_cfg.provider == "candle-whisper" {
+            agent
+        } else {
+            let base_url = stt_cfg.base_url.as_deref().unwrap_or_else(|| {
+                config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .map_or("https://api.openai.com/v1", |o| o.base_url.as_str())
+            });
+            let api_key = config
+                .secrets
+                .openai_api_key
                 .as_ref()
-                .map_or("https://api.openai.com/v1", |o| o.base_url.as_str());
-            let model = config
-                .llm
-                .stt
-                .as_ref()
-                .map_or("whisper-1", |s| s.model.as_str());
+                .map_or(String::new(), |k| k.expose().to_string());
             let whisper = zeph_llm::whisper::WhisperProvider::new(
                 reqwest::Client::new(),
-                api_key.expose(),
+                api_key,
                 base_url,
-                model,
+                &stt_cfg.model,
+            )
+            .with_language(&stt_cfg.language);
+            tracing::info!(
+                model = stt_cfg.model,
+                base_url,
+                "STT enabled via Whisper API"
             );
-            tracing::info!("STT enabled via Whisper API (model: {model})");
             agent.with_stt(Box::new(whisper))
-        } else {
-            tracing::warn!("STT configured but ZEPH_OPENAI_API_KEY not found");
-            agent
         }
     } else {
         agent

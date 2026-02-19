@@ -555,7 +555,8 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 providers,
             ))))
         }
-        other => bail!("LLM provider {other} not available"),
+        #[cfg(not(feature = "candle"))]
+        ProviderKind::Candle => bail!("candle feature is not enabled"),
     }
 }
 

@@ -9,6 +9,7 @@ pub struct WhisperProvider {
     api_key: String,
     base_url: String,
     model: String,
+    language: Option<String>,
 }
 
 impl WhisperProvider {
@@ -24,7 +25,17 @@ impl WhisperProvider {
             api_key: api_key.into(),
             base_url: base_url.into(),
             model: model.into(),
+            language: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        let lang = language.into();
+        if lang != "auto" && !lang.is_empty() {
+            self.language = Some(lang);
+        }
+        self
     }
 }
 
@@ -56,10 +67,13 @@ impl SpeechToText for WhisperProvider {
                 .mime_str("application/octet-stream")
                 .map_err(|e| LlmError::TranscriptionFailed(e.to_string()))?;
 
-            let form = reqwest::multipart::Form::new()
+            let mut form = reqwest::multipart::Form::new()
                 .text("model", self.model.clone())
                 .text("response_format", "json")
                 .part("file", part);
+            if let Some(ref lang) = self.language {
+                form = form.text("language", lang.clone());
+            }
 
             let url = format!(
                 "{}/audio/transcriptions",

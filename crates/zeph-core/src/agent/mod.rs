@@ -73,6 +73,7 @@ struct QueuedMessage {
     text: String,
     received_at: Instant,
     image_parts: Vec<zeph_llm::provider::MessagePart>,
+    raw_attachments: Vec<crate::channel::Attachment>,
 }
 
 pub(super) struct MemoryState {
@@ -560,7 +561,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 self.message_queue.pop_back();
                 continue;
             }
-            self.enqueue_or_merge(msg.text, vec![]);
+            self.enqueue_or_merge(msg.text, vec![], msg.attachments);
         }
     }
 
@@ -568,12 +569,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         &mut self,
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
+        raw_attachments: Vec<crate::channel::Attachment>,
     ) {
         let now = Instant::now();
         if let Some(last) = self.message_queue.back_mut()
             && now.duration_since(last.received_at) < MESSAGE_MERGE_WINDOW
             && last.image_parts.is_empty()
             && image_parts.is_empty()
+            && last.raw_attachments.is_empty()
+            && raw_attachments.is_empty()
         {
             last.text.push('\n');
             last.text.push_str(&text);
@@ -584,6 +588,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 text,
                 received_at: now,
                 image_parts,
+                raw_attachments,
             });
         } else {
             tracing::warn!("message queue full, dropping message");
@@ -649,7 +654,15 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
             let (text, image_parts) = if let Some(queued) = self.message_queue.pop_front() {
                 self.notify_queue_count().await;
-                (queued.text, queued.image_parts)
+                if queued.raw_attachments.is_empty() {
+                    (queued.text, queued.image_parts)
+                } else {
+                    let msg = crate::channel::ChannelMessage {
+                        text: queued.text,
+                        attachments: queued.raw_attachments,
+                    };
+                    self.resolve_message(msg).await
+                }
             } else {
                 let incoming = tokio::select! {
                     result = self.channel.recv() => result?,
@@ -707,6 +720,12 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .attachments
             .into_iter()
             .partition(|a| a.kind == AttachmentKind::Audio);
+
+        tracing::debug!(
+            audio = audio_attachments.len(),
+            has_stt = self.stt.is_some(),
+            "resolve_message attachments"
+        );
 
         let text = if !audio_attachments.is_empty()
             && let Some(stt) = self.stt.as_ref()
@@ -2029,7 +2048,7 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("hello".into(), vec![]);
+        agent.enqueue_or_merge("hello".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), 1);
         assert_eq!(agent.message_queue[0].text, "hello");
     }
@@ -2042,8 +2061,8 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("first".into(), vec![]);
-        agent.enqueue_or_merge("second".into(), vec![]);
+        agent.enqueue_or_merge("first".into(), vec![], vec![]);
+        agent.enqueue_or_merge("second".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), 1);
         assert_eq!(agent.message_queue[0].text, "first\nsecond");
     }
@@ -2060,8 +2079,9 @@ pub(super) mod agent_tests {
             text: "old".into(),
             received_at: Instant::now() - Duration::from_secs(2),
             image_parts: vec![],
+            raw_attachments: vec![],
         });
-        agent.enqueue_or_merge("new".into(), vec![]);
+        agent.enqueue_or_merge("new".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), 2);
         assert_eq!(agent.message_queue[0].text, "old");
         assert_eq!(agent.message_queue[1].text, "new");
@@ -2080,9 +2100,10 @@ pub(super) mod agent_tests {
                 text: format!("msg{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
                 image_parts: vec![],
+                raw_attachments: vec![],
             });
         }
-        agent.enqueue_or_merge("overflow".into(), vec![]);
+        agent.enqueue_or_merge("overflow".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
     }
 
@@ -2094,11 +2115,11 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.enqueue_or_merge("a".into(), vec![]);
+        agent.enqueue_or_merge("a".into(), vec![], vec![]);
         // Wait past merge window
         agent.message_queue.back_mut().unwrap().received_at =
             Instant::now() - Duration::from_secs(1);
-        agent.enqueue_or_merge("b".into(), vec![]);
+        agent.enqueue_or_merge("b".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), 2);
 
         let count = agent.clear_queue();
@@ -2137,6 +2158,7 @@ pub(super) mod agent_tests {
                 text: format!("pre{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
                 image_parts: vec![],
+                raw_attachments: vec![],
             });
         }
         agent.drain_channel();
@@ -2157,6 +2179,7 @@ pub(super) mod agent_tests {
                 text: format!("msg{i}"),
                 received_at: Instant::now() - Duration::from_secs(2),
                 image_parts: vec![],
+                raw_attachments: vec![],
             });
         }
 

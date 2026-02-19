@@ -1,4 +1,4 @@
-use super::{Config, SttConfig, default_stt_model, default_stt_provider};
+use super::{Config, SttConfig, default_stt_language, default_stt_model, default_stt_provider};
 
 impl Config {
     pub(crate) fn apply_env_overrides(&mut self) {
@@ -141,6 +141,8 @@ impl Config {
             let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
                 provider: default_stt_provider(),
                 model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
             });
             stt.provider = v;
         }
@@ -148,8 +150,28 @@ impl Config {
             let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
                 provider: default_stt_provider(),
                 model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
             });
             stt.model = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_LANGUAGE") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.language = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_BASE_URL") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.base_url = Some(v);
         }
         if let Ok(v) = std::env::var("ZEPH_AUTO_UPDATE_CHECK")
             && let Ok(enabled) = v.parse::<bool>()

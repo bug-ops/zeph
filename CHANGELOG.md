@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `base_url` and `language` fields in `[llm.stt]` config for OpenAI-compatible local whisper servers (e.g. whisper.cpp)
+- `ZEPH_STT_BASE_URL` and `ZEPH_STT_LANGUAGE` environment variable overrides
+- Whisper API provider now passes `language` parameter for accurate non-English transcription
+- Documentation for whisper.cpp server setup with Metal acceleration on macOS
 - Per-sub-provider `base_url` and `embedding_model` overrides in orchestrator config
 - Full orchestrator example with cloud + local + STT in default.toml
 - All previously undocumented config keys in default.toml (`agent.auto_update_check`, `llm.stt`, `llm.vision_model`, `skills.disambiguation_threshold`, `tools.filters.*`, `tools.permissions`, `a2a.auth_token`, `mcp.servers.env`)
@@ -17,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Vault age backend now falls back to default directory for key/path when `--vault-key`/`--vault-path` are not provided, matching `zeph vault init` behavior (#613)
 
 ### Changed
+- Whisper STT provider no longer requires OpenAI API key when `base_url` points to a local server
 - Orchestrator sub-providers now resolve `base_url` and `embedding_model` via fallback chain: per-provider, parent section, global default
 
 ## [0.11.1] - 2026-02-19
