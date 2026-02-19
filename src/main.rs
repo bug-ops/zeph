@@ -245,10 +245,21 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
     }
 
+    let cli_history = {
+        let pool = memory.sqlite().pool().clone();
+        let entries = memory
+            .sqlite()
+            .load_input_history(1000)
+            .await
+            .unwrap_or_default();
+        Some((pool, entries))
+    };
+
     #[cfg(feature = "tui")]
-    let (channel, tui_handle) = create_channel_with_tui(app.config(), tui_active).await?;
+    let (channel, tui_handle) =
+        create_channel_with_tui(app.config(), tui_active, cli_history).await?;
     #[cfg(not(feature = "tui"))]
-    let channel = create_channel(app.config()).await?;
+    let channel = create_channel_inner(app.config(), cli_history).await?;
 
     #[cfg(feature = "tui")]
     let is_cli = matches!(channel, AppChannel::Standard(AnyChannel::Cli(_)));
@@ -954,7 +965,10 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
 }
 
 #[allow(clippy::unused_async)]
-async fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
+async fn create_channel_inner(
+    config: &Config,
+    history: Option<(sqlx::SqlitePool, Vec<String>)>,
+) -> anyhow::Result<AnyChannel> {
     #[cfg(feature = "discord")]
     if let Some(dc) = &config.discord
         && let Some(token) = &dc.token
@@ -1002,6 +1016,11 @@ async fn create_channel_inner(config: &Config) -> anyhow::Result<AnyChannel> {
         return Ok(AnyChannel::Telegram(tg));
     }
 
+    if let Some((pool, entries)) = history {
+        let cli = CliChannel::with_history(pool, entries).map_err(|e| anyhow::anyhow!("{e}"))?;
+        return Ok(AnyChannel::Cli(cli));
+    }
+
     Ok(AnyChannel::Cli(CliChannel::new()))
 }
 
@@ -1018,6 +1037,7 @@ struct TuiHandle {
 async fn create_channel_with_tui(
     config: &Config,
     tui_active: bool,
+    history: Option<(sqlx::SqlitePool, Vec<String>)>,
 ) -> anyhow::Result<(AppChannel, Option<TuiHandle>)> {
     if tui_active {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
@@ -1035,13 +1055,13 @@ async fn create_channel_with_tui(
         };
         return Ok((AppChannel::Tui(channel), Some(handle)));
     }
-    let channel = create_channel_inner(config).await?;
+    let channel = create_channel_inner(config, history).await?;
     Ok((AppChannel::Standard(channel), None))
 }
 
-#[cfg_attr(feature = "tui", allow(dead_code))]
+#[allow(dead_code)]
 async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
-    create_channel_inner(config).await
+    create_channel_inner(config, None).await
 }
 
 #[cfg(feature = "scheduler")]
