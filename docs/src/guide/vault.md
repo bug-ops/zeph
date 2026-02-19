@@ -13,6 +13,11 @@ The vault backend is determined by the following priority (highest to lowest):
 3. **Config file:** `vault.backend` in TOML config
 4. **Default:** `"env"`
 
+Key and vault file paths follow the same priority:
+
+1. **CLI flags:** `--vault-key <PATH>`, `--vault-path <PATH>`
+2. **Environment variables:** `ZEPH_VAULT_KEY`, `ZEPH_VAULT_PATH`
+
 ## Backends
 
 | Backend | Description | Activation |

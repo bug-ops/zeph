@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Restore `--vault`, `--vault-key`, `--vault-path` CLI flags lost during clap migration (#587)
+
+### Changed
+- Refactor `AppBuilder::from_env()` to `AppBuilder::new()` with explicit CLI overrides
+- Eliminate redundant manual `std::env::args()` parsing in favor of clap
+- Add `ZEPH_VAULT_KEY` and `ZEPH_VAULT_PATH` environment variable support
+
 ## [0.11.0] - 2026-02-19
 
 ### Added

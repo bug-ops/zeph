@@ -37,6 +37,9 @@ Options:
 |------|-------------|
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |
 | `--config <PATH>` | Path to a TOML config file (overrides `ZEPH_CONFIG` env var) |
+| `--vault <BACKEND>` | Secrets backend: `env` or `age` (overrides `ZEPH_VAULT_BACKEND` env var) |
+| `--vault-key <PATH>` | Path to age identity (private key) file (overrides `ZEPH_VAULT_KEY` env var) |
+| `--vault-path <PATH>` | Path to age-encrypted secrets file (overrides `ZEPH_VAULT_PATH` env var) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |
 
@@ -51,6 +54,9 @@ zeph --config ~/.zeph/config.toml
 
 # Start with TUI dashboard
 zeph --tui
+
+# Start with age-encrypted secrets
+zeph --vault age --vault-key key.txt --vault-path secrets.age
 
 # Generate a new config interactively
 zeph init

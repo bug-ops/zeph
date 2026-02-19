@@ -85,6 +85,9 @@ zeph init                Interactive configuration wizard
 zeph init -o path.toml   Write generated config to a specific path
 zeph --tui               Run with TUI dashboard
 zeph --config <path>     Use a custom config file
+zeph --vault <backend>   Secrets backend: env or age
+zeph --vault-key <path>  Path to age identity key file
+zeph --vault-path <path> Path to age-encrypted vault file
 zeph --version           Print version
 zeph --help              Show help
 ```
