@@ -76,6 +76,10 @@ pub enum AgentEvent {
     },
     QueueCount(usize),
     DiffReady(zeph_core::DiffData),
+    CommandResult {
+        command_id: String,
+        output: String,
+    },
 }
 
 pub struct EventReader {

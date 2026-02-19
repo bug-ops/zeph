@@ -6,12 +6,14 @@ use ratatui::text::Line;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
 
+use crate::command::TuiCommand;
 use crate::event::{AgentEvent, AppEvent};
 use crate::hyperlink::HyperlinkSpan;
 use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 use crate::widgets;
+use crate::widgets::command_palette::CommandPaletteState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderCacheKey {
@@ -124,6 +126,8 @@ pub struct App {
     status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
+    command_palette: Option<CommandPaletteState>,
+    command_tx: Option<mpsc::Sender<TuiCommand>>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -162,6 +166,8 @@ impl App {
             status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
+            command_palette: None,
+            command_tx: None,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -233,6 +239,12 @@ impl App {
     #[must_use]
     pub fn with_metrics_rx(mut self, rx: watch::Receiver<MetricsSnapshot>) -> Self {
         self.metrics_rx = Some(rx);
+        self
+    }
+
+    #[must_use]
+    pub fn with_command_tx(mut self, tx: mpsc::Sender<TuiCommand>) -> Self {
+        self.command_tx = Some(tx);
         self
     }
 
@@ -520,6 +532,18 @@ impl App {
                     msg.diff_data = Some(diff);
                 }
             }
+            AgentEvent::CommandResult { output, .. } => {
+                self.command_palette = None;
+                self.messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: output,
+                    streaming: false,
+                    tool_name: None,
+                    diff_data: None,
+                    filter_stats: None,
+                });
+                self.scroll_offset = 0;
+            }
         }
     }
 
@@ -547,6 +571,10 @@ impl App {
 
         if let Some(state) = &self.confirm_state {
             widgets::confirm::render(&state.prompt, frame, frame.area());
+        }
+
+        if let Some(palette) = &self.command_palette {
+            widgets::command_palette::render(palette, frame, frame.area());
         }
 
         if self.show_help {
@@ -606,6 +634,11 @@ impl App {
             return;
         }
 
+        if self.command_palette.is_some() {
+            self.handle_palette_key(key);
+            return;
+        }
+
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key),
             InputMode::Insert => self.handle_insert_key(key),
@@ -626,6 +659,141 @@ impl App {
         }
     }
 
+    fn handle_palette_key(&mut self, key: KeyEvent) {
+        let Some(palette) = self.command_palette.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.command_palette = None;
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = palette.selected_entry() {
+                    let cmd = entry.command.clone();
+                    self.execute_command(cmd);
+                }
+                self.command_palette = None;
+            }
+            KeyCode::Up => {
+                palette.move_up();
+            }
+            KeyCode::Down => {
+                palette.move_down();
+            }
+            KeyCode::Backspace => {
+                palette.pop_char();
+            }
+            KeyCode::Char(c) => {
+                palette.push_char(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_command(&mut self, cmd: TuiCommand) {
+        match cmd {
+            TuiCommand::SkillList => {
+                let skills = if self.metrics.active_skills.is_empty() {
+                    "No skills loaded.".to_owned()
+                } else {
+                    let lines: Vec<String> = self
+                        .metrics
+                        .active_skills
+                        .iter()
+                        .map(|s| format!("  - {s}"))
+                        .collect();
+                    format!(
+                        "Loaded skills ({}):\n{}",
+                        self.metrics.active_skills.len(),
+                        lines.join("\n")
+                    )
+                };
+                self.push_system_message(skills);
+            }
+            TuiCommand::McpList => {
+                let tools = if self.metrics.active_mcp_tools.is_empty() {
+                    "No MCP tools available.".to_owned()
+                } else {
+                    let lines: Vec<String> = self
+                        .metrics
+                        .active_mcp_tools
+                        .iter()
+                        .map(|t| format!("  - {t}"))
+                        .collect();
+                    format!(
+                        "MCP servers: {}  Tools ({}):\n{}",
+                        self.metrics.mcp_server_count,
+                        self.metrics.active_mcp_tools.len(),
+                        lines.join("\n")
+                    )
+                };
+                self.push_system_message(tools);
+            }
+            TuiCommand::MemoryStats => {
+                let msg = format!(
+                    "Memory stats:\n  SQLite messages: {}\n  Qdrant available: {}\n  Embeddings generated: {}",
+                    self.metrics.sqlite_message_count,
+                    self.metrics.qdrant_available,
+                    self.metrics.embeddings_generated,
+                );
+                self.push_system_message(msg);
+            }
+            TuiCommand::ViewCost => {
+                let msg = format!(
+                    "Cost:\n  Spent: ${:.4}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
+                    self.metrics.cost_spent_cents / 100.0,
+                    self.metrics.prompt_tokens,
+                    self.metrics.completion_tokens,
+                    self.metrics.total_tokens,
+                    self.metrics.cache_read_tokens,
+                    self.metrics.cache_creation_tokens,
+                );
+                self.push_system_message(msg);
+            }
+            TuiCommand::ViewTools => {
+                let tools = if self.metrics.active_mcp_tools.is_empty() {
+                    "No tools available.".to_owned()
+                } else {
+                    let lines: Vec<String> = self
+                        .metrics
+                        .active_mcp_tools
+                        .iter()
+                        .map(|t| format!("  - {t}"))
+                        .collect();
+                    format!(
+                        "Available tools ({}):\n{}",
+                        self.metrics.active_mcp_tools.len(),
+                        lines.join("\n")
+                    )
+                };
+                self.push_system_message(tools);
+            }
+            TuiCommand::ViewConfig | TuiCommand::ViewAutonomy => {
+                if let Some(ref tx) = self.command_tx {
+                    // try_send: capacity 16, user-triggered one at a time — overflow not possible in practice
+                    let _ = tx.try_send(cmd);
+                } else {
+                    self.push_system_message(
+                        "Config not available (no command channel).".to_owned(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn push_system_message(&mut self, content: String) {
+        self.show_splash = false;
+        self.messages.push(ChatMessage {
+            role: MessageRole::System,
+            content,
+            streaming: false,
+            tool_name: None,
+            diff_data: None,
+            filter_stats: None,
+        });
+        self.scroll_offset = 0;
+    }
+
     fn handle_normal_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc if self.is_agent_busy() => {
@@ -635,6 +803,9 @@ impl App {
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('i') => self.input_mode = InputMode::Insert,
+            KeyCode::Char(':') => {
+                self.command_palette = Some(CommandPaletteState::new());
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
             }
@@ -861,7 +1032,8 @@ impl App {
         self.editing_queued = false;
         self.pending_count += 1;
 
-        // Non-blocking send; if channel full, message is dropped
+        // Non-blocking send; capacity 32 — silent drop if agent loop is saturated.
+        // Message is visible in chat but not processed; acceptable for interactive TUI.
         let _ = self.user_input_tx.try_send(text);
     }
 }
@@ -2012,6 +2184,190 @@ mod tests {
                 result,
                 Err(mpsc::error::TryRecvError::Disconnected)
             ));
+        }
+    }
+
+    mod command_palette_tests {
+        use super::*;
+
+        #[test]
+        fn colon_in_normal_mode_opens_palette() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+            assert!(app.command_palette.is_none());
+
+            let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(app.command_palette.is_some());
+        }
+
+        #[test]
+        fn esc_closes_palette() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+            app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
+
+            let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(app.command_palette.is_none());
+        }
+
+        #[test]
+        fn palette_intercepts_all_keys_except_ctrl_c() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
+
+            // Typing a char goes to palette, not to input field
+            let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(app.input().is_empty());
+            let palette = app.command_palette.as_ref().unwrap();
+            assert_eq!(palette.query, "s");
+        }
+
+        #[test]
+        fn enter_on_selected_dispatches_command_locally() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Normal;
+            // Open palette
+            let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(colon)).unwrap();
+            assert!(app.command_palette.is_some());
+
+            // Enter on first command (skill:list)
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(enter)).unwrap();
+            assert!(app.command_palette.is_none());
+            // Should have added a system message
+            assert!(!app.messages().is_empty());
+            assert_eq!(app.messages().last().unwrap().role, MessageRole::System);
+        }
+
+        #[test]
+        fn typing_in_palette_filters_commands() {
+            let (mut app, _rx, _tx) = make_app();
+            app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
+
+            let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+            let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+            let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(m)).unwrap();
+            app.handle_event(AppEvent::Key(c)).unwrap();
+            app.handle_event(AppEvent::Key(p)).unwrap();
+
+            let palette = app.command_palette.as_ref().unwrap();
+            assert_eq!(palette.query, "mcp");
+            assert_eq!(palette.filtered.len(), 1);
+            assert_eq!(palette.filtered[0].id, "mcp:list");
+        }
+
+        #[test]
+        fn backspace_in_palette_removes_char() {
+            let (mut app, _rx, _tx) = make_app();
+            app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
+
+            let s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(s)).unwrap();
+            assert_eq!(app.command_palette.as_ref().unwrap().query, "s");
+
+            let bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(bs)).unwrap();
+            assert!(app.command_palette.as_ref().unwrap().query.is_empty());
+        }
+
+        #[test]
+        fn command_result_event_adds_system_message() {
+            let (mut app, _rx, _tx) = make_app();
+            app.handle_agent_event(AgentEvent::CommandResult {
+                command_id: "skill:list".to_owned(),
+                output: "No skills loaded.".to_owned(),
+            });
+            assert_eq!(app.messages().len(), 1);
+            assert_eq!(app.messages()[0].role, MessageRole::System);
+            assert_eq!(app.messages()[0].content, "No skills loaded.");
+            assert!(app.command_palette.is_none());
+        }
+
+        #[test]
+        fn command_result_closes_palette_if_open() {
+            let (mut app, _rx, _tx) = make_app();
+            app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
+            app.handle_agent_event(AgentEvent::CommandResult {
+                command_id: "view:config".to_owned(),
+                output: "config output".to_owned(),
+            });
+            assert!(app.command_palette.is_none());
+        }
+
+        #[test]
+        fn colon_in_insert_mode_types_colon() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            assert!(app.command_palette.is_none());
+            assert_eq!(app.input(), ":");
+        }
+
+        #[test]
+        fn enter_with_empty_filter_does_not_panic() {
+            let (mut app, _rx, _tx) = make_app();
+            let mut palette = crate::widgets::command_palette::CommandPaletteState::new();
+            // type something that matches nothing
+            for c in "xxxxxxxxxx".chars() {
+                palette.push_char(c);
+            }
+            assert!(palette.filtered.is_empty());
+            app.command_palette = Some(palette);
+
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(enter)).unwrap();
+            // palette should close without crashing, no message added
+            assert!(app.command_palette.is_none());
+        }
+
+        #[test]
+        fn execute_view_config_with_command_tx_sends_command() {
+            let (mut app, _rx, _tx) = make_app();
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<TuiCommand>(16);
+            app.command_tx = Some(cmd_tx);
+
+            app.execute_command(TuiCommand::ViewConfig);
+
+            let received = cmd_rx.try_recv().expect("command should be sent");
+            assert_eq!(received, TuiCommand::ViewConfig);
+            assert!(
+                app.messages().is_empty(),
+                "no system message when channel present"
+            );
+        }
+
+        #[test]
+        fn execute_view_autonomy_with_command_tx_sends_command() {
+            let (mut app, _rx, _tx) = make_app();
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<TuiCommand>(16);
+            app.command_tx = Some(cmd_tx);
+
+            app.execute_command(TuiCommand::ViewAutonomy);
+
+            let received = cmd_rx.try_recv().expect("command should be sent");
+            assert_eq!(received, TuiCommand::ViewAutonomy);
+            assert!(
+                app.messages().is_empty(),
+                "no system message when channel present"
+            );
+        }
+
+        #[test]
+        fn execute_view_config_without_command_tx_adds_fallback_message() {
+            let (mut app, _rx, _tx) = make_app();
+            assert!(app.command_tx.is_none());
+
+            app.execute_command(TuiCommand::ViewConfig);
+
+            assert_eq!(app.messages().len(), 1);
+            assert!(app.messages()[0].content.contains("no command channel"));
         }
     }
 }

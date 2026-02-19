@@ -548,7 +548,8 @@ async fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || reader.run());
 
         let mut tui_app = App::new(tui_handle.user_tx, tui_handle.agent_rx)
-            .with_cancel_signal(agent.cancel_signal());
+            .with_cancel_signal(agent.cancel_signal())
+            .with_command_tx(tui_handle.command_tx);
         tui_app.set_show_source_labels(config.tui.show_source_labels);
 
         let history: Vec<(&str, &str)> = agent
@@ -571,6 +572,18 @@ async fn main() -> anyhow::Result<()> {
 
         let agent_tx = tui_handle.agent_tx;
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx.clone()));
+        tokio::spawn(forward_tui_commands(
+            tui_handle.command_rx,
+            agent_tx.clone(),
+            TuiCommandContext {
+                provider: format!("{:?}", config.llm.provider),
+                model: config.llm.model.clone(),
+                agent_name: config.agent.name.clone(),
+                semantic_enabled: config.memory.semantic.enabled,
+                autonomy_level: format!("{:?}", config.security.autonomy_level),
+                max_tool_iterations: config.agent.max_tool_iterations,
+            },
+        ));
 
         if let Some(tool_rx) = shell_executor_for_tui {
             tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
@@ -620,6 +633,51 @@ async fn main() -> anyhow::Result<()> {
 async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
     while let Some(msg) = rx.recv().await {
         eprintln!("[status] {msg}");
+    }
+}
+
+// SECURITY: non-secret fields only
+#[cfg(feature = "tui")]
+struct TuiCommandContext {
+    provider: String,
+    model: String,
+    agent_name: String,
+    semantic_enabled: bool,
+    autonomy_level: String,
+    max_tool_iterations: usize,
+}
+
+#[cfg(feature = "tui")]
+async fn forward_tui_commands(
+    mut rx: tokio::sync::mpsc::Receiver<zeph_tui::TuiCommand>,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+    ctx: TuiCommandContext,
+) {
+    while let Some(cmd) = rx.recv().await {
+        let (command_id, output) = match cmd {
+            zeph_tui::TuiCommand::ViewConfig => {
+                let text = format!(
+                    "Active configuration:\n  Provider: {}\n  Model: {}\n  Agent name: {}\n  Semantic enabled: {}",
+                    ctx.provider, ctx.model, ctx.agent_name, ctx.semantic_enabled,
+                );
+                ("view:config".to_owned(), text)
+            }
+            zeph_tui::TuiCommand::ViewAutonomy => {
+                let text = format!(
+                    "Autonomy level: {}\n  Max tool iterations: {}",
+                    ctx.autonomy_level, ctx.max_tool_iterations,
+                );
+                ("view:autonomy".to_owned(), text)
+            }
+            _ => continue,
+        };
+        if tx
+            .send(zeph_tui::AgentEvent::CommandResult { command_id, output })
+            .await
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -841,6 +899,8 @@ struct TuiHandle {
     user_tx: tokio::sync::mpsc::Sender<String>,
     agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
     agent_rx: tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>,
+    command_tx: tokio::sync::mpsc::Sender<zeph_tui::TuiCommand>,
+    command_rx: tokio::sync::mpsc::Receiver<zeph_tui::TuiCommand>,
 }
 
 #[cfg(feature = "tui")]
@@ -852,11 +912,15 @@ async fn create_channel_with_tui(
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
         let agent_tx_clone = agent_tx.clone();
+        // command_tx goes to App; command_rx is handled by forward_tui_commands task.
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel::<zeph_tui::TuiCommand>(16);
         let channel = TuiChannel::new(user_rx, agent_tx);
         let handle = TuiHandle {
             user_tx,
             agent_tx: agent_tx_clone,
             agent_rx,
+            command_tx,
+            command_rx,
         };
         return Ok((AppChannel::Tui(channel), Some(handle)));
     }

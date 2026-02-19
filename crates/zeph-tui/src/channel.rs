@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 
+use crate::command::TuiCommand;
 use crate::event::AgentEvent;
 
 #[derive(Debug)]
@@ -8,6 +9,7 @@ pub struct TuiChannel {
     user_input_rx: mpsc::Receiver<String>,
     agent_event_tx: mpsc::Sender<AgentEvent>,
     accumulated: String,
+    command_rx: Option<mpsc::Receiver<TuiCommand>>,
 }
 
 impl TuiChannel {
@@ -20,7 +22,18 @@ impl TuiChannel {
             user_input_rx,
             agent_event_tx,
             accumulated: String::new(),
+            command_rx: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_command_rx(mut self, rx: mpsc::Receiver<TuiCommand>) -> Self {
+        self.command_rx = Some(rx);
+        self
+    }
+
+    pub fn try_recv_command(&mut self) -> Option<TuiCommand> {
+        self.command_rx.as_mut()?.try_recv().ok()
     }
 }
 
@@ -304,6 +317,31 @@ mod tests {
         let (ch, _user_tx, _agent_rx) = make_channel();
         let debug = format!("{ch:?}");
         assert!(debug.contains("TuiChannel"));
+    }
+
+    #[test]
+    fn try_recv_command_returns_none_without_receiver() {
+        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        assert!(ch.try_recv_command().is_none());
+    }
+
+    #[test]
+    fn try_recv_command_returns_none_when_empty() {
+        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+        let mut ch = ch.with_command_rx(cmd_rx);
+        assert!(ch.try_recv_command().is_none());
+    }
+
+    #[test]
+    fn try_recv_command_returns_sent_command() {
+        let (mut ch, _user_tx, _agent_rx) = make_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        cmd_tx.try_send(TuiCommand::SkillList).unwrap();
+        let mut ch = ch.with_command_rx(cmd_rx);
+        let cmd = ch.try_recv_command().expect("should receive command");
+        assert_eq!(cmd, TuiCommand::SkillList);
+        assert!(ch.try_recv_command().is_none(), "second call returns None");
     }
 
     #[tokio::test]

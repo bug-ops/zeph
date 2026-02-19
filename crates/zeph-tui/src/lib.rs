@@ -1,5 +1,6 @@
 pub mod app;
 pub mod channel;
+pub mod command;
 pub mod event;
 pub mod highlight;
 pub mod hyperlink;
@@ -19,6 +20,7 @@ use zeph_core::channel::ChannelError;
 
 pub use app::App;
 pub use channel::TuiChannel;
+pub use command::TuiCommand;
 pub use event::{AgentEvent, AppEvent, CrosstermEventSource, EventReader, EventSource};
 pub use metrics::{MetricsCollector, MetricsSnapshot};
 
