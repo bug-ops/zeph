@@ -285,6 +285,10 @@ pub struct OrchestratorProviderConfig {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    #[serde(default)]
     pub filename: Option<String>,
     #[serde(default)]
     pub device: Option<String>,

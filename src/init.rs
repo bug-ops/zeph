@@ -530,6 +530,8 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
         OrchestratorProviderConfig {
             provider_type: primary_kind.as_str().to_owned(),
             model: Some(primary_model),
+            base_url: None,
+            embedding_model: None,
             filename: None,
             device: None,
         },
@@ -539,6 +541,8 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
         OrchestratorProviderConfig {
             provider_type: fallback_kind.as_str().to_owned(),
             model: Some(fallback_model),
+            base_url: None,
+            embedding_model: None,
             filename: None,
             device: None,
         },

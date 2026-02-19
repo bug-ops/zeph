@@ -6,9 +6,11 @@ max_tool_iterations = 10
 # Optional local model for tool output summarization and context compaction.
 # Format: "ollama/<model>". Falls back to primary provider if unset.
 # summary_model = "ollama/llama3.2"
+# Check for new Zeph releases on startup
+# auto_update_check = true
 
 [llm]
-# LLM provider: "ollama" for local models or "claude" for Claude API
+# LLM provider: "ollama", "claude", "openai", "candle", "orchestrator", "compatible", "router"
 provider = "ollama"
 # Base URL for Ollama server
 base_url = "http://localhost:11434"
@@ -31,14 +33,21 @@ max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
-# Candle local inference (enabled by default, disable with --no-default-features)
+# Speech-to-text provider (Whisper API)
+# [llm.stt]
+# provider = "whisper"
+# model = "whisper-1"
+
+# Vision model for image understanding
+# vision_model = "llava:7b"
+
+# Candle local inference (feature-gated: --features candle)
 # [llm.candle]
 # source = "huggingface"  # "local" or "huggingface"
-# repo_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
 # filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 # local_path = ""          # used when source = "local"
-# chat_template = "mistral"  # llama3, chatml, mistral, phi3, raw
-# device = "auto"          # auto, cpu, metal, cuda
+# chat_template = "chatml"  # llama3, chatml, mistral, phi3, raw
+# device = "cpu"           # auto, cpu, metal, cuda
 # embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
 # [llm.candle.generation]
 # temperature = 0.7
@@ -47,6 +56,7 @@ max_tokens = 4096
 # max_tokens = 2048
 # seed = 42
 # repeat_penalty = 1.1
+# repeat_last_n = 64
 
 # Model orchestrator (enabled by default)
 # Routes tasks to different providers with fallback chains
@@ -54,9 +64,17 @@ max_tokens = 4096
 # default = "ollama"
 # embed = "ollama"
 # [llm.orchestrator.providers.ollama]
-# provider_type = "ollama"
+# type = "ollama"
+# model = "mistral:7b"          # optional: override model
+# base_url = "http://localhost:11434"  # optional: override base URL
+# embedding_model = "qwen3-embedding"  # optional: override embedding model
 # [llm.orchestrator.providers.claude]
-# provider_type = "claude"
+# type = "claude"
+# model = "claude-sonnet-4-5-20250929"  # optional: override [llm.cloud].model
+# [llm.orchestrator.providers.candle]
+# type = "candle"
+# filename = "model.gguf"       # optional: GGUF filename
+# device = "metal"              # optional: cpu, metal, cuda
 # [llm.orchestrator.routes]
 # coding = ["claude", "ollama"]
 # creative = ["claude", "ollama"]
@@ -76,11 +94,54 @@ max_tokens = 4096
 # [llm.router]
 # chain = ["groq", "openai", "ollama"]
 
+# --- Full orchestrator example with cloud + local + STT ---
+# The orchestrator routes tasks to different providers with fallback chains.
+# Sub-providers inherit from parent sections:
+#   - "ollama" sub-provider uses [llm].base_url, [llm].model, [llm].embedding_model as defaults
+#   - "claude" sub-provider requires [llm.cloud] section + ZEPH_CLAUDE_API_KEY
+#   - "openai" sub-provider requires [llm.openai] section + ZEPH_OPENAI_API_KEY
+#   - "candle" sub-provider requires [llm.candle] section
+# Per-provider `model` overrides the inherited default.
+#
+# [llm]
+# provider = "orchestrator"
+# base_url = "http://localhost:11434"      # used by ollama sub-provider
+# model = "mistral:7b"                     # fallback model for sub-providers without explicit model
+# embedding_model = "qwen3-embedding"      # used by ollama sub-provider for embeddings
+#
+# [llm.cloud]
+# model = "claude-sonnet-4-5-20250929"
+# max_tokens = 4096
+#
+# [llm.stt]
+# provider = "whisper"
+# model = "whisper-1"
+#
+# [llm.orchestrator]
+# default = "ollama/mistral:7b"            # "provider_name/model" or just "provider_name"
+# embed = "qwen3-embedding"                # embedding model name or "provider_name/model"
+#
+# [llm.orchestrator.providers.ollama]
+# type = "ollama"
+# model = "mistral:7b"                     # optional: overrides [llm].model
+# base_url = "http://localhost:11434"      # optional: overrides [llm].base_url
+# embedding_model = "qwen3-embedding"      # optional: overrides [llm].embedding_model
+#
+# [llm.orchestrator.providers.claude]
+# type = "claude"
+# model = "claude-sonnet-4-5-20250929"     # optional: overrides [llm.cloud].model
+#
+# [llm.orchestrator.routes]
+# chat = ["ollama", "claude"]              # fallback chain: try ollama first, then claude
+# embed = ["ollama/qwen3-embedding"]       # "provider_name/model" format
+
 [skills]
 # Directories to scan for SKILL.md files
 paths = ["./skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
+# Minimum score delta for skill disambiguation (0.0-1.0)
+# disambiguation_threshold = 0.05
 
 [skills.learning]
 # Enable self-learning skill improvement (feature enabled by default, runtime toggle)
@@ -184,6 +245,7 @@ max_dynamic_servers = 10
 # id = "filesystem"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = {}                      # environment variables for the child process
 # timeout = 30
 
 # HTTP transport (remote MCP server, e.g. Docker container):
@@ -199,8 +261,8 @@ enabled = false
 max_daily_cents = 500
 
 [observability]
-# Tracing exporter: "none" or "otlp" (requires otel feature)
-exporter = "none"
+# Tracing exporter: "" (disabled) or "otlp" (requires otel feature)
+exporter = ""
 # OTLP collector endpoint
 endpoint = "http://localhost:4317"
 
@@ -217,6 +279,8 @@ host = "0.0.0.0"
 port = 8080
 # Public URL advertised in AgentCard (auto-generated if empty)
 public_url = ""
+# Bearer token for authentication (from vault ZEPH_A2A_AUTH_TOKEN)
+# auth_token = ""
 # Rate limit: max requests per minute per IP (0 = unlimited)
 rate_limit = 60
 # Require TLS for outbound A2A connections
@@ -255,6 +319,29 @@ max_body_bytes = 1048576
 [tools.filters]
 # Enable smart output filtering for tool results
 enabled = true
+# [tools.filters.test]
+# enabled = true
+# max_failures = 10
+# truncate_stack_trace = 50
+# [tools.filters.git]
+# enabled = true
+# max_log_entries = 20
+# max_diff_lines = 500
+# [tools.filters.clippy]
+# enabled = true
+# [tools.filters.cargo_build]
+# enabled = true
+# [tools.filters.dir_listing]
+# enabled = true
+# [tools.filters.log_dedup]
+# enabled = true
+# [tools.filters.security]
+# enabled = true
+# extra_patterns = []
+
+# Per-tool permission rules (glob patterns with allow/ask/deny actions)
+# [tools.permissions]
+# shell = [{ pattern = "/tmp/*", action = "allow" }, { pattern = "/etc/*", action = "deny" }]
 
 [tools.audit]
 # Enable audit logging for tool executions

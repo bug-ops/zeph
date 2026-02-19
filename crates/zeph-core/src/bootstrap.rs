@@ -427,14 +427,19 @@ pub fn effective_embedding_model(config: &Config) -> String {
         ProviderKind::Orchestrator => {
             if let Some(orch) = &config.llm.orchestrator
                 && let Some(pcfg) = orch.providers.get(&orch.embed)
-                && pcfg.provider_type == "openai"
-                && let Some(m) = config
-                    .llm
-                    .openai
-                    .as_ref()
-                    .and_then(|o| o.embedding_model.clone())
             {
-                return m;
+                if let Some(ref m) = pcfg.embedding_model {
+                    return m.clone();
+                }
+                if pcfg.provider_type == "openai"
+                    && let Some(m) = config
+                        .llm
+                        .openai
+                        .as_ref()
+                        .and_then(|o| o.embedding_model.clone())
+                {
+                    return m;
+                }
             }
         }
         ProviderKind::Compatible => {
@@ -676,12 +681,13 @@ pub fn build_orchestrator(
     for (name, pcfg) in &orch_cfg.providers {
         let provider = match pcfg.provider_type.as_str() {
             "ollama" => {
+                let base_url = pcfg.base_url.as_deref().unwrap_or(&config.llm.base_url);
                 let model = pcfg.model.as_deref().unwrap_or(&config.llm.model);
-                SubProvider::Ollama(OllamaProvider::new(
-                    &config.llm.base_url,
-                    model.to_owned(),
-                    config.llm.embedding_model.clone(),
-                ))
+                let embed = pcfg
+                    .embedding_model
+                    .clone()
+                    .unwrap_or_else(|| config.llm.embedding_model.clone());
+                SubProvider::Ollama(OllamaProvider::new(base_url, model.to_owned(), embed))
             }
             "claude" => {
                 let cloud = config
@@ -716,13 +722,21 @@ pub fn build_orchestrator(
                     .context("ZEPH_OPENAI_API_KEY required for openai sub-provider")?
                     .expose()
                     .to_owned();
+                let base_url = pcfg
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| openai_cfg.base_url.clone());
                 let model = pcfg.model.as_deref().unwrap_or(&openai_cfg.model);
+                let embed = pcfg
+                    .embedding_model
+                    .clone()
+                    .or_else(|| openai_cfg.embedding_model.clone());
                 SubProvider::OpenAi(OpenAiProvider::new(
                     api_key,
-                    openai_cfg.base_url.clone(),
+                    base_url,
                     model.to_owned(),
                     openai_cfg.max_tokens,
-                    openai_cfg.embedding_model.clone(),
+                    embed,
                     openai_cfg.reasoning_effort.clone(),
                 ))
             }
@@ -1152,6 +1166,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "unknown_type".to_string(),
                 model: None,
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1189,6 +1205,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "claude".to_string(),
                 model: None,
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1230,6 +1248,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "claude".to_string(),
                 model: None,
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1268,6 +1288,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "candle".to_string(),
                 model: None,
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1304,6 +1326,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "ollama".to_string(),
                 model: Some("llama2".to_string()),
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1321,6 +1345,103 @@ mod tests {
     }
 
     #[test]
+    fn build_orchestrator_ollama_per_provider_base_url() {
+        use crate::config::OrchestratorProviderConfig;
+        use std::collections::HashMap;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = ProviderKind::Orchestrator;
+        config.llm.base_url = "http://localhost:11434".into();
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "ollama_custom".to_string(),
+            OrchestratorProviderConfig {
+                provider_type: "ollama".to_string(),
+                model: Some("llama3".to_string()),
+                base_url: Some("http://gpu-server:11434".to_string()),
+                embedding_model: None,
+                filename: None,
+                device: None,
+            },
+        );
+
+        config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
+            providers,
+            routes: HashMap::new(),
+            default: "ollama_custom".to_string(),
+            embed: "ollama_custom".to_string(),
+        });
+
+        let result = build_orchestrator(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_orchestrator_ollama_per_provider_embedding_model() {
+        use crate::config::OrchestratorProviderConfig;
+        use std::collections::HashMap;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.provider = ProviderKind::Orchestrator;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "ollama_embed".to_string(),
+            OrchestratorProviderConfig {
+                provider_type: "ollama".to_string(),
+                model: None,
+                base_url: None,
+                embedding_model: Some("nomic-embed-text".to_string()),
+                filename: None,
+                device: None,
+            },
+        );
+
+        config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
+            providers,
+            routes: HashMap::new(),
+            default: "ollama_embed".to_string(),
+            embed: "ollama_embed".to_string(),
+        });
+
+        let result = build_orchestrator(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn effective_embedding_model_reads_orchestrator_sub_provider() {
+        use crate::config::OrchestratorProviderConfig;
+        use std::collections::HashMap;
+
+        let mut config = Config::default();
+        config.llm.provider = ProviderKind::Orchestrator;
+        config.llm.embedding_model = "default-embed".into();
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "ollama_embed".to_string(),
+            OrchestratorProviderConfig {
+                provider_type: "ollama".to_string(),
+                model: None,
+                base_url: None,
+                embedding_model: Some("custom-embed".to_string()),
+                filename: None,
+                device: None,
+            },
+        );
+
+        config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
+            providers,
+            routes: HashMap::new(),
+            default: "ollama_embed".to_string(),
+            embed: "ollama_embed".to_string(),
+        });
+
+        assert_eq!(effective_embedding_model(&config), "custom-embed");
+    }
+
+    #[test]
     fn build_orchestrator_routes_parsing() {
         use crate::config::OrchestratorProviderConfig;
         use std::collections::HashMap;
@@ -1334,6 +1455,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "ollama".to_string(),
                 model: None,
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: None,
             },
@@ -1386,6 +1509,8 @@ mod tests {
             OrchestratorProviderConfig {
                 provider_type: "candle".to_string(),
                 model: Some("local-model".to_string()),
+                base_url: None,
+                embedding_model: None,
                 filename: None,
                 device: Some("cpu".to_string()),
             },
