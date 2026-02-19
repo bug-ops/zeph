@@ -43,7 +43,6 @@ ratatui = "0.30"
 regex = "1.12"
 reqwest = { version = "0.13", default-features = false }
 rmcp = "0.15"
-rustyline = { version = "17.0", default-features = false }
 semver = "1.0.27"
 scrape-core = "0.2.2"
 subtle = "2.6"

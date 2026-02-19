@@ -16,8 +16,8 @@ futures = { workspace = true, optional = true }
 hmac = { version = "0.12", optional = true }
 pulldown-cmark.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
-rustyline.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+crossterm.workspace = true
+unicode-width.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2 = { version = "0.10", optional = true }

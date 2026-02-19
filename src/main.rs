@@ -248,13 +248,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let cli_history = {
-        let pool = memory.sqlite().pool().clone();
         let entries = memory
             .sqlite()
             .load_input_history(1000)
             .await
             .unwrap_or_default();
-        Some((pool, entries))
+        let store = memory.sqlite().clone();
+        let persist: Box<dyn Fn(&str) + Send> = Box::new(move |text: &str| {
+            let store = store.clone();
+            let text = text.to_owned();
+            if let Ok(handle) = tokio::runtime::Handle::try_current()
+                && let Err(e) = handle.block_on(store.save_input_entry(&text))
+            {
+                tracing::warn!("failed to persist input history entry: {e}");
+            }
+        });
+        Some((entries, persist))
     };
 
     #[cfg(feature = "tui")]
@@ -958,10 +967,12 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     }
 }
 
+type CliHistory = (Vec<String>, Box<dyn Fn(&str) + Send>);
+
 #[allow(clippy::unused_async)]
 async fn create_channel_inner(
     config: &Config,
-    history: Option<(sqlx::SqlitePool, Vec<String>)>,
+    history: Option<CliHistory>,
 ) -> anyhow::Result<AnyChannel> {
     #[cfg(feature = "discord")]
     if let Some(dc) = &config.discord
@@ -1010,8 +1021,8 @@ async fn create_channel_inner(
         return Ok(AnyChannel::Telegram(tg));
     }
 
-    if let Some((pool, entries)) = history {
-        let cli = CliChannel::with_history(pool, entries).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Some((entries, persist_fn)) = history {
+        let cli = CliChannel::with_history(entries, persist_fn);
         return Ok(AnyChannel::Cli(cli));
     }
 
@@ -1031,7 +1042,7 @@ struct TuiHandle {
 async fn create_channel_with_tui(
     config: &Config,
     tui_active: bool,
-    history: Option<(sqlx::SqlitePool, Vec<String>)>,
+    history: Option<CliHistory>,
 ) -> anyhow::Result<(AppChannel, Option<TuiHandle>)> {
     if tui_active {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);

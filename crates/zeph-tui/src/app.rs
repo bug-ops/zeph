@@ -233,6 +233,9 @@ impl App {
                 "assistant" => MessageRole::Assistant,
                 _ => continue,
             };
+            if role == MessageRole::User {
+                self.input_history.push(content.to_owned());
+            }
             self.messages.push(ChatMessage {
                 role,
                 content: content.to_owned(),
@@ -970,13 +973,21 @@ impl App {
                             return;
                         }
                         self.draft_input = self.input.clone();
-                        let idx = self.input_history.len() - 1;
+                        let prefix = &self.draft_input;
+                        let found = self
+                            .input_history
+                            .iter()
+                            .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
+                        let Some(idx) = found else { return };
                         self.history_index = Some(idx);
                         self.input.clone_from(&self.input_history[idx]);
                     }
-                    Some(0) => return,
                     Some(i) => {
-                        let idx = i - 1;
+                        let prefix = &self.draft_input;
+                        let found = self.input_history[..i]
+                            .iter()
+                            .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
+                        let Some(idx) = found else { return };
                         self.history_index = Some(idx);
                         self.input.clone_from(&self.input_history[idx]);
                     }
@@ -987,8 +998,12 @@ impl App {
                 let Some(i) = self.history_index else {
                     return;
                 };
-                if i + 1 < self.input_history.len() {
-                    let idx = i + 1;
+                let prefix = &self.draft_input;
+                let found = self.input_history[i + 1..]
+                    .iter()
+                    .position(|e| prefix.is_empty() || e.starts_with(prefix))
+                    .map(|offset| i + 1 + offset);
+                if let Some(idx) = found {
                     self.history_index = Some(idx);
                     self.input.clone_from(&self.input_history[idx]);
                 } else {
@@ -1806,13 +1821,13 @@ mod tests {
         app.pending_count = 2;
         app.input = "hello".into();
         app.cursor_position = 5;
-        app.input_history.push("prev".into());
+        app.input_history.push("hello world".into());
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key)).unwrap();
 
         assert!(rx.try_recv().is_err());
-        assert_eq!(app.input(), "prev");
+        assert_eq!(app.input(), "hello world");
     }
 
     #[test]

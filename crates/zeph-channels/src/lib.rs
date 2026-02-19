@@ -5,6 +5,7 @@ pub mod cli;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod error;
+mod line_editor;
 pub mod markdown;
 #[cfg(feature = "slack")]
 pub mod slack;

@@ -14,7 +14,7 @@ pub use messages::role_str;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
 pub use trust::SkillTrustRow;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SqliteStore {
     pool: SqlitePool,
 }
