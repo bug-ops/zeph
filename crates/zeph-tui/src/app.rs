@@ -1,6 +1,8 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
 
@@ -10,6 +12,61 @@ use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 use crate::widgets;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderCacheKey {
+    pub content_hash: u64,
+    pub terminal_width: u16,
+    pub tool_expanded: bool,
+    pub compact_tools: bool,
+    pub show_labels: bool,
+}
+
+pub struct RenderCacheEntry {
+    pub key: RenderCacheKey,
+    pub lines: Vec<Line<'static>>,
+}
+
+#[derive(Default)]
+pub struct RenderCache {
+    entries: Vec<Option<RenderCacheEntry>>,
+}
+
+impl RenderCache {
+    pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<&[Line<'static>]> {
+        self.entries
+            .get(idx)
+            .and_then(Option::as_ref)
+            .filter(|e| &e.key == key)
+            .map(|e| e.lines.as_slice())
+    }
+
+    pub fn put(&mut self, idx: usize, key: RenderCacheKey, lines: Vec<Line<'static>>) {
+        if idx >= self.entries.len() {
+            self.entries.resize_with(idx + 1, || None);
+        }
+        self.entries[idx] = Some(RenderCacheEntry { key, lines });
+    }
+
+    pub fn invalidate(&mut self, idx: usize) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            *entry = None;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for entry in &mut self.entries {
+            *entry = None;
+        }
+    }
+}
+
+#[must_use]
+pub fn content_hash(s: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -78,6 +135,7 @@ pub struct App {
     editing_queued: bool,
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
+    pub render_cache: RenderCache,
 }
 
 impl App {
@@ -115,6 +173,7 @@ impl App {
             editing_queued: false,
             hyperlinks: Vec::new(),
             cancel_signal: None,
+            render_cache: RenderCache::default(),
         }
     }
 
@@ -226,7 +285,10 @@ impl App {
     }
 
     pub fn set_show_source_labels(&mut self, v: bool) {
-        self.show_source_labels = v;
+        if self.show_source_labels != v {
+            self.show_source_labels = v;
+            self.render_cache.clear();
+        }
     }
 
     pub fn set_hyperlinks(&mut self, links: Vec<HyperlinkSpan>) {
@@ -282,7 +344,9 @@ impl App {
             AppEvent::Tick => {
                 self.throbber_state.calc_next();
             }
-            AppEvent::Resize(_, _) => {}
+            AppEvent::Resize(_, _) => {
+                self.render_cache.clear();
+            }
             AppEvent::MouseScroll(delta) => {
                 if self.confirm_state.is_none() {
                     if delta > 0 {
@@ -299,6 +363,14 @@ impl App {
 
     pub fn poll_agent_event(&mut self) -> impl Future<Output = Option<AgentEvent>> + use<'_> {
         self.agent_event_rx.recv()
+    }
+
+    /// # Errors
+    ///
+    /// Returns `TryRecvError::Empty` if no events are pending, or `TryRecvError::Disconnected`
+    /// if the sender has been dropped.
+    pub fn try_recv_agent_event(&mut self) -> Result<AgentEvent, mpsc::error::TryRecvError> {
+        self.agent_event_rx.try_recv()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -321,6 +393,8 @@ impl App {
                         filter_stats: None,
                     });
                 }
+                let last_idx = self.messages.len().saturating_sub(1);
+                self.render_cache.invalidate(last_idx);
                 self.scroll_offset = 0;
             }
             AgentEvent::FullMessage(text) => {
@@ -342,6 +416,8 @@ impl App {
                     && last.streaming
                 {
                     last.streaming = false;
+                    let last_idx = self.messages.len().saturating_sub(1);
+                    self.render_cache.invalidate(last_idx);
                 }
             }
             AgentEvent::Typing => {
@@ -365,13 +441,13 @@ impl App {
                 self.scroll_offset = 0;
             }
             AgentEvent::ToolOutputChunk { chunk, .. } => {
-                if let Some(msg) = self
+                if let Some(pos) = self
                     .messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Tool && m.streaming)
+                    .iter()
+                    .rposition(|m| m.role == MessageRole::Tool && m.streaming)
                 {
-                    msg.content.push_str(&chunk);
+                    self.messages[pos].content.push_str(&chunk);
+                    self.render_cache.invalidate(pos);
                 }
                 self.scroll_offset = 0;
             }
@@ -389,17 +465,17 @@ impl App {
                     output_len = output.len(),
                     "TUI ToolOutput event received"
                 );
-                if let Some(msg) = self
+                if let Some(pos) = self
                     .messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Tool && m.streaming)
+                    .iter()
+                    .rposition(|m| m.role == MessageRole::Tool && m.streaming)
                 {
                     // Shell streaming path: finalize existing streaming tool message.
                     debug!("attaching diff to existing streaming Tool message");
-                    msg.streaming = false;
-                    msg.diff_data = diff;
-                    msg.filter_stats = filter_stats;
+                    self.messages[pos].streaming = false;
+                    self.messages[pos].diff_data = diff;
+                    self.messages[pos].filter_stats = filter_stats;
+                    self.render_cache.invalidate(pos);
                 } else if diff.is_some() || filter_stats.is_some() {
                     // Native tool_use path: no prior ToolStart, create the message now.
                     debug!("creating new Tool message with diff (native path)");
@@ -459,7 +535,9 @@ impl App {
         if self.show_splash {
             widgets::splash::render(frame, layout.chat);
         } else {
-            let max_scroll = widgets::chat::render(self, frame, layout.chat);
+            let mut cache = std::mem::take(&mut self.render_cache);
+            let max_scroll = widgets::chat::render(self, frame, layout.chat, &mut cache);
+            self.render_cache = cache;
             self.scroll_offset = self.scroll_offset.min(max_scroll);
         }
         self.draw_side_panel(frame, &layout);
@@ -580,9 +658,11 @@ impl App {
             }
             KeyCode::Char('e') => {
                 self.tool_expanded = !self.tool_expanded;
+                self.render_cache.clear();
             }
             KeyCode::Char('c') => {
                 self.compact_tools = !self.compact_tools;
+                self.render_cache.clear();
             }
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {
@@ -1809,6 +1889,129 @@ mod tests {
 
                 prop_assert!(app.cursor_position() <= app.char_count());
             }
+        }
+    }
+
+    mod render_cache_tests {
+        use super::*;
+        use ratatui::text::Span;
+
+        fn make_key(content_hash: u64, width: u16) -> RenderCacheKey {
+            RenderCacheKey {
+                content_hash,
+                terminal_width: width,
+                tool_expanded: false,
+                compact_tools: false,
+                show_labels: false,
+            }
+        }
+
+        #[test]
+        fn get_returns_none_when_empty() {
+            let cache = RenderCache::default();
+            let key = make_key(1, 80);
+            assert!(cache.get(0, &key).is_none());
+        }
+
+        #[test]
+        fn put_and_get_returns_cached_lines() {
+            let mut cache = RenderCache::default();
+            let key = make_key(42, 80);
+            let lines = vec![Line::from(Span::raw("hello"))];
+            cache.put(0, key, lines.clone());
+            let result = cache.get(0, &key).unwrap();
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].spans[0].content, "hello");
+        }
+
+        #[test]
+        fn get_returns_none_on_key_mismatch() {
+            let mut cache = RenderCache::default();
+            let key1 = make_key(1, 80);
+            let key2 = make_key(2, 80);
+            let lines = vec![Line::from(Span::raw("a"))];
+            cache.put(0, key1, lines);
+            assert!(cache.get(0, &key2).is_none());
+        }
+
+        #[test]
+        fn get_returns_none_on_width_mismatch() {
+            let mut cache = RenderCache::default();
+            let key80 = make_key(1, 80);
+            let key100 = make_key(1, 100);
+            let lines = vec![Line::from(Span::raw("b"))];
+            cache.put(0, key80, lines);
+            assert!(cache.get(0, &key100).is_none());
+        }
+
+        #[test]
+        fn invalidate_clears_single_entry() {
+            let mut cache = RenderCache::default();
+            let key = make_key(1, 80);
+            let lines = vec![Line::from(Span::raw("x"))];
+            cache.put(0, key, lines);
+            assert!(cache.get(0, &key).is_some());
+            cache.invalidate(0);
+            assert!(cache.get(0, &key).is_none());
+        }
+
+        #[test]
+        fn invalidate_out_of_bounds_is_noop() {
+            let mut cache = RenderCache::default();
+            cache.invalidate(99);
+        }
+
+        #[test]
+        fn clear_removes_all_entries() {
+            let mut cache = RenderCache::default();
+            let key0 = make_key(1, 80);
+            let key1 = make_key(2, 80);
+            cache.put(0, key0, vec![Line::from(Span::raw("a"))]);
+            cache.put(1, key1, vec![Line::from(Span::raw("b"))]);
+            cache.clear();
+            assert!(cache.get(0, &key0).is_none());
+            assert!(cache.get(1, &key1).is_none());
+        }
+
+        #[test]
+        fn put_grows_entries_for_non_contiguous_index() {
+            let mut cache = RenderCache::default();
+            let key = make_key(5, 80);
+            let lines = vec![Line::from(Span::raw("z"))];
+            cache.put(5, key, lines);
+            let result = cache.get(5, &key).unwrap();
+            assert_eq!(result[0].spans[0].content, "z");
+        }
+    }
+
+    mod try_recv_tests {
+        use super::*;
+
+        #[test]
+        fn try_recv_returns_empty_when_no_events() {
+            let (mut app, _rx, _tx) = make_app();
+            let result = app.try_recv_agent_event();
+            assert!(matches!(result, Err(mpsc::error::TryRecvError::Empty)));
+        }
+
+        #[test]
+        fn try_recv_returns_event_when_available() {
+            let (mut app, _rx, tx) = make_app();
+            tx.try_send(AgentEvent::Typing).unwrap();
+            let result = app.try_recv_agent_event();
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), AgentEvent::Typing));
+        }
+
+        #[test]
+        fn try_recv_returns_disconnected_when_sender_dropped() {
+            let (mut app, _rx, tx) = make_app();
+            drop(tx);
+            let result = app.try_recv_agent_event();
+            assert!(matches!(
+                result,
+                Err(mpsc::error::TryRecvError::Disconnected)
+            ));
         }
     }
 }

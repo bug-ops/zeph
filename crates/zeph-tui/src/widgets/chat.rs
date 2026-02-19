@@ -6,13 +6,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
 
-use crate::app::{App, MessageRole};
+use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
 
 /// Returns the maximum scroll offset for the rendered content.
-pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
+pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCache) -> usize {
     if area.width == 0 || area.height == 0 {
         return 0;
     }
@@ -22,9 +22,22 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
     // 2 for block borders + 2 for accent prefix ("▎ ") added per line
     let wrap_width = area.width.saturating_sub(4) as usize;
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for (idx, msg) in app.messages().iter().enumerate() {
+    let tool_expanded = app.tool_expanded();
+    let compact_tools = app.compact_tools();
+    let show_labels = app.show_source_labels();
+    let terminal_width = area.width;
+    let throbber_len = BRAILLE_SIX.symbols.len();
+    let throbber_idx = usize::try_from(
+        app.throbber_state()
+            .index()
+            .rem_euclid(i8::try_from(throbber_len).unwrap_or(i8::MAX)),
+    )
+    .unwrap_or(0);
+    let messages: Vec<_> = app.messages().to_vec();
+
+    for (idx, msg) in messages.iter().enumerate() {
         let accent = match msg.role {
             MessageRole::User => theme.user_message,
             MessageRole::Assistant => theme.assistant_accent,
@@ -37,17 +50,44 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) -> usize {
             lines.push(Line::from(Span::styled(sep, theme.system_message)));
         }
 
-        let msg_start = lines.len();
+        let cache_key = RenderCacheKey {
+            content_hash: content_hash(&msg.content),
+            terminal_width,
+            tool_expanded,
+            compact_tools,
+            show_labels,
+        };
 
-        let show_labels = app.show_source_labels();
-        if msg.role == MessageRole::Tool {
-            render_tool_message(msg, app, &theme, wrap_width, show_labels, &mut lines);
+        let msg_lines: Vec<Line<'static>> = if msg.streaming {
+            // Never cache streaming messages
+            render_message_lines(
+                msg,
+                tool_expanded,
+                compact_tools,
+                throbber_idx,
+                &theme,
+                wrap_width,
+                show_labels,
+            )
+        } else if let Some(cached) = cache.get(idx, &cache_key) {
+            cached.to_vec()
         } else {
-            render_chat_message(msg, &theme, wrap_width, show_labels, &mut lines);
-        }
+            let rendered = render_message_lines(
+                msg,
+                tool_expanded,
+                compact_tools,
+                throbber_idx,
+                &theme,
+                wrap_width,
+                show_labels,
+            );
+            cache.put(idx, cache_key, rendered.clone());
+            rendered
+        };
 
-        for line in &mut lines[msg_start..] {
+        for mut line in msg_lines {
             line.spans.insert(0, Span::styled("\u{258e} ", accent));
+            lines.push(line);
         }
     }
 
@@ -109,6 +149,33 @@ pub fn render_activity(app: &mut App, frame: &mut Frame, area: Rect) {
         .throbber_set(BRAILLE_SIX)
         .use_type(WhichUse::Spin);
     frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
+}
+
+fn render_message_lines(
+    msg: &crate::app::ChatMessage,
+    tool_expanded: bool,
+    compact_tools: bool,
+    throbber_idx: usize,
+    theme: &Theme,
+    wrap_width: usize,
+    show_labels: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if msg.role == MessageRole::Tool {
+        render_tool_message(
+            msg,
+            tool_expanded,
+            compact_tools,
+            throbber_idx,
+            theme,
+            wrap_width,
+            show_labels,
+            &mut lines,
+        );
+    } else {
+        render_chat_message(msg, theme, wrap_width, show_labels, &mut lines);
+    }
+    lines
 }
 
 fn render_chat_message(
@@ -228,9 +295,12 @@ fn render_scrollbar(
 
 const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
 
+#[allow(clippy::too_many_arguments)]
 fn render_tool_message(
     msg: &crate::app::ChatMessage,
-    app: &App,
+    tool_expanded: bool,
+    compact_tools: bool,
+    throbber_idx: usize,
     theme: &Theme,
     wrap_width: usize,
     show_labels: bool,
@@ -247,14 +317,7 @@ fn render_tool_message(
     // First line is always the command ($ ...)
     let cmd_line = content_lines.first().copied().unwrap_or("");
     let status_span = if msg.streaming {
-        let len = BRAILLE_SIX.symbols.len();
-        let idx = usize::try_from(
-            app.throbber_state()
-                .index()
-                .rem_euclid(i8::try_from(len).unwrap_or(i8::MAX)),
-        )
-        .unwrap_or(0);
-        let symbol = BRAILLE_SIX.symbols[idx];
+        let symbol = BRAILLE_SIX.symbols[throbber_idx];
         Span::styled(format!("{symbol} "), theme.streaming_cursor)
     } else {
         Span::styled("\u{2714} ".to_string(), theme.highlight)
@@ -278,7 +341,7 @@ fn render_tool_message(
             wrapped.push(Line::from(prefixed_spans));
         }
         let total_visual = wrapped.len();
-        let show_all = app.tool_expanded() || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
+        let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
         if show_all {
             lines.extend(wrapped);
         } else {
@@ -297,7 +360,7 @@ fn render_tool_message(
 
     // Output lines (everything after the command)
     if content_lines.len() > 1 {
-        if app.compact_tools() {
+        if compact_tools {
             let line_count = content_lines.len() - 1;
             let noun = if line_count == 1 { "line" } else { "lines" };
             let summary = format!("{indent}-- {line_count} {noun}");
@@ -318,7 +381,7 @@ fn render_tool_message(
             }
 
             let total_visual = wrapped.len();
-            let show_all = app.tool_expanded() || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
+            let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
 
             if show_all {
                 lines.extend(wrapped);

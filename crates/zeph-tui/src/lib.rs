@@ -67,11 +67,15 @@ async fn tui_loop(
         }
 
         tokio::select! {
+            biased;
             Some(event) = event_rx.recv() => {
                 app.handle_event(event)?;
             }
             Some(agent_event) = app.poll_agent_event() => {
                 app.handle_agent_event(agent_event);
+                while let Ok(ev) = app.try_recv_agent_event() {
+                    app.handle_agent_event(ev);
+                }
             }
             _ = tick.tick() => {}
         }
