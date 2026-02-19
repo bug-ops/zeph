@@ -69,6 +69,9 @@ zeph
 ZEPH_LLM_PROVIDER=claude ZEPH_CLAUDE_API_KEY=sk-ant-... zeph
 ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... zeph
 
+# Multi-model routing — primary Claude, fallback Ollama
+ZEPH_LLM_PROVIDER=orchestrator zeph  # configure via `zeph init`
+
 # Any OpenAI-compatible API (Together AI, Groq, Fireworks, etc.)
 ZEPH_LLM_PROVIDER=compatible ZEPH_COMPATIBLE_BASE_URL=https://api.together.xyz/v1 \
   ZEPH_COMPATIBLE_API_KEY=... zeph

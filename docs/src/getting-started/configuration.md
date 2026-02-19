@@ -4,7 +4,7 @@
 
 Run `zeph init` to generate a `config.toml` interactively. The wizard walks through five steps:
 
-1. **LLM Provider** -- select Ollama (local), Claude, OpenAI, or a compatible endpoint. Provide the base URL, model name, and API key as needed. Choose an embedding model (default: `qwen3-embedding`).
+1. **LLM Provider** -- select Ollama (local), Claude, OpenAI, Orchestrator (multi-model routing), or a compatible endpoint. Orchestrator prompts for a primary and fallback provider, enabling automatic failover. Provide the base URL, model name, and API key as needed. Choose an embedding model (default: `qwen3-embedding`).
 2. **Memory** -- set the SQLite database path and optionally enable semantic memory with Qdrant.
 3. **Channel** -- pick CLI (default), Telegram, Discord, or Slack. Provide tokens and credentials for the selected channel.
 4. **Secrets backend** -- choose `env` (environment variables) or `age` (encrypted file via `~/.zeph/vault.age`).

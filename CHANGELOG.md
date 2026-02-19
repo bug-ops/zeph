@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Orchestrator provider option in `zeph init` wizard for multi-model routing setup (#597)
+
 ### Fixed
 - Restore `--vault`, `--vault-key`, `--vault-path` CLI flags lost during clap migration (#587)
 

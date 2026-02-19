@@ -51,6 +51,16 @@ Routes define provider preference order. If the first provider fails, the next o
 coding = ["local", "cloud"]  # try local first, fallback to cloud
 ```
 
+## Interactive Setup
+
+Run `zeph init` and select **Orchestrator** as the LLM provider. The wizard prompts for:
+
+1. **Primary provider** — select from Ollama, Claude, OpenAI, or Compatible. Provide the model name, base URL, and API key as needed.
+2. **Fallback provider** — same selection. The fallback activates when the primary fails.
+3. **Embedding model** — used for skill matching and semantic memory.
+
+The wizard generates a complete `[llm.orchestrator]` section with provider map, `chat` route (primary + fallback), and `embed` route.
+
 ## Hybrid Setup Example
 
 Embeddings via free local Ollama, chat via paid Claude API:
