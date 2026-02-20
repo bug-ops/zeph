@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Path separator rejection in MCP command validation to prevent symlink-based bypasses
 
 ### Changed
+- `MessagePart::Image` variant now holds `Box<ImageData>` instead of inline fields, improving semantic grouping of image data
+- `Agent<C, T>` simplified to `Agent<C>` — ToolExecutor generic replaced with `Box<dyn ErasedToolExecutor>`, reducing monomorphization
 - Shell command detection rewritten from substring matching to tokenizer-based pipeline with escape normalization, eliminating bypass vectors via backslash insertion, hex/octal escapes, quote splitting, and pipe chains
 - Shell sandbox path validation now uses `std::path::absolute()` as fallback when `canonicalize()` fails on non-existent paths
 - Blocked command matching extracts basename from absolute paths (`/usr/bin/sudo` now correctly blocked)

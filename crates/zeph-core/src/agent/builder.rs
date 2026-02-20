@@ -5,6 +5,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
+use super::Agent;
 use crate::channel::Channel;
 use crate::config::{LearningConfig, SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
@@ -13,7 +14,6 @@ use crate::cost::CostTracker;
 use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
-use super::Agent;
 
 impl<C: Channel> Agent<C> {
     #[must_use]

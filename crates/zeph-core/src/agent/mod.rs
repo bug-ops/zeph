@@ -41,9 +41,7 @@ use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::cost::CostTracker;
 
-use message_queue::{
-    MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime,
-};
+use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
 const TOOL_LOOP_KEEP_RECENT: usize = 4;
@@ -351,7 +349,6 @@ impl<C: Channel> Agent<C> {
 
         Ok(())
     }
-
 
     async fn resolve_message(
         &self,
@@ -785,8 +782,9 @@ pub(super) mod agent_tests {
         Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, DOOM_LOOP_WINDOW, RECALL_PREFIX,
         SUMMARY_PREFIX, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
     };
+    use super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     pub(crate) use crate::channel::Channel;
-    use crate::channel::ChannelMessage;
+    use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
     pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};
     pub(crate) use crate::metrics::MetricsSnapshot;
     use std::sync::{Arc, Mutex};

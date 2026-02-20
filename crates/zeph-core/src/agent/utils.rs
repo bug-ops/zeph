@@ -1,8 +1,8 @@
 use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 
+use super::{Agent, CODE_CONTEXT_PREFIX};
 use crate::channel::Channel;
 use crate::metrics::MetricsSnapshot;
-use super::{Agent, CODE_CONTEXT_PREFIX};
 
 impl<C: Channel> Agent<C> {
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
