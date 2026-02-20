@@ -32,6 +32,7 @@ glob = "0.3.3"
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls", "ureq"] }
 http-body-util = "0.1"
 ignore = "0.4"
+insta = { version = "1.46", features = ["toml", "filters"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"

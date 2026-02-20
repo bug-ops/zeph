@@ -1076,4 +1076,19 @@ mod tests {
         assert_eq!(back.vault.backend, config.vault.backend);
         assert_eq!(back.agent.auto_update_check, config.agent.auto_update_check);
     }
+
+    #[test]
+    fn config_default_snapshot() {
+        let config = Config::default();
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        insta::assert_snapshot!(toml_str);
+    }
+
+    #[test]
+    fn generation_params_defaults() {
+        let p = GenerationParams::default();
+        assert!((p.temperature - 0.7).abs() < f64::EPSILON);
+        assert_eq!(p.max_tokens, 2048);
+        assert_eq!(p.seed, 42);
+    }
 }

@@ -1207,6 +1207,133 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Priority 3: handle_skill_command dispatch (no memory → early exit messages)
+
+    #[tokio::test]
+    async fn handle_skill_command_unknown_subcommand() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("unknown-cmd").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Unknown /skill subcommand")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_stats_no_memory() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("stats").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_versions_no_name() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("versions").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Usage: /skill versions")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_activate_no_args() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("activate").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Usage: /skill activate")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_approve_no_name() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("approve").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Usage: /skill approve")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_reset_no_name() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("reset").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Usage: /skill reset")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_versions_no_memory() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("versions test-skill")
+            .await
+            .unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Memory not available")));
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_activate_invalid_version() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("activate test-skill not-a-number")
+            .await
+            .unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|s| s.contains("Invalid version number")));
+    }
+
+    #[tokio::test]
+    async fn record_skill_outcomes_no_active_skills_is_noop() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // No active skills and no memory → should return immediately without panic
+        agent.record_skill_outcomes("success", None).await;
+        agent
+            .record_skill_outcomes("tool_failure", Some("error"))
+            .await;
+    }
+
     // Priority 3: proptest
 
     use proptest::prelude::*;

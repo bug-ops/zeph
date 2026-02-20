@@ -253,4 +253,37 @@ mod tests {
         assert!(result.output.contains("src/lib.rs:5:1"));
         assert!(!result.output.contains("Compiling"));
     }
+
+    #[test]
+    fn cargo_build_filter_snapshot() {
+        let f = make_filter();
+        let raw = "\
+   Compiling zeph-core v0.11.0
+   Compiling zeph-tools v0.11.0
+   Compiling zeph-llm v0.11.0
+warning: unused import: `std::fmt`
+  --> crates/zeph-core/src/lib.rs:3:5
+   |
+3  |     use std::fmt;
+   |         ^^^^^^^^
+   = note: `#[warn(unused_imports)]` on by default
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s";
+        let result = f.filter("cargo build", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn cargo_build_error_snapshot() {
+        let f = make_filter();
+        let raw = "\
+   Compiling zeph-core v0.11.0
+error[E0308]: mismatched types
+  --> crates/zeph-core/src/lib.rs:10:5
+   |
+10 |     return 42;
+   |            ^^ expected `()`, found integer
+error: could not compile `zeph-core` due to 1 previous error";
+        let result = f.filter("cargo build", raw, 1);
+        insta::assert_snapshot!(result.output);
+    }
 }

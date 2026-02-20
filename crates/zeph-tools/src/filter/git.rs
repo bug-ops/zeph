@@ -301,4 +301,32 @@ Untracked files:
         assert_eq!(result.output, raw);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
     }
+
+    #[test]
+    fn filter_diff_snapshot() {
+        let f = make_filter();
+        let raw = "\
+diff --git a/src/main.rs b/src/main.rs
+index abc..def 100644
+--- a/src/main.rs
++++ b/src/main.rs
++new line 1
+-old line 1
+diff --git a/src/lib.rs b/src/lib.rs
+index ghi..jkl 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
++added line
+";
+        let result = f.filter("git diff", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn filter_status_snapshot() {
+        let f = make_filter();
+        let raw = " M src/main.rs\n M src/lib.rs\n?? new_file.txt\nA  added.rs\n";
+        let result = f.filter("git status --short", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
 }

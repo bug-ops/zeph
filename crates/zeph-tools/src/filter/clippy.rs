@@ -173,4 +173,31 @@ warning: `my-crate` (lib) generated 3 warnings
         assert!(result.output.is_empty());
         assert_eq!(result.confidence, FilterConfidence::Partial);
     }
+
+    #[test]
+    fn clippy_grouped_warnings_snapshot() {
+        let f = make_filter();
+        let raw = "\
+warning: needless pass by value
+  --> src/foo.rs:12:5
+   |
+   = help: use a reference instead
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: needless pass by value
+  --> src/bar.rs:45:10
+   |
+   = help: use a reference instead
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: unused import
+  --> src/main.rs:5:1
+   |
+   = note: `#[warn(clippy::unused_imports)]` on by default
+
+warning: `my-crate` (lib) generated 3 warnings
+";
+        let result = f.filter("cargo clippy", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
 }
