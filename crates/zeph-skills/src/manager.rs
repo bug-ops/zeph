@@ -21,6 +21,7 @@ pub struct InstalledSkill {
     pub name: String,
     pub description: String,
     pub skill_dir: PathBuf,
+    pub requires_secrets: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -207,6 +208,7 @@ impl SkillManager {
                     name: meta.name,
                     description: meta.description,
                     skill_dir,
+                    requires_secrets: meta.requires_secrets,
                 }),
                 Err(e) => tracing::warn!("skipping {}: {e:#}", skill_md.display()),
             }
@@ -599,6 +601,27 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, SkillError::GitCloneFailed(_)));
         assert!(format!("{err}").contains("whitespace"));
+    }
+
+    #[test]
+    fn list_installed_populates_requires_secrets() {
+        let managed = tempfile::tempdir().unwrap();
+        let skill_dir = managed.path().join("api-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: api-skill\ndescription: Needs secrets.\nrequires-secrets: github_token, slack_webhook\n---\n# Body\nHello",
+        )
+        .unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let list = mgr.list_installed().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "api-skill");
+        assert_eq!(
+            list[0].requires_secrets,
+            vec!["github_token".to_owned(), "slack_webhook".to_owned()]
+        );
     }
 
     #[test]

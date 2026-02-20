@@ -843,6 +843,18 @@ async fn handle_skill_command(
                 result.name,
                 &result.blake3_hash[..8]
             );
+
+            // Warn about required secrets so the user knows to configure them.
+            let skill_md = managed_dir.join(&result.name).join("SKILL.md");
+            if let Ok(meta) = zeph_skills::loader::load_skill_meta(&skill_md)
+                && !meta.requires_secrets.is_empty()
+            {
+                println!(
+                    "  Note: this skill requires secrets: {}",
+                    meta.requires_secrets.join(", ")
+                );
+                println!("  Run `zeph vault set ZEPH_SECRET_<NAME> <value>` for each.");
+            }
         }
 
         SkillCommand::Remove { name } => {
@@ -874,7 +886,17 @@ async fn handle_skill_command(
                     .ok()
                     .flatten()
                     .map_or_else(|| "no trust record".to_owned(), |r| r.trust_level);
-                println!("  {} — {} [{}]", skill.name, skill.description, trust);
+                if skill.requires_secrets.is_empty() {
+                    println!("  {} — {} [{}]", skill.name, skill.description, trust);
+                } else {
+                    println!(
+                        "  {} — {} [{}] (requires: {})",
+                        skill.name,
+                        skill.description,
+                        trust,
+                        skill.requires_secrets.join(", "),
+                    );
+                }
             }
         }
 

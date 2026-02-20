@@ -19,7 +19,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
 
-        let Some(managed_dir) = &self.skill_state.managed_dir else {
+        let Some(managed_dir) = self.skill_state.managed_dir.clone() else {
             self.channel
                 .send("Skill management directory not configured.")
                 .await?;
@@ -71,12 +71,38 @@ impl<C: Channel> Agent<C> {
 
                 self.reload_skills().await;
 
-                self.channel
-                    .send(&format!(
-                        "Skill \"{}\" installed (trust: quarantined). Use `/skill trust {} trusted` to promote.",
-                        installed.name, installed.name,
-                    ))
-                    .await?;
+                // Check if installed skill requires secrets that are missing.
+                let skill_md = managed_dir.join(&installed.name).join("SKILL.md");
+                let missing_secrets: Vec<String> =
+                    if let Ok(meta) = zeph_skills::loader::load_skill_meta(&skill_md) {
+                        meta.requires_secrets
+                            .iter()
+                            .filter(|s| {
+                                !self
+                                    .skill_state
+                                    .available_custom_secrets
+                                    .contains_key(s.as_str())
+                            })
+                            .cloned()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                let mut msg = format!(
+                    "Skill \"{}\" installed (trust: quarantined). Use `/skill trust {} trusted` to promote.",
+                    installed.name, installed.name,
+                );
+                if !missing_secrets.is_empty() {
+                    use std::fmt::Write;
+                    let _ = write!(
+                        msg,
+                        "\n⚠ Missing secrets: {}. Run `zeph vault set ZEPH_SECRET_<NAME> <value>` for each.",
+                        missing_secrets.join(", ")
+                    );
+                }
+
+                self.channel.send(&msg).await?;
             }
             Err(e) => {
                 self.channel.send(&format!("Install failed: {e}")).await?;
