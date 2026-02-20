@@ -38,6 +38,14 @@ Use `/skills` in chat to see active skills and their usage statistics.
 - **Hot-reload**: edit a `SKILL.md` file, changes apply without restart
 - **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash)
 
+## External Skill Management
+
+Zeph includes a `SkillManager` that installs, removes, and verifies external skills. Skills can be installed from git URLs or local paths into the managed directory (`~/.config/zeph/skills/`), which is automatically appended to `skills.paths`.
+
+Installed skills start at the `quarantined` trust level. Use `zeph skill verify` to check BLAKE3 integrity, then promote with `zeph skill trust <name> verified` or `zeph skill trust <name> trusted`.
+
+See [CLI Reference — `zeph skill`](../reference/cli.md#zeph-skill) for the full subcommand list, or use the in-session `/skill install` and `/skill remove` commands for hot-reloaded management without restart.
+
 ## Deep Dives
 
 - [Add Custom Skills](../guides/custom-skills.md) — create your own skills

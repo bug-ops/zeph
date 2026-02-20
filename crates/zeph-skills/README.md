@@ -1,6 +1,6 @@
 # zeph-skills
 
-SKILL.md loader, skill registry, and prompt formatter.
+SKILL.md loader, skill registry, skill manager, and prompt formatter.
 
 ## Overview
 
@@ -18,6 +18,7 @@ Parses SKILL.md files (YAML frontmatter + markdown body) from the `skills/` dire
 | `trust` | `SkillTrust`, `TrustLevel` — skill trust scoring |
 | `watcher` | Filesystem watcher for skill hot-reload |
 | `prompt` | Skill-to-prompt formatting |
+| `manager` | `SkillManager` — install, remove, verify, and list external skills (`~/.config/zeph/skills/`) |
 
 **Re-exports:** `SkillError`, `SkillTrust`, `TrustLevel`, `compute_skill_hash`
 

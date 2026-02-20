@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `SkillManager` in zeph-skills — install skills from git URLs or local paths, remove, verify blake3 integrity, list with trust metadata
+- CLI subcommands: `zeph skill {install, remove, list, verify, trust, block, unblock}` — runs without agent loop
+- In-session `/skill install <url|path>` and `/skill remove <name>` with hot reload
+- Managed skills directory at `~/.config/zeph/skills/`, auto-appended to `skills.paths` at bootstrap
+- Hash re-verification on trust promotion — recomputes blake3 before promoting to trusted/verified, rejects on mismatch
+- URL scheme allowlist and path traversal validation in SkillManager as defense-in-depth
+- Blocking I/O wrapped in `spawn_blocking` for async safety in skill management handlers
+
 ## [0.11.3] - 2026-02-20
 
 ### Added

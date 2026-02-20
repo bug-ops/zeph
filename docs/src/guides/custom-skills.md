@@ -73,6 +73,29 @@ Skills from multiple paths are scanned. If a skill with the same name appears in
 
 Changes to `SKILL.md` are hot-reloaded without restart (500ms debounce).
 
+## Installing External Skills
+
+Use `zeph skill install` to add skills from git repositories or local paths:
+
+```bash
+# From a git URL — clones the repo into ~/.config/zeph/skills/
+zeph skill install https://github.com/user/zeph-skill-example.git
+
+# From a local path — copies the skill directory
+zeph skill install /path/to/my-skill
+```
+
+Installed skills are placed in `~/.config/zeph/skills/` and automatically discovered at startup. They start at the `quarantined` trust level (restricted tool access). To grant full access:
+
+```bash
+zeph skill verify my-skill        # check BLAKE3 integrity
+zeph skill trust my-skill trusted  # promote trust level
+```
+
+In an active session, use `/skill install <url|path>` and `/skill remove <name>` — changes are hot-reloaded without restart.
+
+See [Skill Trust Levels](../advanced/skill-trust.md) for the full security model.
+
 ## Deep Dives
 
 - [Skills](../concepts/skills.md) — how embedding-based matching works

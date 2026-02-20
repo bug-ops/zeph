@@ -43,6 +43,16 @@ The detector requires at least 3 events before producing a result.
 
 Skills with trust level below `Verified` are excluded from self-learning improvement. This prevents the LLM from generating improved versions of untrusted skill content.
 
+## Hash Verification on Trust Promotion
+
+When promoting a skill's trust level via `zeph skill trust <name> trusted` or `zeph skill trust <name> verified`, the SkillManager recomputes the BLAKE3 hash of the current `SKILL.md` content and compares it against the stored hash. If the hashes diverge, the promotion is rejected and the skill remains at its current level. This prevents promoting a skill that has been modified since last verification.
+
+Run `zeph skill verify <name>` to check integrity without changing trust level.
+
+## Managed Skills Directory
+
+External skills installed via `zeph skill install` are stored in `~/.config/zeph/skills/`. This directory is automatically appended to `skills.paths` at startup — no manual configuration required. Skills in this directory follow the same structure as local skills (`<name>/SKILL.md`).
+
 ## CLI Commands
 
 | Command | Description |
@@ -52,6 +62,8 @@ Skills with trust level below `Verified` are excluded from self-learning improve
 | `/skill trust <name> <level>` | Set trust level (`trusted`, `verified`, `quarantined`, `blocked`) |
 | `/skill block <name>` | Block a skill (all tool access denied) |
 | `/skill unblock <name>` | Unblock a skill (reverts to `quarantined`) |
+| `/skill install <url\|path>` | Install an external skill (git URL or local path) with hot reload |
+| `/skill remove <name>` | Remove an installed skill with hot reload |
 
 ## Configuration
 

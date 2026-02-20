@@ -14,7 +14,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `agent::tool_execution` | Tool call handling, redaction, and result processing |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
-| `agent::commands` | Chat command dispatch (skills, feedback, etc.) |
+| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, etc.) |
 | `agent::utils` | Shared agent utilities |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `Attachment` / `AttachmentKind` for multimodal inputs |

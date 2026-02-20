@@ -13,6 +13,7 @@ zeph [OPTIONS] [COMMAND]
 | Command | Description |
 |---------|-------------|
 | `init`  | Interactive configuration wizard (see [Configuration Wizard](../getting-started/wizard.md)) |
+| `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 
 When no subcommand is given, Zeph starts the agent loop.
@@ -31,6 +32,38 @@ Options:
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--output <PATH>` | `-o` | Output path for the generated config file |
+
+### `zeph skill`
+
+Manage external skills. Installed skills are stored in `~/.config/zeph/skills/`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `skill install <url\|path>` | Install a skill from a git URL or local directory path |
+| `skill remove <name>` | Remove an installed skill by name |
+| `skill list` | List installed skills with trust level and source metadata |
+| `skill verify [name]` | Verify BLAKE3 integrity of one or all installed skills |
+| `skill trust <name> [level]` | Show or set trust level (`trusted`, `verified`, `quarantined`, `blocked`) |
+| `skill block <name>` | Block a skill (deny all tool access) |
+| `skill unblock <name>` | Unblock a skill (revert to `quarantined`) |
+
+```bash
+# Install from git
+zeph skill install https://github.com/user/zeph-skill-example.git
+
+# Install from local path
+zeph skill install /path/to/my-skill
+
+# List installed skills
+zeph skill list
+
+# Verify integrity and promote trust
+zeph skill verify my-skill
+zeph skill trust my-skill trusted
+
+# Remove a skill
+zeph skill remove my-skill
+```
 
 ### `zeph vault`
 

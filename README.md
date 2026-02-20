@@ -101,6 +101,14 @@ zeph vault set KEY VAL   Encrypt and store a secret
 zeph vault get KEY       Decrypt and print a secret value
 zeph vault list          List stored secret keys (no values)
 zeph vault rm KEY        Remove a secret from the vault
+
+zeph skill install <path|url>  Install an external skill
+zeph skill remove <name>       Remove an installed skill
+zeph skill list                List installed skills
+zeph skill verify              Verify integrity of installed skills
+zeph skill trust <name>        Mark a skill as trusted
+zeph skill block <name>        Block a skill from execution
+zeph skill unblock <name>      Unblock a previously blocked skill
 ```
 
 ## Automated Context Engineering
@@ -255,6 +263,8 @@ Run local models when you want privacy and zero cost. Use cloud APIs when you ne
 Capabilities live in `SKILL.md` files — YAML frontmatter + markdown body. Drop a file into `skills/`, and the agent picks it up on the next query via semantic matching. No code changes. No redeployment.
 
 Skills **evolve**: failure detection triggers self-reflection, and the agent generates improved versions — with optional manual approval before activation. A 4-tier trust model (Trusted → Verified → Quarantined → Blocked) with blake3 integrity hashing ensures that only verified skills execute privileged operations.
+
+**External skill management**: install, remove, verify, and control trust for skills via `zeph skill` CLI subcommands or in-session `/skill install` and `/skill remove` commands with automatic hot-reload. Managed skills are stored in `~/.config/zeph/skills/`.
 
 [Self-learning →](https://bug-ops.github.io/zeph/guide/self-learning.html) · [Skill trust →](https://bug-ops.github.io/zeph/guide/skill-trust.html)
 
