@@ -8884,11 +8884,9 @@ dependencies = [
  "reqwest 0.13.2",
  "serde_json",
  "serial_test",
- "sqlx",
  "tempfile",
  "tokio",
  "tokio-stream",
- "tokio-util",
  "toml 1.0.3+spec-1.1.0",
  "tracing",
  "tracing-opentelemetry",
@@ -8923,7 +8921,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
- "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tracing",
@@ -9021,7 +9018,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tracing",
  "tree-sitter",
  "tree-sitter-bash",
@@ -9042,7 +9038,6 @@ dependencies = [
 name = "zeph-llm"
 version = "0.11.2"
 dependencies = [
- "anyhow",
  "base64 0.22.1",
  "candle-core",
  "candle-nn",
@@ -9088,7 +9083,6 @@ dependencies = [
 name = "zeph-memory"
 version = "0.11.2"
 dependencies = [
- "anyhow",
  "blake3",
  "criterion",
  "pdf-extract",
@@ -9102,7 +9096,6 @@ dependencies = [
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tracing",
  "uuid",
  "zeph-llm",
@@ -9130,7 +9123,6 @@ dependencies = [
 name = "zeph-skills"
 version = "0.11.2"
 dependencies = [
- "anyhow",
  "blake3",
  "criterion",
  "futures",

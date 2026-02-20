@@ -1,0 +1,13 @@
+---
+source: crates/zeph-tools/src/filter/cargo_build.rs
+expression: result.output
+---
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s
+(4 compile/fetch lines removed)
+
+warning: unused import: `std::fmt`
+  --> crates/zeph-core/src/lib.rs:3:5
+   |
+3  |     use std::fmt;
+   |         ^^^^^^^^
+   = note: `#[warn(unused_imports)]` on by default

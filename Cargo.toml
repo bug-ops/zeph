@@ -32,7 +32,7 @@ glob = "0.3.3"
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls", "ureq"] }
 http-body-util = "0.1"
 ignore = "0.4"
-insta = { version = "1.46", features = ["toml", "filters"] }
+insta = { version = "1.46.3", features = ["toml", "filters"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
@@ -41,7 +41,7 @@ opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 pdf-extract = "0.7"
-proptest = "1.6"
+proptest = "1.10"
 pulldown-cmark = "0.13"
 qdrant-client = { version = "1.16", default-features = false }
 ratatui = "0.30"
@@ -140,7 +140,6 @@ dialoguer.workspace = true
 futures.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 opentelemetry = { workspace = true, optional = true }
@@ -161,7 +160,6 @@ zeph-scheduler = { workspace = true, optional = true }
 zeph-tui = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 serde_json = { workspace = true, optional = true }
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 [dev-dependencies]
 serial_test.workspace = true

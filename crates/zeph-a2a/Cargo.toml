@@ -20,7 +20,6 @@ subtle = { workspace = true, optional = true }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "sync"] }
-tokio-util.workspace = true
 url.workspace = true
 tokio-stream.workspace = true
 tower = { workspace = true, optional = true }

@@ -30,7 +30,6 @@ name = "matcher"
 harness = false
 
 [dev-dependencies]
-anyhow.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

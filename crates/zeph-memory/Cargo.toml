@@ -30,13 +30,11 @@ name = "token_estimation"
 harness = false
 
 [dev-dependencies]
-anyhow.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tokio-stream.workspace = true
 zeph-llm = { workspace = true, features = ["mock"] }
 
 [lints]

@@ -1,0 +1,12 @@
+---
+source: crates/zeph-tools/src/filter/cargo_build.rs
+expression: result.output
+---
+(1 compile/fetch lines removed)
+
+error[E0308]: mismatched types
+  --> crates/zeph-core/src/lib.rs:10:5
+   |
+10 |     return 42;
+   |            ^^ expected `()`, found integer
+error: could not compile `zeph-core` due to 1 previous error
