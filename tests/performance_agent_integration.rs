@@ -341,7 +341,7 @@ async fn integration_agent_tool_executor_types() {
     let executor = ShellExecutor::new(&shell_config);
 
     // Should compile and construct successfully
-    let _agent: Agent<MockChannel, ShellExecutor> = Agent::new(
+    let _agent: Agent<MockChannel> = Agent::new(
         provider,
         channel,
         SkillRegistry::default(),
