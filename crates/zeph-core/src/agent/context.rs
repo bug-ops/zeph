@@ -2007,7 +2007,6 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_system_prompt_includes_skill_when_secret_present() {
-        use std::collections::HashMap;
         use zeph_skills::loader::SkillMeta;
         use zeph_skills::registry::SkillRegistry;
 
@@ -2062,7 +2061,6 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present() {
-        use std::collections::HashMap;
         use zeph_skills::loader::SkillMeta;
         use zeph_skills::registry::SkillRegistry;
 

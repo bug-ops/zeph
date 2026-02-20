@@ -1486,10 +1486,6 @@ mod tests {
 
     #[test]
     fn inject_active_skill_env_maps_secret_name_to_env_key() {
-        use std::collections::HashMap;
-        use zeph_skills::loader::SkillMeta;
-        use zeph_skills::registry::SkillRegistry;
-
         // Verify the mapping logic: "github_token" -> "GITHUB_TOKEN"
         let secret_name = "github_token";
         let env_key = secret_name.to_uppercase();
@@ -1539,8 +1535,7 @@ mod tests {
         #[allow(clippy::wildcard_imports)]
         use crate::agent::agent_tests::*;
         use crate::vault::Secret;
-        use std::sync::{Arc, Mutex};
-        use zeph_skills::loader::SkillMeta;
+        use std::sync::Arc;
         use zeph_skills::registry::SkillRegistry;
 
         // Build a registry with one skill that requires "github_token".
@@ -1581,8 +1576,7 @@ mod tests {
         #[allow(clippy::wildcard_imports)]
         use crate::agent::agent_tests::*;
         use crate::vault::Secret;
-        use std::sync::{Arc, Mutex};
-        use zeph_skills::loader::SkillMeta;
+        use std::sync::Arc;
         use zeph_skills::registry::SkillRegistry;
 
         let temp_dir = tempfile::tempdir().unwrap();
