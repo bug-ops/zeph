@@ -1692,6 +1692,55 @@ mod tests {
         assert!(registry.is_none());
     }
 
+    #[test]
+    fn managed_skills_dir_returns_skills_subdir() {
+        let dir = managed_skills_dir();
+        assert!(
+            dir.ends_with("skills"),
+            "managed_skills_dir should end in 'skills', got: {dir:?}"
+        );
+    }
+
+    #[test]
+    fn app_builder_managed_skills_dir_matches_free_fn() {
+        assert_eq!(AppBuilder::managed_skills_dir(), managed_skills_dir());
+    }
+
+    #[test]
+    fn skill_paths_includes_managed_dir() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let builder = AppBuilder {
+            config,
+            config_path: PathBuf::from("/nonexistent/config.toml"),
+            vault: Box::new(EnvVaultProvider),
+        };
+        let paths = builder.skill_paths();
+        let managed = managed_skills_dir();
+        assert!(
+            paths.contains(&managed),
+            "skill_paths() should include managed_skills_dir, got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn skill_paths_does_not_duplicate_managed_dir() {
+        let managed = managed_skills_dir();
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        // Pre-add managed dir to skills.paths to test deduplication
+        config.skills.paths = vec![managed.to_string_lossy().into_owned()];
+        let builder = AppBuilder {
+            config,
+            config_path: PathBuf::from("/nonexistent/config.toml"),
+            vault: Box::new(EnvVaultProvider),
+        };
+        let paths = builder.skill_paths();
+        let count = paths.iter().filter(|p| p == &&managed).count();
+        assert_eq!(
+            count, 1,
+            "managed dir should appear exactly once, got: {paths:?}"
+        );
+    }
+
     #[tokio::test]
     async fn create_skill_matcher_when_semantic_disabled() {
         let tmp = std::env::temp_dir().join("zeph_test_skill_matcher_bootstrap.db");

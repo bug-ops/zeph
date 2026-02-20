@@ -1336,6 +1336,121 @@ mod tests {
             .await;
     }
 
+    // Priority 3: handle_skill_install / handle_skill_remove via handle_skill_command
+
+    #[tokio::test]
+    async fn handle_skill_command_install_no_source() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("install").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /skill install")),
+            "expected usage hint, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_remove_no_name() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("remove").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /skill remove")),
+            "expected usage hint, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_install_no_managed_dir() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // No managed_dir configured
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("install https://example.com/skill")
+            .await
+            .unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("not configured")),
+            "expected not-configured message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_remove_no_managed_dir() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // No managed_dir configured
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("remove my-skill").await.unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("not configured")),
+            "expected not-configured message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_install_from_path_not_found() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let managed = tempfile::tempdir().unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_managed_skills_dir(managed.path().to_path_buf());
+
+        agent
+            .handle_skill_command("install /nonexistent/path/to/skill")
+            .await
+            .unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Install failed")),
+            "expected install failure message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_command_remove_nonexistent_skill() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let managed = tempfile::tempdir().unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_managed_skills_dir(managed.path().to_path_buf());
+
+        agent
+            .handle_skill_command("remove nonexistent-skill")
+            .await
+            .unwrap();
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Remove failed")),
+            "expected remove failure message, got: {sent:?}"
+        );
+    }
+
     // Priority 3: proptest
 
     use proptest::prelude::*;

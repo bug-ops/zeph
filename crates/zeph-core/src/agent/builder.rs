@@ -248,3 +248,67 @@ impl<C: Channel> Agent<C> {
         Arc::clone(&self.cancel_signal)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+
+    /// Verify that with_managed_skills_dir enables the install/remove commands.
+    /// Without a managed dir, `/skill install` sends a "not configured" message.
+    /// With a managed dir configured, it proceeds past that guard (and may fail
+    /// for other reasons such as the source not existing).
+    #[tokio::test]
+    async fn with_managed_skills_dir_enables_install_command() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let managed = tempfile::tempdir().unwrap();
+
+        let mut agent_no_dir = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent_no_dir
+            .handle_skill_command("install /some/path")
+            .await
+            .unwrap();
+        let sent_no_dir = agent_no_dir.channel.sent_messages();
+        assert!(
+            sent_no_dir.iter().any(|s| s.contains("not configured")),
+            "without managed dir: {sent_no_dir:?}"
+        );
+
+        let _ = (provider, channel, registry, executor);
+        let mut agent_with_dir = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_managed_skills_dir(managed.path().to_path_buf());
+
+        agent_with_dir
+            .handle_skill_command("install /nonexistent/path")
+            .await
+            .unwrap();
+        let sent_with_dir = agent_with_dir.channel.sent_messages();
+        assert!(
+            !sent_with_dir.iter().any(|s| s.contains("not configured")),
+            "with managed dir should not say not configured: {sent_with_dir:?}"
+        );
+        assert!(
+            sent_with_dir.iter().any(|s| s.contains("Install failed")),
+            "with managed dir should fail due to bad path: {sent_with_dir:?}"
+        );
+    }
+}

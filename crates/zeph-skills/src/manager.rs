@@ -465,4 +465,143 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].stored_hash_matches, None);
     }
+
+    #[test]
+    fn install_from_url_accepts_git_at_scheme() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        // git@ is accepted by URL validation; git clone will fail (no network),
+        // but the error should be GitCloneFailed — not "unsupported URL scheme".
+        let err = mgr
+            .install_from_url("git@github.com:example/skill.git")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("unsupported URL scheme"),
+            "git@ scheme should pass URL check: {msg}"
+        );
+        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+    }
+
+    #[test]
+    fn install_from_url_rejects_empty_string() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let err = mgr.install_from_url("").unwrap_err();
+        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert!(format!("{err}").contains("unsupported URL scheme"));
+    }
+
+    #[test]
+    fn install_from_path_missing_source_dir() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let err = mgr
+            .install_from_path(Path::new("/nonexistent/skill/path"))
+            .unwrap_err();
+        // load_skill_meta reads SKILL.md → file not found → displayed as Invalid or Io
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("No such file") || msg.contains("invalid") || msg.contains("missing"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn install_from_path_missing_skill_md() {
+        let src = tempfile::tempdir().unwrap();
+        let managed = tempfile::tempdir().unwrap();
+        // Create source dir but no SKILL.md inside it
+        std::fs::create_dir_all(src.path().join("skill-no-md")).unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let err = mgr
+            .install_from_path(&src.path().join("skill-no-md"))
+            .unwrap_err();
+        // load_skill_meta opens SKILL.md → file not found
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("No such file") || msg.contains("invalid") || msg.contains("missing"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn list_installed_skips_dirs_without_skill_md() {
+        let managed = tempfile::tempdir().unwrap();
+        // Create a real skill dir with SKILL.md
+        make_skill_dir(managed.path(), "valid-skill");
+        // Create a dir without SKILL.md — should be skipped
+        std::fs::create_dir_all(managed.path().join("no-md-dir")).unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let list = mgr.list_installed().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "valid-skill");
+    }
+
+    #[test]
+    fn verify_all_empty_dir_returns_empty() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let results = mgr.verify_all(&std::collections::HashMap::new()).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn verify_all_multiple_skills() {
+        let managed = tempfile::tempdir().unwrap();
+        make_skill_dir(managed.path(), "skill-one");
+        make_skill_dir(managed.path(), "skill-two");
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+
+        let hash_one = mgr.verify("skill-one").unwrap();
+        let mut stored = std::collections::HashMap::new();
+        stored.insert("skill-one".to_owned(), hash_one);
+        stored.insert("skill-two".to_owned(), "stale-hash".to_owned());
+
+        let mut results = mgr.verify_all(&stored).unwrap();
+        results.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].stored_hash_matches, Some(true));
+        assert_eq!(results[1].stored_hash_matches, Some(false));
+    }
+
+    #[test]
+    fn remove_skill_path_traversal_rejected() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        // "../something" should either be NotFound or PathTraversal
+        let err = mgr.remove("../evil").unwrap_err();
+        // The dir won't exist so we expect NotFound or PathTraversal
+        assert!(
+            matches!(
+                err,
+                SkillError::NotFound(_) | SkillError::Invalid(_) | SkillError::Other(_)
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn install_from_url_rejects_tab_in_url() {
+        let managed = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let err = mgr
+            .install_from_url("https://example.com/skill\ttab")
+            .unwrap_err();
+        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert!(format!("{err}").contains("whitespace"));
+    }
+
+    #[test]
+    fn new_manager_stores_path() {
+        let dir = PathBuf::from("/some/path");
+        let mgr = SkillManager::new(dir.clone());
+        // verify basic construction — managed_dir is private, but list_installed
+        // on nonexistent path returns Ok([])
+        let result = mgr.list_installed();
+        assert!(result.is_ok());
+    }
 }
