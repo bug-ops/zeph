@@ -1,16 +1,20 @@
+mod builder;
+mod commands;
 mod context;
 pub mod error;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
 mod mcp;
+mod message_queue;
 mod persistence;
-mod streaming;
+mod tool_execution;
 mod trust_commands;
+mod utils;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use std::sync::Arc;
 
@@ -24,33 +28,30 @@ use crate::metrics::MetricsSnapshot;
 use std::collections::HashMap;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
-use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
 use zeph_tools::executor::ToolExecutor;
 
 use crate::channel::Channel;
-use crate::config::Config;
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::cost::CostTracker;
 
-const DOOM_LOOP_WINDOW: usize = 3;
-const TOOL_LOOP_KEEP_RECENT: usize = 4;
-const MAX_QUEUE_SIZE: usize = 10;
-const MESSAGE_MERGE_WINDOW: Duration = Duration::from_millis(500);
-const RECALL_PREFIX: &str = "[semantic recall]\n";
-const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
-const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
-const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
-const TOOL_OUTPUT_SUFFIX: &str = "\n```";
-const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
-const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+use message_queue::QueuedMessage;
 
-fn format_tool_output(tool_name: &str, body: &str) -> String {
+pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
+const TOOL_LOOP_KEEP_RECENT: usize = 4;
+pub(crate) const RECALL_PREFIX: &str = "[semantic recall]\n";
+pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
+pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
+pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
+pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
+
+pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     use std::fmt::Write;
     let capacity = "[tool output: ".len()
         + tool_name.len()
@@ -63,29 +64,6 @@ fn format_tool_output(tool_name: &str, body: &str) -> String {
         "[tool output: {tool_name}]\n```\n{body}{TOOL_OUTPUT_SUFFIX}"
     );
     buf
-}
-
-fn detect_image_mime(filename: Option<&str>) -> &'static str {
-    let ext = filename
-        .and_then(|f| std::path::Path::new(f).extension())
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
-        "image/jpeg"
-    } else if ext.eq_ignore_ascii_case("gif") {
-        "image/gif"
-    } else if ext.eq_ignore_ascii_case("webp") {
-        "image/webp"
-    } else {
-        "image/png"
-    }
-}
-
-struct QueuedMessage {
-    text: String,
-    received_at: Instant,
-    image_parts: Vec<zeph_llm::provider::MessagePart>,
-    raw_attachments: Vec<crate::channel::Attachment>,
 }
 
 pub(super) struct MemoryState {
@@ -271,353 +249,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    #[must_use]
-    pub fn with_stt(mut self, stt: Box<dyn SpeechToText>) -> Self {
-        self.stt = Some(stt);
-        self
-    }
-
-    #[must_use]
-    pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.update_notify_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
-        self.runtime.max_tool_iterations = max;
-        self
-    }
-
-    #[must_use]
-    pub fn with_memory(
-        mut self,
-        memory: SemanticMemory,
-        conversation_id: zeph_memory::ConversationId,
-        history_limit: u32,
-        recall_limit: usize,
-        summarization_threshold: usize,
-    ) -> Self {
-        let has_qdrant = memory.has_qdrant();
-        self.memory_state.memory = Some(memory);
-        self.memory_state.conversation_id = Some(conversation_id);
-        self.memory_state.history_limit = history_limit;
-        self.memory_state.recall_limit = recall_limit;
-        self.memory_state.summarization_threshold = summarization_threshold;
-        self.update_metrics(|m| {
-            m.qdrant_available = has_qdrant;
-            m.sqlite_conversation_id = Some(conversation_id);
-        });
-        self
-    }
-
-    #[must_use]
-    pub fn with_embedding_model(mut self, model: String) -> Self {
-        self.skill_state.embedding_model = model;
-        self
-    }
-
-    #[must_use]
-    pub fn with_disambiguation_threshold(mut self, threshold: f32) -> Self {
-        self.skill_state.disambiguation_threshold = threshold;
-        self
-    }
-
-    #[must_use]
-    pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.shutdown = rx;
-        self
-    }
-
-    #[must_use]
-    pub fn with_skill_reload(
-        mut self,
-        paths: Vec<PathBuf>,
-        rx: mpsc::Receiver<SkillEvent>,
-    ) -> Self {
-        self.skill_state.skill_paths = paths;
-        self.skill_state.skill_reload_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
-        self.config_path = Some(path);
-        self.config_reload_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_learning(mut self, config: LearningConfig) -> Self {
-        self.learning_config = Some(config);
-        self
-    }
-
-    #[must_use]
-    pub fn with_mcp(
-        mut self,
-        tools: Vec<zeph_mcp::McpTool>,
-        registry: Option<zeph_mcp::McpToolRegistry>,
-        manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
-        mcp_config: &crate::config::McpConfig,
-    ) -> Self {
-        self.mcp.tools = tools;
-        self.mcp.registry = registry;
-        self.mcp.manager = manager;
-        self.mcp
-            .allowed_commands
-            .clone_from(&mcp_config.allowed_commands);
-        self.mcp.max_dynamic = mcp_config.max_dynamic_servers;
-        self
-    }
-
-    #[must_use]
-    pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
-        self.runtime.security = security;
-        self.runtime.timeouts = timeouts;
-        self
-    }
-
-    #[must_use]
-    pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
-        self.runtime.summarize_tool_output_enabled = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
-        self.summary_provider = Some(provider);
-        self
-    }
-
-    fn summary_or_primary_provider(&self) -> &AnyProvider {
-        self.summary_provider.as_ref().unwrap_or(&self.provider)
-    }
-
-    #[must_use]
-    pub fn with_permission_policy(mut self, policy: zeph_tools::PermissionPolicy) -> Self {
-        self.runtime.permission_policy = policy;
-        self
-    }
-
-    #[must_use]
-    pub fn with_context_budget(
-        mut self,
-        budget_tokens: usize,
-        reserve_ratio: f32,
-        compaction_threshold: f32,
-        compaction_preserve_tail: usize,
-        prune_protect_tokens: usize,
-    ) -> Self {
-        if budget_tokens > 0 {
-            self.context_state.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
-        }
-        self.context_state.compaction_threshold = compaction_threshold;
-        self.context_state.compaction_preserve_tail = compaction_preserve_tail;
-        self.context_state.prune_protect_tokens = prune_protect_tokens;
-        self
-    }
-
-    #[must_use]
-    pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
-        self.runtime.model_name = name.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.warmup_ready = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
-        self.cost_tracker = Some(tracker);
-        self
-    }
-
-    #[cfg(feature = "index")]
-    #[must_use]
-    pub fn with_code_retriever(
-        mut self,
-        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
-        repo_map_tokens: usize,
-        repo_map_ttl_secs: u64,
-    ) -> Self {
-        self.index.retriever = Some(retriever);
-        self.index.repo_map_tokens = repo_map_tokens;
-        self.index.repo_map_ttl = std::time::Duration::from_secs(repo_map_ttl_secs);
-        self
-    }
-
-    #[must_use]
-    pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
-        let provider_name = self.provider.name().to_string();
-        let model_name = self.runtime.model_name.clone();
-        let total_skills = self.skill_state.registry.all_meta().len();
-        let qdrant_available = self
-            .memory_state
-            .memory
-            .as_ref()
-            .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
-        let conversation_id = self.memory_state.conversation_id;
-        let prompt_estimate = self
-            .messages
-            .first()
-            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        let mcp_tool_count = self.mcp.tools.len();
-        let mcp_server_count = self
-            .mcp
-            .tools
-            .iter()
-            .map(|t| &t.server_id)
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-        tx.send_modify(|m| {
-            m.provider_name = provider_name;
-            m.model_name = model_name;
-            m.total_skills = total_skills;
-            m.qdrant_available = qdrant_available;
-            m.sqlite_conversation_id = conversation_id;
-            m.context_tokens = prompt_estimate;
-            m.prompt_tokens = prompt_estimate;
-            m.total_tokens = prompt_estimate;
-            m.mcp_tool_count = mcp_tool_count;
-            m.mcp_server_count = mcp_server_count;
-        });
-        self.metrics_tx = Some(tx);
-        self
-    }
-
-    /// Returns a handle that can cancel the current in-flight operation.
-    /// The returned `Notify` is stable across messages — callers invoke
-    /// `notify_waiters()` to cancel whatever operation is running.
-    #[must_use]
-    pub fn cancel_signal(&self) -> Arc<Notify> {
-        Arc::clone(&self.cancel_signal)
-    }
-
-    fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
-        if let Some(ref tx) = self.metrics_tx {
-            let elapsed = self.start_time.elapsed().as_secs();
-            tx.send_modify(|m| {
-                m.uptime_seconds = elapsed;
-                f(m);
-            });
-        }
-    }
-
-    fn estimate_tokens(content: &str) -> u64 {
-        u64::try_from(content.len()).unwrap_or(0) / 4
-    }
-
-    pub(super) fn recompute_prompt_tokens(&mut self) {
-        self.cached_prompt_tokens = self
-            .messages
-            .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
-            .sum();
-    }
-
-    pub(super) fn push_message(&mut self, msg: Message) {
-        self.cached_prompt_tokens += Self::estimate_tokens(&msg.content);
-        self.messages.push(msg);
-    }
-
-    pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
-        if let Some(ref tracker) = self.cost_tracker {
-            tracker.record_usage(&self.runtime.model_name, prompt_tokens, completion_tokens);
-            self.update_metrics(|m| {
-                m.cost_spent_cents = tracker.current_spend();
-            });
-        }
-    }
-
-    pub(crate) fn record_cache_usage(&self) {
-        if let Some((creation, read)) = self.provider.last_cache_usage() {
-            self.update_metrics(|m| {
-                m.cache_creation_tokens += creation;
-                m.cache_read_tokens += read;
-            });
-        }
-    }
-
-    /// Inject pre-formatted code context into the message list.
-    /// The caller is responsible for retrieving and formatting the text.
-    pub fn inject_code_context(&mut self, text: &str) {
-        self.remove_code_context_messages();
-        if text.is_empty() || self.messages.len() <= 1 {
-            return;
-        }
-        let content = format!("{CODE_CONTEXT_PREFIX}{text}");
-        self.messages.insert(
-            1,
-            Message::from_parts(
-                Role::System,
-                vec![zeph_llm::provider::MessagePart::CodeContext { text: content }],
-            ),
-        );
-    }
-
-    #[must_use]
-    pub fn context_messages(&self) -> &[Message] {
-        &self.messages
-    }
-
-    fn drain_channel(&mut self) {
-        while self.message_queue.len() < MAX_QUEUE_SIZE {
-            let Some(msg) = self.channel.try_recv() else {
-                break;
-            };
-            if msg.text.trim() == "/drop-last-queued" {
-                self.message_queue.pop_back();
-                continue;
-            }
-            self.enqueue_or_merge(msg.text, vec![], msg.attachments);
-        }
-    }
-
-    fn enqueue_or_merge(
-        &mut self,
-        text: String,
-        image_parts: Vec<zeph_llm::provider::MessagePart>,
-        raw_attachments: Vec<crate::channel::Attachment>,
-    ) {
-        let now = Instant::now();
-        if let Some(last) = self.message_queue.back_mut()
-            && now.duration_since(last.received_at) < MESSAGE_MERGE_WINDOW
-            && last.image_parts.is_empty()
-            && image_parts.is_empty()
-            && last.raw_attachments.is_empty()
-            && raw_attachments.is_empty()
-        {
-            last.text.push('\n');
-            last.text.push_str(&text);
-            return;
-        }
-        if self.message_queue.len() < MAX_QUEUE_SIZE {
-            self.message_queue.push_back(QueuedMessage {
-                text,
-                received_at: now,
-                image_parts,
-                raw_attachments,
-            });
-        } else {
-            tracing::warn!("message queue full, dropping message");
-        }
-    }
-
-    async fn notify_queue_count(&mut self) {
-        let count = self.message_queue.len();
-        let _ = self.channel.send_queue_count(count).await;
-    }
-
-    fn clear_queue(&mut self) -> usize {
-        let count = self.message_queue.len();
-        self.message_queue.clear();
-        count
-    }
-
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
 
@@ -719,96 +350,6 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    async fn resolve_message(
-        &self,
-        msg: crate::channel::ChannelMessage,
-    ) -> (String, Vec<zeph_llm::provider::MessagePart>) {
-        use crate::channel::{Attachment, AttachmentKind};
-        use zeph_llm::provider::MessagePart;
-
-        let text_base = msg.text.clone();
-
-        let (audio_attachments, image_attachments): (Vec<Attachment>, Vec<Attachment>) = msg
-            .attachments
-            .into_iter()
-            .partition(|a| a.kind == AttachmentKind::Audio);
-
-        tracing::debug!(
-            audio = audio_attachments.len(),
-            has_stt = self.stt.is_some(),
-            "resolve_message attachments"
-        );
-
-        let text = if !audio_attachments.is_empty()
-            && let Some(stt) = self.stt.as_ref()
-        {
-            let mut transcribed_parts = Vec::new();
-            for attachment in &audio_attachments {
-                if attachment.data.len() > MAX_AUDIO_BYTES {
-                    tracing::warn!(
-                        size = attachment.data.len(),
-                        max = MAX_AUDIO_BYTES,
-                        "audio attachment exceeds size limit, skipping"
-                    );
-                    continue;
-                }
-                match stt
-                    .transcribe(&attachment.data, attachment.filename.as_deref())
-                    .await
-                {
-                    Ok(result) => {
-                        tracing::info!(
-                            len = result.text.len(),
-                            language = ?result.language,
-                            "audio transcribed"
-                        );
-                        transcribed_parts.push(result.text);
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "audio transcription failed");
-                    }
-                }
-            }
-            if transcribed_parts.is_empty() {
-                text_base
-            } else {
-                let transcribed = transcribed_parts.join("\n");
-                if text_base.is_empty() {
-                    transcribed
-                } else {
-                    format!("[transcribed audio]\n{transcribed}\n\n{text_base}")
-                }
-            }
-        } else {
-            if !audio_attachments.is_empty() {
-                tracing::warn!(
-                    count = audio_attachments.len(),
-                    "audio attachments received but no STT provider configured, dropping"
-                );
-            }
-            text_base
-        };
-
-        let mut image_parts = Vec::new();
-        for attachment in image_attachments {
-            if attachment.data.len() > MAX_IMAGE_BYTES {
-                tracing::warn!(
-                    size = attachment.data.len(),
-                    max = MAX_IMAGE_BYTES,
-                    "image attachment exceeds size limit, skipping"
-                );
-                continue;
-            }
-            let mime_type = detect_image_mime(attachment.filename.as_deref()).to_string();
-            image_parts.push(MessagePart::Image {
-                data: attachment.data,
-                mime_type,
-            });
-        }
-
-        (text, image_parts)
-    }
-
     async fn process_user_message(
         &mut self,
         text: String,
@@ -892,238 +433,8 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
         Ok(())
     }
-
-    async fn handle_image_command(
-        &mut self,
-        path: &str,
-        extra_parts: &mut Vec<zeph_llm::provider::MessagePart>,
-    ) -> Result<(), error::AgentError> {
-        use std::path::Component;
-        use zeph_llm::provider::MessagePart;
-
-        // Reject paths that traverse outside the current directory.
-        let has_parent_dir = std::path::Path::new(path)
-            .components()
-            .any(|c| c == Component::ParentDir);
-        if has_parent_dir {
-            self.channel
-                .send("Invalid image path: path traversal not allowed")
-                .await?;
-            return Ok(());
-        }
-
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(e) => {
-                self.channel
-                    .send(&format!("Cannot read image {path}: {e}"))
-                    .await?;
-                return Ok(());
-            }
-        };
-        if data.len() > MAX_IMAGE_BYTES {
-            self.channel
-                .send(&format!(
-                    "Image {path} exceeds size limit ({} MB), skipping",
-                    MAX_IMAGE_BYTES / 1024 / 1024
-                ))
-                .await?;
-            return Ok(());
-        }
-        let mime_type = detect_image_mime(Some(path)).to_string();
-        extra_parts.push(MessagePart::Image { data, mime_type });
-        self.channel
-            .send(&format!("Image loaded: {path}. Send your message."))
-            .await?;
-        Ok(())
-    }
-
-    async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
-        use std::fmt::Write;
-
-        let mut output = String::from("Available skills:\n\n");
-
-        for meta in self.skill_state.registry.all_meta() {
-            let trust_info = if let Some(memory) = &self.memory_state.memory {
-                memory
-                    .sqlite()
-                    .load_skill_trust(&meta.name)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map_or_else(String::new, |r| format!(" [{}]", r.trust_level))
-            } else {
-                String::new()
-            };
-            let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
-        }
-
-        if let Some(memory) = &self.memory_state.memory {
-            match memory.sqlite().load_skill_usage().await {
-                Ok(usage) if !usage.is_empty() => {
-                    output.push_str("\nUsage statistics:\n\n");
-                    for row in &usage {
-                        let _ = writeln!(
-                            output,
-                            "- {}: {} invocations (last: {})",
-                            row.skill_name, row.invocation_count, row.last_used_at,
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("failed to load skill usage: {e:#}"),
-            }
-        }
-
-        self.channel.send(&output).await?;
-        Ok(())
-    }
-
-    async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
-        let Some((name, rest)) = input.split_once(' ') else {
-            self.channel
-                .send("Usage: /feedback <skill_name> <message>")
-                .await?;
-            return Ok(());
-        };
-        let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
-
-        if feedback.is_empty() {
-            self.channel
-                .send("Usage: /feedback <skill_name> <message>")
-                .await?;
-            return Ok(());
-        }
-
-        let Some(memory) = &self.memory_state.memory else {
-            self.channel.send("Memory not available.").await?;
-            return Ok(());
-        };
-
-        memory
-            .sqlite()
-            .record_skill_outcome(
-                skill_name,
-                None,
-                self.memory_state.conversation_id,
-                "user_rejection",
-                Some(feedback),
-            )
-            .await?;
-
-        if self.is_learning_enabled() {
-            self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
-                .await
-                .ok();
-        }
-
-        self.channel
-            .send(&format!("Feedback recorded for \"{skill_name}\"."))
-            .await?;
-        Ok(())
-    }
-
-    async fn reload_skills(&mut self) {
-        let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
-        if new_registry.fingerprint() == self.skill_state.registry.fingerprint() {
-            return;
-        }
-        self.skill_state.registry = new_registry;
-
-        let all_meta = self.skill_state.registry.all_meta();
-        let provider = self.provider.clone();
-        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
-            let owned = text.to_owned();
-            let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
-        };
-
-        let needs_inmemory_rebuild = !self
-            .skill_state
-            .matcher
-            .as_ref()
-            .is_some_and(SkillMatcherBackend::is_qdrant);
-
-        if needs_inmemory_rebuild {
-            self.skill_state.matcher = SkillMatcher::new(&all_meta, embed_fn)
-                .await
-                .map(SkillMatcherBackend::InMemory);
-        } else if let Some(ref mut backend) = self.skill_state.matcher
-            && let Err(e) = backend
-                .sync(&all_meta, &self.skill_state.embedding_model, embed_fn)
-                .await
-        {
-            tracing::warn!("failed to sync skill embeddings: {e:#}");
-        }
-
-        let all_skills: Vec<Skill> = self
-            .skill_state
-            .registry
-            .all_meta()
-            .iter()
-            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
-            .collect();
-        let trust_map = self.build_skill_trust_map().await;
-        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &trust_map);
-        self.skill_state
-            .last_skills_prompt
-            .clone_from(&skills_prompt);
-        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
-        if let Some(msg) = self.messages.first_mut() {
-            msg.content = system_prompt;
-        }
-
-        tracing::info!(
-            "reloaded {} skill(s)",
-            self.skill_state.registry.all_meta().len()
-        );
-    }
-
-    fn reload_config(&mut self) {
-        let Some(ref path) = self.config_path else {
-            return;
-        };
-        let config = match Config::load(path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("config reload failed: {e:#}");
-                return;
-            }
-        };
-
-        self.runtime.security = config.security;
-        self.runtime.timeouts = config.timeouts;
-        self.memory_state.history_limit = config.memory.history_limit;
-        self.memory_state.recall_limit = config.memory.semantic.recall_limit;
-        self.memory_state.summarization_threshold = config.memory.summarization_threshold;
-        self.skill_state.max_active_skills = config.skills.max_active_skills;
-        self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
-
-        if config.memory.context_budget_tokens > 0 {
-            self.context_state.budget = Some(ContextBudget::new(
-                config.memory.context_budget_tokens,
-                0.20,
-            ));
-        } else {
-            self.context_state.budget = None;
-        }
-        self.context_state.compaction_threshold = config.memory.compaction_threshold;
-        self.context_state.compaction_preserve_tail = config.memory.compaction_preserve_tail;
-        self.context_state.prune_protect_tokens = config.memory.prune_protect_tokens;
-        self.memory_state.cross_session_score_threshold =
-            config.memory.cross_session_score_threshold;
-
-        #[cfg(feature = "index")]
-        {
-            self.index.repo_map_ttl =
-                std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
-        }
-
-        tracing::info!("config reloaded");
-    }
 }
-
-async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
+pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     while !*rx.borrow_and_update() {
         if rx.changed().await.is_err() {
             std::future::pending::<()>().await;
@@ -1131,7 +442,7 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
+pub(crate) async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
     match rx {
         Some(inner) => {
             if let Some(v) = inner.recv().await {
@@ -1147,25 +458,39 @@ async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
 
 #[cfg(test)]
 pub(super) mod agent_tests {
-    pub(crate) use super::*;
-    use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
+    #[allow(unused_imports)]
+    pub(crate) use super::{
+        Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, DOOM_LOOP_WINDOW, RECALL_PREFIX,
+        SUMMARY_PREFIX, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
+    };
+    pub(crate) use crate::channel::Channel;
+    use crate::channel::ChannelMessage;
+    pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};
+    pub(crate) use crate::metrics::MetricsSnapshot;
     use std::sync::{Arc, Mutex};
+    pub(crate) use tokio::sync::{Notify, mpsc, watch};
+    pub(crate) use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
+    pub(crate) use zeph_llm::provider::{Message, Role};
+    pub(crate) use zeph_memory::semantic::SemanticMemory;
+    pub(crate) use zeph_skills::registry::SkillRegistry;
+    pub(crate) use zeph_skills::watcher::SkillEvent;
+    pub(crate) use zeph_tools::executor::ToolExecutor;
     use zeph_tools::executor::{ToolError, ToolOutput};
 
-    pub(super) fn mock_provider(responses: Vec<String>) -> AnyProvider {
+    pub(crate) fn mock_provider(responses: Vec<String>) -> AnyProvider {
         AnyProvider::Mock(MockProvider::with_responses(responses))
     }
 
-    pub(super) fn mock_provider_streaming(responses: Vec<String>) -> AnyProvider {
+    pub(crate) fn mock_provider_streaming(responses: Vec<String>) -> AnyProvider {
         AnyProvider::Mock(MockProvider::with_responses(responses).with_streaming())
     }
 
-    pub(super) fn mock_provider_failing() -> AnyProvider {
+    pub(crate) fn mock_provider_failing() -> AnyProvider {
         AnyProvider::Mock(MockProvider::failing())
     }
 
-    pub(super) struct MockChannel {
+    pub(crate) struct MockChannel {
         messages: Arc<Mutex<Vec<String>>>,
         sent: Arc<Mutex<Vec<String>>>,
         chunks: Arc<Mutex<Vec<String>>>,
@@ -1173,7 +498,7 @@ pub(super) mod agent_tests {
     }
 
     impl MockChannel {
-        pub(super) fn new(messages: Vec<String>) -> Self {
+        pub(crate) fn new(messages: Vec<String>) -> Self {
             Self {
                 messages: Arc::new(Mutex::new(messages)),
                 sent: Arc::new(Mutex::new(Vec::new())),
@@ -1187,7 +512,7 @@ pub(super) mod agent_tests {
             self
         }
 
-        pub(super) fn sent_messages(&self) -> Vec<String> {
+        pub(crate) fn sent_messages(&self) -> Vec<String> {
             self.sent.lock().unwrap().clone()
         }
     }
@@ -1241,18 +566,18 @@ pub(super) mod agent_tests {
         }
     }
 
-    pub(super) struct MockToolExecutor {
+    pub(crate) struct MockToolExecutor {
         outputs: Arc<Mutex<Vec<Result<Option<ToolOutput>, ToolError>>>>,
     }
 
     impl MockToolExecutor {
-        pub(super) fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
+        pub(crate) fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
             Self {
                 outputs: Arc::new(Mutex::new(outputs)),
             }
         }
 
-        pub(super) fn no_tools() -> Self {
+        pub(crate) fn no_tools() -> Self {
             Self::new(vec![Ok(None)])
         }
     }
@@ -1268,7 +593,7 @@ pub(super) mod agent_tests {
         }
     }
 
-    pub(super) fn create_test_registry() -> SkillRegistry {
+    pub(crate) fn create_test_registry() -> SkillRegistry {
         let temp_dir = tempfile::tempdir().unwrap();
         let skill_dir = temp_dir.path().join("test-skill");
         std::fs::create_dir(&skill_dir).unwrap();
@@ -2053,154 +1378,6 @@ pub(super) mod agent_tests {
     }
 
     #[test]
-    fn enqueue_or_merge_adds_new_message() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        agent.enqueue_or_merge("hello".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 1);
-        assert_eq!(agent.message_queue[0].text, "hello");
-    }
-
-    #[test]
-    fn enqueue_or_merge_merges_within_window() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        agent.enqueue_or_merge("first".into(), vec![], vec![]);
-        agent.enqueue_or_merge("second".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 1);
-        assert_eq!(agent.message_queue[0].text, "first\nsecond");
-    }
-
-    #[test]
-    fn enqueue_or_merge_no_merge_after_window() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        agent.message_queue.push_back(QueuedMessage {
-            text: "old".into(),
-            received_at: Instant::now() - Duration::from_secs(2),
-            image_parts: vec![],
-            raw_attachments: vec![],
-        });
-        agent.enqueue_or_merge("new".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 2);
-        assert_eq!(agent.message_queue[0].text, "old");
-        assert_eq!(agent.message_queue[1].text, "new");
-    }
-
-    #[test]
-    fn enqueue_or_merge_respects_max_queue_size() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        for i in 0..MAX_QUEUE_SIZE {
-            agent.message_queue.push_back(QueuedMessage {
-                text: format!("msg{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
-                image_parts: vec![],
-                raw_attachments: vec![],
-            });
-        }
-        agent.enqueue_or_merge("overflow".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
-    }
-
-    #[test]
-    fn clear_queue_returns_count_and_empties() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        agent.enqueue_or_merge("a".into(), vec![], vec![]);
-        // Wait past merge window
-        agent.message_queue.back_mut().unwrap().received_at =
-            Instant::now() - Duration::from_secs(1);
-        agent.enqueue_or_merge("b".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 2);
-
-        let count = agent.clear_queue();
-        assert_eq!(count, 2);
-        assert!(agent.message_queue.is_empty());
-    }
-
-    #[test]
-    fn drain_channel_fills_queue() {
-        let messages: Vec<String> = (0..5).map(|i| format!("msg{i}")).collect();
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(messages);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        agent.drain_channel();
-        // All 5 messages arrive within the merge window, so they merge into 1
-        assert_eq!(agent.message_queue.len(), 1);
-        assert!(agent.message_queue[0].text.contains("msg0"));
-        assert!(agent.message_queue[0].text.contains("msg4"));
-    }
-
-    #[test]
-    fn drain_channel_stops_at_max_queue_size() {
-        let messages: Vec<String> = (0..15).map(|i| format!("msg{i}")).collect();
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(messages);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        // Pre-fill queue to near capacity with old timestamps (outside merge window)
-        for i in 0..MAX_QUEUE_SIZE - 1 {
-            agent.message_queue.push_back(QueuedMessage {
-                text: format!("pre{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
-                image_parts: vec![],
-                raw_attachments: vec![],
-            });
-        }
-        agent.drain_channel();
-        // One more slot was available; all 15 messages merge into it
-        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
-    }
-
-    #[test]
-    fn queue_fifo_order() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        for i in 0..3 {
-            agent.message_queue.push_back(QueuedMessage {
-                text: format!("msg{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
-                image_parts: vec![],
-                raw_attachments: vec![],
-            });
-        }
-
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg0");
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg1");
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg2");
-    }
-
-    #[test]
     fn doom_loop_detection_triggers_on_identical_outputs() {
         // doom_loop_history stores u64 hashes — identical content produces equal hashes
         let h = 42u64;
@@ -2228,32 +1405,6 @@ pub(super) mod agent_tests {
     fn format_tool_output_empty_body() {
         let out = format_tool_output("grep", "");
         assert_eq!(out, "[tool output: grep]\n```\n\n```");
-    }
-
-    #[test]
-    fn detect_image_mime_standard() {
-        assert_eq!(detect_image_mime(Some("photo.jpg")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("photo.jpeg")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("anim.gif")), "image/gif");
-        assert_eq!(detect_image_mime(Some("img.webp")), "image/webp");
-        assert_eq!(detect_image_mime(Some("img.png")), "image/png");
-        assert_eq!(detect_image_mime(None), "image/png");
-    }
-
-    #[test]
-    fn detect_image_mime_uppercase() {
-        assert_eq!(detect_image_mime(Some("photo.JPG")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("photo.JPEG")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("anim.GIF")), "image/gif");
-        assert_eq!(detect_image_mime(Some("img.WEBP")), "image/webp");
-    }
-
-    #[test]
-    fn detect_image_mime_mixed_case() {
-        assert_eq!(detect_image_mime(Some("photo.Jpg")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("photo.JpEg")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("anim.Gif")), "image/gif");
-        assert_eq!(detect_image_mime(Some("img.WebP")), "image/webp");
     }
 
     #[tokio::test]
@@ -2310,293 +1461,5 @@ pub(super) mod agent_tests {
         signal.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(token2.is_cancelled());
-    }
-
-    mod resolve_message_tests {
-        use super::*;
-        use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
-        use std::future::Future;
-        use std::pin::Pin;
-        use zeph_llm::error::LlmError;
-        use zeph_llm::stt::{SpeechToText, Transcription};
-
-        struct MockStt {
-            text: Option<String>,
-        }
-
-        impl MockStt {
-            fn ok(text: &str) -> Self {
-                Self {
-                    text: Some(text.to_string()),
-                }
-            }
-
-            fn failing() -> Self {
-                Self { text: None }
-            }
-        }
-
-        impl SpeechToText for MockStt {
-            fn transcribe(
-                &self,
-                _audio: &[u8],
-                _filename: Option<&str>,
-            ) -> Pin<Box<dyn Future<Output = Result<Transcription, LlmError>> + Send + '_>>
-            {
-                let result = match &self.text {
-                    Some(t) => Ok(Transcription {
-                        text: t.clone(),
-                        language: None,
-                        duration_secs: None,
-                    }),
-                    None => Err(LlmError::TranscriptionFailed("mock error".into())),
-                };
-                Box::pin(async move { result })
-            }
-        }
-
-        fn make_agent(stt: Option<Box<dyn SpeechToText>>) -> Agent<MockChannel, MockToolExecutor> {
-            let provider = mock_provider(vec!["ok".into()]);
-            let empty: Vec<String> = vec![];
-            let registry = zeph_skills::registry::SkillRegistry::load(&empty);
-            let channel = MockChannel::new(vec![]);
-            let executor = MockToolExecutor::no_tools();
-            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-            agent.stt = stt;
-            agent
-        }
-
-        fn audio_attachment(data: &[u8]) -> Attachment {
-            Attachment {
-                kind: AttachmentKind::Audio,
-                data: data.to_vec(),
-                filename: Some("test.wav".into()),
-            }
-        }
-
-        #[tokio::test]
-        async fn no_audio_attachments_returns_text() {
-            let agent = make_agent(None);
-            let msg = ChannelMessage {
-                text: "hello".into(),
-                attachments: vec![],
-            };
-            assert_eq!(agent.resolve_message(msg).await.0, "hello");
-        }
-
-        #[tokio::test]
-        async fn audio_without_stt_returns_original_text() {
-            let agent = make_agent(None);
-            let msg = ChannelMessage {
-                text: "hello".into(),
-                attachments: vec![audio_attachment(b"audio-data")],
-            };
-            assert_eq!(agent.resolve_message(msg).await.0, "hello");
-        }
-
-        #[tokio::test]
-        async fn audio_with_stt_prepends_transcription() {
-            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
-            let msg = ChannelMessage {
-                text: "original".into(),
-                attachments: vec![audio_attachment(b"audio-data")],
-            };
-            let (result, _) = agent.resolve_message(msg).await;
-            assert!(result.contains("[transcribed audio]"));
-            assert!(result.contains("transcribed text"));
-            assert!(result.contains("original"));
-        }
-
-        #[tokio::test]
-        async fn audio_with_stt_no_original_text() {
-            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
-            let msg = ChannelMessage {
-                text: String::new(),
-                attachments: vec![audio_attachment(b"audio-data")],
-            };
-            let (result, _) = agent.resolve_message(msg).await;
-            assert_eq!(result, "transcribed text");
-        }
-
-        #[tokio::test]
-        async fn all_transcriptions_fail_returns_original() {
-            let agent = make_agent(Some(Box::new(MockStt::failing())));
-            let msg = ChannelMessage {
-                text: "original".into(),
-                attachments: vec![audio_attachment(b"audio-data")],
-            };
-            assert_eq!(agent.resolve_message(msg).await.0, "original");
-        }
-
-        #[tokio::test]
-        async fn multiple_audio_attachments_joined() {
-            let agent = make_agent(Some(Box::new(MockStt::ok("chunk"))));
-            let msg = ChannelMessage {
-                text: String::new(),
-                attachments: vec![
-                    audio_attachment(b"a1"),
-                    audio_attachment(b"a2"),
-                    audio_attachment(b"a3"),
-                ],
-            };
-            let (result, _) = agent.resolve_message(msg).await;
-            assert_eq!(result, "chunk\nchunk\nchunk");
-        }
-
-        #[tokio::test]
-        async fn oversized_audio_skipped() {
-            let agent = make_agent(Some(Box::new(MockStt::ok("should not appear"))));
-            let big = vec![0u8; MAX_AUDIO_BYTES + 1];
-            let msg = ChannelMessage {
-                text: "original".into(),
-                attachments: vec![Attachment {
-                    kind: AttachmentKind::Audio,
-                    data: big,
-                    filename: None,
-                }],
-            };
-            assert_eq!(agent.resolve_message(msg).await.0, "original");
-        }
-    }
-
-    #[test]
-    fn detect_image_mime_jpeg() {
-        assert_eq!(detect_image_mime(Some("photo.jpg")), "image/jpeg");
-        assert_eq!(detect_image_mime(Some("photo.jpeg")), "image/jpeg");
-    }
-
-    #[test]
-    fn detect_image_mime_gif() {
-        assert_eq!(detect_image_mime(Some("anim.gif")), "image/gif");
-    }
-
-    #[test]
-    fn detect_image_mime_webp() {
-        assert_eq!(detect_image_mime(Some("img.webp")), "image/webp");
-    }
-
-    #[test]
-    fn detect_image_mime_unknown_defaults_png() {
-        assert_eq!(detect_image_mime(Some("file.bmp")), "image/png");
-        assert_eq!(detect_image_mime(None), "image/png");
-    }
-
-    #[tokio::test]
-    async fn resolve_message_extracts_image_attachment() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        let msg = ChannelMessage {
-            text: "look at this".into(),
-            attachments: vec![Attachment {
-                kind: AttachmentKind::Image,
-                data: vec![0u8; 16],
-                filename: Some("test.jpg".into()),
-            }],
-        };
-        let (text, parts) = agent.resolve_message(msg).await;
-        assert_eq!(text, "look at this");
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            zeph_llm::provider::MessagePart::Image { mime_type, data } => {
-                assert_eq!(mime_type, "image/jpeg");
-                assert_eq!(data.len(), 16);
-            }
-            _ => panic!("expected Image part"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_message_drops_oversized_image() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        let msg = ChannelMessage {
-            text: "big image".into(),
-            attachments: vec![Attachment {
-                kind: AttachmentKind::Image,
-                data: vec![0u8; MAX_IMAGE_BYTES + 1],
-                filename: Some("huge.png".into()),
-            }],
-        };
-        let (text, parts) = agent.resolve_message(msg).await;
-        assert_eq!(text, "big image");
-        assert!(parts.is_empty());
-    }
-
-    #[tokio::test]
-    async fn handle_image_command_rejects_path_traversal() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        let mut parts = Vec::new();
-        let result = agent
-            .handle_image_command("../../etc/passwd", &mut parts)
-            .await;
-        assert!(result.is_ok());
-        assert!(parts.is_empty());
-        // Channel should have received an error message
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("traversal")));
-    }
-
-    #[tokio::test]
-    async fn handle_image_command_missing_file_sends_error() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        let mut parts = Vec::new();
-        let result = agent
-            .handle_image_command("/nonexistent/image.png", &mut parts)
-            .await;
-        assert!(result.is_ok());
-        assert!(parts.is_empty());
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("Cannot read image")));
-    }
-
-    #[tokio::test]
-    async fn handle_image_command_loads_valid_file() {
-        use std::io::Write;
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        // Write a small temp image
-        let mut tmp = tempfile::NamedTempFile::with_suffix(".jpg").unwrap();
-        let data = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
-        tmp.write_all(&data).unwrap();
-        let path = tmp.path().to_str().unwrap().to_owned();
-
-        let mut parts = Vec::new();
-        let result = agent.handle_image_command(&path, &mut parts).await;
-        assert!(result.is_ok());
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            zeph_llm::provider::MessagePart::Image {
-                data: img_data,
-                mime_type,
-            } => {
-                assert_eq!(img_data, &data);
-                assert_eq!(mime_type, "image/jpeg");
-            }
-            _ => panic!("expected Image part"),
-        }
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("Image loaded")));
     }
 }

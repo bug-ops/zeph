@@ -69,7 +69,7 @@ fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
 }
 
 impl<C: Channel, T: ToolExecutor> Agent<C, T> {
-    pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
+    pub(super) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         if self.provider.supports_tool_use() {
             tracing::debug!(
                 provider = self.provider.name(),
@@ -175,7 +175,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
-    pub(crate) async fn call_llm_with_timeout(
+    pub(super) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::error::AgentError> {
         if self.cancel_token.is_cancelled() {
@@ -275,7 +275,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    pub(crate) fn last_user_query(&self) -> &str {
+    pub(super) fn last_user_query(&self) -> &str {
         self.messages
             .iter()
             .rev()
@@ -283,7 +283,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             .map_or("", |m| m.content.as_str())
     }
 
-    pub(crate) async fn summarize_tool_output(&self, output: &str) -> String {
+    pub(super) async fn summarize_tool_output(&self, output: &str) -> String {
         let truncated = zeph_tools::truncate_tool_output(output);
         let query = self.last_user_query();
         let prompt = format!(
@@ -312,7 +312,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    pub(crate) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
+    pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
         if output.len() <= zeph_tools::MAX_TOOL_OUTPUT_CHARS {
             return output.to_string();
         }
@@ -334,7 +334,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
     /// Returns `true` if the tool loop should continue.
     #[allow(clippy::too_many_lines)]
-    pub(crate) async fn handle_tool_result(
+    pub(super) async fn handle_tool_result(
         &mut self,
         response: &str,
         result: Result<Option<ToolOutput>, ToolError>,
@@ -478,7 +478,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
     }
 
-    pub(crate) async fn process_response_streaming(
+    pub(super) async fn process_response_streaming(
         &mut self,
     ) -> Result<String, super::error::AgentError> {
         let mut stream = self.provider.chat_stream(&self.messages).await?;
@@ -515,7 +515,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(response)
     }
 
-    pub(crate) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+    pub(super) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         if self.runtime.security.redact_secrets {
             let redacted = redact_secrets(text);
             let sanitized = crate::redact::sanitize_paths(&redacted);
