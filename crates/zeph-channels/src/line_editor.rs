@@ -326,15 +326,12 @@ mod tests {
     #[test]
     fn navigate_history_down_restores_draft() {
         let history = vec!["cmd1".to_string()];
-        let mut input = String::from("draft");
-        let mut cursor = 5;
-        let mut idx = None;
-        // Pre-set draft to match what navigate_history_up would save from input
+        // Simulate having gone up: idx is Some(0), input is the history entry
+        let mut input = String::from("cmd1");
+        let mut cursor = 4;
+        let mut idx = Some(0);
+        // Draft preserves what the user typed before navigating up
         let mut draft = String::from("draft");
-        // Simulate having gone up: set idx to Some(0) and input to history entry
-        idx = Some(0);
-        input = "cmd1".to_string();
-        cursor = 4;
         // Now go back down — should restore draft
         navigate_history_down(&history, &mut input, &mut cursor, &mut idx, &mut draft);
         assert_eq!(input, "draft");

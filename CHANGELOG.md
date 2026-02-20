@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fuzzy-matching for command palette — character-level gap-penalty scoring replaces substring filter; `daemon_command_registry()` merged into `filter_commands`
 - `TuiCommand::ToggleTheme` variant in command palette (placeholder — theme switching not yet implemented)
 - `--init` wizard daemon step — prompts for A2A server host, port, and auth token; writes `config.a2a.*`
+- Snapshot tests for `Config::default()` TOML serialization (zeph-core), git filter diff/status output, cargo-build filter success/error output, and clippy grouped warnings output — using insta for regression detection
+- Tests for `handle_tool_result` covering blocked, cancelled, sandbox violation, empty output, exit-code failure, and success paths (zeph-core agent/tool_execution.rs)
+- Tests for `maybe_redact` (redaction enabled/disabled) and `last_user_query` helper in agent/tool_execution.rs
+- Tests for `handle_skill_command` dispatch covering unknown subcommand, missing arguments, and no-memory early-exit paths for stats, versions, activate, approve, and reset subcommands (zeph-core agent/learning.rs)
+- Tests for `record_skill_outcomes` noop path when no active skills are present
+- `insta` added to workspace dev-dependencies and to zeph-core and zeph-tools crate dev-deps
 - `Embeddable` trait and `EmbeddingRegistry<T>` in zeph-memory — generic Qdrant sync/search extracted from duplicated code in QdrantSkillMatcher and McpToolRegistry (~350 lines removed)
 - MCP server command allowlist validation — only permitted commands (npx, uvx, node, python3, python, docker, deno, bun) can spawn child processes; configurable via `mcp.allowed_commands`
 - MCP env var blocklist — blocks 21 dangerous variables (LD_PRELOAD, DYLD_*, NODE_OPTIONS, PYTHONPATH, JAVA_TOOL_OPTIONS, etc.) and BASH_FUNC_* prefix from MCP server processes
