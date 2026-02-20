@@ -116,11 +116,9 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let has_images = messages.iter().any(|m| {
-            m.parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::Image { .. }))
-        });
+        let has_images = messages
+            .iter()
+            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
         let model = if has_images {
             self.vision_model.as_deref().unwrap_or(&self.model)
         } else {
@@ -140,11 +138,9 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
-        let has_images = messages.iter().any(|m| {
-            m.parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::Image { .. }))
-        });
+        let has_images = messages
+            .iter()
+            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
         let model = if has_images {
             self.vision_model.as_deref().unwrap_or(&self.model)
         } else {
@@ -207,9 +203,7 @@ fn convert_message(msg: &Message) -> ChatMessage {
         .parts
         .iter()
         .filter_map(|p| match p {
-            MessagePart::Image { data, .. } => {
-                Some(OllamaImage::from_base64(STANDARD.encode(data)))
-            }
+            MessagePart::Image(img) => Some(OllamaImage::from_base64(STANDARD.encode(&img.data))),
             _ => None,
         })
         .collect();
@@ -256,6 +250,7 @@ fn parse_host_port(url: &str) -> (String, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ImageData;
 
     #[test]
     fn context_window_none_by_default() {
@@ -656,10 +651,10 @@ mod tests {
                 MessagePart::Text {
                     text: "describe".into(),
                 },
-                MessagePart::Image {
+                MessagePart::Image(Box::new(ImageData {
                     data: data.clone(),
                     mime_type: "image/jpeg".into(),
-                },
+                })),
             ],
         );
         let chat_msg = convert_message(&msg);

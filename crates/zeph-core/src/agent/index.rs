@@ -1,6 +1,6 @@
-use super::{Agent, Channel, ToolExecutor};
+use super::{Agent, Channel};
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     pub(super) async fn fetch_code_rag(
         index: &super::IndexState,
         query: &str,

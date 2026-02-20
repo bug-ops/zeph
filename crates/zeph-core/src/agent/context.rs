@@ -8,11 +8,11 @@ use zeph_skills::prompt::format_skills_catalog;
 
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget, EnvironmentContext,
-    LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, ToolExecutor,
-    build_system_prompt, format_skills_prompt,
+    LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, build_system_prompt,
+    format_skills_prompt,
 };
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -776,7 +776,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
         } else {
-            let defs = self.tool_executor.tool_definitions();
+            let defs = self.tool_executor.tool_definitions_erased();
             if defs.is_empty() {
                 None
             } else {

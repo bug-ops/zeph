@@ -2,11 +2,9 @@ use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 
 use crate::channel::Channel;
 use crate::metrics::MetricsSnapshot;
-use zeph_tools::executor::ToolExecutor;
-
 use super::{Agent, CODE_CONTEXT_PREFIX};
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics_tx {
             let elapsed = self.start_time.elapsed().as_secs();

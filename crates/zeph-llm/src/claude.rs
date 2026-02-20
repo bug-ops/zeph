@@ -90,11 +90,9 @@ impl ClaudeProvider {
     }
 
     fn has_image_parts(messages: &[Message]) -> bool {
-        messages.iter().any(|m| {
-            m.parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::Image { .. }))
-        })
+        messages
+            .iter()
+            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))))
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
@@ -644,7 +642,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                         p,
                         MessagePart::ToolUse { .. }
                             | MessagePart::ToolResult { .. }
-                            | MessagePart::Image { .. }
+                            | MessagePart::Image(_)
                     )
                 });
 
@@ -697,12 +695,12 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                     text: content.clone(),
                                 });
                             }
-                            MessagePart::Image { data, mime_type } => {
+                            MessagePart::Image(img) => {
                                 blocks.push(AnthropicContentBlock::Image {
                                     source: ImageSource {
                                         source_type: "base64".to_owned(),
-                                        media_type: mime_type.clone(),
-                                        data: STANDARD.encode(data),
+                                        media_type: img.mime_type.clone(),
+                                        data: STANDARD.encode(&img.data),
                                     },
                                 });
                             }
@@ -787,6 +785,7 @@ struct ContentBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ImageData;
     use tokio_stream::StreamExt;
 
     #[test]
@@ -1444,10 +1443,10 @@ mod tests {
                 MessagePart::Text {
                     text: "look at this".into(),
                 },
-                MessagePart::Image {
+                MessagePart::Image(Box::new(ImageData {
                     data: data.clone(),
                     mime_type: "image/jpeg".into(),
-                },
+                })),
             ],
         );
         let (system, chat) = split_messages_structured(&[msg]);
@@ -1478,10 +1477,10 @@ mod tests {
     fn has_image_parts_detects_image_in_messages() {
         let with_image = Message::from_parts(
             Role::User,
-            vec![MessagePart::Image {
+            vec![MessagePart::Image(Box::new(ImageData {
                 data: vec![1],
                 mime_type: "image/png".into(),
-            }],
+            }))],
         );
         let without_image = Message::from_legacy(Role::User, "plain text");
         assert!(ClaudeProvider::has_image_parts(&[with_image]));

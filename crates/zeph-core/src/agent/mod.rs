@@ -1,5 +1,4 @@
 mod builder;
-mod commands;
 mod context;
 pub mod error;
 #[cfg(feature = "index")]
@@ -28,20 +27,23 @@ use crate::metrics::MetricsSnapshot;
 use std::collections::HashMap;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
-use zeph_skills::matcher::SkillMatcherBackend;
+use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
-use zeph_tools::executor::ToolExecutor;
+use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
 use crate::channel::Channel;
+use crate::config::Config;
 use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::cost::CostTracker;
 
-use message_queue::QueuedMessage;
+use message_queue::{
+    MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime,
+};
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
 const TOOL_LOOP_KEEP_RECENT: usize = 4;
@@ -119,10 +121,10 @@ pub(super) struct RuntimeConfig {
     pub(super) permission_policy: zeph_tools::PermissionPolicy,
 }
 
-pub struct Agent<C: Channel, T: ToolExecutor> {
+pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
-    tool_executor: T,
+    tool_executor: Box<dyn ErasedToolExecutor>,
     messages: Vec<Message>,
     pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
@@ -150,7 +152,7 @@ pub struct Agent<C: Channel, T: ToolExecutor> {
     update_notify_rx: Option<mpsc::Receiver<String>>,
 }
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn new(
         provider: AnyProvider,
@@ -158,7 +160,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         registry: SkillRegistry,
         matcher: Option<SkillMatcherBackend>,
         max_active_skills: usize,
-        tool_executor: T,
+        tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
         let all_skills: Vec<Skill> = registry
             .all_meta()
@@ -176,7 +178,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Self {
             provider,
             channel,
-            tool_executor,
+            tool_executor: Box::new(tool_executor),
             messages: vec![Message {
                 role: Role::System,
                 content: system_prompt,
@@ -350,6 +352,97 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         Ok(())
     }
 
+
+    async fn resolve_message(
+        &self,
+        msg: crate::channel::ChannelMessage,
+    ) -> (String, Vec<zeph_llm::provider::MessagePart>) {
+        use crate::channel::{Attachment, AttachmentKind};
+        use zeph_llm::provider::{ImageData, MessagePart};
+
+        let text_base = msg.text.clone();
+
+        let (audio_attachments, image_attachments): (Vec<Attachment>, Vec<Attachment>) = msg
+            .attachments
+            .into_iter()
+            .partition(|a| a.kind == AttachmentKind::Audio);
+
+        tracing::debug!(
+            audio = audio_attachments.len(),
+            has_stt = self.stt.is_some(),
+            "resolve_message attachments"
+        );
+
+        let text = if !audio_attachments.is_empty()
+            && let Some(stt) = self.stt.as_ref()
+        {
+            let mut transcribed_parts = Vec::new();
+            for attachment in &audio_attachments {
+                if attachment.data.len() > MAX_AUDIO_BYTES {
+                    tracing::warn!(
+                        size = attachment.data.len(),
+                        max = MAX_AUDIO_BYTES,
+                        "audio attachment exceeds size limit, skipping"
+                    );
+                    continue;
+                }
+                match stt
+                    .transcribe(&attachment.data, attachment.filename.as_deref())
+                    .await
+                {
+                    Ok(result) => {
+                        tracing::info!(
+                            len = result.text.len(),
+                            language = ?result.language,
+                            "audio transcribed"
+                        );
+                        transcribed_parts.push(result.text);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "audio transcription failed");
+                    }
+                }
+            }
+            if transcribed_parts.is_empty() {
+                text_base
+            } else {
+                let transcribed = transcribed_parts.join("\n");
+                if text_base.is_empty() {
+                    transcribed
+                } else {
+                    format!("[transcribed audio]\n{transcribed}\n\n{text_base}")
+                }
+            }
+        } else {
+            if !audio_attachments.is_empty() {
+                tracing::warn!(
+                    count = audio_attachments.len(),
+                    "audio attachments received but no STT provider configured, dropping"
+                );
+            }
+            text_base
+        };
+
+        let mut image_parts = Vec::new();
+        for attachment in image_attachments {
+            if attachment.data.len() > MAX_IMAGE_BYTES {
+                tracing::warn!(
+                    size = attachment.data.len(),
+                    max = MAX_IMAGE_BYTES,
+                    "image attachment exceeds size limit, skipping"
+                );
+                continue;
+            }
+            let mime_type = detect_image_mime(attachment.filename.as_deref()).to_string();
+            image_parts.push(MessagePart::Image(Box::new(ImageData {
+                data: attachment.data,
+                mime_type,
+            })));
+        }
+
+        (text, image_parts)
+    }
+
     async fn process_user_message(
         &mut self,
         text: String,
@@ -432,6 +525,235 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
         }
 
         Ok(())
+    }
+
+    async fn handle_image_command(
+        &mut self,
+        path: &str,
+        extra_parts: &mut Vec<zeph_llm::provider::MessagePart>,
+    ) -> Result<(), error::AgentError> {
+        use std::path::Component;
+        use zeph_llm::provider::{ImageData, MessagePart};
+
+        // Reject paths that traverse outside the current directory.
+        let has_parent_dir = std::path::Path::new(path)
+            .components()
+            .any(|c| c == Component::ParentDir);
+        if has_parent_dir {
+            self.channel
+                .send("Invalid image path: path traversal not allowed")
+                .await?;
+            return Ok(());
+        }
+
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.channel
+                    .send(&format!("Cannot read image {path}: {e}"))
+                    .await?;
+                return Ok(());
+            }
+        };
+        if data.len() > MAX_IMAGE_BYTES {
+            self.channel
+                .send(&format!(
+                    "Image {path} exceeds size limit ({} MB), skipping",
+                    MAX_IMAGE_BYTES / 1024 / 1024
+                ))
+                .await?;
+            return Ok(());
+        }
+        let mime_type = detect_image_mime(Some(path)).to_string();
+        extra_parts.push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
+        self.channel
+            .send(&format!("Image loaded: {path}. Send your message."))
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+
+        let mut output = String::from("Available skills:\n\n");
+
+        for meta in self.skill_state.registry.all_meta() {
+            let trust_info = if let Some(memory) = &self.memory_state.memory {
+                memory
+                    .sqlite()
+                    .load_skill_trust(&meta.name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or_else(String::new, |r| format!(" [{}]", r.trust_level))
+            } else {
+                String::new()
+            };
+            let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
+        }
+
+        if let Some(memory) = &self.memory_state.memory {
+            match memory.sqlite().load_skill_usage().await {
+                Ok(usage) if !usage.is_empty() => {
+                    output.push_str("\nUsage statistics:\n\n");
+                    for row in &usage {
+                        let _ = writeln!(
+                            output,
+                            "- {}: {} invocations (last: {})",
+                            row.skill_name, row.invocation_count, row.last_used_at,
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("failed to load skill usage: {e:#}"),
+            }
+        }
+
+        self.channel.send(&output).await?;
+        Ok(())
+    }
+
+    async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
+        let Some((name, rest)) = input.split_once(' ') else {
+            self.channel
+                .send("Usage: /feedback <skill_name> <message>")
+                .await?;
+            return Ok(());
+        };
+        let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
+
+        if feedback.is_empty() {
+            self.channel
+                .send("Usage: /feedback <skill_name> <message>")
+                .await?;
+            return Ok(());
+        }
+
+        let Some(memory) = &self.memory_state.memory else {
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
+        };
+
+        memory
+            .sqlite()
+            .record_skill_outcome(
+                skill_name,
+                None,
+                self.memory_state.conversation_id,
+                "user_rejection",
+                Some(feedback),
+            )
+            .await?;
+
+        if self.is_learning_enabled() {
+            self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
+                .await
+                .ok();
+        }
+
+        self.channel
+            .send(&format!("Feedback recorded for \"{skill_name}\"."))
+            .await?;
+        Ok(())
+    }
+
+    async fn reload_skills(&mut self) {
+        let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
+        if new_registry.fingerprint() == self.skill_state.registry.fingerprint() {
+            return;
+        }
+        self.skill_state.registry = new_registry;
+
+        let all_meta = self.skill_state.registry.all_meta();
+        let provider = self.provider.clone();
+        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+            let owned = text.to_owned();
+            let p = provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        };
+
+        let needs_inmemory_rebuild = !self
+            .skill_state
+            .matcher
+            .as_ref()
+            .is_some_and(SkillMatcherBackend::is_qdrant);
+
+        if needs_inmemory_rebuild {
+            self.skill_state.matcher = SkillMatcher::new(&all_meta, embed_fn)
+                .await
+                .map(SkillMatcherBackend::InMemory);
+        } else if let Some(ref mut backend) = self.skill_state.matcher
+            && let Err(e) = backend
+                .sync(&all_meta, &self.skill_state.embedding_model, embed_fn)
+                .await
+        {
+            tracing::warn!("failed to sync skill embeddings: {e:#}");
+        }
+
+        let all_skills: Vec<Skill> = self
+            .skill_state
+            .registry
+            .all_meta()
+            .iter()
+            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
+            .collect();
+        let trust_map = self.build_skill_trust_map().await;
+        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &trust_map);
+        self.skill_state
+            .last_skills_prompt
+            .clone_from(&skills_prompt);
+        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
+        if let Some(msg) = self.messages.first_mut() {
+            msg.content = system_prompt;
+        }
+
+        tracing::info!(
+            "reloaded {} skill(s)",
+            self.skill_state.registry.all_meta().len()
+        );
+    }
+
+    fn reload_config(&mut self) {
+        let Some(ref path) = self.config_path else {
+            return;
+        };
+        let config = match Config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("config reload failed: {e:#}");
+                return;
+            }
+        };
+
+        self.runtime.security = config.security;
+        self.runtime.timeouts = config.timeouts;
+        self.memory_state.history_limit = config.memory.history_limit;
+        self.memory_state.recall_limit = config.memory.semantic.recall_limit;
+        self.memory_state.summarization_threshold = config.memory.summarization_threshold;
+        self.skill_state.max_active_skills = config.skills.max_active_skills;
+        self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
+
+        if config.memory.context_budget_tokens > 0 {
+            self.context_state.budget = Some(ContextBudget::new(
+                config.memory.context_budget_tokens,
+                0.20,
+            ));
+        } else {
+            self.context_state.budget = None;
+        }
+        self.context_state.compaction_threshold = config.memory.compaction_threshold;
+        self.context_state.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+        self.context_state.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.memory_state.cross_session_score_threshold =
+            config.memory.cross_session_score_threshold;
+
+        #[cfg(feature = "index")]
+        {
+            self.index.repo_map_ttl =
+                std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
+        }
+
+        tracing::info!("config reloaded");
     }
 }
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
@@ -1461,5 +1783,290 @@ pub(super) mod agent_tests {
         signal.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(token2.is_cancelled());
+    }
+
+    mod resolve_message_tests {
+        use super::*;
+        use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
+        use std::future::Future;
+        use std::pin::Pin;
+        use zeph_llm::error::LlmError;
+        use zeph_llm::stt::{SpeechToText, Transcription};
+
+        struct MockStt {
+            text: Option<String>,
+        }
+
+        impl MockStt {
+            fn ok(text: &str) -> Self {
+                Self {
+                    text: Some(text.to_string()),
+                }
+            }
+
+            fn failing() -> Self {
+                Self { text: None }
+            }
+        }
+
+        impl SpeechToText for MockStt {
+            fn transcribe(
+                &self,
+                _audio: &[u8],
+                _filename: Option<&str>,
+            ) -> Pin<Box<dyn Future<Output = Result<Transcription, LlmError>> + Send + '_>>
+            {
+                let result = match &self.text {
+                    Some(t) => Ok(Transcription {
+                        text: t.clone(),
+                        language: None,
+                        duration_secs: None,
+                    }),
+                    None => Err(LlmError::TranscriptionFailed("mock error".into())),
+                };
+                Box::pin(async move { result })
+            }
+        }
+
+        fn make_agent(stt: Option<Box<dyn SpeechToText>>) -> Agent<MockChannel> {
+            let provider = mock_provider(vec!["ok".into()]);
+            let empty: Vec<String> = vec![];
+            let registry = zeph_skills::registry::SkillRegistry::load(&empty);
+            let channel = MockChannel::new(vec![]);
+            let executor = MockToolExecutor::no_tools();
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.stt = stt;
+            agent
+        }
+
+        fn audio_attachment(data: &[u8]) -> Attachment {
+            Attachment {
+                kind: AttachmentKind::Audio,
+                data: data.to_vec(),
+                filename: Some("test.wav".into()),
+            }
+        }
+
+        #[tokio::test]
+        async fn no_audio_attachments_returns_text() {
+            let agent = make_agent(None);
+            let msg = ChannelMessage {
+                text: "hello".into(),
+                attachments: vec![],
+            };
+            assert_eq!(agent.resolve_message(msg).await.0, "hello");
+        }
+
+        #[tokio::test]
+        async fn audio_without_stt_returns_original_text() {
+            let agent = make_agent(None);
+            let msg = ChannelMessage {
+                text: "hello".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            assert_eq!(agent.resolve_message(msg).await.0, "hello");
+        }
+
+        #[tokio::test]
+        async fn audio_with_stt_prepends_transcription() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            let (result, _) = agent.resolve_message(msg).await;
+            assert!(result.contains("[transcribed audio]"));
+            assert!(result.contains("transcribed text"));
+            assert!(result.contains("original"));
+        }
+
+        #[tokio::test]
+        async fn audio_with_stt_no_original_text() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("transcribed text"))));
+            let msg = ChannelMessage {
+                text: String::new(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            let (result, _) = agent.resolve_message(msg).await;
+            assert_eq!(result, "transcribed text");
+        }
+
+        #[tokio::test]
+        async fn all_transcriptions_fail_returns_original() {
+            let agent = make_agent(Some(Box::new(MockStt::failing())));
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![audio_attachment(b"audio-data")],
+            };
+            assert_eq!(agent.resolve_message(msg).await.0, "original");
+        }
+
+        #[tokio::test]
+        async fn multiple_audio_attachments_joined() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("chunk"))));
+            let msg = ChannelMessage {
+                text: String::new(),
+                attachments: vec![
+                    audio_attachment(b"a1"),
+                    audio_attachment(b"a2"),
+                    audio_attachment(b"a3"),
+                ],
+            };
+            let (result, _) = agent.resolve_message(msg).await;
+            assert_eq!(result, "chunk\nchunk\nchunk");
+        }
+
+        #[tokio::test]
+        async fn oversized_audio_skipped() {
+            let agent = make_agent(Some(Box::new(MockStt::ok("should not appear"))));
+            let big = vec![0u8; MAX_AUDIO_BYTES + 1];
+            let msg = ChannelMessage {
+                text: "original".into(),
+                attachments: vec![Attachment {
+                    kind: AttachmentKind::Audio,
+                    data: big,
+                    filename: None,
+                }],
+            };
+            assert_eq!(agent.resolve_message(msg).await.0, "original");
+        }
+    }
+
+    #[test]
+    fn detect_image_mime_jpeg() {
+        assert_eq!(detect_image_mime(Some("photo.jpg")), "image/jpeg");
+        assert_eq!(detect_image_mime(Some("photo.jpeg")), "image/jpeg");
+    }
+
+    #[test]
+    fn detect_image_mime_gif() {
+        assert_eq!(detect_image_mime(Some("anim.gif")), "image/gif");
+    }
+
+    #[test]
+    fn detect_image_mime_webp() {
+        assert_eq!(detect_image_mime(Some("img.webp")), "image/webp");
+    }
+
+    #[test]
+    fn detect_image_mime_unknown_defaults_png() {
+        assert_eq!(detect_image_mime(Some("file.bmp")), "image/png");
+        assert_eq!(detect_image_mime(None), "image/png");
+    }
+
+    #[tokio::test]
+    async fn resolve_message_extracts_image_attachment() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let msg = ChannelMessage {
+            text: "look at this".into(),
+            attachments: vec![Attachment {
+                kind: AttachmentKind::Image,
+                data: vec![0u8; 16],
+                filename: Some("test.jpg".into()),
+            }],
+        };
+        let (text, parts) = agent.resolve_message(msg).await;
+        assert_eq!(text, "look at this");
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            zeph_llm::provider::MessagePart::Image(img) => {
+                assert_eq!(img.mime_type, "image/jpeg");
+                assert_eq!(img.data.len(), 16);
+            }
+            _ => panic!("expected Image part"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_message_drops_oversized_image() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let msg = ChannelMessage {
+            text: "big image".into(),
+            attachments: vec![Attachment {
+                kind: AttachmentKind::Image,
+                data: vec![0u8; MAX_IMAGE_BYTES + 1],
+                filename: Some("huge.png".into()),
+            }],
+        };
+        let (text, parts) = agent.resolve_message(msg).await;
+        assert_eq!(text, "big image");
+        assert!(parts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_rejects_path_traversal() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut parts = Vec::new();
+        let result = agent
+            .handle_image_command("../../etc/passwd", &mut parts)
+            .await;
+        assert!(result.is_ok());
+        assert!(parts.is_empty());
+        // Channel should have received an error message
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("traversal")));
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_missing_file_sends_error() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut parts = Vec::new();
+        let result = agent
+            .handle_image_command("/nonexistent/image.png", &mut parts)
+            .await;
+        assert!(result.is_ok());
+        assert!(parts.is_empty());
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("Cannot read image")));
+    }
+
+    #[tokio::test]
+    async fn handle_image_command_loads_valid_file() {
+        use std::io::Write;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Write a small temp image
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".jpg").unwrap();
+        let data = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        tmp.write_all(&data).unwrap();
+        let path = tmp.path().to_str().unwrap().to_owned();
+
+        let mut parts = Vec::new();
+        let result = agent.handle_image_command(&path, &mut parts).await;
+        assert!(result.is_ok());
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            zeph_llm::provider::MessagePart::Image(img) => {
+                assert_eq!(img.data, data);
+                assert_eq!(img.mime_type, "image/jpeg");
+            }
+            _ => panic!("expected Image part"),
+        }
+        let sent = agent.channel.sent_messages();
+        assert!(sent.iter().any(|m| m.contains("Image loaded")));
     }
 }

@@ -1072,14 +1072,13 @@ async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
 }
 
 #[cfg(feature = "scheduler")]
-async fn bootstrap_scheduler<C, T>(
-    agent: zeph_core::agent::Agent<C, T>,
+async fn bootstrap_scheduler<C>(
+    agent: zeph_core::agent::Agent<C>,
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
-) -> zeph_core::agent::Agent<C, T>
+) -> zeph_core::agent::Agent<C>
 where
     C: zeph_core::channel::Channel,
-    T: zeph_tools::executor::ToolExecutor,
 {
     if !config.scheduler.enabled {
         if config.agent.auto_update_check {

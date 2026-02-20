@@ -1,12 +1,10 @@
+use crate::channel::Channel;
 use zeph_llm::provider::Role;
 use zeph_memory::sqlite::role_str;
-use zeph_tools::executor::ToolExecutor;
-
-use crate::channel::Channel;
 
 use super::Agent;
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     /// Load conversation history from memory and inject into messages.
     ///
     /// # Errors

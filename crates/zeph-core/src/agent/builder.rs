@@ -13,11 +13,9 @@ use crate::cost::CostTracker;
 use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
-use zeph_tools::executor::ToolExecutor;
-
 use super::Agent;
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
         self.stt = Some(stt);

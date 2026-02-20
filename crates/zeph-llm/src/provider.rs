@@ -123,11 +123,14 @@ pub enum MessagePart {
         #[serde(default)]
         is_error: bool,
     },
-    Image {
-        #[serde(with = "serde_bytes_base64")]
-        data: Vec<u8>,
-        mime_type: String,
-    },
+    Image(Box<ImageData>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImageData {
+    #[serde(with = "serde_bytes_base64")]
+    pub data: Vec<u8>,
+    pub mime_type: String,
 }
 
 mod serde_bytes_base64 {
@@ -221,8 +224,8 @@ impl Message {
                 } => {
                     let _ = write!(out, "[tool_result: {tool_use_id}]\n{content}");
                 }
-                MessagePart::Image { data, mime_type } => {
-                    let _ = write!(out, "[image: {mime_type}, {} bytes]", data.len());
+                MessagePart::Image(img) => {
+                    let _ = write!(out, "[image: {}, {} bytes]", img.mime_type, img.data.len());
                 }
             }
         }
@@ -1017,16 +1020,16 @@ mod tests {
 
     #[test]
     fn message_part_image_roundtrip_json() {
-        let part = MessagePart::Image {
+        let part = MessagePart::Image(Box::new(ImageData {
             data: vec![1, 2, 3, 4],
             mime_type: "image/jpeg".into(),
-        };
+        }));
         let json = serde_json::to_string(&part).unwrap();
         let decoded: MessagePart = serde_json::from_str(&json).unwrap();
         match decoded {
-            MessagePart::Image { data, mime_type } => {
-                assert_eq!(data, vec![1, 2, 3, 4]);
-                assert_eq!(mime_type, "image/jpeg");
+            MessagePart::Image(img) => {
+                assert_eq!(img.data, vec![1, 2, 3, 4]);
+                assert_eq!(img.mime_type, "image/jpeg");
             }
             _ => panic!("expected Image variant"),
         }
@@ -1040,10 +1043,10 @@ mod tests {
                 MessagePart::Text {
                     text: "see this".into(),
                 },
-                MessagePart::Image {
+                MessagePart::Image(Box::new(ImageData {
                     data: vec![0u8; 100],
                     mime_type: "image/png".into(),
-                },
+                })),
             ],
         );
         let content = msg.to_llm_content();

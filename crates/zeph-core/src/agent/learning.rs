@@ -1,10 +1,10 @@
-use super::{Agent, Channel, LlmProvider, ToolExecutor};
+use super::{Agent, Channel, LlmProvider};
 
 use super::{LearningConfig, Message, Role, SemanticMemory};
 
 use std::path::PathBuf;
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     pub(super) fn is_learning_enabled(&self) -> bool {
         self.learning_config.as_ref().is_some_and(|c| c.enabled)
     }

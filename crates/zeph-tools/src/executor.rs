@@ -199,6 +199,59 @@ pub trait ToolExecutor: Send + Sync {
     }
 }
 
+/// Object-safe erased version of [`ToolExecutor`] using boxed futures.
+///
+/// Implemented automatically for all `T: ToolExecutor + 'static`.
+/// Use `Box<dyn ErasedToolExecutor>` when dynamic dispatch is required.
+pub trait ErasedToolExecutor: Send + Sync {
+    fn execute_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
+
+    fn tool_definitions_erased(&self) -> Vec<crate::registry::ToolDef>;
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
+}
+
+impl<T: ToolExecutor> ErasedToolExecutor for T {
+    fn execute_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(self.execute(response))
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(self.execute_confirmed(response))
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<crate::registry::ToolDef> {
+        self.tool_definitions()
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(self.execute_tool_call(call))
+    }
+}
+
 /// Extract fenced code blocks with the given language marker from text.
 ///
 /// Searches for `` ```{lang} `` … `` ``` `` pairs, returning trimmed content.

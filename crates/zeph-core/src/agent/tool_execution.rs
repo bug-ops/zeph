@@ -1,6 +1,6 @@
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{ChatResponse, LlmProvider, Message, MessagePart, Role, ToolDefinition};
-use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use crate::channel::Channel;
@@ -68,8 +68,8 @@ fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
     }
 }
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
-    pub(super) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
+impl<C: Channel> Agent<C> {
+    pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         if self.provider.supports_tool_use() {
             tracing::debug!(
                 provider = self.provider.name(),
@@ -141,7 +141,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
             let result = self
                 .tool_executor
-                .execute(&response)
+                .execute_erased(&response)
                 .instrument(tracing::info_span!("tool_exec"))
                 .await;
             if !self.handle_tool_result(&response, result).await? {
@@ -427,7 +427,9 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
             Err(ToolError::ConfirmationRequired { command }) => {
                 let prompt = format!("Allow command: {command}?");
                 if self.channel.confirm(&prompt).await? {
-                    if let Ok(Some(out)) = self.tool_executor.execute_confirmed(response).await {
+                    if let Ok(Some(out)) =
+                        self.tool_executor.execute_confirmed_erased(response).await
+                    {
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         let display = self.maybe_redact(&formatted);
@@ -533,7 +535,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
 
         let tool_defs: Vec<ToolDefinition> = self
             .tool_executor
-            .tool_definitions()
+            .tool_definitions_erased()
             .iter()
             .map(tool_def_to_definition)
             .collect();
@@ -741,7 +743,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                     .iter()
                     .zip(tool_calls.iter())
                     .map(|(call, tc)| {
-                        self.tool_executor.execute_tool_call(call).instrument(
+                        self.tool_executor.execute_tool_call_erased(call).instrument(
                             tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
                         )
                     })
@@ -751,7 +753,7 @@ impl<C: Channel, T: ToolExecutor> Agent<C, T> {
                 use futures::StreamExt;
                 let stream =
                     futures::stream::iter(calls.iter().zip(tool_calls.iter()).map(|(call, tc)| {
-                        self.tool_executor.execute_tool_call(call).instrument(
+                        self.tool_executor.execute_tool_call_erased(call).instrument(
                             tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
                         )
                     }));

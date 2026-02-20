@@ -1,6 +1,6 @@
-use super::{Agent, Channel, LlmProvider, ToolExecutor};
+use super::{Agent, Channel, LlmProvider};
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     pub(super) async fn handle_mcp_command(
         &mut self,
         args: &str,

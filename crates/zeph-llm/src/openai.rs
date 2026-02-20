@@ -523,11 +523,9 @@ struct VisionChatRequest<'a> {
 }
 
 fn has_image_parts(messages: &[Message]) -> bool {
-    messages.iter().any(|m| {
-        m.parts
-            .iter()
-            .any(|p| matches!(p, MessagePart::Image { .. }))
-    })
+    messages
+        .iter()
+        .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))))
 }
 
 fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
@@ -539,10 +537,7 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            let has_images = msg
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::Image { .. }));
+            let has_images = msg.parts.iter().any(|p| matches!(p, MessagePart::Image(_)));
             if has_images {
                 let mut parts = Vec::new();
                 let text_str: String = msg
@@ -562,11 +557,11 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
                     parts.push(OpenAiContentPart::Text { text: text_str });
                 }
                 for part in &msg.parts {
-                    if let MessagePart::Image { data, mime_type } = part {
-                        let b64 = STANDARD.encode(data);
+                    if let MessagePart::Image(img) = part {
+                        let b64 = STANDARD.encode(&img.data);
                         parts.push(OpenAiContentPart::ImageUrl {
                             image_url: ImageUrlDetail {
-                                url: format!("data:{mime_type};base64,{b64}"),
+                                url: format!("data:{};base64,{b64}", img.mime_type),
                             },
                         });
                     }
@@ -878,6 +873,7 @@ struct JsonSchemaFormat<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ImageData;
     use tokio_stream::StreamExt;
 
     fn test_provider() -> OpenAiProvider {
@@ -1506,10 +1502,10 @@ mod tests {
                 MessagePart::Text {
                     text: "look".into(),
                 },
-                MessagePart::Image {
+                MessagePart::Image(Box::new(ImageData {
                     data: vec![1, 2, 3],
                     mime_type: "image/png".into(),
-                },
+                })),
             ],
         );
         let msg_text_only = Message::from_legacy(Role::User, "plain");
@@ -1527,10 +1523,10 @@ mod tests {
                 MessagePart::Text {
                     text: "describe this".into(),
                 },
-                MessagePart::Image {
+                MessagePart::Image(Box::new(ImageData {
                     data: data.clone(),
                     mime_type: "image/jpeg".into(),
-                },
+                })),
             ],
         );
         let converted = convert_messages_vision(&[msg]);
@@ -1569,10 +1565,10 @@ mod tests {
     fn convert_messages_vision_image_only_no_text_part() {
         let msg = Message::from_parts(
             Role::User,
-            vec![MessagePart::Image {
+            vec![MessagePart::Image(Box::new(ImageData {
                 data: vec![1],
                 mime_type: "image/png".into(),
-            }],
+            }))],
         );
         let converted = convert_messages_vision(&[msg]);
         // No text parts collected → only image_url

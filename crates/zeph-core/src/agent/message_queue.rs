@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use crate::channel::Channel;
-use zeph_tools::executor::ToolExecutor;
 
 use super::Agent;
 
@@ -33,7 +32,7 @@ pub(super) fn detect_image_mime(filename: Option<&str>) -> &'static str {
     }
 }
 
-impl<C: Channel, T: ToolExecutor> Agent<C, T> {
+impl<C: Channel> Agent<C> {
     pub(super) fn drain_channel(&mut self) {
         while self.message_queue.len() < MAX_QUEUE_SIZE {
             let Some(msg) = self.channel.try_recv() else {
