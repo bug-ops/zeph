@@ -65,6 +65,8 @@ zeph vault rm ZEPH_TELEGRAM_TOKEN
 | Flag | Description |
 |------|-------------|
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |
+| `--daemon` | Run as headless background agent with A2A endpoint (requires `daemon` + `a2a` features). See [Daemon Mode](../guides/daemon-mode.md) |
+| `--connect <URL>` | Connect TUI to a remote daemon via A2A SSE streaming (requires `tui` + `a2a` features). See [Daemon Mode](../guides/daemon-mode.md) |
 | `--config <PATH>` | Path to a TOML config file (overrides `ZEPH_CONFIG` env var) |
 | `--vault <BACKEND>` | Secrets backend: `env` or `age` (overrides `ZEPH_VAULT_BACKEND` env var) |
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
@@ -96,4 +98,10 @@ zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
 
 # Generate a new config interactively
 zeph init
+
+# Start as headless daemon with A2A endpoint
+zeph --daemon
+
+# Connect TUI to a running daemon
+zeph --connect http://localhost:3000
 ```

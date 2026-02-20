@@ -39,9 +39,16 @@ rate_limit = 60
 
 ## Task Processing
 
-Incoming `message/send` requests are routed through `AgentTaskProcessor`, which forwards the message to the configured LLM provider for real inference. The processor creates a task, sends the user message to the LLM, and returns the model response as a completed A2A task artifact.
+Incoming `message/send` requests are routed through `TaskProcessor`, which implements streaming via `ProcessorEvent`:
 
-> Current limitation: the A2A task processor runs inference only (no tool execution or memory context).
+```rust
+pub enum ProcessorEvent {
+    StatusUpdate { state: TaskState, is_final: bool },
+    ArtifactChunk { text: String, is_final: bool },
+}
+```
+
+The processor sends events through an `mpsc::Sender<ProcessorEvent>`, enabling per-token SSE streaming to connected clients. In daemon mode, `AgentTaskProcessor` bridges A2A requests to the full agent loop (LLM, tools, memory, MCP) via `LoopbackChannel`, providing complete agent capabilities over the A2A protocol.
 
 ## A2A Client
 

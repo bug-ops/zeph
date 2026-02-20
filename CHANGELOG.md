@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Command palette daemon commands: `daemon:connect`, `daemon:disconnect`, `daemon:status`
 - Command palette action commands: `app:quit` (shortcut `q`), `app:help` (shortcut `?`), `session:new`, `app:theme`
 - Fuzzy-matching for command palette — character-level gap-penalty scoring replaces substring filter; `daemon_command_registry()` merged into `filter_commands`
+- `TuiCommand::ToggleTheme` variant in command palette (placeholder — theme switching not yet implemented)
 - `--init` wizard daemon step — prompts for A2A server host, port, and auth token; writes `config.a2a.*`
 - `Embeddable` trait and `EmbeddingRegistry<T>` in zeph-memory — generic Qdrant sync/search extracted from duplicated code in QdrantSkillMatcher and McpToolRegistry (~350 lines removed)
 - MCP server command allowlist validation — only permitted commands (npx, uvx, node, python3, python, docker, deno, bun) can spawn child processes; configurable via `mcp.allowed_commands`
@@ -59,6 +60,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)
+- PID file creation uses `OpenOptions::create_new(true)` (O_CREAT|O_EXCL) to prevent TOCTOU symlink attacks
 
 ## [0.11.2] - 2026-02-19
 

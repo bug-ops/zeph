@@ -18,7 +18,12 @@ zeph --tui
 
 # Via environment variable
 ZEPH_TUI=true zeph
+
+# Connect to a remote daemon (requires tui + a2a features)
+zeph --connect http://localhost:3000
 ```
+
+When using `--connect`, the TUI renders token-by-token streaming from the remote agent via A2A SSE. See [Daemon Mode](../guides/daemon-mode.md) for the full setup guide.
 
 ## Layout
 
@@ -107,17 +112,24 @@ Press `Ctrl+P` in Insert mode to open the command palette. The palette provides 
 
 Available commands:
 
-| Command | Description |
-|---------|-------------|
-| `skill:list` | List loaded skills |
-| `mcp:list` | List MCP servers and tools |
-| `memory:stats` | Show memory statistics |
-| `view:cost` | Show cost breakdown |
-| `view:tools` | List available tools |
-| `view:config` | Show active configuration |
-| `view:autonomy` | Show autonomy/trust level |
+| Command | Description | Shortcut |
+|---------|-------------|----------|
+| `skill:list` | List loaded skills | |
+| `mcp:list` | List MCP servers and tools | |
+| `memory:stats` | Show memory statistics | |
+| `view:cost` | Show cost breakdown | |
+| `view:tools` | List available tools | |
+| `view:config` | Show active configuration | |
+| `view:autonomy` | Show autonomy/trust level | |
+| `session:new` | Start new conversation | |
+| `app:quit` | Quit application | `q` |
+| `app:help` | Show keybindings help | `?` |
+| `app:theme` | Toggle theme (dark/light) | |
+| `daemon:connect` | Connect to remote daemon | |
+| `daemon:disconnect` | Disconnect from daemon | |
+| `daemon:status` | Show connection status | |
 
-All commands are read-only and do not modify agent state. Results are displayed as system messages in the chat panel.
+View commands are read-only. Action commands (`session:new`, `app:quit`, `app:theme`) modify application state. Daemon commands manage the remote connection (see [Daemon Mode](../guides/daemon-mode.md)). The palette supports fuzzy matching on both command IDs and labels.
 
 ### Confirmation Modal
 

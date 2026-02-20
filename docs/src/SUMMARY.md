@@ -24,6 +24,7 @@
 - [Connect MCP Servers](guides/mcp.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
 - [Deploy with Docker](guides/docker.md)
+- [Daemon Mode](guides/daemon-mode.md)
 
 # Advanced
 

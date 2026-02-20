@@ -1,6 +1,6 @@
 # Channels
 
-Zeph supports five I/O channels. Each implements the `Channel` trait and can be selected at runtime.
+Zeph supports six I/O channels. Each implements the `Channel` trait and can be selected at runtime.
 
 ## Overview
 
@@ -11,6 +11,7 @@ Zeph supports five I/O channels. Each implements the `Channel` trait and can be 
 | Slack | `ZEPH_SLACK_BOT_TOKEN` (requires `slack` feature) | `chat.update` every 2s | Reply "yes" |
 | Telegram | `ZEPH_TELEGRAM_TOKEN` | Edit-in-place every 10s | Reply "yes" |
 | TUI | `--tui` flag (requires `tui` feature) | Real-time in chat panel | Auto-confirm |
+| Loopback | `--daemon` flag (requires `daemon` + `a2a` features) | Via `LoopbackEvent` mpsc | Auto-confirm |
 
 ## CLI Channel
 
@@ -76,13 +77,20 @@ Rich terminal interface based on ratatui. See [TUI Dashboard](tui.md) for full d
 zeph --tui
 ```
 
+## Loopback Channel
+
+Internal headless channel used by daemon mode. `LoopbackChannel` bridges the A2A `TaskProcessor` with the agent loop via two linked tokio mpsc pairs. The handle side (`LoopbackHandle`) exposes `input_tx` for sending user messages and `output_rx` for receiving `LoopbackEvent` variants (`Chunk`, `Flush`, `FullMessage`, `Status`, `ToolOutput`). Confirmations are auto-approved.
+
+See [Daemon Mode](../guides/daemon-mode.md) for usage.
+
 ## Channel Selection Priority
 
-1. `--tui` flag or `ZEPH_TUI=true` → TUI
-2. Discord config with token → Discord
-3. Slack config with bot_token → Slack
-4. `ZEPH_TELEGRAM_TOKEN` set → Telegram
-5. Default → CLI
+1. `--daemon` flag → Loopback (headless, requires `daemon` + `a2a`)
+2. `--tui` flag or `ZEPH_TUI=true` → TUI
+3. Discord config with token → Discord
+4. Slack config with bot_token → Slack
+5. `ZEPH_TELEGRAM_TOKEN` set → Telegram
+6. Default → CLI
 
 Only one channel is active per session.
 

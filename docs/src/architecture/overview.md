@@ -61,3 +61,5 @@ Queued messages are processed sequentially with full context rebuilding between 
 - **Feature gates:** optional crates (`zeph-index`, `zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
 - **Context engineering:** proportional budget allocation, semantic recall injection, message trimming, runtime compaction, environment context injection, progressive skill loading, ZEPH.md project config discovery
 - **Graceful shutdown:** Ctrl-C triggers ordered teardown — the agent loop exits cleanly, MCP server connections are closed, and pending async tasks are drained before process exit
+- **LoopbackChannel:** headless `Channel` implementation using two linked tokio mpsc pairs (`input_tx`/`input_rx` for user messages, `output_tx`/`output_rx` for `LoopbackEvent` variants). Auto-approves confirmations. Used by daemon mode to bridge the A2A task processor with the agent loop
+- **Streaming TaskProcessor:** `ProcessorEvent` enum (`StatusUpdate`, `ArtifactChunk`) replaces the former synchronous `ProcessResult`. The `TaskProcessor::process` method accepts an `mpsc::Sender<ProcessorEvent>` for per-token SSE streaming to connected A2A clients

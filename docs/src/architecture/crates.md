@@ -18,6 +18,7 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `VaultProvider` trait — pluggable secret resolution
 - `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
 - `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking (feature-gated: `daemon`)
+- `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` — headless channel for daemon mode using paired tokio mpsc channels; auto-approves confirmations
 
 ## zeph-llm
 
@@ -67,7 +68,7 @@ SQLite-backed conversation persistence with Qdrant vector search.
 
 Channel implementations for the Zeph agent.
 
-- `AnyChannel` — enum dispatch over all channel variants (Cli, Telegram, Discord, Slack, Tui), used by the binary for runtime channel selection
+- `AnyChannel` — enum dispatch over all channel variants (Cli, Telegram, Discord, Slack, Tui, Loopback), used by the binary for runtime channel selection
 - `ChannelError` — typed error enum (`Telegram`, `NoActiveChat`) replacing prior `anyhow` usage
 - `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
 - `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window
@@ -140,13 +141,14 @@ A2A protocol client and server (optional, feature-gated).
 - `AgentCardBuilder` — construct agent cards from runtime config
 - A2A Server — axum-based HTTP server with bearer auth, rate limiting with TTL-based eviction (60s sweep, 10K max entries), body size limits
 - `TaskManager` — in-memory task lifecycle management
+- `ProcessorEvent` — streaming event enum (`StatusUpdate`, `ArtifactChunk`) for per-token SSE delivery; `TaskProcessor::process` accepts `mpsc::Sender<ProcessorEvent>`
 
 ## zeph-tui
 
 ratatui-based TUI dashboard (optional, feature-gated).
 
 - `TuiChannel` — Channel trait implementation bridging agent loop and TUI render loop via mpsc, oneshot-based confirmation dialog, bounded message queue (max 10) with 500ms merge window
-- `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`, queue badge indicator `[+N queued]`, Ctrl+K to clear queue
+- `App` — TUI state machine with Normal/Insert/Confirm modes, keybindings, scroll, live metrics polling via `watch::Receiver`, queue badge indicator `[+N queued]`, Ctrl+K to clear queue, command palette with fuzzy matching
 - `EventReader` — crossterm event loop on dedicated OS thread (avoids tokio starvation)
 - Side panel widgets: `skills` (active/total), `memory` (SQLite, Qdrant, embeddings), `resources` (tokens, API calls, latency)
 - Chat widget with bottom-up message feed, pulldown-cmark markdown rendering, scrollbar with proportional thumb, mouse scroll, thinking block segmentation, and streaming cursor

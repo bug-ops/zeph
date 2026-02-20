@@ -87,6 +87,8 @@ zeph                     Run the agent (default)
 zeph init                Interactive configuration wizard
 zeph init -o path.toml   Write generated config to a specific path
 zeph --tui               Run with TUI dashboard
+zeph --daemon            Run as headless background daemon with A2A endpoint
+zeph --connect <url>     Connect TUI to a running daemon via SSE
 zeph --config <path>     Use a custom config file
 zeph --vault <backend>   Secrets backend: env or age
 zeph --vault-key <path>  Path to age identity key file
@@ -288,6 +290,24 @@ cargo build --release --features tui
 ./target/release/zeph --tui
 ```
 
+### Daemon Mode
+
+Run Zeph as a headless background agent. The daemon exposes an A2A endpoint for programmatic interaction and accepts remote TUI connections via SSE streaming.
+
+```bash
+# Start the daemon (requires daemon + a2a features)
+cargo run --release --features daemon,a2a -- --daemon
+
+# Connect a TUI to the running daemon (requires tui + a2a features)
+cargo run --release --features tui,a2a -- --connect http://localhost:3000
+```
+
+The daemon uses a `LoopbackChannel` for headless agent I/O, allowing programmatic message exchange without a terminal or chat adapter.
+
+### Command Palette
+
+Press `Ctrl+P` in the TUI to open the command palette. 14+ commands with fuzzy matching and keybinding hints provide quick access to agent actions — file picker, skill stats, metrics toggle, theme switching, and more.
+
 [TUI guide →](https://bug-ops.github.io/zeph/guide/tui.html)
 
 ### TUI Testing
@@ -381,7 +401,7 @@ Always compiled in: `openai`, `compatible`, `orchestrator`, `router`, `self-lear
 | `a2a` | Agent-to-agent protocol |
 | `index` | AST-based code indexing |
 | `gateway` | HTTP webhook ingestion |
-| `daemon` | Component supervisor |
+| `daemon` | Headless background agent with A2A endpoint and remote TUI support |
 | `pdf` | PDF document loading for RAG |
 | `stt` | Speech-to-text via OpenAI Whisper API |
 | `scheduler` | Cron-based periodic tasks; auto-update check runs daily at 09:00 |
