@@ -187,7 +187,16 @@ impl AppBuilder {
     }
 
     pub fn skill_paths(&self) -> Vec<PathBuf> {
-        self.config.skills.paths.iter().map(PathBuf::from).collect()
+        let mut paths: Vec<PathBuf> = self.config.skills.paths.iter().map(PathBuf::from).collect();
+        let managed_dir = managed_skills_dir();
+        if !paths.contains(&managed_dir) {
+            paths.push(managed_dir);
+        }
+        paths
+    }
+
+    pub fn managed_skills_dir() -> PathBuf {
+        managed_skills_dir()
     }
 
     pub async fn build_tool_executor(&self) -> anyhow::Result<ToolExecutorBundle> {
@@ -825,6 +834,11 @@ pub fn build_orchestrator(
         orch_cfg.default.clone(),
         orch_cfg.embed.clone(),
     )?)
+}
+
+/// Returns the default managed skills directory: `~/.config/zeph/skills/`.
+pub fn managed_skills_dir() -> PathBuf {
+    crate::vault::default_vault_dir().join("skills")
 }
 
 pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {

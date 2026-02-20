@@ -86,6 +86,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_managed_skills_dir(mut self, dir: PathBuf) -> Self {
+        self.skill_state.managed_dir = Some(dir);
+        self
+    }
+
+    #[must_use]
     pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
         self.config_path = Some(path);
         self.config_reload_rx = Some(rx);

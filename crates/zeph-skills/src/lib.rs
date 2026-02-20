@@ -3,6 +3,7 @@
 pub mod error;
 pub mod evolution;
 pub mod loader;
+pub mod manager;
 pub mod matcher;
 pub mod prompt;
 pub mod qdrant_matcher;

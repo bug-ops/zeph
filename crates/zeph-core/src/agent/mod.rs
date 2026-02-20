@@ -7,6 +7,7 @@ mod learning;
 mod mcp;
 mod message_queue;
 mod persistence;
+mod skill_management;
 mod tool_execution;
 mod trust_commands;
 mod utils;
@@ -78,6 +79,7 @@ pub(super) struct MemoryState {
 pub(super) struct SkillState {
     pub(super) registry: SkillRegistry,
     pub(super) skill_paths: Vec<PathBuf>,
+    pub(super) managed_dir: Option<PathBuf>,
     pub(super) matcher: Option<SkillMatcherBackend>,
     pub(super) max_active_skills: usize,
     pub(super) disambiguation_threshold: f32,
@@ -193,6 +195,7 @@ impl<C: Channel> Agent<C> {
             skill_state: SkillState {
                 registry,
                 skill_paths: Vec::new(),
+                managed_dir: None,
                 matcher,
                 max_active_skills,
                 disambiguation_threshold: 0.05,

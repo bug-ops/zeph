@@ -430,9 +430,11 @@ impl<C: Channel> Agent<C> {
             Some("trust") => self.handle_skill_trust_command(&parts[1..]).await,
             Some("block") => self.handle_skill_block(parts.get(1).copied()).await,
             Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
+            Some("install") => self.handle_skill_install(parts.get(1).copied()).await,
+            Some("remove") => self.handle_skill_remove(parts.get(1).copied()).await,
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove")
                     .await?;
                 Ok(())
             }

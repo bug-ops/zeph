@@ -164,6 +164,49 @@ enum Command {
         #[command(subcommand)]
         command: VaultCommand,
     },
+    /// Manage external skills
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Install a skill from a git URL or local path
+    Install {
+        /// Git URL or local directory path
+        source: String,
+    },
+    /// Remove an installed skill
+    Remove {
+        /// Skill name
+        name: String,
+    },
+    /// List installed skills
+    List,
+    /// Verify skill integrity (blake3 hash check)
+    Verify {
+        /// Skill name (omit to verify all)
+        name: Option<String>,
+    },
+    /// Set trust level for a skill
+    Trust {
+        /// Skill name
+        name: String,
+        /// Trust level: trusted, verified, quarantined, blocked
+        level: String,
+    },
+    /// Block a skill
+    Block {
+        /// Skill name
+        name: String,
+    },
+    /// Unblock a skill (sets to quarantined)
+    Unblock {
+        /// Skill name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -206,6 +249,10 @@ async fn main() -> anyhow::Result<()> {
                 cli.vault_key.as_deref(),
                 cli.vault_path.as_deref(),
             );
+        }
+        Some(Command::Skill { command: skill_cmd }) => {
+            tracing_subscriber::fmt::init();
+            return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
         }
         None => {}
     }
@@ -426,6 +473,7 @@ async fn main() -> anyhow::Result<()> {
     .with_embedding_model(embed_model.clone())
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths.clone(), reload_rx)
+    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
     .with_memory(
         memory,
         conversation_id,
@@ -727,6 +775,261 @@ async fn main() -> anyhow::Result<()> {
 
 fn default_vault_dir() -> PathBuf {
     zeph_core::vault::default_vault_dir()
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_skill_command(
+    cmd: SkillCommand,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use zeph_core::bootstrap::{managed_skills_dir, resolve_config_path};
+    use zeph_skills::manager::SkillManager;
+
+    let config_file = resolve_config_path(config_path);
+    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+
+    let managed_dir = managed_skills_dir();
+    std::fs::create_dir_all(&managed_dir)
+        .map_err(|e| anyhow::anyhow!("failed to create managed skills dir: {e}"))?;
+
+    let mgr = SkillManager::new(managed_dir.clone());
+
+    let sqlite_path = config.memory.sqlite_path.clone();
+
+    match cmd {
+        SkillCommand::Install { source } => {
+            let result = if source.starts_with("http://")
+                || source.starts_with("https://")
+                || source.starts_with("git@")
+            {
+                mgr.install_from_url(&source)
+            } else {
+                mgr.install_from_path(std::path::Path::new(&source))
+            }
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+            let (source_kind, source_url, source_path) = match &result.source {
+                zeph_skills::SkillSource::Hub { url } => ("hub", Some(url.as_str()), None),
+                zeph_skills::SkillSource::File { path } => {
+                    ("file", None, Some(path.to_string_lossy().into_owned()))
+                }
+                zeph_skills::SkillSource::Local => ("local", None, None),
+            };
+            store
+                .upsert_skill_trust(
+                    &result.name,
+                    "quarantined",
+                    source_kind,
+                    source_url,
+                    source_path.as_deref(),
+                    &result.blake3_hash,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("trust upsert failed: {e}"))?;
+
+            println!(
+                "Installed skill \"{}\" (hash: {}..., trust: quarantined)",
+                result.name,
+                &result.blake3_hash[..8]
+            );
+        }
+
+        SkillCommand::Remove { name } => {
+            mgr.remove(&name).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+            store
+                .delete_skill_trust(&name)
+                .await
+                .map_err(|e| anyhow::anyhow!("trust delete failed: {e}"))?;
+            println!("Removed skill \"{name}\".");
+        }
+
+        SkillCommand::List => {
+            let installed = mgr.list_installed().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if installed.is_empty() {
+                println!("No skills installed in {}.", managed_dir.display());
+                return Ok(());
+            }
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+            println!("Installed skills ({}):\n", installed.len());
+            for skill in &installed {
+                let trust = store
+                    .load_skill_trust(&skill.name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| "no trust record".to_owned(), |r| r.trust_level);
+                println!("  {} — {} [{}]", skill.name, skill.description, trust);
+            }
+        }
+
+        SkillCommand::Verify { name } => {
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+
+            if let Some(name) = name {
+                let current_hash = mgr.verify(&name).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let stored = store
+                    .load_skill_trust(&name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|r| r.blake3_hash);
+                match stored {
+                    Some(ref h) if h == &current_hash => {
+                        println!("{name}: OK (hash matches)");
+                    }
+                    Some(_) => {
+                        println!("{name}: MISMATCH (hash changed, setting to quarantined)");
+                        store
+                            .set_skill_trust_level(&name, "quarantined")
+                            .await
+                            .map_err(|e| anyhow::anyhow!("trust update failed: {e}"))?;
+                        store
+                            .update_skill_hash(&name, &current_hash)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("hash update failed: {e}"))?;
+                    }
+                    None => {
+                        println!("{name}: no stored hash (hash: {}...)", &current_hash[..8]);
+                    }
+                }
+            } else {
+                // Verify all.
+                let rows = store
+                    .load_all_skill_trust()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let stored_hashes: HashMap<String, String> = rows
+                    .into_iter()
+                    .map(|r| (r.skill_name, r.blake3_hash))
+                    .collect();
+                let results = mgr
+                    .verify_all(&stored_hashes)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                for r in &results {
+                    match r.stored_hash_matches {
+                        Some(true) => println!("{}: OK", r.name),
+                        Some(false) => {
+                            println!("{}: MISMATCH (setting to quarantined)", r.name);
+                            store
+                                .set_skill_trust_level(&r.name, "quarantined")
+                                .await
+                                .map_err(|e| anyhow::anyhow!("trust update failed: {e}"))?;
+                            store
+                                .update_skill_hash(&r.name, &r.current_hash)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("hash update failed: {e}"))?;
+                        }
+                        None => println!("{}: no stored hash", r.name),
+                    }
+                }
+            }
+        }
+
+        SkillCommand::Trust { name, level } => {
+            let valid = matches!(
+                level.as_str(),
+                "trusted" | "verified" | "quarantined" | "blocked"
+            );
+            if !valid {
+                anyhow::bail!(
+                    "invalid trust level: {level}. Use: trusted, verified, quarantined, blocked"
+                );
+            }
+
+            // REV-003: re-verify hash before promoting to trusted/verified.
+            if matches!(level.as_str(), "trusted" | "verified") {
+                let managed_dir = zeph_core::bootstrap::managed_skills_dir();
+                let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
+                let name_clone = name.clone();
+                let current_hash = tokio::task::spawn_blocking(move || mgr.verify(&name_clone))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {e}"))??;
+
+                let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+                let row = store
+                    .load_skill_trust(&name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                match row {
+                    None => anyhow::bail!("skill \"{name}\" not found in trust database"),
+                    Some(r) if r.blake3_hash != current_hash => {
+                        anyhow::bail!(
+                            "hash mismatch for \"{name}\" — run `zeph skill verify {name}` first"
+                        );
+                    }
+                    Some(_) => {}
+                }
+
+                let updated = store
+                    .set_skill_trust_level(&name, &level)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                if updated {
+                    println!("Trust level for \"{name}\" set to {level}.");
+                } else {
+                    anyhow::bail!("skill \"{name}\" not found in trust database");
+                }
+            } else {
+                let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+                let updated = store
+                    .set_skill_trust_level(&name, &level)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                if updated {
+                    println!("Trust level for \"{name}\" set to {level}.");
+                } else {
+                    anyhow::bail!("skill \"{name}\" not found in trust database");
+                }
+            }
+        }
+
+        SkillCommand::Block { name } => {
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+            let updated = store
+                .set_skill_trust_level(&name, "blocked")
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if updated {
+                println!("Skill \"{name}\" blocked.");
+            } else {
+                anyhow::bail!("skill \"{name}\" not found in trust database");
+            }
+        }
+
+        SkillCommand::Unblock { name } => {
+            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+            let updated = store
+                .set_skill_trust_level(&name, "quarantined")
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if updated {
+                println!("Skill \"{name}\" unblocked (set to quarantined).");
+            } else {
+                anyhow::bail!("skill \"{name}\" not found in trust database");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_vault_command(
@@ -1115,6 +1418,7 @@ async fn run_daemon(
     .with_embedding_model(embed_model)
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths, reload_rx)
+    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
     .with_memory(
         memory,
         conversation_id,
