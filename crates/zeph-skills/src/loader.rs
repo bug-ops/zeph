@@ -10,6 +10,7 @@ pub struct SkillMeta {
     pub license: Option<String>,
     pub metadata: Vec<(String, String)>,
     pub allowed_tools: Vec<String>,
+    pub requires_secrets: Vec<String>,
     pub skill_dir: PathBuf,
 }
 
@@ -71,6 +72,7 @@ struct RawFrontmatter {
     license: Option<String>,
     metadata: Vec<(String, String)>,
     allowed_tools: Vec<String>,
+    requires_secrets: Vec<String>,
 }
 
 fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
@@ -80,6 +82,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     let mut license = None;
     let mut metadata = Vec::new();
     let mut allowed_tools = Vec::new();
+    let mut requires_secrets = Vec::new();
 
     for line in yaml_str.lines() {
         let line = line.trim();
@@ -101,6 +104,13 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
                         .filter(|s| !s.is_empty())
                         .collect();
                 }
+                "requires-secrets" => {
+                    requires_secrets = value
+                        .split(',')
+                        .map(|s| s.trim().to_lowercase().replace('-', "_"))
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
                 _ => {
                     if !value.is_empty() {
                         metadata.push((key.to_string(), value));
@@ -117,6 +127,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         license,
         metadata,
         allowed_tools,
+        requires_secrets,
     }
 }
 
@@ -206,6 +217,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         license: raw.license,
         metadata: raw.metadata,
         allowed_tools: raw.allowed_tools,
+        requires_secrets: raw.requires_secrets,
         skill_dir,
     })
 }
@@ -439,5 +451,77 @@ mod tests {
         std::fs::write(&path, format!("---\nname: {name}\ndescription: d\n---\nb")).unwrap();
 
         assert!(load_skill_meta(&path).is_err());
+    }
+
+    #[test]
+    fn requires_secrets_parsed_from_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "github-api",
+            "---\nname: github-api\ndescription: GitHub integration.\nrequires-secrets: github-token, github-org\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["github_token", "github_org"]);
+    }
+
+    #[test]
+    fn requires_secrets_empty_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "no-secrets",
+            "---\nname: no-secrets\ndescription: No secrets needed.\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert!(meta.requires_secrets.is_empty());
+    }
+
+    #[test]
+    fn requires_secrets_lowercased() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "mixed-case",
+            "---\nname: mixed-case\ndescription: Case test.\nrequires-secrets: MY-KEY, Another-Key\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["my_key", "another_key"]);
+    }
+
+    #[test]
+    fn requires_secrets_single_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "single",
+            "---\nname: single\ndescription: One secret.\nrequires-secrets: github_token\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["github_token"]);
+    }
+
+    #[test]
+    fn requires_secrets_trailing_comma() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "trailing",
+            "---\nname: trailing\ndescription: Trailing comma.\nrequires-secrets: key_a, key_b,\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["key_a", "key_b"]);
+    }
+
+    #[test]
+    fn requires_secrets_underscores_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "underscored",
+            "---\nname: underscored\ndescription: Already underscored.\nrequires-secrets: my_api_key, another_token\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["my_api_key", "another_token"]);
     }
 }

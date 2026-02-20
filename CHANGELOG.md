@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hash re-verification on trust promotion — recomputes blake3 before promoting to trusted/verified, rejects on mismatch
 - URL scheme allowlist and path traversal validation in SkillManager as defense-in-depth
 - Blocking I/O wrapped in `spawn_blocking` for async safety in skill management handlers
+- `custom: HashMap<String, Secret>` field in `ResolvedSecrets` for user-defined vault secrets (#682)
+- `list_keys()` method on `VaultProvider` trait with implementations for Age and Env backends (#682)
+- `requires-secrets` field in SKILL.md frontmatter for declaring per-skill secret dependencies (#682)
+- Gate skill activation on required secrets availability in system prompt builder (#682)
+- Inject active skill's secrets as scoped env vars into `ShellExecutor` at execution time (#682)
+- Custom secrets step in interactive config wizard (`--init`) (#682)
 
 ## [0.11.3] - 2026-02-20
 

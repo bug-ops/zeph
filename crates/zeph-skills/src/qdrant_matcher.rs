@@ -153,6 +153,7 @@ mod tests {
             license: None,
             metadata: Vec::new(),
             allowed_tools: Vec::new(),
+            requires_secrets: Vec::new(),
             skill_dir: PathBuf::new(),
         }
     }

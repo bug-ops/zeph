@@ -993,6 +993,9 @@ pub struct ResolvedSecrets {
     pub discord_token: Option<Secret>,
     pub slack_bot_token: Option<Secret>,
     pub slack_signing_secret: Option<Secret>,
+    /// Arbitrary skill secrets resolved from `ZEPH_SECRET_*` vault keys.
+    /// Key is the lowercased name after stripping the prefix (e.g. `github_token`).
+    pub custom: HashMap<String, Secret>,
 }
 
 impl Default for Config {

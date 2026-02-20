@@ -25,7 +25,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `metrics` | Runtime metrics collection |
 | `project` | Project-level context detection |
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
-| `vault` | Secret storage and resolution via vault providers (age-encrypted read/write) |
+| `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection |
 | `diff` | Diff rendering utilities |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 

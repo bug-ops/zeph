@@ -146,6 +146,18 @@ impl Config {
         {
             sl.signing_secret = Some(val);
         }
+        for key in vault.list_keys() {
+            if let Some(custom_name) = key.strip_prefix("ZEPH_SECRET_")
+                && !custom_name.is_empty()
+                && let Some(val) = vault.get_secret(&key).await?
+            {
+                // Canonical form uses underscores. Both `_` and `-` in vault key names
+                // are normalized to `_` so that ZEPH_SECRET_MY-KEY and ZEPH_SECRET_MY_KEY
+                // both map to "my_key", matching SKILL.md requires-secrets parsing.
+                let normalized = custom_name.to_lowercase().replace('-', "_");
+                self.secrets.custom.insert(normalized, Secret::new(val));
+            }
+        }
         Ok(())
     }
 }

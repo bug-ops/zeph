@@ -197,6 +197,9 @@ pub trait ToolExecutor: Send + Sync {
     ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         std::future::ready(Ok(None))
     }
+
+    /// Inject environment variables for the currently active skill. No-op by default.
+    fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -220,6 +223,9 @@ pub trait ErasedToolExecutor: Send + Sync {
         &'a self,
         call: &'a ToolCall,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
+
+    /// Inject environment variables for the currently active skill. No-op by default.
+    fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 }
 
 impl<T: ToolExecutor> ErasedToolExecutor for T {
@@ -249,6 +255,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
         Box::pin(self.execute_tool_call(call))
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        ToolExecutor::set_skill_env(self, env);
     }
 }
 

@@ -37,6 +37,7 @@ Use `/skills` in chat to see active skills and their usage statistics.
 - **Progressive loading**: only metadata (~100 tokens per skill) is loaded at startup. Full body is loaded on first activation and cached
 - **Hot-reload**: edit a `SKILL.md` file, changes apply without restart
 - **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash)
+- **Secret gating**: skills that declare `requires-secrets` in their frontmatter are excluded from the prompt if the required secrets are not present in the vault. This prevents the agent from attempting to use a skill that would fail due to missing credentials
 
 ## External Skill Management
 

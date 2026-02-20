@@ -99,6 +99,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_available_secrets(
+        mut self,
+        secrets: impl IntoIterator<Item = (String, crate::vault::Secret)>,
+    ) -> Self {
+        self.skill_state.available_custom_secrets = secrets.into_iter().collect();
+        self
+    }
+
+    #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         self.learning_config = Some(config);
         self

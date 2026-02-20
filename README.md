@@ -109,6 +109,9 @@ zeph skill verify              Verify integrity of installed skills
 zeph skill trust <name>        Mark a skill as trusted
 zeph skill block <name>        Block a skill from execution
 zeph skill unblock <name>      Unblock a previously blocked skill
+
+# Custom skill secrets use the ZEPH_SECRET_* prefix:
+zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_...   # injected as GITHUB_TOKEN for skills that require it
 ```
 
 ## Automated Context Engineering
@@ -265,6 +268,8 @@ Capabilities live in `SKILL.md` files — YAML frontmatter + markdown body. Drop
 Skills **evolve**: failure detection triggers self-reflection, and the agent generates improved versions — with optional manual approval before activation. A 4-tier trust model (Trusted → Verified → Quarantined → Blocked) with blake3 integrity hashing ensures that only verified skills execute privileged operations.
 
 **External skill management**: install, remove, verify, and control trust for skills via `zeph skill` CLI subcommands or in-session `/skill install` and `/skill remove` commands with automatic hot-reload. Managed skills are stored in `~/.config/zeph/skills/`.
+
+Skills can declare **required secrets** via the `requires-secrets` frontmatter field. Zeph resolves each named secret from the vault and injects it as an environment variable scoped to tool execution for that skill — no hardcoded credentials, no secret leakage across skills. Store custom secrets under the `ZEPH_SECRET_<NAME>` key; the `zeph init` wizard includes a dedicated step for this.
 
 [Self-learning →](https://bug-ops.github.io/zeph/guide/self-learning.html) · [Skill trust →](https://bug-ops.github.io/zeph/guide/skill-trust.html)
 

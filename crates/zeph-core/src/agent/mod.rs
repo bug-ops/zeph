@@ -41,6 +41,7 @@ use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::cost::CostTracker;
+use crate::vault::Secret;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
 
@@ -87,6 +88,8 @@ pub(super) struct SkillState {
     pub(super) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     pub(super) active_skill_names: Vec<String>,
     pub(super) last_skills_prompt: String,
+    /// Custom secrets available at runtime: key=hyphenated name, value=secret.
+    pub(super) available_custom_secrets: HashMap<String, Secret>,
 }
 
 pub(super) struct ContextState {
@@ -124,7 +127,7 @@ pub(super) struct RuntimeConfig {
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
-    tool_executor: Box<dyn ErasedToolExecutor>,
+    pub(crate) tool_executor: Box<dyn ErasedToolExecutor>,
     messages: Vec<Message>,
     pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
@@ -203,6 +206,7 @@ impl<C: Channel> Agent<C> {
                 skill_reload_rx: None,
                 active_skill_names: Vec::new(),
                 last_skills_prompt: skills_prompt,
+                available_custom_secrets: HashMap::new(),
             },
             context_state: ContextState {
                 budget: None,
@@ -891,12 +895,14 @@ pub(super) mod agent_tests {
 
     pub(crate) struct MockToolExecutor {
         outputs: Arc<Mutex<Vec<Result<Option<ToolOutput>, ToolError>>>>,
+        pub(crate) captured_env: Arc<Mutex<Vec<Option<std::collections::HashMap<String, String>>>>>,
     }
 
     impl MockToolExecutor {
         pub(crate) fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
             Self {
                 outputs: Arc::new(Mutex::new(outputs)),
+                captured_env: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -913,6 +919,10 @@ pub(super) mod agent_tests {
             } else {
                 outputs.remove(0)
             }
+        }
+
+        fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+            self.captured_env.lock().unwrap().push(env);
         }
     }
 

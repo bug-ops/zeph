@@ -139,11 +139,13 @@ impl<C: Channel> Agent<C> {
             });
             self.persist_message(Role::Assistant, &response).await;
 
+            self.inject_active_skill_env();
             let result = self
                 .tool_executor
                 .execute_erased(&response)
                 .instrument(tracing::info_span!("tool_exec"))
                 .await;
+            self.tool_executor.set_skill_env(None);
             if !self.handle_tool_result(&response, result).await? {
                 return Ok(());
             }
@@ -735,6 +737,8 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
+        // Inject active skill secrets before tool execution
+        self.inject_active_skill_env();
         // Execute tool calls in parallel, with cancellation
         let max_parallel = self.runtime.timeouts.max_parallel_tools;
         let exec_fut = async {
@@ -763,12 +767,14 @@ impl<C: Channel> Agent<C> {
         let tool_results = tokio::select! {
             results = exec_fut => results,
             () = self.cancel_token.cancelled() => {
+                self.tool_executor.set_skill_env(None);
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 return Ok(());
             }
         };
+        self.tool_executor.set_skill_env(None);
 
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
@@ -841,6 +847,41 @@ impl<C: Channel> Agent<C> {
         self.push_message(user_msg);
 
         Ok(())
+    }
+
+    /// Inject environment variables from the active skill's required secrets into the executor.
+    ///
+    /// Secret `github_token` maps to env var `GITHUB_TOKEN` (uppercased, underscores preserved).
+    fn inject_active_skill_env(&self) {
+        if self.skill_state.active_skill_names.is_empty()
+            || self.skill_state.available_custom_secrets.is_empty()
+        {
+            return;
+        }
+        let env: std::collections::HashMap<String, String> = self
+            .skill_state
+            .active_skill_names
+            .iter()
+            .filter_map(|name| self.skill_state.registry.get_skill(name).ok())
+            .flat_map(|skill| {
+                skill
+                    .meta
+                    .requires_secrets
+                    .into_iter()
+                    .filter_map(|secret_name| {
+                        self.skill_state
+                            .available_custom_secrets
+                            .get(&secret_name)
+                            .map(|secret| {
+                                let env_key = secret_name.to_uppercase();
+                                (env_key, secret.expose().to_owned())
+                            })
+                    })
+            })
+            .collect();
+        if !env.is_empty() {
+            self.tool_executor.set_skill_env(Some(env));
+        }
     }
 
     /// Returns `true` if a doom loop was detected and the caller should break.
@@ -1441,5 +1482,143 @@ mod tests {
             let out = r.as_ref().unwrap().as_ref().unwrap();
             assert_eq!(out.tool_name, format!("tool-{i}"));
         }
+    }
+
+    #[test]
+    fn inject_active_skill_env_maps_secret_name_to_env_key() {
+        use std::collections::HashMap;
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        // Verify the mapping logic: "github_token" -> "GITHUB_TOKEN"
+        let secret_name = "github_token";
+        let env_key = secret_name.to_uppercase();
+        assert_eq!(env_key, "GITHUB_TOKEN");
+
+        // "some_api_key" -> "SOME_API_KEY"
+        let secret_name2 = "some_api_key";
+        let env_key2 = secret_name2.to_uppercase();
+        assert_eq!(env_key2, "SOME_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn inject_active_skill_env_injects_only_active_skill_secrets() {
+        use crate::agent::Agent;
+        #[allow(clippy::wildcard_imports)]
+        use crate::agent::agent_tests::*;
+        use crate::vault::Secret;
+        use zeph_skills::registry::SkillRegistry;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Add available custom secrets
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("github_token".into(), Secret::new("gh-secret-val"));
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("other_key".into(), Secret::new("other-val"));
+
+        // No active skills — inject_active_skill_env should be a no-op
+        assert!(agent.skill_state.active_skill_names.is_empty());
+        agent.inject_active_skill_env();
+        // tool_executor.set_skill_env was not called (no-op path)
+        assert!(agent.skill_state.active_skill_names.is_empty());
+    }
+
+    #[test]
+    fn inject_active_skill_env_calls_set_skill_env_with_correct_map() {
+        use crate::agent::Agent;
+        #[allow(clippy::wildcard_imports)]
+        use crate::agent::agent_tests::*;
+        use crate::vault::Secret;
+        use std::sync::{Arc, Mutex};
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        // Build a registry with one skill that requires "github_token".
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("gh-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: gh-skill\ndescription: GitHub.\nrequires-secrets: github_token\n---\nbody",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let executor = MockToolExecutor::no_tools();
+        let captured = Arc::clone(&executor.captured_env);
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("github_token".into(), Secret::new("gh-val"));
+        agent.skill_state.active_skill_names.push("gh-skill".into());
+
+        agent.inject_active_skill_env();
+
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 1, "set_skill_env must be called once");
+        let env = calls[0].as_ref().expect("env must be Some");
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some("gh-val"));
+    }
+
+    #[test]
+    fn inject_active_skill_env_clears_after_call() {
+        use crate::agent::Agent;
+        #[allow(clippy::wildcard_imports)]
+        use crate::agent::agent_tests::*;
+        use crate::vault::Secret;
+        use std::sync::{Arc, Mutex};
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("tok-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tok-skill\ndescription: Token.\nrequires-secrets: api_token\n---\nbody",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let executor = MockToolExecutor::no_tools();
+        let captured = Arc::clone(&executor.captured_env);
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("api_token".into(), Secret::new("tok-val"));
+        agent
+            .skill_state
+            .active_skill_names
+            .push("tok-skill".into());
+
+        // First call — injects env
+        agent.inject_active_skill_env();
+        // Simulate post-execution clear
+        agent.tool_executor.set_skill_env(None);
+
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 2, "inject + clear = 2 calls");
+        assert!(calls[0].is_some(), "first call must set env");
+        assert!(calls[1].is_none(), "second call must clear env");
     }
 }

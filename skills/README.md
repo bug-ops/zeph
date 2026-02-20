@@ -69,8 +69,29 @@ Instructions and examples go here.
 
 - `name` — unique identifier for the skill
 - `description` — used for matching against user queries. Write it so that the embedding model can connect user intent to this skill. Be specific: "Extract structured data from web pages using CSS selectors" works better than "Web stuff"
+- `requires-secrets` — optional comma-separated list of secret names this skill needs (e.g. `github-token, npm-token`). Zeph resolves each name from the vault and injects it as an environment variable before running any shell tool for the active skill. Secret name `github-token` maps to env var `GITHUB_TOKEN` (uppercased, hyphens to underscores).
 
 **Body:** markdown with instructions, code examples, or reference material. This is injected verbatim into the LLM context when the skill is selected.
+
+### Example: Skill with Secret Injection
+
+```markdown
+---
+name: github-release
+description: Create GitHub releases and upload assets via the API.
+requires-secrets: github-token
+---
+# GitHub Release
+
+## Create a release
+```bash
+curl -X POST https://api.github.com/repos/owner/repo/releases \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  -d '{"tag_name":"v1.0.0"}'
+```
+```
+
+`GITHUB_TOKEN` is automatically set from the vault when this skill is active. No hardcoded credentials needed.
 
 ### Example: Custom Deployment Skill
 
@@ -94,6 +115,24 @@ ssh user@server 'sudo systemctl restart myapp'
 
 > [!IMPORTANT]
 > The `description` field is critical for skill matching. If your skill isn't being selected, try rewriting the description with keywords that match how users would phrase their requests.
+
+## Secrets for Skills
+
+Skills can declare secrets they need via `requires-secrets`. Zeph resolves each name from the active vault and injects it as an environment variable scoped to tool execution for that skill. No other skill or tool run sees the injected values.
+
+**Storing custom secrets:**
+
+```bash
+# Store a secret in the vault (age backend)
+zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_...
+
+# Or via environment variable (env backend)
+export ZEPH_SECRET_GITHUB_TOKEN=ghp_...
+```
+
+The `ZEPH_SECRET_` prefix identifies a value as a skill-scoped custom secret. During startup, Zeph scans the vault for all `ZEPH_SECRET_*` keys and builds an in-memory map. The canonical form strips the prefix and lowercases with hyphens (`ZEPH_SECRET_GITHUB_TOKEN` → `github-token`), matching the `requires-secrets` declaration in the skill frontmatter.
+
+The `zeph init` wizard includes a dedicated step for adding custom secrets during first-time setup.
 
 ## Configuration
 

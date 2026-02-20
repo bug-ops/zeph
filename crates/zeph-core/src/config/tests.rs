@@ -2309,6 +2309,92 @@ async fn resolve_secrets_populates_slack_tokens() {
     assert_eq!(sl.signing_secret.as_deref(), Some("sign-vault"));
 }
 
+#[tokio::test]
+async fn resolve_secrets_populates_custom_map() {
+    use crate::vault::MockVaultProvider;
+    let vault = MockVaultProvider::new()
+        .with_secret("ZEPH_SECRET_GITHUB_TOKEN", "gh-token-123")
+        .with_secret("ZEPH_SECRET_SOME_API_KEY", "api-val");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    assert_eq!(
+        config
+            .secrets
+            .custom
+            .get("github_token")
+            .map(|s| s.expose()),
+        Some("gh-token-123")
+    );
+    assert_eq!(
+        config
+            .secrets
+            .custom
+            .get("some_api_key")
+            .map(|s| s.expose()),
+        Some("api-val")
+    );
+}
+
+#[tokio::test]
+async fn resolve_secrets_custom_ignores_non_prefix_keys() {
+    use crate::vault::MockVaultProvider;
+    let vault = MockVaultProvider::new()
+        .with_secret("ZEPH_CLAUDE_API_KEY", "claude-key")
+        .with_secret("OTHER_KEY", "other");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    assert!(config.secrets.custom.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_secrets_hyphen_in_vault_key_normalized_to_underscore() {
+    use crate::vault::MockVaultProvider;
+    let vault = MockVaultProvider::new().with_secret("ZEPH_SECRET_MY-KEY", "val");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    assert_eq!(
+        config.secrets.custom.get("my_key").map(|s| s.expose()),
+        Some("val"),
+        "hyphen in vault key name must be normalized to underscore"
+    );
+    assert!(
+        config.secrets.custom.get("my-key").is_none(),
+        "hyphenated key must not be stored"
+    );
+}
+
+#[tokio::test]
+async fn resolve_secrets_bare_prefix_rejected() {
+    use crate::vault::MockVaultProvider;
+    // "ZEPH_SECRET_" with nothing after it — empty custom_name must be skipped
+    let vault = MockVaultProvider::new().with_secret("ZEPH_SECRET_", "val");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    assert!(
+        config.secrets.custom.is_empty(),
+        "bare ZEPH_SECRET_ prefix must not produce a custom entry"
+    );
+}
+
+#[tokio::test]
+async fn resolve_secrets_get_secret_returns_none_skips_entry() {
+    use crate::vault::MockVaultProvider;
+    // Key is present in list_keys() but get_secret() returns None — entry must be skipped.
+    let vault = MockVaultProvider::new()
+        .with_listed_key("ZEPH_SECRET_GHOST")
+        .with_secret("ZEPH_SECRET_REAL", "val");
+    let mut config = Config::default();
+    config.resolve_secrets(&vault).await.unwrap();
+    assert!(
+        config.secrets.custom.get("ghost").is_none(),
+        "key with None get_secret must not appear in custom map"
+    );
+    assert_eq!(
+        config.secrets.custom.get("real").map(|s| s.expose()),
+        Some("val")
+    );
+}
+
 #[test]
 fn stt_config_defaults() {
     let toml_str = r#"

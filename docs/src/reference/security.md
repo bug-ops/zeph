@@ -2,6 +2,62 @@
 
 Zeph implements defense-in-depth security for safe AI agent operations in production environments.
 
+## Age Vault
+
+Zeph can store secrets in an [age](https://age-encryption.org/)-encrypted vault file instead of environment variables. This is the recommended approach for production and shared environments.
+
+### Setup
+
+```bash
+zeph vault init                        # generate keypair + empty vault
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
+zeph vault set ZEPH_TELEGRAM_TOKEN 123456:ABC...
+zeph vault list                        # show stored keys
+zeph vault get ZEPH_CLAUDE_API_KEY     # retrieve a value
+zeph vault rm ZEPH_CLAUDE_API_KEY      # remove a key
+```
+
+Enable the vault backend in config:
+
+```toml
+[vault]
+backend = "age"
+```
+
+The vault file path defaults to `~/.zeph/vault.age`. The private key path defaults to `~/.zeph/key.txt`.
+
+### Custom Secrets
+
+Beyond built-in provider keys, you can store arbitrary secrets for skill authentication using the `ZEPH_SECRET_` prefix:
+
+```bash
+zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_yourtokenhere
+zeph vault set ZEPH_SECRET_STRIPE_KEY sk_live_...
+```
+
+Skills declare which secrets they require via `requires-secrets` in their frontmatter. Skills with unsatisfied secrets are excluded from the prompt automatically — they will not be matched or executed until the secret is available.
+
+When a skill with `requires-secrets` is active, its secrets are injected as environment variables into shell commands it runs. The prefix is stripped and the name is uppercased:
+
+| Vault key | Env var injected |
+|-----------|-----------------|
+| `ZEPH_SECRET_GITHUB_TOKEN` | `GITHUB_TOKEN` |
+| `ZEPH_SECRET_STRIPE_KEY` | `STRIPE_KEY` |
+
+Only the secrets declared by the currently active skill are injected — not all vault secrets.
+
+See [Add Custom Skills — Secret-Gated Skills](../guides/custom-skills.md#secret-gated-skills) for how to declare requirements in a skill.
+
+### Docker
+
+Mount the vault and key files as read-only volumes:
+
+```yaml
+volumes:
+  - ~/.zeph/vault.age:/home/zeph/.zeph/vault.age:ro
+  - ~/.zeph/key.txt:/home/zeph/.zeph/key.txt:ro
+```
+
 ## Shell Command Filtering
 
 All shell commands from LLM responses pass through a security filter before execution. Shell command detection uses a tokenizer-based pipeline that splits input into tokens, handles wrapper commands (e.g., `env`, `nohup`, `timeout`), and applies word-boundary matching against blocked patterns. This replaces the prior substring-based approach for more accurate detection with fewer false positives. Commands matching blocked patterns are rejected with detailed error messages.

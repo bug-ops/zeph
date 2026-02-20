@@ -40,6 +40,7 @@ pub struct ShellExecutor {
     permission_policy: Option<PermissionPolicy>,
     output_filter_registry: Option<OutputFilterRegistry>,
     cancel_token: Option<CancellationToken>,
+    skill_env: std::sync::RwLock<Option<std::collections::HashMap<String, String>>>,
 }
 
 impl ShellExecutor {
@@ -86,6 +87,15 @@ impl ShellExecutor {
             permission_policy: None,
             output_filter_registry: None,
             cancel_token: None,
+            skill_env: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Set environment variables to inject when executing the active skill's bash blocks.
+    pub fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        match self.skill_env.write() {
+            Ok(mut guard) => *guard = env,
+            Err(e) => tracing::error!("skill_env RwLock poisoned: {e}"),
         }
     }
 
@@ -199,11 +209,14 @@ impl ShellExecutor {
             }
 
             let start = Instant::now();
+            let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
+                self.skill_env.read().ok().and_then(|g| g.clone());
             let (out, exit_code) = execute_bash(
                 block,
                 self.timeout,
                 self.tool_event_tx.as_ref(),
                 self.cancel_token.as_ref(),
+                skill_env_snapshot.as_ref(),
             )
             .await;
             if exit_code == 130
@@ -387,6 +400,10 @@ impl ToolExecutor for ShellExecutor {
         // Wrap as a fenced block so execute_inner can extract and run it
         let synthetic = format!("```bash\n{command}\n```");
         self.execute_inner(&synthetic, false).await
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        ShellExecutor::set_skill_env(self, env);
     }
 }
 
@@ -640,18 +657,22 @@ async fn execute_bash(
     timeout: Duration,
     event_tx: Option<&ToolEventTx>,
     cancel_token: Option<&CancellationToken>,
+    extra_env: Option<&std::collections::HashMap<String, String>>,
 ) -> (String, i32) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let timeout_secs = timeout.as_secs();
 
-    let child_result = Command::new("bash")
-        .arg("-c")
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
         .arg(code)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    if let Some(env) = extra_env {
+        cmd.envs(env);
+    }
+    let child_result = cmd.spawn();
 
     let mut child = match child_result {
         Ok(c) => c,
@@ -788,7 +809,8 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_simple_command() {
-        let (result, code) = execute_bash("echo hello", Duration::from_secs(30), None, None).await;
+        let (result, code) =
+            execute_bash("echo hello", Duration::from_secs(30), None, None, None).await;
         assert!(result.contains("hello"));
         assert_eq!(code, 0);
     }
@@ -796,7 +818,8 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_stderr_output() {
-        let (result, _) = execute_bash("echo err >&2", Duration::from_secs(30), None, None).await;
+        let (result, _) =
+            execute_bash("echo err >&2", Duration::from_secs(30), None, None, None).await;
         assert!(result.contains("[stderr]"));
         assert!(result.contains("err"));
     }
@@ -807,6 +830,7 @@ mod tests {
         let (result, _) = execute_bash(
             "echo out && echo err >&2",
             Duration::from_secs(30),
+            None,
             None,
             None,
         )
@@ -820,7 +844,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn execute_empty_output() {
-        let (result, code) = execute_bash("true", Duration::from_secs(30), None, None).await;
+        let (result, code) = execute_bash("true", Duration::from_secs(30), None, None, None).await;
         assert_eq!(result, "(no output)");
         assert_eq!(code, 0);
     }
@@ -1543,8 +1567,53 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn execute_bash_injects_extra_env() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "ZEPH_TEST_INJECTED_VAR".to_owned(),
+            "hello-from-env".to_owned(),
+        );
+        let (result, code) = execute_bash(
+            "echo $ZEPH_TEST_INJECTED_VAR",
+            Duration::from_secs(5),
+            None,
+            None,
+            Some(&env),
+        )
+        .await;
+        assert_eq!(code, 0);
+        assert!(result.contains("hello-from-env"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_executor_set_skill_env_injects_vars() {
+        let config = ShellConfig {
+            timeout: 5,
+            allowed_commands: vec![],
+            blocked_commands: vec![],
+            allowed_paths: vec![],
+            confirm_patterns: vec![],
+            allow_network: false,
+        };
+        let executor = ShellExecutor::new(&config);
+        let mut env = std::collections::HashMap::new();
+        env.insert("MY_SKILL_SECRET".to_owned(), "injected-value".to_owned());
+        executor.set_skill_env(Some(env));
+        use crate::executor::ToolExecutor;
+        let result = executor
+            .execute("```bash\necho $MY_SKILL_SECRET\n```")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("injected-value"));
+        executor.set_skill_env(None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn execute_bash_error_handling() {
-        let (result, code) = execute_bash("false", Duration::from_secs(5), None, None).await;
+        let (result, code) = execute_bash("false", Duration::from_secs(5), None, None, None).await;
         assert_eq!(result, "(no output)");
         assert_eq!(code, 1);
     }
@@ -1555,6 +1624,7 @@ mod tests {
         let (result, _) = execute_bash(
             "nonexistent-command-xyz",
             Duration::from_secs(5),
+            None,
             None,
             None,
         )
@@ -1658,8 +1728,14 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             token_clone.cancel();
         });
-        let (result, code) =
-            execute_bash("sleep 60", Duration::from_secs(30), None, Some(&token)).await;
+        let (result, code) = execute_bash(
+            "sleep 60",
+            Duration::from_secs(30),
+            None,
+            Some(&token),
+            None,
+        )
+        .await;
         assert_eq!(code, 130);
         assert!(result.contains("[cancelled]"));
     }
@@ -1667,7 +1743,8 @@ mod tests {
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
     async fn cancel_token_none_does_not_cancel() {
-        let (result, code) = execute_bash("echo ok", Duration::from_secs(5), None, None).await;
+        let (result, code) =
+            execute_bash("echo ok", Duration::from_secs(5), None, None, None).await;
         assert_eq!(code, 0);
         assert!(result.contains("ok"));
     }
@@ -1685,7 +1762,7 @@ mod tests {
             token_clone.cancel();
         });
         let (result, code) =
-            execute_bash(&script, Duration::from_secs(30), None, Some(&token)).await;
+            execute_bash(&script, Duration::from_secs(30), None, Some(&token), None).await;
         assert_eq!(code, 130);
         assert!(result.contains("[cancelled]"));
         // Wait briefly, then verify the subprocess did NOT create the marker file

@@ -492,7 +492,14 @@ async fn main() -> anyhow::Result<()> {
     .with_security(config.security, config.timeouts)
     .with_tool_summarization(config.tools.summarize_output)
     .with_permission_policy(permission_policy.clone())
-    .with_config_reload(config_path, config_reload_rx);
+    .with_config_reload(config_path, config_reload_rx)
+    .with_available_secrets(
+        config
+            .secrets
+            .custom
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
 
     let agent = if config.cost.enabled {
         let tracker = CostTracker::new(true, f64::from(config.cost.max_daily_cents));
@@ -1439,7 +1446,14 @@ async fn run_daemon(
     .with_permission_policy(permission_policy)
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
-    .with_learning(config.skills.learning.clone());
+    .with_learning(config.skills.learning.clone())
+    .with_available_secrets(
+        config
+            .secrets
+            .custom
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
 
     let summary_provider = app.build_summary_provider();
     let agent = if let Some(sp) = summary_provider {

@@ -45,20 +45,15 @@ pub trait VaultProvider: Send + Sync {
         &self,
         key: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>>;
+
+    /// Return all known secret keys. Used for scanning `ZEPH_SECRET_*` prefixes.
+    fn list_keys(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// MVP vault backend that reads secrets from environment variables.
 pub struct EnvVaultProvider;
-
-impl VaultProvider for EnvVaultProvider {
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
-        let key = key.to_owned();
-        Box::pin(async move { Ok(std::env::var(&key).ok()) })
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgeVaultError {
@@ -300,6 +295,31 @@ impl VaultProvider for AgeVaultProvider {
         let result = self.secrets.get(key).cloned();
         Box::pin(async move { Ok(result) })
     }
+
+    fn list_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.secrets.keys().cloned().collect();
+        keys.sort_unstable();
+        keys
+    }
+}
+
+impl VaultProvider for EnvVaultProvider {
+    fn get_secret(
+        &self,
+        key: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+        let key = key.to_owned();
+        Box::pin(async move { Ok(std::env::var(&key).ok()) })
+    }
+
+    fn list_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("ZEPH_SECRET_"))
+            .map(|(k, _)| k)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
 }
 
 /// Test helper with HashMap-based secret storage.
@@ -307,6 +327,8 @@ impl VaultProvider for AgeVaultProvider {
 #[derive(Default)]
 pub struct MockVaultProvider {
     secrets: std::collections::HashMap<String, String>,
+    /// Keys returned by list_keys() but absent from secrets (simulates get_secret returning None).
+    listed_only: Vec<String>,
 }
 
 #[cfg(test)]
@@ -321,6 +343,13 @@ impl MockVaultProvider {
         self.secrets.insert(key.to_owned(), value.to_owned());
         self
     }
+
+    /// Add a key to list_keys() without a corresponding get_secret() value.
+    #[must_use]
+    pub fn with_listed_key(mut self, key: &str) -> Self {
+        self.listed_only.push(key.to_owned());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +360,18 @@ impl VaultProvider for MockVaultProvider {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
         let result = self.secrets.get(key).cloned();
         Box::pin(async move { Ok(result) })
+    }
+
+    fn list_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .secrets
+            .keys()
+            .cloned()
+            .chain(self.listed_only.iter().cloned())
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
     }
 }
 
@@ -409,6 +450,33 @@ mod tests {
         let secret: Secret = serde_json::from_str(json).unwrap();
         assert_eq!(secret.expose(), "my-secret-value");
         assert_eq!(format!("{secret:?}"), "[REDACTED]");
+    }
+
+    #[test]
+    fn mock_vault_list_keys_sorted() {
+        let vault = MockVaultProvider::new()
+            .with_secret("B_KEY", "v2")
+            .with_secret("A_KEY", "v1")
+            .with_secret("C_KEY", "v3");
+        let mut keys = vault.list_keys();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["A_KEY", "B_KEY", "C_KEY"]);
+    }
+
+    #[test]
+    fn mock_vault_list_keys_empty() {
+        let vault = MockVaultProvider::new();
+        assert!(vault.list_keys().is_empty());
+    }
+
+    #[test]
+    fn env_vault_list_keys_filters_zeph_secret_prefix() {
+        let key = "ZEPH_SECRET_TEST_LISTKEYS_UNIQUE_9999";
+        unsafe { std::env::set_var(key, "v") };
+        let vault = EnvVaultProvider;
+        let keys = vault.list_keys();
+        assert!(keys.contains(&key.to_owned()));
+        unsafe { std::env::remove_var(key) };
     }
 }
 

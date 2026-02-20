@@ -33,6 +33,39 @@ into the LLM context when the skill is matched.
 | `description` | Yes | Used for embedding-based matching against user queries |
 | `compatibility` | No | Runtime requirements (e.g., "requires curl") |
 | `allowed-tools` | No | Comma-separated tool names this skill can use |
+| `requires-secrets` | No | Comma-separated secret names the skill needs (see below) |
+
+### Secret-Gated Skills
+
+If a skill requires API credentials or tokens, declare them with `requires-secrets`:
+
+```markdown
+---
+name: github-api
+description: GitHub API integration — search repos, create issues, review PRs.
+requires-secrets: github-token, github-org
+---
+```
+
+Secret names use lowercase with hyphens. They map to vault keys with the `ZEPH_SECRET_` prefix:
+
+| `requires-secrets` name | Vault key | Env var injected |
+|------------------------|-----------|-----------------|
+| `github-token` | `ZEPH_SECRET_GITHUB_TOKEN` | `GITHUB_TOKEN` |
+| `github-org` | `ZEPH_SECRET_GITHUB_ORG` | `GITHUB_ORG` |
+
+**Activation gate:** if any declared secret is missing from the vault, the skill is excluded from the prompt. It will not be matched or suggested until the secret is provided.
+
+**Scoped injection:** when the skill is active, its secrets are injected as environment variables into shell commands the skill executes. Only the secrets declared by the active skill are exposed — not all vault secrets.
+
+Store secrets with the vault CLI:
+
+```bash
+zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_yourtokenhere
+zeph vault set ZEPH_SECRET_GITHUB_ORG my-org
+```
+
+See [Vault — Custom Secrets](../reference/security.md#custom-secrets) for full details.
 
 ### Name Rules
 

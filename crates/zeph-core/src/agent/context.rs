@@ -715,6 +715,35 @@ impl<C: Channel> Agent<C> {
             (0..all_meta.len()).collect()
         };
 
+        let matched_indices: Vec<usize> = matched_indices
+            .into_iter()
+            .filter(|&i| {
+                let Some(meta) = all_meta.get(i) else {
+                    return false;
+                };
+                let missing: Vec<&str> = meta
+                    .requires_secrets
+                    .iter()
+                    .filter(|s| {
+                        !self
+                            .skill_state
+                            .available_custom_secrets
+                            .contains_key(s.as_str())
+                    })
+                    .map(String::as_str)
+                    .collect();
+                if !missing.is_empty() {
+                    tracing::info!(
+                        skill = %meta.name,
+                        missing = ?missing,
+                        "skill deactivated: missing required secrets"
+                    );
+                    return false;
+                }
+                true
+            })
+            .collect();
+
         self.skill_state.active_skill_names = matched_indices
             .iter()
             .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
@@ -1755,6 +1784,7 @@ mod tests {
                 license: None,
                 metadata: Vec::new(),
                 allowed_tools: Vec::new(),
+                requires_secrets: Vec::new(),
                 skill_dir: std::path::PathBuf::new(),
             },
             SkillMeta {
@@ -1764,6 +1794,7 @@ mod tests {
                 license: None,
                 metadata: Vec::new(),
                 allowed_tools: Vec::new(),
+                requires_secrets: Vec::new(),
                 skill_dir: std::path::PathBuf::new(),
             },
         ];
@@ -1803,6 +1834,7 @@ mod tests {
             license: None,
             metadata: Vec::new(),
             allowed_tools: Vec::new(),
+            requires_secrets: Vec::new(),
             skill_dir: std::path::PathBuf::new(),
         }];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
@@ -1852,6 +1884,7 @@ mod tests {
                 license: None,
                 metadata: Vec::new(),
                 allowed_tools: Vec::new(),
+                requires_secrets: Vec::new(),
                 skill_dir: std::path::PathBuf::new(),
             },
             SkillMeta {
@@ -1861,6 +1894,7 @@ mod tests {
                 license: None,
                 metadata: Vec::new(),
                 allowed_tools: Vec::new(),
+                requires_secrets: Vec::new(),
                 skill_dir: std::path::PathBuf::new(),
             },
         ];
@@ -1902,6 +1936,7 @@ mod tests {
             license: None,
             metadata: Vec::new(),
             allowed_tools: Vec::new(),
+            requires_secrets: Vec::new(),
             skill_dir: std::path::PathBuf::new(),
         }];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
@@ -1916,5 +1951,166 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], 0);
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_excludes_skill_when_secret_missing() {
+        use std::collections::HashMap;
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Skill requires a secret that is NOT available
+        let meta_with_secret = SkillMeta {
+            name: "secure-skill".into(),
+            description: "needs a secret".into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            requires_secrets: vec!["my_api_key".into()],
+            skill_dir: std::path::PathBuf::new(),
+        };
+
+        // available_custom_secrets is empty — skill must be excluded
+        agent.skill_state.available_custom_secrets = HashMap::new();
+
+        let all_meta = vec![meta_with_secret];
+        let matched_indices: Vec<usize> = vec![0];
+
+        let filtered: Vec<usize> = matched_indices
+            .into_iter()
+            .filter(|&i| {
+                let Some(meta) = all_meta.get(i) else {
+                    return false;
+                };
+                meta.requires_secrets.iter().all(|s| {
+                    agent
+                        .skill_state
+                        .available_custom_secrets
+                        .contains_key(s.as_str())
+                })
+            })
+            .collect();
+
+        assert!(
+            filtered.is_empty(),
+            "skill must be excluded when required secret is missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_includes_skill_when_secret_present() {
+        use std::collections::HashMap;
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let meta_with_secret = SkillMeta {
+            name: "secure-skill".into(),
+            description: "needs a secret".into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            requires_secrets: vec!["my_api_key".into()],
+            skill_dir: std::path::PathBuf::new(),
+        };
+
+        // Secret IS available
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("my_api_key".into(), crate::vault::Secret::new("token-val"));
+
+        let all_meta = vec![meta_with_secret];
+        let matched_indices: Vec<usize> = vec![0];
+
+        let filtered: Vec<usize> = matched_indices
+            .into_iter()
+            .filter(|&i| {
+                let Some(meta) = all_meta.get(i) else {
+                    return false;
+                };
+                meta.requires_secrets.iter().all(|s| {
+                    agent
+                        .skill_state
+                        .available_custom_secrets
+                        .contains_key(s.as_str())
+                })
+            })
+            .collect();
+
+        assert_eq!(
+            filtered,
+            vec![0],
+            "skill must be included when required secret is present"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present() {
+        use std::collections::HashMap;
+        use zeph_skills::loader::SkillMeta;
+        use zeph_skills::registry::SkillRegistry;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let meta = SkillMeta {
+            name: "multi-secret-skill".into(),
+            description: "needs two secrets".into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            requires_secrets: vec!["secret_a".into(), "secret_b".into()],
+            skill_dir: std::path::PathBuf::new(),
+        };
+
+        // Only "secret_a" present, "secret_b" missing — skill must be excluded.
+        agent
+            .skill_state
+            .available_custom_secrets
+            .insert("secret_a".into(), crate::vault::Secret::new("val-a"));
+
+        let all_meta = vec![meta];
+        let matched_indices: Vec<usize> = vec![0];
+
+        let filtered: Vec<usize> = matched_indices
+            .into_iter()
+            .filter(|&i| {
+                let Some(meta) = all_meta.get(i) else {
+                    return false;
+                };
+                meta.requires_secrets.iter().all(|s| {
+                    agent
+                        .skill_state
+                        .available_custom_secrets
+                        .contains_key(s.as_str())
+                })
+            })
+            .collect();
+
+        assert!(
+            filtered.is_empty(),
+            "skill must be excluded when only partial secrets are available"
+        );
     }
 }

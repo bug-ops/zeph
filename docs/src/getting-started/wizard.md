@@ -1,6 +1,6 @@
 # Configuration Wizard
 
-Run `zeph init` to generate a `config.toml` through a guided 7-step wizard. This is the fastest way to get a working configuration.
+Run `zeph init` to generate a `config.toml` through a guided wizard. This is the fastest way to get a working configuration.
 
 ```bash
 zeph init
@@ -52,11 +52,19 @@ Configure headless daemon mode with A2A endpoint (requires `daemon` + `a2a` feat
 
 Skip this step if you do not plan to run Zeph in headless mode.
 
-## Step 6: Update Check
+## Step 6: Custom Secrets
+
+If the `age` vault backend was selected, the wizard offers to add custom secrets for skill authentication.
+
+When prompted, enter a secret name and value. The wizard stores each secret with the `ZEPH_SECRET_` prefix in the vault. If any installed skills declare `requires-secrets`, the wizard lists them so you know which keys to provide.
+
+Skip this step if your skills do not require external API credentials.
+
+## Step 7: Update Check
 
 Enable or disable automatic version checks against GitHub Releases (default: enabled).
 
-## Step 7: Review and Save
+## Step 8: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 
@@ -70,4 +78,4 @@ The wizard prints the secrets you need to configure:
 ## Further Reading
 
 - [Configuration Reference](../reference/configuration.md) — full config file and environment variables
-- [Secrets Management](../reference/security.md#age-vault) — vault setup and Docker integration
+- [Vault — Age Vault](../reference/security.md#age-vault) — vault setup, custom secrets, and Docker integration
