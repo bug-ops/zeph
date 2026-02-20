@@ -777,12 +777,12 @@ pub(crate) async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Opti
 
 #[cfg(test)]
 pub(super) mod agent_tests {
+    use super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     #[allow(unused_imports)]
     pub(crate) use super::{
         Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, DOOM_LOOP_WINDOW, RECALL_PREFIX,
         SUMMARY_PREFIX, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
     };
-    use super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     pub(crate) use crate::channel::Channel;
     use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
     pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};
