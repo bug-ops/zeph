@@ -9145,7 +9145,6 @@ dependencies = [
 name = "zeph-tui"
 version = "0.11.2"
 dependencies = [
- "anyhow",
  "crossterm",
  "expectrl",
  "ignore",

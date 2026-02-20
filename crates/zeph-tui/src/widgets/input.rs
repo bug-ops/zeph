@@ -79,8 +79,7 @@ mod tests {
                 crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyModifiers::NONE,
             ),
-        ))
-        .unwrap();
+        ));
         let output = render_to_string(40, 5, |frame, area| {
             super::render(&app, frame, area);
         });

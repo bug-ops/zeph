@@ -367,10 +367,7 @@ impl App {
         &mut self.throbber_state
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if event handling fails.
-    pub fn handle_event(&mut self, event: AppEvent) -> anyhow::Result<()> {
+    pub fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => {
@@ -390,7 +387,6 @@ impl App {
             }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
         }
-        Ok(())
     }
 
     pub fn poll_agent_event(&mut self) -> impl Future<Output = Option<AgentEvent>> + use<'_> {
@@ -1183,7 +1179,7 @@ mod tests {
     fn ctrl_c_quits() {
         let (mut app, _rx, _tx) = make_app();
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.should_quit);
     }
 
@@ -1192,7 +1188,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a");
         assert_eq!(app.cursor_position(), 1);
     }
@@ -1202,7 +1198,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input_mode(), InputMode::Normal);
     }
 
@@ -1211,7 +1207,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input_mode(), InputMode::Insert);
     }
 
@@ -1220,7 +1216,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.should_quit);
     }
 
@@ -1231,7 +1227,7 @@ mod tests {
         app.input = "ab".into();
         app.cursor_position = 2;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a");
         assert_eq!(app.cursor_position(), 1);
     }
@@ -1243,7 +1239,7 @@ mod tests {
         app.input = "hello".into();
         app.cursor_position = 5;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].content, "hello");
@@ -1257,7 +1253,7 @@ mod tests {
         let (mut app, mut rx, _tx) = make_app();
         app.input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err());
     }
@@ -1307,11 +1303,11 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Normal;
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(up)).unwrap();
+        app.handle_event(AppEvent::Key(up));
         assert_eq!(app.scroll_offset(), 1);
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(down)).unwrap();
+        app.handle_event(AppEvent::Key(down));
         assert_eq!(app.scroll_offset(), 0);
     }
 
@@ -1322,16 +1318,16 @@ mod tests {
         assert_eq!(app.active_panel, Panel::Chat);
 
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(tab)).unwrap();
+        app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Skills);
 
-        app.handle_event(AppEvent::Key(tab)).unwrap();
+        app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Memory);
 
-        app.handle_event(AppEvent::Key(tab)).unwrap();
+        app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Resources);
 
-        app.handle_event(AppEvent::Key(tab)).unwrap();
+        app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Chat);
     }
 
@@ -1342,7 +1338,7 @@ mod tests {
         app.input = "some text".into();
         app.cursor_position = 9;
         let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
         assert_eq!(app.cursor_position(), 0);
     }
@@ -1355,23 +1351,23 @@ mod tests {
         app.cursor_position = 1;
 
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(left)).unwrap();
+        app.handle_event(AppEvent::Key(left));
         assert_eq!(app.cursor_position(), 0);
 
         // left at 0 stays at 0
-        app.handle_event(AppEvent::Key(left)).unwrap();
+        app.handle_event(AppEvent::Key(left));
         assert_eq!(app.cursor_position(), 0);
 
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(right)).unwrap();
+        app.handle_event(AppEvent::Key(right));
         assert_eq!(app.cursor_position(), 1);
 
         let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(home)).unwrap();
+        app.handle_event(AppEvent::Key(home));
         assert_eq!(app.cursor_position(), 0);
 
         let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(end)).unwrap();
+        app.handle_event(AppEvent::Key(end));
         assert_eq!(app.cursor_position(), 3);
     }
 
@@ -1382,7 +1378,7 @@ mod tests {
         app.input = "abc".into();
         app.cursor_position = 1;
         let key = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "ac");
         assert_eq!(app.cursor_position(), 1);
     }
@@ -1395,30 +1391,30 @@ mod tests {
         // Type multi-byte chars
         for c in "\u{00e9}a\u{1f600}".chars() {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
         }
         assert_eq!(app.input(), "\u{00e9}a\u{1f600}");
         assert_eq!(app.cursor_position(), 3);
 
         // Backspace removes the emoji (last char)
         let bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(bs)).unwrap();
+        app.handle_event(AppEvent::Key(bs));
         assert_eq!(app.input(), "\u{00e9}a");
         assert_eq!(app.cursor_position(), 2);
 
         // Move cursor left and delete 'a'
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(left)).unwrap();
+        app.handle_event(AppEvent::Key(left));
         assert_eq!(app.cursor_position(), 1);
 
         let del = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(del)).unwrap();
+        app.handle_event(AppEvent::Key(del));
         assert_eq!(app.input(), "\u{00e9}");
         assert_eq!(app.cursor_position(), 1);
 
         // End key uses char count, not byte count
         let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(end)).unwrap();
+        app.handle_event(AppEvent::Key(end));
         assert_eq!(app.cursor_position(), 1);
     }
 
@@ -1443,7 +1439,7 @@ mod tests {
             response_tx: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.confirm_state.is_none());
         assert!(rx.try_recv().unwrap());
     }
@@ -1457,7 +1453,7 @@ mod tests {
             response_tx: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.confirm_state.is_none());
         assert!(rx.try_recv().unwrap());
     }
@@ -1471,7 +1467,7 @@ mod tests {
             response_tx: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.confirm_state.is_none());
         assert!(!rx.try_recv().unwrap());
     }
@@ -1485,7 +1481,7 @@ mod tests {
             response_tx: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.confirm_state.is_none());
         assert!(!rx.try_recv().unwrap());
     }
@@ -1500,7 +1496,7 @@ mod tests {
             response_tx: Some(tx),
         });
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
         assert!(app.confirm_state.is_some());
     }
@@ -1512,7 +1508,7 @@ mod tests {
         app.input = "hello".into();
         app.cursor_position = 5;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello\n");
         assert_eq!(app.cursor_position(), 6);
         assert!(app.messages().is_empty());
@@ -1526,7 +1522,7 @@ mod tests {
         app.input = "ab".into();
         app.cursor_position = 1;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a\nb");
         assert_eq!(app.cursor_position(), 2);
     }
@@ -1538,10 +1534,10 @@ mod tests {
         assert!(app.show_side_panels());
 
         let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(!app.show_side_panels());
 
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.show_side_panels());
     }
 
@@ -1549,9 +1545,9 @@ mod tests {
     fn mouse_scroll_up() {
         let (mut app, _rx, _tx) = make_app();
         assert_eq!(app.scroll_offset(), 0);
-        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(1));
         assert_eq!(app.scroll_offset(), 1);
-        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(1));
         assert_eq!(app.scroll_offset(), 2);
     }
 
@@ -1559,9 +1555,9 @@ mod tests {
     fn mouse_scroll_down() {
         let (mut app, _rx, _tx) = make_app();
         app.scroll_offset = 5;
-        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 4);
-        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 3);
     }
 
@@ -1569,9 +1565,9 @@ mod tests {
     fn mouse_scroll_down_saturates_at_zero() {
         let (mut app, _rx, _tx) = make_app();
         app.scroll_offset = 1;
-        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 0);
-        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 0);
     }
 
@@ -1584,9 +1580,9 @@ mod tests {
             response_tx: Some(tx),
         });
         app.scroll_offset = 5;
-        app.handle_event(AppEvent::MouseScroll(1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(1));
         assert_eq!(app.scroll_offset(), 5);
-        app.handle_event(AppEvent::MouseScroll(-1)).unwrap();
+        app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 5);
     }
 
@@ -1691,7 +1687,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.show_help);
     }
 
@@ -1700,7 +1696,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.show_help = true;
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(!app.show_help);
     }
 
@@ -1709,7 +1705,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.show_help = true;
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(!app.show_help);
     }
 
@@ -1721,13 +1717,13 @@ mod tests {
 
         // Typing a character should not modify input
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
         assert!(app.show_help);
 
         // Enter should not submit
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.messages().is_empty());
         assert!(app.show_help);
     }
@@ -1737,7 +1733,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.show_help = true;
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(app.should_quit);
     }
 
@@ -1746,7 +1742,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert!(!app.show_help);
         assert_eq!(app.input(), "?");
     }
@@ -1768,7 +1764,7 @@ mod tests {
         assert!(app.is_agent_busy());
 
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
         assert!(result.is_ok(), "notify should have been triggered");
     }
@@ -1782,7 +1778,7 @@ mod tests {
         assert!(!app.is_agent_busy());
 
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         // No way to assert "not notified" directly, but we verify no panic
     }
 
@@ -1802,7 +1798,7 @@ mod tests {
         });
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
 
         assert_eq!(app.input(), "queued msg");
         assert_eq!(app.cursor_position(), 10);
@@ -1824,7 +1820,7 @@ mod tests {
         app.input_history.push("hello world".into());
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
 
         assert!(rx.try_recv().is_err());
         assert_eq!(app.input(), "hello world");
@@ -1865,7 +1861,7 @@ mod tests {
             app.input = "hello world".into();
             app.cursor_position = 11;
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(enter)).unwrap();
+            app.handle_event(AppEvent::Key(enter));
 
             let output = draw_app(&mut app, 80, 24);
             assert!(output.contains("hello world"));
@@ -1876,7 +1872,7 @@ mod tests {
             let (mut app, _rx, _tx) = make_app();
             app.input_mode = InputMode::Normal;
             let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             let output = draw_app(&mut app, 80, 30);
             assert!(output.contains("Help"));
@@ -1888,9 +1884,9 @@ mod tests {
             let (mut app, _rx, _tx) = make_app();
             app.input_mode = InputMode::Normal;
             let open = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(open)).unwrap();
+            app.handle_event(AppEvent::Key(open));
             let close = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(close)).unwrap();
+            app.handle_event(AppEvent::Key(close));
 
             let output = draw_app(&mut app, 80, 30);
             assert!(!output.contains("Help — press"));
@@ -1920,7 +1916,7 @@ mod tests {
                 response_tx: Some(tx),
             });
             let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             let output = draw_app(&mut app, 60, 20);
             assert!(!output.contains("[Y]es / [N]o"));
@@ -1936,7 +1932,7 @@ mod tests {
             assert!(before.contains("Memory"));
 
             let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             let after = draw_app(&mut app, 120, 40);
             assert!(!after.contains("Skills ("));
@@ -1956,7 +1952,7 @@ mod tests {
             app.input = "hi".into();
             app.cursor_position = 2;
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(enter)).unwrap();
+            app.handle_event(AppEvent::Key(enter));
 
             let output = draw_app(&mut app, 80, 24);
             assert!(!output.contains("Type a message"));
@@ -2080,7 +2076,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 8;
         let key = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 6);
     }
 
@@ -2091,7 +2087,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 2;
         let key = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 6);
     }
 
@@ -2102,7 +2098,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 7;
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 0);
     }
 
@@ -2113,7 +2109,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 3;
         let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 11);
     }
 
@@ -2124,7 +2120,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 11;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello ");
         assert_eq!(app.cursor_position(), 6);
     }
@@ -2136,7 +2132,7 @@ mod tests {
         app.input = "hello world".into();
         app.cursor_position = 6;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "world");
         assert_eq!(app.cursor_position(), 0);
     }
@@ -2148,7 +2144,7 @@ mod tests {
         app.input = "hello".into();
         app.cursor_position = 0;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
-        app.handle_event(AppEvent::Key(key)).unwrap();
+        app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello");
         assert_eq!(app.cursor_position(), 0);
     }
@@ -2190,7 +2186,7 @@ mod tests {
                 app.cursor_position = cursor.min(len);
 
                 let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
-                app.handle_event(AppEvent::Key(key)).unwrap();
+                app.handle_event(AppEvent::Key(key));
 
                 prop_assert!(app.cursor_position() <= app.char_count());
             }
@@ -2330,7 +2326,7 @@ mod tests {
             assert!(app.command_palette.is_none());
 
             let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(app.command_palette.is_some());
         }
 
@@ -2341,7 +2337,7 @@ mod tests {
             app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(app.command_palette.is_none());
         }
 
@@ -2353,7 +2349,7 @@ mod tests {
 
             // Typing a char goes to palette, not to input field
             let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(app.input().is_empty());
             let palette = app.command_palette.as_ref().unwrap();
             assert_eq!(palette.query, "s");
@@ -2365,12 +2361,12 @@ mod tests {
             app.input_mode = InputMode::Normal;
             // Open palette
             let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(colon)).unwrap();
+            app.handle_event(AppEvent::Key(colon));
             assert!(app.command_palette.is_some());
 
             // Enter on first command (skill:list)
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(enter)).unwrap();
+            app.handle_event(AppEvent::Key(enter));
             assert!(app.command_palette.is_none());
             // Should have added a system message
             assert!(!app.messages().is_empty());
@@ -2385,9 +2381,9 @@ mod tests {
             let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
             let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
             let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(m)).unwrap();
-            app.handle_event(AppEvent::Key(c)).unwrap();
-            app.handle_event(AppEvent::Key(p)).unwrap();
+            app.handle_event(AppEvent::Key(m));
+            app.handle_event(AppEvent::Key(c));
+            app.handle_event(AppEvent::Key(p));
 
             let palette = app.command_palette.as_ref().unwrap();
             assert_eq!(palette.query, "mcp");
@@ -2401,11 +2397,11 @@ mod tests {
             app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
 
             let s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(s)).unwrap();
+            app.handle_event(AppEvent::Key(s));
             assert_eq!(app.command_palette.as_ref().unwrap().query, "s");
 
             let bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(bs)).unwrap();
+            app.handle_event(AppEvent::Key(bs));
             assert!(app.command_palette.as_ref().unwrap().query.is_empty());
         }
 
@@ -2438,7 +2434,7 @@ mod tests {
             let (mut app, _rx, _tx) = make_app();
             app.input_mode = InputMode::Insert;
             let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(app.command_palette.is_none());
             assert_eq!(app.input(), ":");
         }
@@ -2455,7 +2451,7 @@ mod tests {
             app.command_palette = Some(palette);
 
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(enter)).unwrap();
+            app.handle_event(AppEvent::Key(enter));
             // palette should close without crashing, no message added
             assert!(app.command_palette.is_none());
         }
@@ -2542,7 +2538,7 @@ mod tests {
             let (mut app, _rx, _tx) = make_app_with_index();
             app.input_mode = InputMode::Insert;
             let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(
                 !app.input.contains('@'),
                 "@ should not be in input after opening picker"
@@ -2561,7 +2557,7 @@ mod tests {
             assert!(app.file_picker_state.is_some());
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert!(app.file_picker_state.is_none());
             assert!(app.input.is_empty());
         }
@@ -2581,7 +2577,7 @@ mod tests {
                 .unwrap();
 
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
             assert!(
@@ -2606,7 +2602,7 @@ mod tests {
                 .unwrap();
 
             let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
             assert!(app.input.contains(&selected));
@@ -2624,7 +2620,7 @@ mod tests {
             assert!(app.file_picker_state.as_ref().unwrap().matches().is_empty());
 
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
             assert!(app.input.is_empty(), "input must be unchanged");
@@ -2639,7 +2635,7 @@ mod tests {
             assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 0);
 
             let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 1);
         }
 
@@ -2650,7 +2646,7 @@ mod tests {
             open_picker_with_index(&mut app, &idx);
 
             let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             let state = app.file_picker_state.as_ref().unwrap();
             assert_eq!(state.selected, state.matches().len() - 1);
         }
@@ -2664,7 +2660,7 @@ mod tests {
             let initial_count = app.file_picker_state.as_ref().unwrap().matches().len();
 
             let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             let filtered_count = app.file_picker_state.as_ref().unwrap().matches().len();
             assert!(filtered_count <= initial_count);
@@ -2680,7 +2676,7 @@ mod tests {
             app.file_picker_state.as_mut().unwrap().update_query("ma");
 
             let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_some());
             assert_eq!(app.file_picker_state.as_ref().unwrap().query, "m");
@@ -2695,7 +2691,7 @@ mod tests {
             assert!(app.file_picker_state.as_ref().unwrap().query.is_empty());
 
             let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
         }
@@ -2709,7 +2705,7 @@ mod tests {
             app.input = "hello".into();
             app.cursor_position = 5;
             let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             assert_eq!(
                 app.input, "hello",
                 "input should be unchanged while picker is open"
@@ -2734,7 +2730,7 @@ mod tests {
                 .unwrap();
 
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
 
             assert!(app.input.contains(&selected));
             assert!(app.input.starts_with('a'));

@@ -683,7 +683,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             result = tui_task => {
                 agent.shutdown().await;
-                return result?;
+                result??;
+                return Ok(());
             }
             result = agent_future => {
                 agent.shutdown().await;

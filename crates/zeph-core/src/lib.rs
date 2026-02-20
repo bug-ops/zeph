@@ -22,5 +22,5 @@ pub mod http;
 pub use agent::Agent;
 pub use agent::error::AgentError;
 pub use channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
-pub use config::Config;
+pub use config::{Config, ConfigError};
 pub use diff::DiffData;

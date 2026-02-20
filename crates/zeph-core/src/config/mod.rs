@@ -9,9 +9,19 @@ pub use zeph_tools::AutonomyLevel;
 
 use std::path::Path;
 
-use anyhow::Context;
-
 use crate::vault::VaultProvider;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to read config file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse config file: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("config validation failed: {0}")]
+    Validation(String),
+    #[error("vault error: {0}")]
+    Vault(#[from] anyhow::Error),
+}
 
 impl Config {
     /// Load configuration from a TOML file with env var overrides.
@@ -21,10 +31,10 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if the file exists but cannot be read or parsed.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let mut config = if path.exists() {
-            let content = std::fs::read_to_string(path).context("failed to read config file")?;
-            toml::from_str::<Self>(&content).context("failed to parse config file")?
+            let content = std::fs::read_to_string(path)?;
+            toml::from_str::<Self>(&content)?
         } else {
             Self::default()
         };
@@ -38,29 +48,33 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if any value is out of range.
-    pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.memory.history_limit <= 10_000,
-            "history_limit must be <= 10000, got {}",
-            self.memory.history_limit
-        );
-        if self.memory.context_budget_tokens > 0 {
-            anyhow::ensure!(
-                self.memory.context_budget_tokens <= 1_000_000,
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.memory.history_limit > 10_000 {
+            return Err(ConfigError::Validation(format!(
+                "history_limit must be <= 10000, got {}",
+                self.memory.history_limit
+            )));
+        }
+        if self.memory.context_budget_tokens > 1_000_000 {
+            return Err(ConfigError::Validation(format!(
                 "context_budget_tokens must be <= 1000000, got {}",
                 self.memory.context_budget_tokens
-            );
+            )));
         }
-        anyhow::ensure!(
-            self.agent.max_tool_iterations <= 100,
-            "max_tool_iterations must be <= 100, got {}",
-            self.agent.max_tool_iterations
-        );
-        anyhow::ensure!(self.a2a.rate_limit > 0, "a2a.rate_limit must be > 0");
-        anyhow::ensure!(
-            self.gateway.rate_limit > 0,
-            "gateway.rate_limit must be > 0"
-        );
+        if self.agent.max_tool_iterations > 100 {
+            return Err(ConfigError::Validation(format!(
+                "max_tool_iterations must be <= 100, got {}",
+                self.agent.max_tool_iterations
+            )));
+        }
+        if self.a2a.rate_limit == 0 {
+            return Err(ConfigError::Validation("a2a.rate_limit must be > 0".into()));
+        }
+        if self.gateway.rate_limit == 0 {
+            return Err(ConfigError::Validation(
+                "gateway.rate_limit must be > 0".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -69,7 +83,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if the vault backend fails.
-    pub async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> anyhow::Result<()> {
+    pub async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> Result<(), ConfigError> {
         use crate::vault::Secret;
 
         if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {

@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add `default_client()` HTTP helper with standard timeouts and user-agent in zeph-core and zeph-llm (#666)
 - Replace 5 production `Client::new()` calls with `default_client()` for consistent HTTP config (#667)
 - Decompose agent/mod.rs (2602→459 lines) into tool_execution, message_queue, builder, commands, and utils modules (#648, #649, #650)
+- Replace `anyhow` in `zeph-core::config` with typed `ConfigError` enum (Io, Parse, Validation, Vault)
+- Replace `anyhow` in `zeph-tui` with typed `TuiError` enum (Io, Channel); simplify `handle_event()` return to `()`
+- Sort `[workspace.dependencies]` alphabetically in root Cargo.toml
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)
