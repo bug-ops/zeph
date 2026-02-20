@@ -109,7 +109,7 @@ pub(crate) mod testing {
     use std::sync::Arc;
 
     use crate::error::A2aError;
-    use crate::types::{AgentCapabilities, AgentCard, Message, Part, Role};
+    use crate::types::{AgentCapabilities, AgentCard, Message};
 
     use super::state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 
