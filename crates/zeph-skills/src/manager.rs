@@ -499,10 +499,13 @@ mod tests {
         let err = mgr
             .install_from_path(Path::new("/nonexistent/skill/path"))
             .unwrap_err();
-        // load_skill_meta reads SKILL.md → file not found → displayed as Invalid or Io
+        // load_skill_meta reads SKILL.md → file not found
         let msg = format!("{err}");
         assert!(
-            msg.contains("No such file") || msg.contains("invalid") || msg.contains("missing"),
+            msg.contains("No such file")
+                || msg.contains("cannot find")
+                || msg.contains("invalid")
+                || msg.contains("missing"),
             "unexpected error: {msg}"
         );
     }
@@ -521,7 +524,10 @@ mod tests {
         // load_skill_meta opens SKILL.md → file not found
         let msg = format!("{err}");
         assert!(
-            msg.contains("No such file") || msg.contains("invalid") || msg.contains("missing"),
+            msg.contains("No such file")
+                || msg.contains("cannot find")
+                || msg.contains("invalid")
+                || msg.contains("missing"),
             "unexpected error: {msg}"
         );
     }
