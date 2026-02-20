@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use crate::error::A2aError;
 use crate::types::AgentCard;
 use router::build_router_with_full_config;
-pub use state::{AppState, ProcessResult, TaskManager, TaskProcessor};
+pub use state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 
 pub struct A2aServer {
     state: AppState,
@@ -111,7 +111,7 @@ pub(crate) mod testing {
     use crate::error::A2aError;
     use crate::types::{AgentCapabilities, AgentCard, Message, Part, Role};
 
-    use super::state::{AppState, ProcessResult, TaskManager, TaskProcessor};
+    use super::state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 
     pub struct EchoProcessor;
 
@@ -120,22 +120,24 @@ pub(crate) mod testing {
             &self,
             _task_id: String,
             message: Message,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<ProcessResult, A2aError>> + Send>,
-        > {
+            event_tx: tokio::sync::mpsc::Sender<ProcessorEvent>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), A2aError>> + Send>>
+        {
             Box::pin(async move {
                 let text = message.text_content().unwrap_or("").to_owned();
-                Ok(ProcessResult {
-                    response: Message {
-                        role: Role::Agent,
-                        parts: vec![Part::text(format!("echo: {text}"))],
-                        message_id: None,
-                        task_id: None,
-                        context_id: None,
-                        metadata: None,
-                    },
-                    artifacts: vec![],
-                })
+                let _ = event_tx
+                    .send(ProcessorEvent::ArtifactChunk {
+                        text: format!("echo: {text}"),
+                        is_final: true,
+                    })
+                    .await;
+                let _ = event_tx
+                    .send(ProcessorEvent::StatusUpdate {
+                        state: crate::types::TaskState::Completed,
+                        is_final: true,
+                    })
+                    .await;
+                Ok(())
             })
         }
     }
@@ -147,9 +149,9 @@ pub(crate) mod testing {
             &self,
             _task_id: String,
             _message: Message,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<ProcessResult, A2aError>> + Send>,
-        > {
+            _event_tx: tokio::sync::mpsc::Sender<ProcessorEvent>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), A2aError>> + Send>>
+        {
             Box::pin(async { Err(A2aError::Server("boom".into())) })
         }
     }

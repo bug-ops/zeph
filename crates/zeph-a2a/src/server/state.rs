@@ -12,20 +12,23 @@ pub struct AppState {
     pub processor: Arc<dyn TaskProcessor>,
 }
 
+/// Event emitted by a streaming `TaskProcessor` toward the handler.
+#[derive(Debug, Clone)]
+pub enum ProcessorEvent {
+    StatusUpdate { state: TaskState, is_final: bool },
+    ArtifactChunk { text: String, is_final: bool },
+}
+
 /// Trait for processing A2A task messages through the agent pipeline.
 pub trait TaskProcessor: Send + Sync {
     fn process(
         &self,
         task_id: String,
         message: Message,
+        event_tx: tokio::sync::mpsc::Sender<ProcessorEvent>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<ProcessResult, crate::error::A2aError>> + Send>,
+        Box<dyn std::future::Future<Output = Result<(), crate::error::A2aError>> + Send>,
     >;
-}
-
-pub struct ProcessResult {
-    pub response: Message,
-    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Clone)]

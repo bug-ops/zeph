@@ -136,6 +136,7 @@ stt = ["zeph-llm/stt", "dep:reqwest"]
 anyhow.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
+futures.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util.workspace = true

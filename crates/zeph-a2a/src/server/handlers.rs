@@ -15,7 +15,7 @@ use crate::jsonrpc::{
 };
 use crate::types::{TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent};
 
-use super::state::{AppState, CancelError, now_rfc3339};
+use super::state::{AppState, CancelError, ProcessorEvent, now_rfc3339};
 
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
@@ -104,32 +104,52 @@ async fn handle_send_message(
         .update_status(&task.id, TaskState::Working, None)
         .await;
 
-    match state
+    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
+    let proc_future = state
         .processor
-        .process(task.id.clone(), params.message)
-        .await
-    {
-        Ok(result) => {
-            state
-                .task_manager
-                .append_history(&task.id, result.response)
-                .await;
-            for artifact in result.artifacts {
-                state.task_manager.add_artifact(&task.id, artifact).await;
+        .process(task.id.clone(), params.message, event_tx);
+
+    let proc_handle = tokio::spawn(proc_future);
+
+    let mut accumulated = String::new();
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            ProcessorEvent::ArtifactChunk { text, .. } => {
+                accumulated.push_str(&text);
             }
-            state
-                .task_manager
-                .update_status(&task.id, TaskState::Completed, None)
-                .await;
-        }
-        Err(e) => {
-            tracing::error!(task_id = %task.id, "task processing failed: {e}");
-            state
-                .task_manager
-                .update_status(&task.id, TaskState::Failed, None)
-                .await;
+            ProcessorEvent::StatusUpdate { .. } => {}
         }
     }
+
+    let final_state = match proc_handle.await {
+        Ok(Ok(())) => TaskState::Completed,
+        Ok(Err(e)) => {
+            tracing::error!(task_id = %task.id, "task processing failed: {e}");
+            TaskState::Failed
+        }
+        Err(e) => {
+            tracing::error!(task_id = %task.id, "task processor panicked: {e}");
+            TaskState::Failed
+        }
+    };
+
+    if final_state == TaskState::Completed && !accumulated.is_empty() {
+        use crate::types::{Message, Part, Role};
+        let response = Message {
+            role: Role::Agent,
+            parts: vec![Part::text(accumulated)],
+            message_id: None,
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        state.task_manager.append_history(&task.id, response).await;
+    }
+
+    state
+        .task_manager
+        .update_status(&task.id, final_state, None)
+        .await;
 
     match state.task_manager.get_task(&task.id, None).await {
         Some(t) => success_response(id, t),
@@ -273,54 +293,88 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
         ))
         .await;
 
-    match state.processor.process(task_id.clone(), message).await {
-        Ok(result) => {
-            state
-                .task_manager
-                .append_history(&task_id, result.response)
-                .await;
+    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
+    let proc_future = state.processor.process(task_id.clone(), message, event_tx);
 
-            for artifact in result.artifacts {
+    let proc_handle = tokio::spawn(proc_future);
+
+    let mut accumulated = String::new();
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            ProcessorEvent::ArtifactChunk { text, is_final } => {
+                accumulated.push_str(&text);
+                let artifact = crate::types::Artifact {
+                    artifact_id: uuid::Uuid::new_v4().to_string(),
+                    name: None,
+                    parts: vec![crate::types::Part::text(text)],
+                    metadata: None,
+                };
                 let evt = TaskArtifactUpdateEvent {
                     kind: "artifact-update".into(),
                     task_id: task_id.clone(),
                     context_id: context_id.clone(),
-                    artifact: artifact.clone(),
-                    is_final: false,
+                    artifact,
+                    is_final,
                 };
                 let _ = tx.send(sse_rpc_event(&evt)).await;
-                state.task_manager.add_artifact(&task_id, artifact).await;
             }
-
-            state
-                .task_manager
-                .update_status(&task_id, TaskState::Completed, None)
-                .await;
-            let _ = tx
-                .send(status_event(
-                    &task_id,
-                    context_id.as_ref(),
-                    TaskState::Completed,
-                    true,
-                ))
-                .await;
-        }
-        Err(e) => {
-            tracing::error!(task_id = %task_id, "stream task processing failed: {e}");
-            state
-                .task_manager
-                .update_status(&task_id, TaskState::Failed, None)
-                .await;
-            let _ = tx
-                .send(status_event(
-                    &task_id,
-                    context_id.as_ref(),
-                    TaskState::Failed,
-                    true,
-                ))
-                .await;
+            ProcessorEvent::StatusUpdate {
+                state: task_state,
+                is_final,
+            } => {
+                state
+                    .task_manager
+                    .update_status(&task_id, task_state, None)
+                    .await;
+                let _ = tx
+                    .send(status_event(
+                        &task_id,
+                        context_id.as_ref(),
+                        task_state,
+                        is_final,
+                    ))
+                    .await;
+            }
         }
     }
+
+    let final_state = match proc_handle.await {
+        Ok(Ok(())) => TaskState::Completed,
+        Ok(Err(e)) => {
+            tracing::error!(task_id = %task_id, "stream task processing failed: {e}");
+            TaskState::Failed
+        }
+        Err(e) => {
+            tracing::error!(task_id = %task_id, "stream task processor panicked: {e}");
+            TaskState::Failed
+        }
+    };
+
+    if final_state == TaskState::Completed && !accumulated.is_empty() {
+        use crate::types::{Message, Part, Role};
+        let response = Message {
+            role: Role::Agent,
+            parts: vec![Part::text(accumulated)],
+            message_id: None,
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        state.task_manager.append_history(&task_id, response).await;
+    }
+
+    state
+        .task_manager
+        .update_status(&task_id, final_state, None)
+        .await;
+    let _ = tx
+        .send(status_event(
+            &task_id,
+            context_id.as_ref(),
+            final_state,
+            true,
+        ))
+        .await;
 }
 
 #[cfg(test)]
@@ -409,5 +463,80 @@ mod tests {
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert_eq!(msg, "invalid parameters");
         assert!(!msg.contains("invalid type"), "serde details must not leak");
+    }
+
+    // Multi-chunk ArtifactChunk accumulation test
+
+    struct MultiChunkProcessor;
+
+    impl super::super::state::TaskProcessor for MultiChunkProcessor {
+        fn process(
+            &self,
+            _task_id: String,
+            _message: crate::types::Message,
+            event_tx: tokio::sync::mpsc::Sender<super::super::state::ProcessorEvent>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), crate::error::A2aError>> + Send>,
+        > {
+            Box::pin(async move {
+                let _ = event_tx
+                    .send(super::super::state::ProcessorEvent::ArtifactChunk {
+                        text: "chunk1".into(),
+                        is_final: false,
+                    })
+                    .await;
+                let _ = event_tx
+                    .send(super::super::state::ProcessorEvent::ArtifactChunk {
+                        text: " chunk2".into(),
+                        is_final: false,
+                    })
+                    .await;
+                let _ = event_tx
+                    .send(super::super::state::ProcessorEvent::ArtifactChunk {
+                        text: " chunk3".into(),
+                        is_final: true,
+                    })
+                    .await;
+                let _ = event_tx
+                    .send(super::super::state::ProcessorEvent::StatusUpdate {
+                        state: crate::types::TaskState::Completed,
+                        is_final: true,
+                    })
+                    .await;
+                Ok(())
+            })
+        }
+    }
+
+    fn multi_chunk_state() -> super::super::state::AppState {
+        use std::sync::Arc;
+        super::super::state::AppState {
+            card: super::super::testing::test_card(),
+            task_manager: super::super::state::TaskManager::new(),
+            processor: Arc::new(MultiChunkProcessor),
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_chunk_accumulation_produces_joined_artifact() {
+        let app = build_router_with_config(multi_chunk_state(), None, 0);
+        let msg = crate::types::Message {
+            role: crate::types::Role::User,
+            parts: vec![crate::types::Part::Text {
+                text: "hello".into(),
+            }],
+            message_id: "m1".into(),
+        };
+        let req = make_rpc_request(
+            "message/send",
+            serde_json::json!({ "message": serde_json::to_value(&msg).unwrap() }),
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        // Result should contain artifact with all chunks joined
+        let artifacts = &body["result"]["artifacts"];
+        let text = artifacts[0]["parts"][0]["text"].as_str().unwrap_or("");
+        assert_eq!(text, "chunk1 chunk2 chunk3");
     }
 }

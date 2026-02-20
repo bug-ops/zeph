@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` in zeph-core — headless channel for daemon mode, pairs with a handle that exposes `input_tx` / `output_rx` for programmatic agent I/O
+- `ProcessorEvent` enum in zeph-a2a server — streaming event type replacing synchronous `ProcessResult`; `TaskProcessor::process` now accepts an `mpsc::Sender<ProcessorEvent>` and returns `Result<(), A2aError>`
+- `--daemon` CLI flag (feature `daemon+a2a`) — bootstraps a full agent + A2A JSON-RPC server under `DaemonSupervisor` with PID file lifecycle and Ctrl-C graceful shutdown
+- `--connect <URL>` CLI flag (feature `tui+a2a`) — connects the TUI to a remote daemon via A2A SSE, mapping `TaskEvent` to `AgentEvent` in real-time
+- Command palette daemon commands: `daemon:connect`, `daemon:disconnect`, `daemon:status`
+- Command palette action commands: `app:quit` (shortcut `q`), `app:help` (shortcut `?`), `session:new`, `app:theme`
+- Fuzzy-matching for command palette — character-level gap-penalty scoring replaces substring filter; `daemon_command_registry()` merged into `filter_commands`
+- `--init` wizard daemon step — prompts for A2A server host, port, and auth token; writes `config.a2a.*`
 - `Embeddable` trait and `EmbeddingRegistry<T>` in zeph-memory — generic Qdrant sync/search extracted from duplicated code in QdrantSkillMatcher and McpToolRegistry (~350 lines removed)
 - MCP server command allowlist validation — only permitted commands (npx, uvx, node, python3, python, docker, deno, bun) can spawn child processes; configurable via `mcp.allowed_commands`
 - MCP env var blocklist — blocks 21 dangerous variables (LD_PRELOAD, DYLD_*, NODE_OPTIONS, PYTHONPATH, JAVA_TOOL_OPTIONS, etc.) and BASH_FUNC_* prefix from MCP server processes

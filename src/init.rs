@@ -40,6 +40,10 @@ pub(crate) struct WizardState {
     pub(crate) orchestrator_fallback_api_key: Option<String>,
     pub(crate) orchestrator_fallback_compatible_name: Option<String>,
     pub(crate) auto_update_check: bool,
+    pub(crate) daemon_enabled: bool,
+    pub(crate) daemon_host: String,
+    pub(crate) daemon_port: u16,
+    pub(crate) daemon_auth_token: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -58,6 +62,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         vault_backend: "env".into(),
         semantic_enabled: true,
         auto_update_check: true,
+        daemon_host: "127.0.0.1".into(),
+        daemon_port: 8080,
         ..WizardState::default()
     };
 
@@ -66,6 +72,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_memory(&mut state)?;
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
+    step_daemon(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -497,6 +504,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         backend: state.vault_backend.clone(),
     };
 
+    if state.daemon_enabled {
+        config.a2a.enabled = true;
+        config.a2a.host.clone_from(&state.daemon_host);
+        config.a2a.port = state.daemon_port;
+        config.a2a.auth_token.clone_from(&state.daemon_auth_token);
+    }
+
     config
 }
 
@@ -567,6 +581,36 @@ fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
         .with_prompt("Enable automatic update checks?")
         .default(true)
         .interact()?;
+
+    println!();
+    Ok(())
+}
+
+fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 6a/6: Daemon / A2A Server ==\n");
+
+    state.daemon_enabled = Confirm::new()
+        .with_prompt("Enable A2A daemon server?")
+        .default(false)
+        .interact()?;
+
+    if state.daemon_enabled {
+        state.daemon_host = Input::new()
+            .with_prompt("Bind address")
+            .default("127.0.0.1".into())
+            .interact_text()?;
+
+        state.daemon_port = Input::new()
+            .with_prompt("Port")
+            .default(8080u16)
+            .interact_text()?;
+
+        let raw: String = Password::new()
+            .with_prompt("Auth token (leave empty to disable)")
+            .allow_empty_password(true)
+            .interact()?;
+        state.daemon_auth_token = if raw.is_empty() { None } else { Some(raw) };
+    }
 
     println!();
     Ok(())

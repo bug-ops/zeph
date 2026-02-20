@@ -141,9 +141,12 @@ pub fn render(state: &CommandPaletteState, frame: &mut Frame, area: Rect) {
             } else {
                 Style::default()
             };
+            let shortcut_str = entry.shortcut.map_or(String::new(), |s| format!(" [{s}]"));
+            let shortcut_style = style.patch(Style::default().fg(ratatui::style::Color::DarkGray));
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<20}", entry.id), style.patch(theme.panel_title)),
                 Span::styled(format!("  {}", entry.label), style),
+                Span::styled(shortcut_str, shortcut_style),
             ]))
         })
         .collect();
@@ -162,7 +165,7 @@ mod tests {
     #[test]
     fn new_state_has_all_commands() {
         let state = CommandPaletteState::new();
-        assert_eq!(state.filtered.len(), 7);
+        assert!(state.filtered.len() >= 11);
         assert_eq!(state.selected, 0);
         assert!(state.query.is_empty());
         assert_eq!(state.cursor, 0);
@@ -175,7 +178,7 @@ mod tests {
         state.push_char('k');
         assert_eq!(state.query, "sk");
         assert_eq!(state.cursor, 2);
-        assert_eq!(state.filtered.len(), 1);
+        assert!(!state.filtered.is_empty());
         assert_eq!(state.filtered[0].id, "skill:list");
     }
 
@@ -208,9 +211,10 @@ mod tests {
     #[test]
     fn move_down_clamps_at_last() {
         let mut state = CommandPaletteState::new();
-        state.selected = 6;
+        let last = state.filtered.len() - 1;
+        state.selected = last;
         state.move_down();
-        assert_eq!(state.selected, 6);
+        assert_eq!(state.selected, last);
     }
 
     #[test]

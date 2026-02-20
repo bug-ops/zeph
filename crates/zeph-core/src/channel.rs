@@ -156,6 +156,108 @@ pub trait Channel: Send {
     }
 }
 
+/// Events emitted by the agent side toward the A2A caller.
+#[derive(Debug, Clone)]
+pub enum LoopbackEvent {
+    Chunk(String),
+    Flush,
+    FullMessage(String),
+    Status(String),
+    ToolOutput {
+        tool_name: String,
+        display: String,
+        diff: Option<crate::DiffData>,
+        filter_stats: Option<String>,
+    },
+}
+
+/// Caller-side handle for sending input and receiving agent output.
+pub struct LoopbackHandle {
+    pub input_tx: tokio::sync::mpsc::Sender<ChannelMessage>,
+    pub output_rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
+}
+
+/// Headless channel bridging an A2A `TaskProcessor` with the agent loop.
+pub struct LoopbackChannel {
+    input_rx: tokio::sync::mpsc::Receiver<ChannelMessage>,
+    output_tx: tokio::sync::mpsc::Sender<LoopbackEvent>,
+}
+
+impl LoopbackChannel {
+    /// Create a linked `(LoopbackChannel, LoopbackHandle)` pair.
+    #[must_use]
+    pub fn pair(buffer: usize) -> (Self, LoopbackHandle) {
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(buffer);
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel(buffer);
+        (
+            Self {
+                input_rx,
+                output_tx,
+            },
+            LoopbackHandle {
+                input_tx,
+                output_rx,
+            },
+        )
+    }
+}
+
+impl Channel for LoopbackChannel {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
+        Ok(self.input_rx.recv().await)
+    }
+
+    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::FullMessage(text.to_owned()))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Chunk(chunk.to_owned()))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Flush)
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Status(text.to_owned()))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn send_tool_output(
+        &mut self,
+        tool_name: &str,
+        display: &str,
+        diff: Option<crate::DiffData>,
+        filter_stats: Option<String>,
+    ) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::ToolOutput {
+                tool_name: tool_name.to_owned(),
+                display: display.to_owned(),
+                diff,
+                filter_stats,
+            })
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +392,121 @@ mod tests {
     async fn stub_channel_send_queue_count_noop() {
         let mut ch = StubChannel;
         ch.send_queue_count(5).await.unwrap();
+    }
+
+    // LoopbackChannel tests
+
+    #[test]
+    fn loopback_pair_returns_linked_handles() {
+        let (channel, handle) = LoopbackChannel::pair(8);
+        // Both sides exist and channels are connected via their sender capacity
+        drop(channel);
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn loopback_send_recv_round_trip() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        handle
+            .input_tx
+            .send(ChannelMessage {
+                text: "hello".to_owned(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "hello");
+    }
+
+    #[tokio::test]
+    async fn loopback_recv_returns_none_when_handle_dropped() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        drop(handle);
+        let result = channel.recv().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_send_produces_full_message_event() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.send("world").await.unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        assert!(matches!(event, LoopbackEvent::FullMessage(t) if t == "world"));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_chunk_then_flush() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.send_chunk("part1").await.unwrap();
+        channel.flush_chunks().await.unwrap();
+        let ev1 = handle.output_rx.recv().await.unwrap();
+        let ev2 = handle.output_rx.recv().await.unwrap();
+        assert!(matches!(ev1, LoopbackEvent::Chunk(t) if t == "part1"));
+        assert!(matches!(ev2, LoopbackEvent::Flush));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_tool_output() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel
+            .send_tool_output("bash", "exit 0", None, None)
+            .await
+            .unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        match event {
+            LoopbackEvent::ToolOutput {
+                tool_name,
+                display,
+                diff,
+                filter_stats,
+            } => {
+                assert_eq!(tool_name, "bash");
+                assert_eq!(display, "exit 0");
+                assert!(diff.is_none());
+                assert!(filter_stats.is_none());
+            }
+            _ => panic!("expected ToolOutput event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_confirm_auto_approves() {
+        let (mut channel, _handle) = LoopbackChannel::pair(8);
+        let result = channel.confirm("are you sure?").await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn loopback_send_error_when_output_closed() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        // Drop only the output_rx side by dropping the handle
+        drop(handle);
+        let result = channel.send("too late").await;
+        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_chunk_error_when_output_closed() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        drop(handle);
+        let result = channel.send_chunk("chunk").await;
+        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+    }
+
+    #[tokio::test]
+    async fn loopback_flush_error_when_output_closed() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        drop(handle);
+        let result = channel.flush_chunks().await;
+        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_status_event() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.send_status("working...").await.unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        assert!(matches!(event, LoopbackEvent::Status(s) if s == "working..."));
     }
 }

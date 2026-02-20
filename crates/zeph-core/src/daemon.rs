@@ -106,18 +106,24 @@ impl DaemonSupervisor {
     }
 }
 
-/// Write a PID file. Returns an error if the write fails.
+/// Write a PID file atomically using `O_CREAT | O_EXCL` to prevent TOCTOU races.
 ///
 /// # Errors
 ///
-/// Returns an error if the PID file directory cannot be created or the file cannot be written.
+/// Returns an error if the PID file directory cannot be created, the file already exists,
+/// or the file cannot be written.
 pub fn write_pid_file(path: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
     let expanded = expand_tilde(path);
     let path = std::path::Path::new(&expanded);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, std::process::id().to_string())
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(std::process::id().to_string().as_bytes())
 }
 
 /// Read the PID from a PID file.

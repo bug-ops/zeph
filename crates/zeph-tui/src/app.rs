@@ -715,6 +715,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::SkillList => {
@@ -802,6 +803,24 @@ impl App {
                         "Config not available (no command channel).".to_owned(),
                     );
                 }
+            }
+            TuiCommand::Quit => {
+                self.should_quit = true;
+            }
+            TuiCommand::Help => {
+                self.show_help = true;
+            }
+            TuiCommand::NewSession => {
+                self.messages.clear();
+                self.push_system_message("New conversation started.".to_owned());
+            }
+            TuiCommand::ToggleTheme => {
+                self.push_system_message("Theme switching is not yet implemented.".to_owned());
+            }
+            TuiCommand::DaemonConnect | TuiCommand::DaemonDisconnect | TuiCommand::DaemonStatus => {
+                self.push_system_message(
+                    "Daemon commands are not yet implemented in this mode.".to_owned(),
+                );
             }
         }
     }

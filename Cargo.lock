@@ -8846,6 +8846,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dialoguer",
+ "futures",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
