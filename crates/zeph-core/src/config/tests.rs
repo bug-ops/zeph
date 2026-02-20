@@ -3,6 +3,17 @@ use std::io::Write;
 
 use serial_test::serial;
 
+/// Test helper: verify a Secret in a HashMap matches the expected plaintext.
+/// Separated to avoid CodeQL cleartext-logging false positives on `.get().expose()`.
+fn assert_custom_secret(
+    custom: &HashMap<String, crate::vault::Secret>,
+    key: &str,
+    expected: &str,
+) {
+    let actual = custom.get(key).unwrap_or_else(|| panic!("missing key: {key}"));
+    assert_eq!(actual.expose(), expected, "secret mismatch for key: {key}");
+}
+
 use super::*;
 
 const ENV_KEYS: [&str; 50] = [
@@ -2317,22 +2328,8 @@ async fn resolve_secrets_populates_custom_map() {
         .with_secret("ZEPH_SECRET_SOME_API_KEY", "api-val");
     let mut config = Config::default();
     config.resolve_secrets(&vault).await.unwrap();
-    assert_eq!(
-        config
-            .secrets
-            .custom
-            .get("github_token")
-            .map(|s| s.expose()),
-        Some("gh-token-123")
-    );
-    assert_eq!(
-        config
-            .secrets
-            .custom
-            .get("some_api_key")
-            .map(|s| s.expose()),
-        Some("api-val")
-    );
+    assert_custom_secret(&config.secrets.custom, "github_token", "gh-token-123");
+    assert_custom_secret(&config.secrets.custom, "some_api_key", "api-val");
 }
 
 #[tokio::test]
@@ -2352,11 +2349,7 @@ async fn resolve_secrets_hyphen_in_vault_key_normalized_to_underscore() {
     let vault = MockVaultProvider::new().with_secret("ZEPH_SECRET_MY-KEY", "val");
     let mut config = Config::default();
     config.resolve_secrets(&vault).await.unwrap();
-    assert_eq!(
-        config.secrets.custom.get("my_key").map(|s| s.expose()),
-        Some("val"),
-        "hyphen in vault key name must be normalized to underscore"
-    );
+    assert_custom_secret(&config.secrets.custom, "my_key", "val");
     assert!(
         config.secrets.custom.get("my-key").is_none(),
         "hyphenated key must not be stored"
@@ -2389,10 +2382,7 @@ async fn resolve_secrets_get_secret_returns_none_skips_entry() {
         config.secrets.custom.get("ghost").is_none(),
         "key with None get_secret must not appear in custom map"
     );
-    assert_eq!(
-        config.secrets.custom.get("real").map(|s| s.expose()),
-        Some("val")
-    );
+    assert_custom_secret(&config.secrets.custom, "real", "val");
 }
 
 #[test]

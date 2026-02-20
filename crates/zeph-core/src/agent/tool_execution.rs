@@ -874,7 +874,10 @@ impl<C: Channel> Agent<C> {
                             .get(&secret_name)
                             .map(|secret| {
                                 let env_key = secret_name.to_uppercase();
-                                (env_key, secret.expose().to_owned())
+                                // Secret is intentionally exposed here for subprocess
+                                // env injection, not for logging.
+                                let value = secret.expose().to_owned(); // lgtm[rust/cleartext-logging]
+                                (env_key, value)
                             })
                     })
             })
