@@ -47,7 +47,7 @@ scheduler.register_handler(&TaskKind::UpdateCheck, Box::new(handler));
 Notification format sent via the channel:
 
 ```
-New version available: v0.12.0 (current: v0.11.2).
+New version available: v0.12.0 (current: v0.11.3).
 Update: https://github.com/bug-ops/zeph/releases/tag/v0.12.0
 ```
 

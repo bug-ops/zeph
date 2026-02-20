@@ -205,7 +205,7 @@ flowchart TD
 | **File sandbox** | Writes outside allowed paths |
 | **Tool permissions** | Glob-based allow/ask/deny policy per tool |
 | **Destructive command gate** | Accidental `rm -rf`, `DROP TABLE`, etc. |
-| **Secret redaction** | API keys leaking into context or logs (6 provider patterns) |
+| **Secret redaction** | API keys leaking into context or logs (9 provider patterns, regex-based) |
 | **SSRF protection** | Agent and MCP client requests to internal networks |
 | **Audit logging** | Full tool execution trace for forensics |
 | **Rate limiter** | TTL-based eviction, per-IP limits on gateway |
@@ -262,7 +262,7 @@ Skills **evolve**: failure detection triggers self-reflection, and the agent gen
 
 | Protocol | What It Does |
 |----------|-------------|
-| **MCP** | Connect external tool servers (stdio + HTTP) with SSRF protection |
+| **MCP** | Connect external tool servers (stdio + HTTP) with SSRF protection, command allowlist, and env var blocklist |
 | **A2A** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming |
 | **Audio input** | Speech-to-text via OpenAI Whisper API or local Candle Whisper (offline, feature-gated); Telegram and Slack audio files transcribed automatically |
 | **Vision** | Image input via CLI (`/image`), TUI (`/image`), and Telegram photo messages; supported by Claude, OpenAI, and Ollama providers (20 MB max, automatic MIME detection) |

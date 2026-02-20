@@ -45,6 +45,10 @@ Both tiers run automatically. See [Context Engineering](../advanced/context.md) 
 
 Drop a `ZEPH.md` file in your project root and Zeph discovers it automatically. Project-specific instructions are included in every prompt as a `<project_context>` block. Zeph walks up the directory tree looking for `ZEPH.md`, `ZEPH.local.md`, or `.zeph/config.md`.
 
+## Embeddable Trait and EmbeddingRegistry
+
+The `Embeddable` trait provides a generic interface for any type that can be embedded in Qdrant. It requires `id()`, `content_for_embedding()`, `content_hash()`, and `to_payload()` methods. `EmbeddingRegistry<T: Embeddable>` is a generic sync/search engine that delta-syncs items by BLAKE3 content hash and performs cosine similarity search. This pattern is used internally by skill matching, MCP tool registry, and code indexing.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

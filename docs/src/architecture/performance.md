@@ -43,6 +43,22 @@ The TUI applies two optimizations to maintain responsive input during heavy stre
 - **Event loop batching**: `biased` `tokio::select!` prioritizes keyboard/mouse input over agent events. Agent events are drained via `try_recv` loop, coalescing multiple streaming chunks into a single frame redraw.
 - **Per-message render cache**: Syntax highlighting and markdown parsing results are cached with content-hash keys. Only messages with changed content are re-parsed. Cache invalidation triggers: content mutation, terminal resize, and view mode toggle.
 
+## SQLite WAL Mode
+
+SQLite is opened with WAL (Write-Ahead Logging) mode, enabling concurrent reads during writes and improving throughput for the message persistence hot path.
+
+## Cached Prompt Tokens
+
+The system prompt token count is cached after the first computation and reused across agent loop iterations. This avoids re-estimating tokens for the static portion of the prompt on every turn.
+
+## LazyLock System Prompt
+
+Static system prompt fragments (tool definitions, environment preamble) use `LazyLock` for one-time initialization, eliminating repeated string allocation and formatting.
+
+## Content Hash Doom-Loop Detection
+
+The agent loop tracks a BLAKE3 content hash of the last LLM response. If the model produces an identical response twice consecutively, the loop breaks early to prevent infinite tool-call cycles.
+
 ## Tokio Runtime
 
 Tokio is imported with explicit features (`macros`, `rt-multi-thread`, `signal`, `sync`) instead of the `full` meta-feature, reducing compile time and binary size.

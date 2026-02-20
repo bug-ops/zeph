@@ -65,6 +65,15 @@ These tests are marked `#[ignore]` because they require a built binary and are s
 cargo nextest run -p zeph-tui -- --ignored
 ```
 
+## Config and Filter Snapshot Tests
+
+Beyond widget rendering, `insta` snapshots also cover:
+
+- **Config serialization** (`zeph-core`): snapshot tests verify that `Config` round-trips correctly through TOML serialization/deserialization, catching unintended field changes or serde attribute regressions.
+- **Output filters** (`zeph-tools`): each filter's output is snapshot-tested against known command outputs (e.g., `cargo test`, `cargo clippy`, `git diff`), ensuring filter logic changes are reviewed explicitly via snapshot diffs.
+
+These snapshots follow the same `cargo insta test` / `cargo insta review` workflow described below.
+
 ## Snapshot Workflow
 
 Snapshot management uses `cargo-insta`:

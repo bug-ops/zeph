@@ -52,7 +52,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 
 ## Key Design Decisions
 
-- **Generic Agent:** `Agent<P: LlmProvider + Clone + 'static, C: Channel, T: ToolExecutor>` — fully generic over provider, channel, and tool executor. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs` and `persistence.rs` submodules
+- **Generic Agent:** `Agent<C: Channel>` — generic over channel only. The provider is resolved at construction time (`AnyProvider` enum dispatch). Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch, eliminating the former `T: ToolExecutor` generic parameter. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs` and `persistence.rs` submodules
 - **TLS:** rustls everywhere (no openssl-sys)
 - **Bootstrap:** `AppBuilder` in `zeph-core::bootstrap` handles config/vault resolution, provider creation, memory setup, skill matching, tool executor composition, and graceful shutdown wiring. `main.rs` is a thin dispatcher over `AnyChannel`
 - **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `main.rs`

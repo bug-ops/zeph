@@ -1,6 +1,6 @@
 # Configuration Wizard
 
-Run `zeph init` to generate a `config.toml` through a guided 6-step wizard. This is the fastest way to get a working configuration.
+Run `zeph init` to generate a `config.toml` through a guided 7-step wizard. This is the fastest way to get a working configuration.
 
 ```bash
 zeph init
@@ -41,11 +41,22 @@ Pick the I/O channel:
 - **Discord** — provide bot token and application ID (requires `discord` feature)
 - **Slack** — provide bot token and signing secret (requires `slack` feature)
 
-## Step 5: Update Check
+## Step 5: Daemon
+
+Configure headless daemon mode with A2A endpoint (requires `daemon` + `a2a` features):
+
+- **Enable daemon** — toggle daemon supervisor on/off
+- **A2A host/port** — bind address for the A2A JSON-RPC server (default: `0.0.0.0:3000`)
+- **Auth token** — bearer token for A2A authentication (recommended for production)
+- **PID file path** — location for instance detection (default: `~/.zeph/zeph.pid`)
+
+Skip this step if you do not plan to run Zeph in headless mode.
+
+## Step 6: Update Check
 
 Enable or disable automatic version checks against GitHub Releases (default: enabled).
 
-## Step 6: Review and Save
+## Step 7: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

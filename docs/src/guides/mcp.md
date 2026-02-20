@@ -29,7 +29,9 @@ allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 max_dynamic_servers = 10
 ```
 
-`allowed_commands` restricts which binaries can be spawned as MCP servers. `max_dynamic_servers` limits the number of servers added at runtime.
+`allowed_commands` restricts which binaries can be spawned as MCP stdio servers. Commands containing path separators (`/` or `\`) are rejected to prevent path traversal — only bare command names resolved via `$PATH` are accepted. `max_dynamic_servers` limits the number of servers added at runtime.
+
+Environment variables containing secrets (API keys, tokens, credentials — 21 variables plus `BASH_FUNC_*` patterns) are automatically stripped from MCP child process environments. See [MCP Security](../reference/security/mcp.md) for the full blocklist.
 
 ## Dynamic Management
 

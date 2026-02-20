@@ -23,10 +23,11 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `document::pipeline` | `IngestionPipeline` — load, split, embed, store via Qdrant |
 | `vector_store` | `VectorStore` trait and `VectorPoint` types |
 | `embedding_store` | `EmbeddingStore` — high-level embedding CRUD |
+| `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature)
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`
 
 ## Features
 

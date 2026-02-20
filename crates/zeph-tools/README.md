@@ -11,9 +11,9 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | Module | Description |
 |--------|-------------|
 | `executor` | `ToolExecutor` trait, `ToolOutput`, `ToolCall` |
-| `shell` | Shell command executor |
+| `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping |
 | `file` | File operation executor |
-| `scrape` | Web scraping executor |
+| `scrape` | Web scraping executor with SSRF protection (post-DNS private IP validation, pinned address client) |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
 | `filter` | Output filtering pipeline |
 | `permissions` | Permission checks for tool invocation |

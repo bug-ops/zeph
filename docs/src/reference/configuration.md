@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Complete reference for the Zeph configuration file and environment variables. For the interactive setup wizard, see [Configuration Wizard](../getting-started/wizard.md).
+Complete reference for the Zeph configuration file and environment variables. For the interactive 7-step setup wizard (including daemon/A2A configuration), see [Configuration Wizard](../getting-started/wizard.md).
 
 ## Config File Resolution
 

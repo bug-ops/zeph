@@ -10,16 +10,21 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `Agent` — main loop driving inference and tool execution |
+| `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>` |
+| `agent::tool_execution` | Tool call handling, redaction, and result processing |
+| `agent::message_queue` | Message queue management |
+| `agent::builder` | Agent builder API |
+| `agent::commands` | Chat command dispatch (skills, feedback, etc.) |
+| `agent::utils` | Shared agent utilities |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
-| `channel` | `Channel` trait defining I/O adapters; `Attachment` / `AttachmentKind` for multimodal inputs (images, audio) |
-| `config` | TOML config with `ZEPH_*` env overrides |
+| `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `Attachment` / `AttachmentKind` for multimodal inputs |
+| `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
 | `context` | LLM context assembly from history, skills, memory |
 | `cost` | Token cost tracking and budgeting |
-| `daemon` | Background daemon mode (optional feature) |
+| `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |
 | `project` | Project-level context detection |
-| `redact` | Sensitive data redaction |
+| `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write) |
 | `diff` | Diff rendering utilities |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |

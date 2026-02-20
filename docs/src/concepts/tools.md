@@ -47,6 +47,10 @@ action = "deny"
 
 First matching rule wins. Default: `ask`.
 
+## ErasedToolExecutor
+
+The `ToolExecutor` trait is made object-safe via `ErasedToolExecutor`, enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch. This allows `Agent<C>` to hold any tool executor combination without a generic type parameter, simplifying the agent signature and making it easier to compose executors at runtime.
+
 ## Deep Dives
 
 - [Tool System](../advanced/tools.md) — full reference with filter pipeline, native tool use, iteration control

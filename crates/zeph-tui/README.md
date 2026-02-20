@@ -10,6 +10,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 
 - **app** — `App` state machine driving the render/event loop
 - **channel** — `TuiChannel` implementing the `Channel` trait for agent I/O
+- **command_palette** — fuzzy-matching command palette with daemon commands (`daemon:connect`, `daemon:disconnect`, `daemon:status`), action commands (`app:quit`, `app:help`, `session:new`, `app:theme`), and keybinding hints
 - **event** — `AgentEvent`, `AppEvent`, `EventReader` for async event dispatch
 - **file_picker** — `@`-triggered fuzzy file search with `nucleo-matcher` and `ignore` crate
 - **highlight** — syntax highlighting for code blocks
@@ -18,6 +19,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry
 - **theme** — color palette and style definitions
 - **widgets** — reusable ratatui widget components
+- **error** — `TuiError` typed error enum (Io, Channel)
 
 ## Usage
 

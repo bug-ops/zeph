@@ -4,7 +4,7 @@ Zeph implements defense-in-depth security for safe AI agent operations in produc
 
 ## Shell Command Filtering
 
-All shell commands from LLM responses pass through a security filter before execution. Commands matching blocked patterns are rejected with detailed error messages.
+All shell commands from LLM responses pass through a security filter before execution. Shell command detection uses a tokenizer-based pipeline that splits input into tokens, handles wrapper commands (e.g., `env`, `nohup`, `timeout`), and applies word-boundary matching against blocked patterns. This replaces the prior substring-based approach for more accurate detection with fewer false positives. Commands matching blocked patterns are rejected with detailed error messages.
 
 **12 blocked patterns by default:**
 
@@ -107,10 +107,10 @@ Each entry includes timestamp, tool name, command, result (success/blocked/error
 
 ## Secret Redaction
 
-LLM responses are scanned for common secret patterns before display:
+LLM responses are scanned for secret patterns using compiled regexes before display:
 
-- Detected patterns: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`, `AIza` (Google API), `glpat-` (GitLab)
-- Secrets replaced with `[REDACTED]` preserving original whitespace formatting
+- Detected prefixes: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`, `AIza` (Google API), `glpat-` (GitLab), `hf_` (HuggingFace), `npm_` (npm), `dckr_pat_` (Docker)
+- Regex-based matching replaces detected secrets with `[REDACTED]`, preserving original whitespace formatting
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
 
 ## Config Validation

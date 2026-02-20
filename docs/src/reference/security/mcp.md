@@ -56,14 +56,24 @@ url = "https://trusted-server.example.com/mcp"
 - Verify the server's TLS certificate chain
 - Monitor server logs for unexpected tool invocations
 
-## Command Allowlists
+## Command Allowlist Validation
 
-For production deployments, consider restricting which MCP tools can be invoked. While Zeph does not yet enforce tool-level allowlists, you can limit exposure by:
+The `mcp.allowed_commands` setting restricts which binaries can be spawned as MCP stdio servers. Validation enforces:
 
-1. Running only the MCP servers you need
-2. Configuring each server with minimal permissions
-3. Using filesystem servers with read-only access where possible
-4. Auditing tool calls via Zeph's tracing output (`RUST_LOG=zeph_mcp=debug`)
+- Only commands listed in `allowed_commands` are permitted (default: `["npx", "uvx", "node", "python", "python3"]`)
+- **Path separator rejection**: commands containing `/` or `\` are rejected to prevent path traversal (e.g., `./malicious` or `/usr/bin/evil`)
+- Commands must be bare names resolved via `$PATH`, not absolute or relative paths
+
+## Environment Variable Blocklist
+
+MCP server child processes inherit a sanitized environment. The following 21 environment variables (plus any matching `BASH_FUNC_*`) are stripped before spawning:
+
+- Shell API keys: `ZEPH_CLAUDE_API_KEY`, `ZEPH_OPENAI_API_KEY`, `ZEPH_TELEGRAM_TOKEN`, `ZEPH_DISCORD_TOKEN`, `ZEPH_SLACK_BOT_TOKEN`, `ZEPH_SLACK_SIGNING_SECRET`, `ZEPH_A2A_AUTH_TOKEN`
+- Cloud credentials: `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AZURE_CLIENT_SECRET`, `GCP_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
+- Common secrets: `DATABASE_URL`, `REDIS_URL`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `NPM_TOKEN`, `CARGO_REGISTRY_TOKEN`, `DOCKER_PASSWORD`, `VAULT_TOKEN`, `SSH_AUTH_SOCK`
+- Shell function exports: `BASH_FUNC_*` (glob match)
+
+This prevents accidental secret leakage to untrusted MCP servers.
 
 ## Environment Variables
 

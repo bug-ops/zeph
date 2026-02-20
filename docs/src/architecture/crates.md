@@ -7,7 +7,7 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 Agent loop, bootstrap orchestration, configuration loading, and context builder.
 
 - `AppBuilder` — bootstrap orchestrator in `zeph-core::bootstrap`: `from_env()` config/vault resolution, `build_provider()` with health check, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
-- `Agent<C, T>` — main agent loop with streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection, and context budget check (stops at 80% threshold). Provider is resolved at construction time (no `P` generic). Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`); logic is decomposed into `streaming.rs` and `persistence.rs` submodules
+- `Agent<C>` — main agent loop generic over channel only. Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch (no `T` generic). Provider is resolved at construction time (`AnyProvider` enum dispatch, no `P` generic). Streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection via content hash, and context budget check (stops at 80% threshold). Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`); logic is decomposed into `streaming.rs` and `persistence.rs` submodules
 - `AgentError` — typed error enum covering LLM, memory, channel, tool, context, and I/O failures (replaces prior `anyhow` usage)
 - `Config` — TOML config loading with env var overrides
 - `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management. Returns `Result<_, ChannelError>` with typed variants (`Io`, `ChannelClosed`, `ConfirmationCancelled`)
@@ -57,6 +57,8 @@ SQLite-backed conversation persistence with Qdrant vector search.
 - `QdrantOps` — shared helper consolidating common Qdrant operations (ensure_collection, upsert, search, delete, scroll), used by `QdrantStore`, `CodeStore`, `QdrantSkillMatcher`, and `McpToolRegistry`
 - `QdrantStore` — vector storage and cosine similarity search with `MessageKind` enum (`Regular` | `Summary`) for payload classification
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
+- `Embeddable` trait — generic interface for types that can be embedded and synced to Qdrant (provides `id`, `content_for_embedding`, `content_hash`, `to_payload`)
+- `EmbeddingRegistry<T: Embeddable>` — generic Qdrant sync/search engine: delta-syncs items by BLAKE3 content hash, performs cosine similarity search, and returns scored results
 - Automatic collection creation, graceful degradation without Qdrant
 - `DocumentLoader` trait — async document loading with `load(&Path)` returning `Vec<Document>`, dyn-compatible via `Pin<Box<dyn Future>>`
 - `TextLoader` — plain text and markdown loader (`.txt`, `.md`, `.markdown`) with configurable `max_file_size` (50 MiB default) and path canonicalization
@@ -77,7 +79,7 @@ Channel implementations for the Zeph agent.
 
 Tool execution abstraction and shell backend.
 
-- `ToolExecutor` trait — accepts LLM response or structured `ToolCall`, returns tool output
+- `ToolExecutor` trait + `ErasedToolExecutor` — `ErasedToolExecutor` is an object-safe wrapper enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch in `Agent<C>`
 - `ToolRegistry` — typed definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape), injected into system prompt as `<tools>` catalog
 - `ToolCall` / `execute_tool_call()` — structured tool invocation with typed parameters alongside legacy bash extraction (dual-mode)
 - `FileExecutor` — sandboxed file operations (read, write, edit, glob, grep) with ancestor-walk path canonicalization

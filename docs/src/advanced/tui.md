@@ -104,7 +104,7 @@ Press `Ctrl+P` in Insert mode to open the command palette. The palette provides 
 
 | Key | Action |
 |-----|--------|
-| Any character | Filter commands by substring match |
+| Any character | Filter commands by fuzzy match |
 | `Up` / `Down` | Navigate the command list |
 | `Enter` | Execute selected command |
 | `Backspace` | Remove last query character |
