@@ -134,10 +134,12 @@ mod tests {
         assert!(ch.send_status("thinking...").await.is_ok());
     }
 
+    // crossterm on Windows uses ReadConsoleInputW which blocks indefinitely
+    // without a real console handle (headless CI), while Unix poll() gets EOF
+    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn any_channel_cli_confirm_returns_bool() {
         let mut ch = AnyChannel::Cli(CliChannel::new());
-        // In non-interactive mode this should return Ok (doesn't panic)
         let _ = ch.confirm("confirm?").await;
     }
 
