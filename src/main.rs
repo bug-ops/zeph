@@ -551,7 +551,7 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map_or(String::new(), |k| k.expose().to_string());
             let whisper = zeph_llm::whisper::WhisperProvider::new(
-                reqwest::Client::new(),
+                zeph_core::http::default_client(),
                 api_key,
                 base_url,
                 &stt_cfg.model,

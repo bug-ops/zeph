@@ -35,7 +35,7 @@ struct EditMessage<'a> {
 impl RestClient {
     #[must_use]
     pub fn new(token: String) -> Self {
-        let client = reqwest::Client::new();
+        let client = zeph_core::http::default_client();
         Self { client, token }
     }
 

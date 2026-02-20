@@ -17,6 +17,7 @@ pub mod redact;
 pub mod vault;
 
 pub mod diff;
+pub mod http;
 
 pub use agent::Agent;
 pub use agent::error::AgentError;

@@ -45,7 +45,7 @@ impl SlackApi {
     #[must_use]
     pub fn new(token: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: zeph_core::http::default_client(),
             token,
         }
     }

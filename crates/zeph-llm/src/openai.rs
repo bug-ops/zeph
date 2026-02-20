@@ -69,7 +69,7 @@ impl OpenAiProvider {
             base_url.pop();
         }
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http::default_client(),
             api_key,
             base_url,
             model,

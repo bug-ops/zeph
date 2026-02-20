@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Secret redaction regex-based pattern matching replaces whitespace tokenizer, detecting secrets in URLs, JSON, and quoted strings
 - Added `hf_`, `npm_`, `dckr_pat_` to secret redaction prefixes
 - A2A client stream errors truncate upstream body to 256 bytes
+- Add `default_client()` HTTP helper with standard timeouts and user-agent in zeph-core and zeph-llm (#666)
+- Replace 5 production `Client::new()` calls with `default_client()` for consistent HTTP config (#667)
 
 ### Fixed
 - False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)

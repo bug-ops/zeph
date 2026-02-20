@@ -9,6 +9,7 @@ pub mod claude;
 pub mod compatible;
 pub mod error;
 pub mod extractor;
+pub(crate) mod http;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub mod ollama;
