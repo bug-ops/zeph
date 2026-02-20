@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-02-20
+
+### Added
+- `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` in zeph-core — headless channel for daemon mode, pairs with a handle that exposes `input_tx` / `output_rx` for programmatic agent I/O
+- `ProcessorEvent` enum in zeph-a2a server — streaming event type replacing synchronous `ProcessResult`; `TaskProcessor::process` now accepts an `mpsc::Sender<ProcessorEvent>` and returns `Result<(), A2aError>`
+- `--daemon` CLI flag (feature `daemon+a2a`) — bootstraps a full agent + A2A JSON-RPC server under `DaemonSupervisor` with PID file lifecycle and Ctrl-C graceful shutdown
+- `--connect <URL>` CLI flag (feature `tui+a2a`) — connects the TUI to a remote daemon via A2A SSE, mapping `TaskEvent` to `AgentEvent` in real-time
+- Command palette daemon commands: `daemon:connect`, `daemon:disconnect`, `daemon:status`
+- Command palette action commands: `app:quit` (shortcut `q`), `app:help` (shortcut `?`), `session:new`, `app:theme`
+- Fuzzy-matching for command palette — character-level gap-penalty scoring replaces substring filter; `daemon_command_registry()` merged into `filter_commands`
+- `TuiCommand::ToggleTheme` variant in command palette (placeholder — theme switching not yet implemented)
+- `--init` wizard daemon step — prompts for A2A server host, port, and auth token; writes `config.a2a.*`
+- Snapshot tests for `Config::default()` TOML serialization (zeph-core), git filter diff/status output, cargo-build filter success/error output, and clippy grouped warnings output — using insta for regression detection
+- Tests for `handle_tool_result` covering blocked, cancelled, sandbox violation, empty output, exit-code failure, and success paths (zeph-core agent/tool_execution.rs)
+- Tests for `maybe_redact` (redaction enabled/disabled) and `last_user_query` helper in agent/tool_execution.rs
+- Tests for `handle_skill_command` dispatch covering unknown subcommand, missing arguments, and no-memory early-exit paths for stats, versions, activate, approve, and reset subcommands (zeph-core agent/learning.rs)
+- Tests for `record_skill_outcomes` noop path when no active skills are present
+- `insta` added to workspace dev-dependencies and to zeph-core and zeph-tools crate dev-deps
+- `Embeddable` trait and `EmbeddingRegistry<T>` in zeph-memory — generic Qdrant sync/search extracted from duplicated code in QdrantSkillMatcher and McpToolRegistry (~350 lines removed)
+- MCP server command allowlist validation — only permitted commands (npx, uvx, node, python3, python, docker, deno, bun) can spawn child processes; configurable via `mcp.allowed_commands`
+- MCP env var blocklist — blocks 21 dangerous variables (LD_PRELOAD, DYLD_*, NODE_OPTIONS, PYTHONPATH, JAVA_TOOL_OPTIONS, etc.) and BASH_FUNC_* prefix from MCP server processes
+- Path separator rejection in MCP command validation to prevent symlink-based bypasses
+
+### Changed
+- `MessagePart::Image` variant now holds `Box<ImageData>` instead of inline fields, improving semantic grouping of image data
+- `Agent<C, T>` simplified to `Agent<C>` — ToolExecutor generic replaced with `Box<dyn ErasedToolExecutor>`, reducing monomorphization
+- Shell command detection rewritten from substring matching to tokenizer-based pipeline with escape normalization, eliminating bypass vectors via backslash insertion, hex/octal escapes, quote splitting, and pipe chains
+- Shell sandbox path validation now uses `std::path::absolute()` as fallback when `canonicalize()` fails on non-existent paths
+- Blocked command matching extracts basename from absolute paths (`/usr/bin/sudo` now correctly blocked)
+- Transparent wrapper commands (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `xargs`) are skipped to detect the actual command
+- Default confirm patterns now include `$(` and backtick subshell expressions
+- Enable SQLite WAL mode with SYNCHRONOUS=NORMAL for 2-5x write throughput (#639)
+- Replace O(n*iterations) token scan with cached_prompt_tokens in budget checks (#640)
+- Defer maybe_redact to stream completion boundary instead of per-chunk (#641)
+- Replace format_tool_output string allocation with Write-into-buffer (#642)
+- Change ToolCall.params from HashMap to serde_json::Map, eliminating clone (#643)
+- Pre-join static system prompt sections into LazyLock<String> (#644)
+- Replace doom-loop string history with content hash comparison (#645)
+- Return &'static str from detect_image_mime with case-insensitive matching (#646)
+- Replace block_on in history persist with fire-and-forget async spawn (#647)
+- Change `LlmProvider::name()` from `&'static str` to `&str`, eliminating `Box::leak` memory leak in CompatibleProvider (#633)
+- Extract rate-limit retry helper `send_with_retry()` in zeph-llm, deduplicating 3 retry loops (#634)
+- Extract `sse_to_chat_stream()` helpers shared by Claude and OpenAI providers (#635)
+- Replace double `AnyProvider::clone()` in `embed_fn()` with single `Arc` clone (#636)
+- Add `with_client()` builder to ClaudeProvider and OpenAiProvider for shared `reqwest::Client` (#637)
+- Cache `JsonSchema` per `TypeId` in `chat_typed` to avoid per-call schema generation (#638)
+- Scrape executor performs post-DNS resolution validation against private/loopback IPs with pinned address client to prevent SSRF via DNS rebinding
+- Private host detection expanded to block `*.localhost`, `*.internal`, `*.local` domains
+- A2A error responses sanitized: serde details and method names no longer exposed to clients
+- Rate limiter rejects new clients with 429 when entry map is at capacity after stale eviction
+- Secret redaction regex-based pattern matching replaces whitespace tokenizer, detecting secrets in URLs, JSON, and quoted strings
+- Added `hf_`, `npm_`, `dckr_pat_` to secret redaction prefixes
+- A2A client stream errors truncate upstream body to 256 bytes
+- Add `default_client()` HTTP helper with standard timeouts and user-agent in zeph-core and zeph-llm (#666)
+- Replace 5 production `Client::new()` calls with `default_client()` for consistent HTTP config (#667)
+- Decompose agent/mod.rs (2602→459 lines) into tool_execution, message_queue, builder, commands, and utils modules (#648, #649, #650)
+- Replace `anyhow` in `zeph-core::config` with typed `ConfigError` enum (Io, Parse, Validation, Vault)
+- Replace `anyhow` in `zeph-tui` with typed `TuiError` enum (Io, Channel); simplify `handle_event()` return to `()`
+- Sort `[workspace.dependencies]` alphabetically in root Cargo.toml
+
+### Fixed
+- False positive: "sudoku" no longer matched by "sudo" blocked pattern (word-boundary matching)
+- PID file creation uses `OpenOptions::create_new(true)` (O_CREAT|O_EXCL) to prevent TOCTOU symlink attacks
+
 ## [0.11.2] - 2026-02-19
 
 ### Added
@@ -989,7 +1053,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/bug-ops/zeph/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bug-ops/zeph/compare/v0.10.0...v0.11.0

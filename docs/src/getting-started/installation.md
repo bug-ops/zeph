@@ -19,7 +19,7 @@ ZEPH_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/bug-ops/zeph/relea
 Install a specific version:
 
 ```bash
-curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh -s -- --version v0.11.2
+curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh -s -- --version v0.11.3
 ```
 
 After installation, run the configuration wizard:
