@@ -5,12 +5,10 @@ use serial_test::serial;
 
 /// Test helper: verify a Secret in a HashMap matches the expected plaintext.
 /// Separated to avoid CodeQL cleartext-logging false positives on `.get().expose()`.
-fn assert_custom_secret(
-    custom: &HashMap<String, crate::vault::Secret>,
-    key: &str,
-    expected: &str,
-) {
-    let actual = custom.get(key).unwrap_or_else(|| panic!("missing key: {key}"));
+fn assert_custom_secret(custom: &HashMap<String, crate::vault::Secret>, key: &str, expected: &str) {
+    let actual = custom
+        .get(key)
+        .unwrap_or_else(|| panic!("missing key: {key}"));
     assert_eq!(actual.expose(), expected, "secret mismatch for key: {key}");
 }
 
