@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_send_recv_round_trip() {
-        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        let (mut channel, handle) = LoopbackChannel::pair(8);
         handle
             .input_tx
             .send(ChannelMessage {

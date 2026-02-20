@@ -1540,9 +1540,6 @@ mod tests {
     use std::path::Path;
     use zeph_core::channel::Channel;
     use zeph_core::config::ProviderKind;
-    #[cfg(all(feature = "daemon", feature = "a2a"))]
-    use zeph_llm::ollama::OllamaProvider;
-
     #[tokio::test]
     async fn create_channel_returns_cli_when_no_telegram() {
         let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();

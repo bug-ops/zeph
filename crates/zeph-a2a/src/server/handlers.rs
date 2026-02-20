@@ -134,16 +134,14 @@ async fn handle_send_message(
     };
 
     if final_state == TaskState::Completed && !accumulated.is_empty() {
-        use crate::types::{Message, Part, Role};
-        let response = Message {
-            role: Role::Agent,
+        use crate::types::{Artifact, Part};
+        let artifact = Artifact {
+            artifact_id: format!("{}-artifact", task.id),
+            name: None,
             parts: vec![Part::text(accumulated)],
-            message_id: None,
-            task_id: None,
-            context_id: None,
             metadata: None,
         };
-        state.task_manager.append_history(&task.id, response).await;
+        state.task_manager.add_artifact(&task.id, artifact).await;
     }
 
     state
@@ -351,16 +349,14 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
     };
 
     if final_state == TaskState::Completed && !accumulated.is_empty() {
-        use crate::types::{Message, Part, Role};
-        let response = Message {
-            role: Role::Agent,
+        use crate::types::{Artifact, Part};
+        let artifact = Artifact {
+            artifact_id: format!("{task_id}-artifact"),
+            name: None,
             parts: vec![Part::text(accumulated)],
-            message_id: None,
-            task_id: None,
-            context_id: None,
             metadata: None,
         };
-        state.task_manager.append_history(&task_id, response).await;
+        state.task_manager.add_artifact(&task_id, artifact).await;
     }
 
     state
@@ -524,8 +520,12 @@ mod tests {
             role: crate::types::Role::User,
             parts: vec![crate::types::Part::Text {
                 text: "hello".into(),
+                metadata: None,
             }],
-            message_id: "m1".into(),
+            message_id: Some("m1".into()),
+            task_id: None,
+            context_id: None,
+            metadata: None,
         };
         let req = make_rpc_request(
             "message/send",
