@@ -175,4 +175,73 @@ mod tests {
         let cloned = sub.clone();
         assert_eq!(cloned.name(), sub.name());
     }
+
+    #[test]
+    fn sub_provider_openai_delegates() {
+        let sub = SubProvider::OpenAi(OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        ));
+        assert_eq!(sub.name(), "openai");
+        assert!(sub.supports_streaming());
+        assert!(!sub.supports_embeddings());
+        assert!(sub.supports_tool_use());
+    }
+
+    #[test]
+    fn sub_provider_openai_supports_embeddings_when_embed_model_set() {
+        let sub = SubProvider::OpenAi(OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            Some("text-embedding-3-small".into()),
+            None,
+        ));
+        assert!(sub.supports_embeddings());
+    }
+
+    #[test]
+    fn sub_provider_set_status_tx_does_not_panic_for_ollama() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut sub = SubProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        // Ollama ignores set_status_tx — must not panic
+        sub.set_status_tx(tx);
+    }
+
+    #[test]
+    fn sub_provider_set_status_tx_does_not_panic_for_claude() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut sub = SubProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        sub.set_status_tx(tx);
+    }
+
+    #[test]
+    fn sub_provider_last_cache_usage_returns_none_for_ollama() {
+        let sub = SubProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        assert!(sub.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn sub_provider_ollama_does_not_support_tool_use() {
+        let sub = SubProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        // Ollama does not support structured tool_use in the current implementation
+        assert!(!sub.supports_tool_use());
+    }
 }

@@ -131,3 +131,131 @@ impl<C: Channel> Agent<C> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+    use zeph_llm::any::AnyProvider;
+    use zeph_memory::semantic::SemanticMemory;
+
+    async fn test_memory(provider: &AnyProvider) -> SemanticMemory {
+        SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            provider.clone(),
+            "test-model",
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn load_history_without_memory_returns_ok() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.load_history().await;
+        assert!(result.is_ok());
+        // No messages added when no memory is configured
+        assert_eq!(agent.messages.len(), 1); // system prompt only
+    }
+
+    #[tokio::test]
+    async fn load_history_with_messages_injects_into_agent() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        memory
+            .sqlite()
+            .save_message(cid, "user", "hello from history")
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .save_message(cid, "assistant", "hi back")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 100);
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+        // Two messages were added from history
+        assert_eq!(agent.messages.len(), messages_before + 2);
+    }
+
+    #[tokio::test]
+    async fn load_history_skips_empty_messages() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Save an empty message (should be skipped) and a valid one
+        memory
+            .sqlite()
+            .save_message(cid, "user", "   ")
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .save_message(cid, "user", "real message")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 100);
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+        // Only the non-empty message is loaded
+        assert_eq!(agent.messages.len(), messages_before + 1);
+    }
+
+    #[tokio::test]
+    async fn load_history_with_empty_store_returns_ok() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory, cid, 50, 5, 100);
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+        // No messages added — empty history
+        assert_eq!(agent.messages.len(), messages_before);
+    }
+
+    #[tokio::test]
+    async fn persist_message_without_memory_silently_returns() {
+        // No memory configured — persist_message must not panic
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Must not panic and must complete
+        agent.persist_message(Role::User, "hello").await;
+    }
+}

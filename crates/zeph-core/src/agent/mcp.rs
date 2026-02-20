@@ -278,6 +278,11 @@ impl<C: Channel> Agent<C> {
             .await
     }
 
+    #[cfg(test)]
+    pub(crate) fn mcp_tool_count(&self) -> usize {
+        self.mcp.tools.len()
+    }
+
     pub(super) async fn sync_mcp_registry(&mut self) {
         let Some(ref mut registry) = self.mcp.registry else {
             return;
@@ -297,5 +302,149 @@ impl<C: Channel> Agent<C> {
         {
             tracing::warn!("failed to sync MCP tool registry: {e:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+
+    #[tokio::test]
+    async fn handle_mcp_command_unknown_subcommand_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_mcp_command("unknown").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /mcp")),
+            "expected usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_list_no_manager_shows_disabled() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_mcp_command("list").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("MCP is not enabled")),
+            "expected not-enabled message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_tools_no_server_id_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_mcp_command("tools").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /mcp tools")),
+            "expected tools usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_remove_no_server_id_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_mcp_command("remove").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /mcp remove")),
+            "expected remove usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_remove_no_manager_shows_disabled() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // "remove server-id" but no manager
+        agent.handle_mcp_command("remove my-server").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("MCP is not enabled")),
+            "expected not-enabled message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_add_insufficient_args_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // "add" with only 1 arg (needs at least 2)
+        agent.handle_mcp_command("add server-id").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage: /mcp add")),
+            "expected add usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mcp_tools_with_unknown_server_shows_no_tools() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // mcp.tools is empty, so any server will have no tools
+        agent
+            .handle_mcp_command("tools nonexistent-server")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("No tools found")),
+            "expected no-tools message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_count_starts_at_zero() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert_eq!(agent.mcp_tool_count(), 0);
     }
 }

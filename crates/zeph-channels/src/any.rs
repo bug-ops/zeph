@@ -96,3 +96,61 @@ impl Channel for AnyChannel {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::CliChannel;
+    use zeph_core::channel::Channel;
+
+    #[tokio::test]
+    async fn any_channel_cli_send_returns_ok() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        assert!(ch.send("hello").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send_chunk_returns_ok() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        assert!(ch.send_chunk("chunk").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_flush_chunks_returns_ok() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        ch.send_chunk("data").await.unwrap();
+        assert!(ch.flush_chunks().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send_typing_returns_ok() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        assert!(ch.send_typing().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_send_status_returns_ok() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        assert!(ch.send_status("thinking...").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn any_channel_cli_confirm_returns_bool() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        // In non-interactive mode this should return Ok (doesn't panic)
+        let _ = ch.confirm("confirm?").await;
+    }
+
+    #[test]
+    fn any_channel_cli_try_recv_returns_none() {
+        let mut ch = AnyChannel::Cli(CliChannel::new());
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[test]
+    fn any_channel_debug() {
+        let ch = AnyChannel::Cli(CliChannel::new());
+        let debug = format!("{ch:?}");
+        assert!(debug.contains("Cli"));
+    }
+}
