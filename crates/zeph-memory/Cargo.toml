@@ -16,7 +16,8 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "v5"] }
+blake3.workspace = true
 zeph-llm.workspace = true
 
 [features]

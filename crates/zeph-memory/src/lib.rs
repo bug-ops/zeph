@@ -1,6 +1,7 @@
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
 pub mod document;
+pub mod embedding_registry;
 pub mod embedding_store;
 pub mod error;
 #[cfg(feature = "mock")]
@@ -16,6 +17,9 @@ pub use document::PdfLoader;
 pub use document::{
     Chunk, Document, DocumentError, DocumentLoader, DocumentMetadata, IngestionPipeline,
     SplitterConfig, TextLoader, TextSplitter,
+};
+pub use embedding_registry::{
+    EmbedFuture, Embeddable, EmbeddingRegistry, EmbeddingRegistryError, SyncStats,
 };
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;

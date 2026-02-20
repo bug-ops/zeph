@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-
-use qdrant_client::qdrant::{PointStruct, value::Kind};
-use zeph_memory::QdrantOps;
+pub use zeph_memory::SyncStats;
+use zeph_memory::{Embeddable, EmbeddingRegistry, QdrantOps};
 
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
@@ -16,37 +14,40 @@ const SKILL_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x00, 0x00, 0x00, 0x01, // version
 ]);
 
-#[derive(Debug, Default)]
-pub struct SyncStats {
-    pub added: usize,
-    pub updated: usize,
-    pub removed: usize,
-    pub unchanged: usize,
+impl Embeddable for &SkillMeta {
+    fn key(&self) -> &str {
+        &self.name
+    }
+
+    fn content_hash(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.name.as_bytes());
+        hasher.update(self.description.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    fn embed_text(&self) -> &str {
+        &self.description
+    }
+
+    fn to_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "key": self.name,
+            "description": self.description,
+        })
+    }
 }
 
 pub struct QdrantSkillMatcher {
-    ops: QdrantOps,
-    collection: String,
-    hashes: HashMap<String, String>,
+    registry: EmbeddingRegistry,
 }
 
 impl std::fmt::Debug for QdrantSkillMatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QdrantSkillMatcher")
-            .field("collection", &self.collection)
+            .field("collection", &COLLECTION_NAME)
             .finish_non_exhaustive()
     }
-}
-
-fn content_hash(meta: &SkillMeta) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(meta.name.as_bytes());
-    hasher.update(meta.description.as_bytes());
-    hasher.finalize().to_hex().to_string()
-}
-
-fn skill_point_id(skill_name: &str) -> String {
-    uuid::Uuid::new_v5(&SKILL_NAMESPACE, skill_name.as_bytes()).to_string()
 }
 
 impl QdrantSkillMatcher {
@@ -55,11 +56,8 @@ impl QdrantSkillMatcher {
     /// Returns an error if the Qdrant client cannot be created.
     pub fn new(qdrant_url: &str) -> Result<Self, SkillError> {
         let ops = QdrantOps::new(qdrant_url)?;
-
         Ok(Self {
-            ops,
-            collection: COLLECTION_NAME.into(),
-            hashes: HashMap::new(),
+            registry: EmbeddingRegistry::new(ops, COLLECTION_NAME, SKILL_NAMESPACE),
         })
     }
 
@@ -77,84 +75,17 @@ impl QdrantSkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        let mut stats = SyncStats::default();
-
-        self.ensure_collection(&embed_fn).await?;
-
-        let existing = self.ops.scroll_all(&self.collection, "skill_name").await?;
-
-        let mut current: HashMap<String, (String, &SkillMeta)> = HashMap::with_capacity(meta.len());
-        for m in meta {
-            current.insert(m.name.clone(), (content_hash(m), *m));
-        }
-
-        let model_changed = existing.values().any(|stored| {
-            stored
-                .get("embedding_model")
-                .is_some_and(|m| m != embedding_model)
-        });
-
-        if model_changed {
-            tracing::warn!("embedding model changed to '{embedding_model}', recreating collection");
-            self.recreate_collection(&embed_fn).await?;
-        }
-
-        let mut points_to_upsert = Vec::new();
-        for (name, (hash, m)) in &current {
-            let needs_update = if let Some(stored) = existing.get(name) {
-                model_changed || stored.get("content_hash").is_some_and(|h| h != hash)
-            } else {
-                true
-            };
-
-            if !needs_update {
-                stats.unchanged += 1;
-                self.hashes.insert(name.clone(), hash.clone());
-                continue;
-            }
-
-            let vector = match embed_fn(&m.description).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("failed to embed skill '{name}': {e:#}");
-                    continue;
-                }
-            };
-
-            let point_id = skill_point_id(name);
-            let payload = serde_json::json!({
-                "skill_name": name,
-                "description": m.description,
-                "content_hash": hash,
-                "embedding_model": embedding_model,
-            });
-            let payload_map = QdrantOps::json_to_payload(payload)?;
-
-            points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
-
-            if existing.contains_key(name) {
-                stats.updated += 1;
-            } else {
-                stats.added += 1;
-            }
-            self.hashes.insert(name.clone(), hash.clone());
-        }
-
-        if !points_to_upsert.is_empty() {
-            self.ops.upsert(&self.collection, points_to_upsert).await?;
-        }
-
-        let orphan_ids: Vec<qdrant_client::qdrant::PointId> = existing
-            .keys()
-            .filter(|name| !current.contains_key(*name))
-            .map(|name| qdrant_client::qdrant::PointId::from(skill_point_id(name).as_str()))
-            .collect();
-
-        if !orphan_ids.is_empty() {
-            stats.removed = orphan_ids.len();
-            self.ops.delete_by_ids(&self.collection, orphan_ids).await?;
-        }
-
+        let stats = self
+            .registry
+            .sync(meta, embedding_model, |text| {
+                let fut = embed_fn(text);
+                Box::pin(async move {
+                    fut.await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                }) as zeph_memory::EmbedFuture
+            })
+            .await
+            .map_err(|e| SkillError::Other(e.to_string()))?;
         tracing::info!(
             added = stats.added,
             updated = stats.updated,
@@ -162,7 +93,6 @@ impl QdrantSkillMatcher {
             unchanged = stats.unchanged,
             "skill embeddings synced"
         );
-
         Ok(stats)
     }
 
@@ -178,26 +108,20 @@ impl QdrantSkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        let query_vec = match embed_fn(query).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to embed query: {e:#}");
-                return Vec::new();
-            }
-        };
-
-        let Ok(limit_u64) = u64::try_from(limit) else {
-            return Vec::new();
-        };
-
         let results = match self
-            .ops
-            .search(&self.collection, query_vec, limit_u64, None)
+            .registry
+            .search_raw(query, limit, |text| {
+                let fut = embed_fn(text);
+                Box::pin(async move {
+                    fut.await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                }) as zeph_memory::EmbedFuture
+            })
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!("Qdrant search failed, returning empty: {e:#}");
+                tracing::warn!("Qdrant skill search failed: {e:#}");
                 return Vec::new();
             }
         };
@@ -205,58 +129,14 @@ impl QdrantSkillMatcher {
         results
             .into_iter()
             .filter_map(|point| {
-                let name = point.payload.get("skill_name")?;
-                let name_str = match &name.kind {
-                    Some(Kind::StringValue(s)) => s.as_str(),
-                    _ => return None,
-                };
-                let index = meta.iter().position(|m| m.name == name_str)?;
+                let name = point.payload.get("key")?.as_str()?;
+                let index = meta.iter().position(|m| m.name == name)?;
                 Some(ScoredMatch {
                     index,
                     score: point.score,
                 })
             })
             .collect()
-    }
-
-    async fn recreate_collection<F>(&self, embed_fn: &F) -> Result<(), SkillError>
-    where
-        F: Fn(&str) -> EmbedFuture,
-    {
-        if self.ops.collection_exists(&self.collection).await? {
-            self.ops.delete_collection(&self.collection).await?;
-            tracing::info!(
-                collection = &self.collection,
-                "deleted collection for recreation"
-            );
-        }
-        self.ensure_collection(embed_fn).await
-    }
-
-    async fn ensure_collection<F>(&self, embed_fn: &F) -> Result<(), SkillError>
-    where
-        F: Fn(&str) -> EmbedFuture,
-    {
-        if self.ops.collection_exists(&self.collection).await? {
-            return Ok(());
-        }
-
-        let probe = embed_fn("dimension probe")
-            .await
-            .map_err(|e| SkillError::Other(format!("failed to probe embedding dimensions: {e}")))?;
-        let vector_size = u64::try_from(probe.len())?;
-
-        self.ops
-            .ensure_collection(&self.collection, vector_size)
-            .await?;
-
-        tracing::info!(
-            collection = &self.collection,
-            dimensions = vector_size,
-            "created Qdrant collection for skill embeddings"
-        );
-
-        Ok(())
     }
 }
 
@@ -278,54 +158,35 @@ mod tests {
     }
 
     #[test]
-    fn test_content_hash_deterministic() {
-        let meta = make_meta("test", "A test skill");
-        let h1 = content_hash(&meta);
-        let h2 = content_hash(&meta);
-        assert_eq!(h1, h2);
+    fn embeddable_key() {
+        let meta = make_meta("my-skill", "desc");
+        assert_eq!((&meta).key(), "my-skill");
     }
 
     #[test]
-    fn test_content_hash_changes_on_modification() {
+    fn embeddable_embed_text() {
+        let meta = make_meta("skill", "A test skill");
+        assert_eq!((&meta).embed_text(), "A test skill");
+    }
+
+    #[test]
+    fn embeddable_content_hash_deterministic() {
+        let meta = make_meta("test", "A test skill");
+        assert_eq!((&meta).content_hash(), (&meta).content_hash());
+    }
+
+    #[test]
+    fn embeddable_content_hash_changes_on_modification() {
         let m1 = make_meta("test", "A test skill v1");
         let m2 = make_meta("test", "A test skill v2");
-        assert_ne!(content_hash(&m1), content_hash(&m2));
+        assert_ne!((&m1).content_hash(), (&m2).content_hash());
     }
 
     #[test]
-    fn test_skill_point_id_deterministic() {
-        let id1 = skill_point_id("my-skill");
-        let id2 = skill_point_id("my-skill");
-        assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn test_skill_point_id_different_names() {
-        let id1 = skill_point_id("skill-a");
-        let id2 = skill_point_id("skill-b");
-        assert_ne!(id1, id2);
-    }
-
-    #[test]
-    fn test_sync_stats_default() {
-        let stats = SyncStats::default();
-        assert_eq!(stats.added, 0);
-        assert_eq!(stats.updated, 0);
-        assert_eq!(stats.removed, 0);
-        assert_eq!(stats.unchanged, 0);
-    }
-
-    #[test]
-    fn sync_stats_debug() {
-        let stats = SyncStats {
-            added: 5,
-            updated: 3,
-            removed: 1,
-            unchanged: 10,
-        };
-        let dbg = format!("{stats:?}");
-        assert!(dbg.contains("added"));
-        assert!(dbg.contains("5"));
+    fn embeddable_payload_has_key_field() {
+        let meta = make_meta("my-skill", "desc");
+        let payload = (&meta).to_payload();
+        assert_eq!(payload["key"], "my-skill");
     }
 
     #[test]
@@ -343,23 +204,17 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_different_descriptions() {
-        let m1 = make_meta("skill", "description A");
-        let m2 = make_meta("skill", "description B");
-        assert_ne!(content_hash(&m1), content_hash(&m2));
-    }
-
-    #[test]
     fn content_hash_different_names() {
         let m1 = make_meta("skill-a", "desc");
         let m2 = make_meta("skill-b", "desc");
-        assert_ne!(content_hash(&m1), content_hash(&m2));
+        assert_ne!((&m1).content_hash(), (&m2).content_hash());
     }
 
     #[test]
-    fn skill_point_id_is_valid_uuid() {
-        let id = skill_point_id("test-skill");
-        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    fn content_hash_different_descriptions() {
+        let m1 = make_meta("skill", "description A");
+        let m2 = make_meta("skill", "description B");
+        assert_ne!((&m1).content_hash(), (&m2).content_hash());
     }
 
     #[test]
