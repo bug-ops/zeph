@@ -326,4 +326,32 @@ mod tests {
         assert!(result.contains("[REDACTED]"));
         assert!(!result.contains("dckr_pat_"));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn redact_secrets_never_panics(s in ".*") {
+            let _ = redact_secrets(&s);
+        }
+
+        #[test]
+        fn sanitize_paths_never_panics(s in ".*") {
+            let _ = sanitize_paths(&s);
+        }
+
+        #[test]
+        fn redact_preserves_non_secret_text(s in "[a-zA-Z0-9 .,!?]{1,200}") {
+            // Only test strings that genuinely contain no secret prefixes.
+            let secret_prefixes = [
+                "sk-", "sk_live_", "sk_test_", "AKIA", "ghp_", "gho_",
+                "-----BEGIN", "xoxb-", "xoxp-", "AIza", "ya29.", "glpat-",
+                "hf_", "npm_", "dckr_pat_",
+            ];
+            if !secret_prefixes.iter().any(|p| s.contains(p)) {
+                let result = redact_secrets(&s);
+                assert_eq!(result.as_ref(), s.as_str());
+            }
+        }
+    }
 }

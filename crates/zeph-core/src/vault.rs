@@ -693,4 +693,26 @@ mod age_tests {
         let vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
         assert_eq!(vault.list_keys(), Vec::<&str>::new());
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn secret_value_roundtrip(s in ".*") {
+            let secret = Secret::new(s.clone());
+            assert_eq!(secret.expose(), s.as_str());
+        }
+
+        #[test]
+        fn secret_debug_always_redacted(s in ".*") {
+            let secret = Secret::new(s);
+            assert_eq!(format!("{secret:?}"), "[REDACTED]");
+        }
+
+        #[test]
+        fn secret_display_always_redacted(s in ".*") {
+            let secret = Secret::new(s);
+            assert_eq!(format!("{secret}"), "[REDACTED]");
+        }
+    }
 }

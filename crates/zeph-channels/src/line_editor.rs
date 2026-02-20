@@ -228,3 +228,127 @@ fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_count_ascii() {
+        assert_eq!(char_count("hello"), 5);
+        assert_eq!(char_count(""), 0);
+    }
+
+    #[test]
+    fn char_count_unicode() {
+        assert_eq!(char_count("héllo"), 5);
+        assert_eq!(char_count("日本語"), 3);
+    }
+
+    #[test]
+    fn byte_offset_start() {
+        assert_eq!(byte_offset("hello", 0), 0);
+    }
+
+    #[test]
+    fn byte_offset_end() {
+        assert_eq!(byte_offset("hello", 5), 5);
+    }
+
+    #[test]
+    fn byte_offset_beyond() {
+        assert_eq!(byte_offset("hello", 100), 5);
+    }
+
+    #[test]
+    fn byte_offset_unicode() {
+        // "é" is 2 bytes, so char index 1 = byte offset 2
+        let s = "éllo";
+        assert_eq!(byte_offset(s, 1), 2);
+    }
+
+    #[test]
+    fn prev_word_boundary_from_end() {
+        // "hello world" cursor at 11 (end), boundary should be at start of "world"=6
+        assert_eq!(prev_word_boundary("hello world", 11), 6);
+    }
+
+    #[test]
+    fn prev_word_boundary_at_start() {
+        assert_eq!(prev_word_boundary("hello", 0), 0);
+    }
+
+    #[test]
+    fn prev_word_boundary_skips_spaces() {
+        // "hello   world" cursor after spaces at 8, boundary = after "hello" at 5? no, past spaces
+        // spaces are non-alphanumeric, then alphanumeric of "hello"
+        assert_eq!(prev_word_boundary("hello   world", 8), 0);
+    }
+
+    #[test]
+    fn navigate_history_up_empty_history_no_op() {
+        let history: Vec<String> = vec![];
+        let mut input = String::from("test");
+        let mut cursor = 4;
+        let mut idx = None;
+        let mut draft = String::new();
+        navigate_history_up(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        assert_eq!(input, "test");
+        assert!(idx.is_none());
+    }
+
+    #[test]
+    fn navigate_history_up_selects_last_entry() {
+        let history = vec!["cmd1".to_string(), "cmd2".to_string()];
+        let mut input = String::new();
+        let mut cursor = 0;
+        let mut idx = None;
+        let mut draft = String::new();
+        navigate_history_up(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        assert_eq!(input, "cmd2");
+        assert_eq!(idx, Some(1));
+        assert_eq!(cursor, 4);
+    }
+
+    #[test]
+    fn navigate_history_up_twice_goes_further_back() {
+        let history = vec!["cmd1".to_string(), "cmd2".to_string()];
+        let mut input = String::new();
+        let mut cursor = 0;
+        let mut idx = None;
+        let mut draft = String::new();
+        navigate_history_up(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        navigate_history_up(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        assert_eq!(input, "cmd1");
+        assert_eq!(idx, Some(0));
+    }
+
+    #[test]
+    fn navigate_history_down_restores_draft() {
+        let history = vec!["cmd1".to_string()];
+        let mut input = String::from("draft");
+        let mut cursor = 5;
+        let mut idx = None;
+        // Pre-set draft to match what navigate_history_up would save from input
+        let mut draft = String::from("draft");
+        // Simulate having gone up: set idx to Some(0) and input to history entry
+        idx = Some(0);
+        input = "cmd1".to_string();
+        cursor = 4;
+        // Now go back down — should restore draft
+        navigate_history_down(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        assert_eq!(input, "draft");
+        assert!(idx.is_none());
+    }
+
+    #[test]
+    fn navigate_history_down_no_op_when_no_index() {
+        let history = vec!["cmd1".to_string()];
+        let mut input = String::from("unchanged");
+        let mut cursor = 9;
+        let mut idx = None;
+        let mut draft = String::new();
+        navigate_history_down(&history, &mut input, &mut cursor, &mut idx, &mut draft);
+        assert_eq!(input, "unchanged");
+    }
+}

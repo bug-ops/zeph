@@ -304,12 +304,23 @@ impl EmbeddingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::in_memory_store::InMemoryVectorStore;
     use crate::sqlite::SqliteStore;
 
     async fn setup() -> (SqliteStore, SqlitePool) {
         let store = SqliteStore::new(":memory:").await.unwrap();
         let pool = store.pool().clone();
         (store, pool)
+    }
+
+    async fn setup_with_store() -> (EmbeddingStore, SqliteStore) {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let mem_store = Box::new(InMemoryVectorStore::new());
+        let embedding_store = EmbeddingStore::with_store(mem_store, pool);
+        // Create collection first
+        embedding_store.ensure_collection(4).await.unwrap();
+        (embedding_store, sqlite)
     }
 
     #[tokio::test]
@@ -352,6 +363,116 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(row.0, 1);
+    }
+
+    #[tokio::test]
+    async fn embedding_store_search_empty_returns_empty() {
+        let (store, _sqlite) = setup_with_store().await;
+        let results = store.search(&[1.0, 0.0, 0.0, 0.0], 10, None).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_store_store_and_search() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite
+            .save_message(cid, "user", "test message")
+            .await
+            .unwrap();
+
+        store
+            .store(
+                msg_id,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+            )
+            .await
+            .unwrap();
+
+        let results = store.search(&[1.0, 0.0, 0.0, 0.0], 5, None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message_id, msg_id);
+        assert_eq!(results[0].conversation_id, cid);
+        assert!((results[0].score - 1.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn embedding_store_has_embedding_false_for_unknown() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
+        assert!(!store.has_embedding(msg_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn embedding_store_has_embedding_true_after_store() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite.save_message(cid, "user", "hello").await.unwrap();
+
+        store
+            .store(
+                msg_id,
+                cid,
+                "user",
+                vec![0.0, 1.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+            )
+            .await
+            .unwrap();
+
+        assert!(store.has_embedding(msg_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn embedding_store_search_with_conversation_filter() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid1 = sqlite.create_conversation().await.unwrap();
+        let cid2 = sqlite.create_conversation().await.unwrap();
+        let msg1 = sqlite.save_message(cid1, "user", "msg1").await.unwrap();
+        let msg2 = sqlite.save_message(cid2, "user", "msg2").await.unwrap();
+
+        store
+            .store(
+                msg1,
+                cid1,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+            )
+            .await
+            .unwrap();
+        store
+            .store(
+                msg2,
+                cid2,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .search(
+                &[1.0, 0.0, 0.0, 0.0],
+                10,
+                Some(SearchFilter {
+                    conversation_id: Some(cid1),
+                    role: None,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].conversation_id, cid1);
     }
 
     #[tokio::test]

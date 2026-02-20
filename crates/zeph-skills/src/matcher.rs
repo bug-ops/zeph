@@ -580,4 +580,28 @@ mod tests {
         assert!(matched[0].score > 0.0);
         assert!(matched[0].score >= matched[1].score);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn scored_match_score_preserved(index in 0usize..100, score in -1.0f32..=1.0) {
+            let m = ScoredMatch { index, score };
+            // score stored exactly as provided; f32 round-trip is identity
+            assert!((m.score - score).abs() < f32::EPSILON);
+            assert_eq!(m.index, index);
+        }
+
+        #[test]
+        fn cosine_similarity_within_bounds(
+            a in proptest::collection::vec(-1.0f32..=1.0, 1..10),
+            b in proptest::collection::vec(-1.0f32..=1.0, 1..10),
+        ) {
+            if a.len() == b.len() {
+                let result = cosine_similarity(&a, &b);
+                // cosine similarity is in [-1, 1], allow small floating-point slack
+                assert!(result >= -1.01 && result <= 1.01, "got {result}");
+            }
+        }
+    }
 }

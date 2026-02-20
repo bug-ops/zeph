@@ -3509,3 +3509,269 @@ mod self_learning {
         assert!(stats.is_empty());
     }
 }
+
+// -- trust_commands tests --
+
+mod trust_commands {
+    use std::sync::{Arc, Mutex};
+
+    use zeph_core::agent::Agent;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_memory::semantic::SemanticMemory;
+    use zeph_memory::types::ConversationId;
+    use zeph_skills::registry::SkillRegistry;
+
+    use super::{MockChannel, MockToolExecutor};
+
+    fn mock_provider() -> AnyProvider {
+        let mut p = MockProvider::default();
+        p.default_response = String::new();
+        AnyProvider::Mock(p)
+    }
+
+    async fn make_memory(provider: &AnyProvider) -> (SemanticMemory, ConversationId) {
+        let memory =
+            SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
+                .await
+                .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        (memory, cid)
+    }
+
+    #[tokio::test]
+    async fn trust_list_empty_db_shows_no_data() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("No skill trust data")),
+            "expected no-data message, got: {collected:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_list_with_entries_shows_skills() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        memory
+            .sqlite()
+            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("my-skill")),
+            "expected skill name in output, got: {collected:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_set_valid_level_updates_skill() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust my-skill blocked"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        memory
+            .sqlite()
+            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("blocked")),
+            "expected updated level in output, got: {collected:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_set_invalid_level_returns_error() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust my-skill superadmin"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        memory
+            .sqlite()
+            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("Invalid trust level")),
+            "expected invalid level error, got: {collected:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_command_without_memory_reports_unavailable() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("Memory not available")),
+            "expected memory-unavailable message, got: {collected:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_set_nonexistent_skill_reports_not_found() {
+        let provider = mock_provider();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["/skill trust ghost trusted"], outputs.clone());
+        let (memory, cid) = make_memory(&provider).await;
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            5,
+            MockToolExecutor,
+        )
+        .with_memory(memory, cid, 50, 5, 100);
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert!(
+            collected.iter().any(|o| o.contains("not found")),
+            "expected not-found message, got: {collected:?}"
+        );
+    }
+}
+
+// -- Phase 4: E2E tests --
+
+mod e2e {
+    use std::io::Write as _;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use zeph_core::agent::Agent;
+    use zeph_core::config::Config;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_skills::registry::SkillRegistry;
+
+    use super::{MockChannel, MockToolExecutor};
+
+    #[tokio::test]
+    async fn e2e_config_toml_to_agent_single_loop() {
+        // Write a minimal valid config TOML to a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("zeph.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        write!(
+            f,
+            r#"
+[agent]
+name = "TestAgent"
+
+[llm]
+provider = "ollama"
+model = "mistral:7b"
+base_url = "http://localhost:11434"
+
+[skills]
+paths = []
+
+[memory]
+sqlite_path = "./data/test.db"
+history_limit = 10
+"#
+        )
+        .unwrap();
+
+        let config = Config::load(Path::new(&config_path)).unwrap();
+        assert_eq!(config.agent.name, "TestAgent");
+        assert_eq!(config.memory.history_limit, 10);
+
+        // Construct agent using mock provider (config loaded, but provider is mocked for test)
+        let mut provider = MockProvider::default();
+        provider.default_response = "hello from agent".to_string();
+        let provider = AnyProvider::Mock(provider);
+
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let channel = MockChannel::new(vec!["ping"], outputs.clone());
+
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            SkillRegistry::default(),
+            None,
+            usize::try_from(config.memory.history_limit).unwrap(),
+            MockToolExecutor,
+        );
+        agent.run().await.unwrap();
+
+        let collected = outputs.lock().unwrap();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], "hello from agent");
+    }
+}

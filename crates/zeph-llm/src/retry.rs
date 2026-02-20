@@ -77,4 +77,124 @@ mod tests {
         assert_eq!(BASE_BACKOFF_SECS << 1, 2);
         assert_eq!(BASE_BACKOFF_SECS << 2, 4);
     }
+
+    /// Spawn a minimal HTTP server that returns a fixed response for each connection.
+    /// Returns (port, join_handle).
+    async fn spawn_mock_server(responses: Vec<&'static str>) -> (u16, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = tokio::spawn(async move {
+            for resp in responses {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let (reader, mut writer) = stream.split();
+                    let mut buf_reader = BufReader::new(reader);
+                    // Drain headers
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        buf_reader.read_line(&mut line).await.unwrap_or(0);
+                        if line == "\r\n" || line == "\n" || line.is_empty() {
+                            break;
+                        }
+                    }
+                    writer.write_all(resp.as_bytes()).await.ok();
+                });
+            }
+        });
+
+        (port, handle)
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_success_on_first_attempt() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let (port, _handle) = spawn_mock_server(vec![ok_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        let result = send_with_retry("test", 3, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert_eq!(result.unwrap().status(), 200);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_exhausts_retries_returns_rate_limited() {
+        // All responses are 429 with Retry-After: 0 to not slow down the test
+        let rate_limit_response =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let (port, _handle) =
+            spawn_mock_server(vec![rate_limit_response, rate_limit_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        // max_retries=1 means: attempt 0 (429 → retry), attempt 1 (429 → fail)
+        let result = send_with_retry("test", 1, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(LlmError::RateLimited)),
+            "expected RateLimited, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_after_one_429() {
+        let rate_limit_response =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+        let (port, _handle) = spawn_mock_server(vec![rate_limit_response, ok_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        let result = send_with_retry("test", 2, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after one retry, got: {result:?}"
+        );
+        assert_eq!(result.unwrap().status(), 200);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn retry_delay_range_always_valid(attempt in 0u32..63) {
+            // Verify exponential backoff stays within u64 range for all valid shift amounts.
+            // attempt < 63 guarantees BASE_BACKOFF_SECS << attempt fits in u64.
+            let delay = Duration::from_secs(BASE_BACKOFF_SECS << attempt);
+            assert!(delay.as_secs() >= BASE_BACKOFF_SECS, "delay must be at least base backoff");
+            // Exponential growth: each step doubles
+            if attempt > 0 {
+                let prev = Duration::from_secs(BASE_BACKOFF_SECS << (attempt - 1));
+                assert_eq!(delay.as_secs(), prev.as_secs() * 2);
+            }
+        }
+    }
 }

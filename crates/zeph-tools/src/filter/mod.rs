@@ -983,6 +983,22 @@ extra_patterns = ["TODO: security review"]
         assert_eq!(result.filtered_chars, "say DONE there".len());
     }
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn filter_pipeline_run_never_panics(cmd in ".*", output in ".*", exit_code in -1i32..=255) {
+            let pipeline = FilterPipeline::new();
+            let _ = pipeline.run(&cmd, &output, exit_code);
+        }
+
+        #[test]
+        fn output_filter_registry_apply_never_panics(cmd in ".*", output in ".*", exit_code in -1i32..=255) {
+            let reg = OutputFilterRegistry::new(true);
+            let _ = reg.apply(&cmd, &output, exit_code);
+        }
+    }
+
     #[test]
     fn registry_pipeline_with_two_matching_filters() {
         let mut reg = OutputFilterRegistry::new(true);

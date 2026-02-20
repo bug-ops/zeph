@@ -25,6 +25,7 @@ zeph-skills.workspace = true
 
 [dev-dependencies]
 filetime = "0.2"
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true
