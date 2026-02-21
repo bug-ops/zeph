@@ -15,6 +15,7 @@ readme = "README.md"
 [dependencies]
 ignore.workspace = true
 nucleo-matcher.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 crossterm.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true

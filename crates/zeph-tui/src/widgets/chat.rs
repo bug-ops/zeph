@@ -55,8 +55,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         };
 
         if idx > 0 {
-            let sep = "\u{2500}".repeat(wrap_width);
-            lines.push(Line::from(Span::styled(sep, theme.system_message)));
+            lines.push(Line::default());
         }
 
         let cache_key = RenderCacheKey {
@@ -96,8 +95,25 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
 
         all_md_links.extend(msg_md_links);
 
-        for mut line in msg_lines {
-            line.spans.insert(0, Span::styled("\u{258e} ", accent));
+        let time_str = &msg.timestamp;
+        for (i, mut line) in msg_lines.into_iter().enumerate() {
+            if msg.role == MessageRole::User {
+                line.spans.insert(0, Span::styled("\u{258e} ", accent));
+            } else {
+                line.spans.insert(0, Span::raw("  "));
+            }
+            if i == 0 {
+                let content_width: usize =
+                    line.spans.iter().map(|s| s.content.chars().count()).sum();
+                let pad = wrap_width
+                    .saturating_sub(content_width)
+                    .saturating_sub(time_str.len());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                    line.spans
+                        .push(Span::styled(time_str.clone(), theme.system_message));
+                }
+            }
             lines.push(line);
         }
     }
@@ -198,24 +214,16 @@ fn render_chat_message(
     msg: &crate::app::ChatMessage,
     theme: &Theme,
     wrap_width: usize,
-    show_labels: bool,
+    _show_labels: bool,
     lines: &mut Vec<Line<'static>>,
 ) -> Vec<MdLink> {
-    let (prefix, base_style) = if show_labels {
-        match msg.role {
-            MessageRole::User => ("[user] ", theme.user_message),
-            MessageRole::Assistant => ("[zeph] ", theme.assistant_message),
-            MessageRole::System => ("[system] ", theme.system_message),
-            MessageRole::Tool => unreachable!(),
-        }
-    } else {
-        match msg.role {
-            MessageRole::User => ("", theme.user_message),
-            MessageRole::Assistant => ("", theme.assistant_message),
-            MessageRole::System => ("", theme.system_message),
-            MessageRole::Tool => unreachable!(),
-        }
+    let base_style = match msg.role {
+        MessageRole::User => theme.user_message,
+        MessageRole::Assistant => theme.assistant_message,
+        MessageRole::System => theme.system_message,
+        MessageRole::Tool => unreachable!(),
     };
+    let prefix = "";
 
     let indent = " ".repeat(prefix.len());
     let is_assistant = msg.role == MessageRole::Assistant;
@@ -243,7 +251,7 @@ fn render_chat_message(
 
         let is_last_line = i == styled_lines.len() - 1;
         if msg.streaming && is_last_line {
-            line_spans.push(Span::styled("\u{258c}".to_string(), theme.streaming_cursor));
+            line_spans.push(Span::styled("\u{2502}".to_string(), theme.streaming_cursor));
         }
 
         lines.extend(wrap_spans(line_spans, wrap_width));
@@ -252,7 +260,7 @@ fn render_chat_message(
     if styled_lines.is_empty() {
         let mut pfx_spans = vec![Span::styled(prefix.to_string(), base_style)];
         if msg.streaming {
-            pfx_spans.push(Span::styled("\u{258c}".to_string(), theme.streaming_cursor));
+            pfx_spans.push(Span::styled("\u{2502}".to_string(), theme.streaming_cursor));
         }
         lines.extend(wrap_spans(pfx_spans, wrap_width));
     }
@@ -266,48 +274,33 @@ fn render_scrollbar(
     inner_height: usize,
     total: usize,
     scroll: usize,
-    effective_offset: usize,
+    _effective_offset: usize,
     max_scroll: usize,
 ) {
-    let indicator_x = area.x + area.width.saturating_sub(2);
-    if scroll > 0 {
-        let y = area.y + 1;
+    let track_height = inner_height;
+    if track_height == 0 {
+        return;
+    }
+    let thumb_size = (inner_height * track_height)
+        .checked_div(total)
+        .unwrap_or(track_height)
+        .clamp(1, track_height);
+    let thumb_pos = ((track_height - thumb_size) * scroll)
+        .checked_div(max_scroll)
+        .unwrap_or(0);
+    let track_top = area.y + 1;
+    let bar_x = area.x + area.width.saturating_sub(1);
+    let dim = Style::default().fg(ratatui::style::Color::DarkGray);
+    for row in 0..track_height {
+        let ch = if row >= thumb_pos && row < thumb_pos + thumb_size {
+            "\u{2502}"
+        } else {
+            " "
+        };
+        let row_y = u16::try_from(row).unwrap_or(u16::MAX);
         frame
             .buffer_mut()
-            .set_string(indicator_x, y, "\u{25b2}", Style::default());
-    }
-    if effective_offset > 0 {
-        let y = area.y + area.height.saturating_sub(2);
-        frame
-            .buffer_mut()
-            .set_string(indicator_x, y, "\u{25bc}", Style::default());
-    }
-
-    let track_height = inner_height.saturating_sub(2);
-    if track_height > 0 {
-        let thumb_size = (inner_height * track_height)
-            .checked_div(total)
-            .unwrap_or(track_height)
-            .clamp(1, track_height);
-        let thumb_pos = ((track_height - thumb_size) * scroll)
-            .checked_div(max_scroll)
-            .unwrap_or(0);
-        let track_top = area.y + 2;
-        let bar_x = area.x + area.width.saturating_sub(1);
-        for row in 0..track_height {
-            let ch = if row >= thumb_pos && row < thumb_pos + thumb_size {
-                "\u{2588}"
-            } else {
-                "\u{2591}"
-            };
-            let row_y = u16::try_from(row).unwrap_or(u16::MAX);
-            frame.buffer_mut().set_string(
-                bar_x,
-                track_top + row_y,
-                ch,
-                Style::default().fg(ratatui::style::Color::DarkGray),
-            );
-        }
+            .set_string(bar_x, track_top + row_y, ch, dim);
     }
 }
 
@@ -321,32 +314,27 @@ fn render_tool_message(
     throbber_idx: usize,
     theme: &Theme,
     wrap_width: usize,
-    show_labels: bool,
+    _show_labels: bool,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let prefix = if show_labels {
-        let name = msg.tool_name.as_deref().unwrap_or("tool");
-        format!("[{name}] ")
-    } else {
-        String::new()
-    };
+    let name = msg.tool_name.as_deref().unwrap_or("tool");
     let content_lines: Vec<&str> = msg.content.lines().collect();
-
-    // First line is always the command ($ ...)
     let cmd_line = content_lines.first().copied().unwrap_or("");
+    let dim = Style::default().add_modifier(Modifier::DIM);
+
     let status_span = if msg.streaming {
         let symbol = BRAILLE_SIX.symbols[throbber_idx];
         Span::styled(format!("{symbol} "), theme.streaming_cursor)
     } else {
-        Span::styled("\u{2714} ".to_string(), theme.highlight)
+        Span::styled("\u{2714} ", dim)
     };
-    let indent = " ".repeat(prefix.len());
     let cmd_spans: Vec<Span<'static>> = vec![
-        Span::styled(prefix, theme.highlight),
         status_span,
-        Span::styled(cmd_line.to_string(), theme.tool_command),
+        Span::styled(format!("{name} "), dim),
+        Span::styled(cmd_line.to_string(), dim),
     ];
     lines.extend(wrap_spans(cmd_spans, wrap_width));
+    let indent = "  ";
 
     // Diff rendering for write/edit tools
     if let Some(ref diff_data) = msg.diff_data {
@@ -354,7 +342,7 @@ fn render_tool_message(
         let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
         let mut wrapped: Vec<Line<'static>> = Vec::new();
         for line in rendered {
-            let mut prefixed_spans = vec![Span::styled(indent.clone(), Style::default())];
+            let mut prefixed_spans = vec![Span::styled(indent.to_string(), Style::default())];
             prefixed_spans.extend(line.spans);
             wrapped.push(Line::from(prefixed_spans));
         }
@@ -392,7 +380,7 @@ fn render_tool_message(
             let mut wrapped: Vec<Line<'static>> = Vec::new();
             for line in output_lines {
                 let spans = vec![
-                    Span::styled(indent.clone(), Style::default()),
+                    Span::styled(indent.to_string(), Style::default()),
                     Span::styled((*line).to_string(), theme.code_block),
                 ];
                 wrapped.extend(wrap_spans(spans, wrap_width));

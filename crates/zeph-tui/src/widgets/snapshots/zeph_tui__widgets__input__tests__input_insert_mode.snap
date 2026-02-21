@@ -1,9 +1,10 @@
 ---
 source: crates/zeph-tui/src/widgets/input.rs
+assertion_line: 78
 expression: output
 ---
 ┌ Input (Esc to cancel) ───────────────┐
-│                                      │
-│                                      │
+│Type a message, / for commands, @ to  │
+│mention                               │
 │                                      │
 └──────────────────────────────────────┘

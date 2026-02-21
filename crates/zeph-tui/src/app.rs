@@ -105,6 +105,33 @@ pub struct ChatMessage {
     pub tool_name: Option<String>,
     pub diff_data: Option<zeph_core::DiffData>,
     pub filter_stats: Option<String>,
+    pub timestamp: String,
+}
+
+impl ChatMessage {
+    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            streaming: false,
+            tool_name: None,
+            diff_data: None,
+            filter_stats: None,
+            timestamp: format_local_time(),
+        }
+    }
+
+    #[must_use]
+    pub fn streaming(mut self) -> Self {
+        self.streaming = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool(mut self, name: String) -> Self {
+        self.tool_name = Some(name);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,14 +244,8 @@ impl App {
             if role_str == "user"
                 && let Some((tool_name, body)) = parse_tool_output(content, TOOL_SUFFIX)
             {
-                self.messages.push(ChatMessage {
-                    role: MessageRole::Tool,
-                    content: body,
-                    streaming: false,
-                    tool_name: Some(tool_name),
-                    diff_data: None,
-                    filter_stats: None,
-                });
+                self.messages
+                    .push(ChatMessage::new(MessageRole::Tool, body).with_tool(tool_name));
                 continue;
             }
 
@@ -236,14 +257,7 @@ impl App {
             if role == MessageRole::User {
                 self.input_history.push(content.to_owned());
             }
-            self.messages.push(ChatMessage {
-                role,
-                content: content.to_owned(),
-                streaming: false,
-                tool_name: None,
-                diff_data: None,
-                filter_stats: None,
-            });
+            self.messages.push(ChatMessage::new(role, content));
         }
         if !self.messages.is_empty() {
             self.show_splash = false;
@@ -299,6 +313,13 @@ impl App {
     #[must_use]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
+    }
+
+    /// Scroll to bottom only if already at (or near) the bottom.
+    fn auto_scroll(&mut self) {
+        if self.scroll_offset <= 1 {
+            self.scroll_offset = 0;
+        }
     }
 
     #[must_use]
@@ -412,32 +433,20 @@ impl App {
                 {
                     last.content.push_str(&text);
                 } else {
-                    self.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: text,
-                        streaming: true,
-                        tool_name: None,
-                        diff_data: None,
-                        filter_stats: None,
-                    });
+                    self.messages
+                        .push(ChatMessage::new(MessageRole::Assistant, text).streaming());
                 }
                 let last_idx = self.messages.len().saturating_sub(1);
                 self.render_cache.invalidate(last_idx);
-                self.scroll_offset = 0;
+                self.auto_scroll();
             }
             AgentEvent::FullMessage(text) => {
                 self.status_label = None;
                 if !text.starts_with("[tool output") {
-                    self.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: text,
-                        streaming: false,
-                        tool_name: None,
-                        diff_data: None,
-                        filter_stats: None,
-                    });
+                    self.messages
+                        .push(ChatMessage::new(MessageRole::Assistant, text));
                 }
-                self.scroll_offset = 0;
+                self.auto_scroll();
             }
             AgentEvent::Flush => {
                 if let Some(last) = self.messages.last_mut()
@@ -454,19 +463,16 @@ impl App {
             }
             AgentEvent::Status(text) => {
                 self.status_label = if text.is_empty() { None } else { Some(text) };
-                self.scroll_offset = 0;
+                self.auto_scroll();
             }
             AgentEvent::ToolStart { tool_name, command } => {
                 self.status_label = None;
-                self.messages.push(ChatMessage {
-                    role: MessageRole::Tool,
-                    content: format!("$ {command}\n"),
-                    streaming: true,
-                    tool_name: Some(tool_name),
-                    diff_data: None,
-                    filter_stats: None,
-                });
-                self.scroll_offset = 0;
+                self.messages.push(
+                    ChatMessage::new(MessageRole::Tool, format!("$ {command}\n"))
+                        .streaming()
+                        .with_tool(tool_name),
+                );
+                self.auto_scroll();
             }
             AgentEvent::ToolOutputChunk { chunk, .. } => {
                 if let Some(pos) = self
@@ -477,7 +483,7 @@ impl App {
                     self.messages[pos].content.push_str(&chunk);
                     self.render_cache.invalidate(pos);
                 }
-                self.scroll_offset = 0;
+                self.auto_scroll();
             }
             AgentEvent::ToolOutput {
                 tool_name,
@@ -507,14 +513,10 @@ impl App {
                 } else if diff.is_some() || filter_stats.is_some() {
                     // Native tool_use path: no prior ToolStart, create the message now.
                     debug!("creating new Tool message with diff (native path)");
-                    self.messages.push(ChatMessage {
-                        role: MessageRole::Tool,
-                        content: output,
-                        streaming: false,
-                        tool_name: Some(tool_name),
-                        diff_data: diff,
-                        filter_stats,
-                    });
+                    let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
+                    msg.diff_data = diff;
+                    msg.filter_stats = filter_stats;
+                    self.messages.push(msg);
                 } else if let Some(msg) = self
                     .messages
                     .iter_mut()
@@ -523,7 +525,7 @@ impl App {
                 {
                     msg.filter_stats = filter_stats;
                 }
-                self.scroll_offset = 0;
+                self.auto_scroll();
             }
             AgentEvent::ConfirmRequest {
                 prompt,
@@ -550,15 +552,9 @@ impl App {
             }
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
-                self.messages.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: output,
-                    streaming: false,
-                    tool_name: None,
-                    diff_data: None,
-                    filter_stats: None,
-                });
-                self.scroll_offset = 0;
+                self.messages
+                    .push(ChatMessage::new(MessageRole::System, output));
+                self.auto_scroll();
             }
         }
     }
@@ -828,14 +824,8 @@ impl App {
 
     fn push_system_message(&mut self, content: String) {
         self.show_splash = false;
-        self.messages.push(ChatMessage {
-            role: MessageRole::System,
-            content,
-            streaming: false,
-            tool_name: None,
-            diff_data: None,
-            filter_stats: None,
-        });
+        self.messages
+            .push(ChatMessage::new(MessageRole::System, content));
         self.scroll_offset = 0;
     }
 
@@ -887,6 +877,11 @@ impl App {
                     Panel::Memory => Panel::Resources,
                     Panel::Resources => Panel::Chat,
                 };
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.messages.clear();
+                self.render_cache.clear();
+                self.scroll_offset = 0;
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -1123,14 +1118,8 @@ impl App {
         self.input_history.push(text.clone());
         self.history_index = None;
         self.draft_input.clear();
-        self.messages.push(ChatMessage {
-            role: MessageRole::User,
-            content: text.clone(),
-            streaming: false,
-            tool_name: None,
-            diff_data: None,
-            filter_stats: None,
-        });
+        self.messages
+            .push(ChatMessage::new(MessageRole::User, text.clone()));
         self.input.clear();
         self.cursor_position = 0;
         self.scroll_offset = 0;
@@ -1141,6 +1130,10 @@ impl App {
         // Message is visible in chat but not processed; acceptable for interactive TUI.
         let _ = self.user_input_tx.try_send(text);
     }
+}
+
+fn format_local_time() -> String {
+    chrono::Local::now().format("%H:%M").to_string()
 }
 
 fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
@@ -1808,14 +1801,8 @@ mod tests {
         app.input_mode = InputMode::Insert;
         app.pending_count = 2;
         app.input_history.push("queued msg".into());
-        app.messages.push(ChatMessage {
-            role: MessageRole::User,
-            content: "queued msg".into(),
-            streaming: false,
-            tool_name: None,
-            diff_data: None,
-            filter_stats: None,
-        });
+        app.messages
+            .push(ChatMessage::new(MessageRole::User, "queued msg"));
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
@@ -1974,22 +1961,17 @@ mod tests {
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(enter));
 
-            let output = draw_app(&mut app, 80, 24);
-            assert!(!output.contains("Type a message"));
+            assert!(!app.show_splash, "splash should be hidden after submit");
         }
 
         #[test]
         fn markdown_link_produces_hyperlink_span() {
             let (mut app, _rx, _tx) = make_app();
             app.show_splash = false;
-            app.messages.push(ChatMessage {
-                role: MessageRole::Assistant,
-                content: "See [docs](https://docs.rs) for details".into(),
-                streaming: false,
-                tool_name: None,
-                diff_data: None,
-                filter_stats: None,
-            });
+            app.messages.push(ChatMessage::new(
+                MessageRole::Assistant,
+                "See [docs](https://docs.rs) for details",
+            ));
 
             let _ = draw_app(&mut app, 80, 24);
             let links = app.take_hyperlinks();
@@ -2004,14 +1986,10 @@ mod tests {
         fn bare_url_still_produces_hyperlink_span() {
             let (mut app, _rx, _tx) = make_app();
             app.show_splash = false;
-            app.messages.push(ChatMessage {
-                role: MessageRole::Assistant,
-                content: "Visit https://example.com today".into(),
-                streaming: false,
-                tool_name: None,
-                diff_data: None,
-                filter_stats: None,
-            });
+            app.messages.push(ChatMessage::new(
+                MessageRole::Assistant,
+                "Visit https://example.com today",
+            ));
 
             let _ = draw_app(&mut app, 80, 24);
             let links = app.take_hyperlinks();

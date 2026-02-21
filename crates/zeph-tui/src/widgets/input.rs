@@ -29,10 +29,17 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         block = block.title_bottom(Span::styled(" [editing queued] ", theme.highlight));
     }
 
-    let paragraph = Paragraph::new(app.input())
-        .block(block)
-        .style(theme.input_cursor)
-        .wrap(Wrap { trim: false });
+    let paragraph = if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) {
+        Paragraph::new("Type a message, / for commands, @ to mention")
+            .block(block)
+            .style(theme.system_message)
+            .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(app.input())
+            .block(block)
+            .style(theme.input_text)
+            .wrap(Wrap { trim: false })
+    };
 
     frame.render_widget(paragraph, area);
 

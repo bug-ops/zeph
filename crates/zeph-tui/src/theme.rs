@@ -19,6 +19,7 @@ pub struct Theme {
     pub user_message: Style,
     pub assistant_message: Style,
     pub system_message: Style,
+    pub input_text: Style,
     pub input_cursor: Style,
     pub status_bar: Style,
     pub header: Style,
@@ -47,8 +48,9 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             user_message: Style::default().fg(Color::Cyan),
-            assistant_message: Style::default().fg(Color::White),
+            assistant_message: Style::default().fg(Color::Rgb(200, 200, 210)),
             system_message: Style::default().fg(Color::DarkGray),
+            input_text: Style::default().fg(Color::Cyan),
             input_cursor: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -69,9 +71,7 @@ impl Default for Theme {
                 .bg(Color::Rgb(15, 30, 55))
                 .add_modifier(Modifier::BOLD),
             code_block: Style::default().fg(Color::Rgb(190, 175, 145)),
-            streaming_cursor: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::SLOW_BLINK),
+            streaming_cursor: Style::default().fg(Color::DarkGray),
             tool_command: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
