@@ -133,17 +133,19 @@ When two candidates score within a configurable threshold of each other, structu
 
 ### Smart Output Filtering — 70-99% Token Savings
 
-Raw tool output is the #1 context window polluter. A `cargo test` run produces 300+ lines; the model needs 3. Zeph applies command-aware filters **before** context injection:
+Raw tool output is the #1 context window polluter. A `cargo test` run produces 300+ lines; the model needs 3. Zeph applies command-aware filters **before** context injection via a unified declarative TOML engine with 9 strategy types:
 
-| Filter | What It Does | Typical Savings |
-|--------|-------------|-----------------|
-| **Test** | Cargo test/nextest — failures-only mode | 94-99% |
-| **Git** | Compact status/diff/log/push | 80-99% |
-| **Clippy** | Group warnings by lint rule | 70-90% |
-| **Directory** | Hide noise dirs (target, node_modules, .git) | 60-80% |
-| **Log dedup** | Normalize timestamps/UUIDs, count repeats | 70-85% |
+| Strategy | What It Does | Typical Savings |
+|----------|-------------|-----------------|
+| `test_summary` | Cargo test/nextest/pytest/Go test — failures-only mode | 94-99% |
+| `git_status` / `git_diff` | Compact status and bounded diff/log output | 80-99% |
+| `group_by_rule` | Group Clippy warnings by lint rule | 70-90% |
+| `dedup` | Normalize timestamps/UUIDs, count repeats | 70-85% |
+| `strip_noise` / `keep_matching` | Remove or retain lines by regex pattern | varies |
+| `truncate` | Head+tail window with configurable limits | varies |
+| `strip_annotated` | Drop annotated diagnostic lines (e.g. `help:`) | varies |
 
-Additional tools (Docker, npm/yarn/pnpm, pip, Make, pytest, Go test, Terraform, kubectl, Homebrew) are covered by **declarative TOML-based filter rules** with `strip_noise` and `truncate` strategies. 10 built-in rules ship embedded; drop a custom `filters.toml` next to your config to add or override rules without code changes.
+19 built-in rules ship embedded, covering Cargo test/nextest, Clippy, git, directory listings, Docker, npm/yarn/pnpm, pip, Make, pytest, Go test, Terraform, kubectl, and Homebrew. Drop a custom `filters.toml` next to your config to add or override rules without code changes.
 
 Per-command stats shown inline, so you see exactly what was saved:
 

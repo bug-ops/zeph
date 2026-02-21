@@ -117,19 +117,13 @@ Before tool output reaches the LLM context, it passes through a command-aware fi
 
 ### Compound Command Matching
 
-LLMs often generate compound shell expressions like `cd /path && cargo test 2>&1 | tail -80`. Filter matchers automatically extract the last command segment after `&&` or `;` separators and strip trailing pipes and redirections before matching. This means `cd /Users/me/project && cargo clippy --workspace -- -D warnings 2>&1` correctly matches the `ClippyFilter` — no special configuration needed.
+LLMs often generate compound shell expressions like `cd /path && cargo test 2>&1 | tail -80`. Filter matchers automatically extract the last command segment after `&&` or `;` separators and strip trailing pipes and redirections before matching. This means `cd /Users/me/project && cargo clippy --workspace -- -D warnings 2>&1` correctly matches the clippy rules — no special configuration needed.
 
-### Built-in Filters
+### Built-in Rules
 
-| Filter | Matches | What it removes |
-|--------|---------|----------------|
-| `TestOutputFilter` | `cargo test`, `cargo nextest`, `pytest`, `go test` | Passing test lines, verbose output; keeps failures and summary |
-| `ClippyFilter` | `cargo clippy` | Duplicate diagnostic paths, redundant `help:` lines |
-| `GitFilter` | `git log`, `git diff` | Limits log entries (default: 20), diff line count (default: 500) |
-| `DirListingFilter` | `ls`, `find`, `tree` | Collapses redundant whitespace and deduplicates paths |
-| `LogDedupFilter` | any command with repetitive log output | Deduplicates consecutive identical lines |
+All 19 built-in rules are implemented in the declarative TOML engine and cover: Cargo test/nextest, Clippy, git status, git diff/log, directory listings, log deduplication, Docker, npm/yarn/pnpm, pip, Make, pytest, Go test, Terraform, kubectl, and Homebrew.
 
-All filters also strip ANSI escape sequences, carriage-return progress bars, and collapse consecutive blank lines (`sanitize_output`).
+All rules also strip ANSI escape sequences, carriage-return progress bars, and collapse consecutive blank lines (`sanitize_output`).
 
 ### Security Pass
 
@@ -159,9 +153,9 @@ This appears only when lines were actually removed. It lets you verify the filte
 
 ### Declarative Filters
 
-In addition to the built-in filters above, you can define custom filter rules in a `filters.toml` file. Rules are loaded at startup and compiled into the same pipeline alongside the built-in filters.
+All filtering is driven by a declarative TOML engine. Rules are loaded at startup from a `filters.toml` file and compiled into the pipeline.
 
-When no user file is present, Zeph uses embedded defaults that cover common noisy commands (`docker build`, `npm install`, `pip install`, `make`, `pytest`, `go test`, `terraform`, `kubectl`, `brew`).
+When no user file is present, Zeph uses 19 embedded built-in rules that cover `cargo test`, `cargo nextest`, `cargo clippy`, `git status`, `git diff`, `git log`, directory listings (`ls`, `find`, `tree`), log deduplication, `docker build`, `npm`/`yarn`/`pnpm install`, `pip install`, `make`, `pytest`, `go test`, `terraform`, `kubectl`, and `brew`.
 
 To override, place a `filters.toml` next to your `config.toml` or set `filters_path`:
 
@@ -209,9 +203,19 @@ Exactly one of `exact`, `prefix`, or `regex` must be set.
 
 #### Strategies
 
-**`strip_noise`** — removes lines matching any of the provided regex patterns. Reports `Full` confidence when lines were removed, `Fallback` otherwise.
+Nine strategy types are available:
 
-**`truncate`** — keeps the first `head` lines and last `tail` lines when output exceeds `max_lines`. Reports `Partial` confidence when truncation occurs. Defaults: `head = 20`, `tail = 20`.
+| Strategy | Description |
+|----------|-------------|
+| `strip_noise` | Removes lines matching any of the provided regex patterns. `Full` confidence when lines removed, `Fallback` otherwise. |
+| `truncate` | Keeps the first `head` lines and last `tail` lines when output exceeds `max_lines`. `Partial` confidence when truncated. Defaults: `head = 20`, `tail = 20`. |
+| `keep_matching` | Keeps only lines matching at least one of the provided regex patterns; discards the rest. |
+| `strip_annotated` | Strips lines that carry a specific annotation prefix (e.g. `note:`, `help:`). |
+| `test_summary` | Parses test runner output (Cargo test/nextest, pytest, Go test); retains failures and the final summary, discards passing lines. |
+| `group_by_rule` | Groups diagnostic lines (e.g. Clippy warnings) by lint rule and emits one block per rule. |
+| `git_status` | Compact-formats `git status` output; preserves branch, staged, and unstaged sections. |
+| `git_diff` | Limits diff output to `max_diff_lines` (default: 500); preserves file headers. |
+| `dedup` | Normalises timestamps and UUIDs, then deduplicates consecutive identical lines, annotating repeat counts. |
 
 #### Safety limits
 
@@ -226,31 +230,12 @@ Exactly one of `exact`, `prefix`, or `regex` must be set.
 enabled = true            # Master switch (default: true)
 filters_path = ""         # Custom filters.toml path (default: config dir)
 
-[tools.filters.test]
-enabled = true
-max_failures = 10         # Max failing tests to show (default: 10)
-truncate_stack_trace = 50 # Stack trace line limit (default: 50)
-
-[tools.filters.git]
-enabled = true
-max_log_entries = 20      # Max git log entries (default: 20)
-max_diff_lines = 500      # Max diff lines (default: 500)
-
-[tools.filters.clippy]
-enabled = true
-
-[tools.filters.dir_listing]
-enabled = true
-
-[tools.filters.log_dedup]
-enabled = true
-
 [tools.filters.security]
 enabled = true
 extra_patterns = []       # Additional regex patterns to flag as credentials
 ```
 
-Individual filters can be disabled without affecting others.
+Individual rules can be disabled via `enabled = false` in the rule definition without removing them from the file.
 
 ## Configuration
 
