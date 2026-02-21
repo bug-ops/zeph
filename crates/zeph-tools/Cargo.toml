@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-tools"
+keywords.workspace = true
+categories.workspace = true
+description = "Tool executor trait with shell, web scrape, and composite executors for Zeph"
+readme = "README.md"
 
 [dependencies]
 dirs = "6.0"

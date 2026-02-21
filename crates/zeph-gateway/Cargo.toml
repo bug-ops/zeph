@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-gateway"
+keywords.workspace = true
+categories.workspace = true
+description = "HTTP gateway for webhook ingestion with bearer auth for Zeph"
+readme = "README.md"
 
 [dependencies]
 axum.workspace = true

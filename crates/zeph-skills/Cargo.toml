@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-skills"
+keywords.workspace = true
+categories.workspace = true
+description = "SKILL.md parser, registry, embedding matcher, and hot-reload for Zeph"
+readme = "README.md"
 
 [features]
 default = []

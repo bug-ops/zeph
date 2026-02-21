@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-scheduler"
+keywords.workspace = true
+categories.workspace = true
+description = "Cron-based periodic task scheduler with SQLite persistence for Zeph"
+readme = "README.md"
 
 [dependencies]
 chrono.workspace = true

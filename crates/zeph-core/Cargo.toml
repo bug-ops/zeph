@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-core"
+keywords.workspace = true
+categories.workspace = true
+description = "Core agent loop, configuration, context builder, metrics, and vault for Zeph"
+readme = "README.md"
 
 [features]
 default = []

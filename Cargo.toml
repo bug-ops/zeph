@@ -9,6 +9,10 @@ version = "0.11.3"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
+homepage = "https://github.com/bug-ops/zeph"
+documentation = "https://docs.rs/zeph"
+keywords = ["ai", "agent", "llm", "inference", "skills"]
+categories = ["command-line-utilities", "science"]
 
 [workspace.dependencies]
 age = { version = "0.11.2", default-features = false }
@@ -113,6 +117,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Lightweight AI agent with hybrid inference, skills-first architecture, and multi-channel I/O"
+readme = "README.md"
 
 [features]
 default = []

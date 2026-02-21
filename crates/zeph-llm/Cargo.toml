@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-llm"
+keywords.workspace = true
+categories.workspace = true
+description = "LLM provider abstraction with Ollama, Claude, OpenAI, and Candle backends"
+readme = "README.md"
 
 [features]
 default = []

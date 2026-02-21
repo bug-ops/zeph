@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-mcp"
+keywords.workspace = true
+categories.workspace = true
+description = "MCP client with multi-server lifecycle and Qdrant tool registry for Zeph"
+readme = "README.md"
 
 [features]
 default = []

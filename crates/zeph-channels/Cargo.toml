@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-channels"
+keywords.workspace = true
+categories.workspace = true
+description = "Multi-channel I/O adapters (CLI, Telegram, Discord, Slack) for Zeph"
+readme = "README.md"
 
 [features]
 discord = ["dep:tokio-tungstenite", "dep:futures"]

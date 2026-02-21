@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-index"
+keywords.workspace = true
+categories.workspace = true
+description = "AST-based code indexing and semantic retrieval for Zeph"
+readme = "README.md"
 
 [features]
 default = ["lang-rust", "lang-python", "lang-js", "lang-go", "lang-config"]

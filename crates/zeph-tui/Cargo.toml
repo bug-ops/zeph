@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-tui"
+keywords.workspace = true
+categories.workspace = true
+description = "Ratatui-based TUI dashboard with real-time metrics for Zeph"
+readme = "README.md"
 
 [dependencies]
 ignore.workspace = true

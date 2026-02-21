@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-a2a"
+keywords.workspace = true
+categories.workspace = true
+description = "A2A protocol client and server with agent discovery for Zeph"
+readme = "README.md"
 
 [features]
 server = ["dep:axum", "dep:subtle", "dep:tower", "dep:tower-http"]

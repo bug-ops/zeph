@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-memory"
+keywords.workspace = true
+categories.workspace = true
+description = "Semantic memory with SQLite and Qdrant for Zeph agent"
+readme = "README.md"
 
 [dependencies]
 pdf-extract = { workspace = true, optional = true }
