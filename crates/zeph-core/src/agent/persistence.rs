@@ -66,16 +66,19 @@ impl<C: Channel> Agent<C> {
             .and_then(|m| serde_json::to_string(&m.parts).ok())
             .unwrap_or_else(|| "[]".to_string());
 
+        let _ = self.channel.send_status("saving...").await;
         let (_message_id, embedding_stored) = match memory
             .remember_with_parts(cid, role_str(role), content, &parts_json)
             .await
         {
             Ok(result) => result,
             Err(e) => {
+                let _ = self.channel.send_status("").await;
                 tracing::error!("failed to persist message: {e:#}");
                 return;
             }
         };
+        let _ = self.channel.send_status("").await;
 
         self.update_metrics(|m| {
             m.sqlite_message_count += 1;

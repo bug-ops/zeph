@@ -110,9 +110,12 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
+            let _ = self.channel.send_status("thinking...").await;
             let Some(response) = self.call_llm_with_timeout().await? else {
+                let _ = self.channel.send_status("").await;
                 return Ok(());
             };
+            let _ = self.channel.send_status("").await;
 
             if response.trim().is_empty() {
                 tracing::warn!("received empty response from LLM, skipping");
@@ -140,11 +143,13 @@ impl<C: Channel> Agent<C> {
             self.persist_message(Role::Assistant, &response).await;
 
             self.inject_active_skill_env();
+            let _ = self.channel.send_status("running tool...").await;
             let result = self
                 .tool_executor
                 .execute_erased(&response)
                 .instrument(tracing::info_span!("tool_exec"))
                 .await;
+            let _ = self.channel.send_status("").await;
             self.tool_executor.set_skill_env(None);
             if !self.handle_tool_result(&response, result).await? {
                 return Ok(());
@@ -577,7 +582,9 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
+            let _ = self.channel.send_status("thinking...").await;
             let chat_result = self.call_chat_with_tools(&tool_defs).await?;
+            let _ = self.channel.send_status("").await;
 
             let Some(chat_result) = chat_result else {
                 tracing::debug!("chat_with_tools returned None (timeout)");

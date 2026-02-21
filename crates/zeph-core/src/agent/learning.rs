@@ -84,8 +84,13 @@ impl<C: Channel> Agent<C> {
         });
 
         let messages_before = self.messages.len();
+        let _ = self.channel.send_status("reflecting...").await;
         // Box::pin to break async recursion cycle (process_response -> attempt_self_reflection -> process_response)
-        Box::pin(self.process_response()).await?;
+        if let Err(e) = Box::pin(self.process_response()).await {
+            let _ = self.channel.send_status("").await;
+            return Err(e);
+        }
+        let _ = self.channel.send_status("").await;
         let retry_succeeded = self.messages.len() > messages_before;
 
         if retry_succeeded {

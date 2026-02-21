@@ -80,8 +80,10 @@ impl<C: Channel> Agent<C> {
             timeout: std::time::Duration::from_secs(30),
         };
 
+        let _ = self.channel.send_status("connecting to mcp...").await;
         match manager.add_server(&entry).await {
             Ok(tools) => {
+                let _ = self.channel.send_status("").await;
                 let count = tools.len();
                 self.mcp.tools.extend(tools);
                 self.sync_mcp_registry().await;
@@ -106,6 +108,7 @@ impl<C: Channel> Agent<C> {
                 Ok(())
             }
             Err(e) => {
+                let _ = self.channel.send_status("").await;
                 tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
                 self.channel
                     .send(&format!("Failed to connect server '{}': {e}", entry.id))

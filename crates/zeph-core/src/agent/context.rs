@@ -577,6 +577,7 @@ impl<C: Channel> Agent<C> {
         let Some(ref budget) = self.context_state.budget else {
             return Ok(());
         };
+        let _ = self.channel.send_status("building context...").await;
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
         let alloc = budget.allocate(system_prompt, &self.skill_state.last_skills_prompt);
@@ -593,19 +594,37 @@ impl<C: Channel> Agent<C> {
 
         // Fetch all context sources concurrently
         #[cfg(not(feature = "index"))]
-        let (summaries_msg, cross_session_msg, recall_msg) = tokio::try_join!(
-            Self::fetch_summaries(&self.memory_state, alloc.summaries),
-            Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
-            Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
-        )?;
+        let (summaries_msg, cross_session_msg, recall_msg) = {
+            let result = tokio::try_join!(
+                Self::fetch_summaries(&self.memory_state, alloc.summaries),
+                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
+                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
+            );
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = self.channel.send_status("").await;
+                    return Err(e);
+                }
+            }
+        };
 
         #[cfg(feature = "index")]
-        let (summaries_msg, cross_session_msg, recall_msg, code_rag_text) = tokio::try_join!(
-            Self::fetch_summaries(&self.memory_state, alloc.summaries),
-            Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
-            Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
-            Self::fetch_code_rag(&self.index, &query, alloc.code_context),
-        )?;
+        let (summaries_msg, cross_session_msg, recall_msg, code_rag_text) = {
+            let result = tokio::try_join!(
+                Self::fetch_summaries(&self.memory_state, alloc.summaries),
+                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
+                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
+                Self::fetch_code_rag(&self.index, &query, alloc.code_context),
+            );
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = self.channel.send_status("").await;
+                    return Err(e);
+                }
+            }
+        };
 
         // Insert fetched messages (order: recall, cross-session, summaries at position 1)
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
@@ -626,6 +645,7 @@ impl<C: Channel> Agent<C> {
 
         self.trim_messages_to_budget(alloc.recent_history);
         self.recompute_prompt_tokens();
+        let _ = self.channel.send_status("").await;
 
         Ok(())
     }
@@ -688,6 +708,7 @@ impl<C: Channel> Agent<C> {
         let all_meta = self.skill_state.registry.all_meta();
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
+            let _ = self.channel.send_status("matching skills...").await;
             let scored = matcher
                 .match_skills(
                     &all_meta,
@@ -701,7 +722,7 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
 
-            if scored.len() >= 2
+            let indices: Vec<usize> = if scored.len() >= 2
                 && (scored[0].score - scored[1].score) < self.skill_state.disambiguation_threshold
             {
                 match self.disambiguate_skills(query, &all_meta, &scored).await {
@@ -710,7 +731,9 @@ impl<C: Channel> Agent<C> {
                 }
             } else {
                 scored.iter().map(|s| s.index).collect()
-            }
+            };
+            let _ = self.channel.send_status("").await;
+            indices
         } else {
             (0..all_meta.len()).collect()
         };

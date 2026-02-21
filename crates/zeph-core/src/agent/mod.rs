@@ -666,6 +666,7 @@ impl<C: Channel> Agent<C> {
         if new_registry.fingerprint() == self.skill_state.registry.fingerprint() {
             return;
         }
+        let _ = self.channel.send_status("reloading skills...").await;
         self.skill_state.registry = new_registry;
 
         let all_meta = self.skill_state.registry.all_meta();
@@ -711,6 +712,7 @@ impl<C: Channel> Agent<C> {
             msg.content = system_prompt;
         }
 
+        let _ = self.channel.send_status("").await;
         tracing::info!(
             "reloaded {} skill(s)",
             self.skill_state.registry.all_meta().len()
