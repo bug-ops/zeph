@@ -46,7 +46,7 @@ cargo install --git https://github.com/bug-ops/zeph
 docker pull ghcr.io/bug-ops/zeph:latest
 ```
 
-Pre-built binaries for Linux, macOS, and Windows: [GitHub Releases](https://github.com/bug-ops/zeph/releases/latest) · [Docker](https://bug-ops.github.io/zeph/guide/docker.html)
+Pre-built binaries for Linux, macOS, and Windows: [GitHub Releases](https://github.com/bug-ops/zeph/releases/latest) · [Docker](https://bug-ops.github.io/zeph/guides/docker.html)
 
 </details>
 
@@ -83,7 +83,7 @@ ZEPH_LLM_PROVIDER=compatible ZEPH_COMPATIBLE_BASE_URL=https://api.together.xyz/v
 ```
 
 > [!TIP]
-> Full setup walkthrough: [Installation](https://bug-ops.github.io/zeph/getting-started/installation.html) · [Configuration](https://bug-ops.github.io/zeph/getting-started/configuration.html) · [Secrets management](https://bug-ops.github.io/zeph/guide/vault.html)
+> Full setup walkthrough: [Installation](https://bug-ops.github.io/zeph/getting-started/installation.html) · [Configuration](https://bug-ops.github.io/zeph/reference/configuration.html) · [Secrets management](https://bug-ops.github.io/zeph/reference/security.html)
 
 ## CLI Usage
 
@@ -129,7 +129,7 @@ Most frameworks inject all tool descriptions into every prompt. 50 tools install
 
 Zeph embeds skills and MCP tools as vectors at startup (concurrent embedding via `buffer_unordered`), then retrieves only the **top-K relevant** per query via cosine similarity. Install 500 skills — the prompt sees only the 5 that matter.
 
-When two candidates score within a configurable threshold of each other, structured intent classification resolves the ambiguity: the agent calls the LLM with a typed `IntentClassification` schema and reorders candidates accordingly — no hallucination, no guessing. [How skills work →](https://bug-ops.github.io/zeph/guide/skills.html)
+When two candidates score within a configurable threshold of each other, structured intent classification resolves the ambiguity: the agent calls the LLM with a typed `IntentClassification` schema and reorders candidates accordingly — no hallucination, no guessing. [How skills work →](https://bug-ops.github.io/zeph/concepts/skills.html)
 
 ### Smart Output Filtering — 70-99% Token Savings
 
@@ -149,7 +149,7 @@ Per-command stats shown inline, so you see exactly what was saved:
 [shell] `cargo test` 342 lines → 28 lines, 91.8% filtered
 ```
 
-[Filter architecture →](https://bug-ops.github.io/zeph/guide/tools.html)
+[Filter architecture →](https://bug-ops.github.io/zeph/advanced/tools.html)
 
 ### Two-Tier Context Pruning
 
@@ -159,7 +159,7 @@ When the context window fills up, Zeph doesn't just truncate from the top.
 
 **Tier 2 — LLM compaction.** Only when Tier 1 isn't enough, a summarization call compresses older exchanges. A token-based protection zone shields recent messages from pruning.
 
-Result: fewer compaction calls, lower costs, better memory of what happened. [Context engineering →](https://bug-ops.github.io/zeph/guide/context.html)
+Result: fewer compaction calls, lower costs, better memory of what happened. [Context engineering →](https://bug-ops.github.io/zeph/advanced/context.html)
 
 ### Proportional Budget Allocation
 
@@ -229,7 +229,7 @@ flowchart TD
 | **Skill trust quarantine** | 4-tier model (Trusted/Verified/Quarantined/Blocked) with blake3 integrity |
 | **Container scanning** | Trivy in CI — 0 HIGH/CRITICAL CVEs |
 
-[Security model →](https://bug-ops.github.io/zeph/security.html) · [MCP security →](https://bug-ops.github.io/zeph/security/mcp.html)
+[Security model →](https://bug-ops.github.io/zeph/reference/security.html) · [MCP security →](https://bug-ops.github.io/zeph/reference/security/mcp.html)
 
 ## Lightweight by Design
 
@@ -264,7 +264,7 @@ Run local models when you want privacy and zero cost. Use cloud APIs when you ne
 | **Orchestrator** | Multi-model | Fallback chains across providers |
 | **Router** | Multi-model | Prompt-based model selection |
 
-[OpenAI guide →](https://bug-ops.github.io/zeph/guide/openai.html) · [Candle guide →](https://bug-ops.github.io/zeph/guide/candle.html) · [Orchestrator →](https://bug-ops.github.io/zeph/guide/orchestrator.html)
+[Cloud providers →](https://bug-ops.github.io/zeph/guides/cloud-provider.html) · [Candle guide →](https://bug-ops.github.io/zeph/advanced/candle.html) · [Orchestrator →](https://bug-ops.github.io/zeph/advanced/orchestrator.html)
 
 ## Skills, Not Hardcoded Prompts
 
@@ -276,7 +276,7 @@ Skills **evolve**: failure detection triggers self-reflection, and the agent gen
 
 Skills can declare **required secrets** via the `x-requires-secrets` frontmatter field. Zeph resolves each named secret from the vault and injects it as an environment variable scoped to tool execution for that skill — no hardcoded credentials, no secret leakage across skills. Store custom secrets under the `ZEPH_SECRET_<NAME>` key; the `zeph init` wizard includes a dedicated step for this.
 
-[Self-learning →](https://bug-ops.github.io/zeph/guide/self-learning.html) · [Skill trust →](https://bug-ops.github.io/zeph/guide/skill-trust.html)
+[Self-learning →](https://bug-ops.github.io/zeph/advanced/self-learning.html) · [Skill trust →](https://bug-ops.github.io/zeph/advanced/skill-trust.html)
 
 ## Connect Everything
 
@@ -290,7 +290,7 @@ Skills can declare **required secrets** via the `x-requires-secrets` frontmatter
 | **Gateway** | HTTP webhook ingestion with bearer auth and rate limiting |
 | **Native tool_use** | Structured tool calling via Claude/OpenAI APIs; text fallback for local models |
 
-[MCP →](https://bug-ops.github.io/zeph/guide/mcp.html) · [A2A →](https://bug-ops.github.io/zeph/guide/a2a.html) · [Channels →](https://bug-ops.github.io/zeph/guide/channels.html) · [Gateway →](https://bug-ops.github.io/zeph/guide/gateway.html)
+[MCP →](https://bug-ops.github.io/zeph/guides/mcp.html) · [A2A →](https://bug-ops.github.io/zeph/advanced/a2a.html) · [Channels →](https://bug-ops.github.io/zeph/advanced/channels.html) · [Gateway →](https://bug-ops.github.io/zeph/advanced/gateway.html)
 
 ## Built-In TUI Dashboard
 
@@ -328,7 +328,7 @@ The daemon uses a `LoopbackChannel` for headless agent I/O, allowing programmati
 
 Press `Ctrl+P` in the TUI to open the command palette. 14+ commands with fuzzy matching and keybinding hints provide quick access to agent actions — file picker, skill stats, metrics toggle, theme switching, and more.
 
-[TUI guide →](https://bug-ops.github.io/zeph/guide/tui.html)
+[TUI guide →](https://bug-ops.github.io/zeph/advanced/tui.html)
 
 ### TUI Testing
 
@@ -434,7 +434,7 @@ cargo build --release --features full     # everything
 cargo build --release --features tui      # with dashboard
 ```
 
-[Feature flags reference →](https://bug-ops.github.io/zeph/feature-flags.html)
+[Feature flags reference →](https://bug-ops.github.io/zeph/reference/feature-flags.html)
 
 ## Documentation
 
