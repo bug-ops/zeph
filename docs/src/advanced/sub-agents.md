@@ -1,58 +1,84 @@
 # Sub-Agent Orchestration
 
-Zeph supports delegating tasks to specialized sub-agents that run in isolated contexts with controlled permissions. Sub-agents are defined as markdown files with TOML frontmatter and communicate with the main agent via the A2A protocol over in-process channels.
+Sub-agents let you delegate tasks to specialized helpers that work in the background while you continue chatting with Zeph. Each sub-agent has its own system prompt, tools, and skills — but cannot access anything you haven't explicitly allowed.
 
-## Concepts
+## Quick Start
 
-A sub-agent is a lightweight, disposable agent instance that:
+1. Create a definition file:
 
-- Has its own system prompt, message history, and LLM model
-- Receives a filtered subset of tools and skills from the main agent
-- Starts with zero permissions (zero-trust model)
-- Communicates with the main agent via A2A protocol messages
-- Cannot spawn other sub-agents (no nesting)
-- Is automatically cleaned up on completion, cancellation, timeout, or crash
+```markdown
++++
+name = "code-reviewer"
+description = "Reviews code for correctness and style"
++++
 
-The main agent remains the single user-facing interface. Sub-agents are invisible to the user except through status updates and approval prompts.
-
-## Architecture
-
-```
-User
-  |
-  v
-+---------------------------+
-|  Main Agent               |
-|  - user channel           |
-|  - SubAgentManager        |
-|  - VaultProvider          |
-|  - SkillRegistry          |
-+-----|---------------------+
-      |
-      | A2A (in-process mpsc channels)
-      |
-  +---+---+---+
-  |   |   |   |
-  v   v   v   v
- SA1 SA2 SA3 SA4   (sub-agent instances)
+You are a code reviewer. Analyze the provided code for bugs, performance issues, and idiomatic style.
 ```
 
-Each sub-agent has:
-- Own message history and system prompt
-- Filtered tool access via `FilteredToolExecutor`
-- Filtered skill access via glob patterns
-- No vault access unless explicitly granted with TTL
+2. Save it to `.zeph/agents/code-reviewer.md` in your project (or `~/.config/zeph/agents/` for global use).
 
-## Definition Format
+3. Spawn the sub-agent:
 
-Sub-agent definitions are markdown files with `+++`-delimited TOML frontmatter, stored in:
+```
+> /agent spawn code-reviewer Review the authentication module
+Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+```
 
-- `.zeph/agents/` (project scope, higher priority)
-- `~/.config/zeph/agents/` (user scope)
+Or use the shorthand `@mention` syntax:
 
-When both directories contain a definition with the same `name`, the project-scope file takes precedence.
+```
+> @code-reviewer Review the authentication module
+Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+```
 
-### Example
+That's it. The sub-agent works in the background and reports results when done.
+
+## Managing Sub-Agents
+
+| Command | Description |
+|---------|-------------|
+| `/agent list` | Show available sub-agent definitions |
+| `/agent spawn <name> <prompt>` | Start a sub-agent with a task |
+| `/agent bg <name> <prompt>` | Alias for `spawn` |
+| `/agent status` | Show active sub-agents with state and progress |
+| `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `@name <prompt>` | Shorthand for `/agent spawn` |
+
+### Checking Status
+
+```
+> /agent status
+Active sub-agents:
+  [a1b2c3d4] working  turns=3  elapsed=42s  Analyzing auth flow...
+```
+
+### Cancelling
+
+The `cancel` command accepts a UUID prefix. If the prefix is ambiguous (matches multiple agents), you'll be asked for a longer prefix:
+
+```
+> /agent cancel a1b2
+Cancelled sub-agent a1b2c3d4-...
+```
+
+## Writing Definitions
+
+A definition is a markdown file with TOML frontmatter between `+++` delimiters. The body after the closing `+++` becomes the sub-agent's system prompt.
+
+### Minimal Definition
+
+Only `name` and `description` are required. Everything else has sensible defaults:
+
+```markdown
++++
+name = "helper"
+description = "General-purpose helper"
++++
+
+You are a helpful assistant. Complete the given task concisely.
+```
+
+### Full Definition
 
 ```markdown
 +++
@@ -66,7 +92,6 @@ allow = ["shell", "web_scrape"]
 [permissions]
 secrets = ["github-token"]
 max_turns = 10
-background = false
 timeout_secs = 300
 ttl_secs = 120
 
@@ -83,245 +108,99 @@ You are a code reviewer. Analyze the provided code for:
 Report findings as a structured list with severity (critical/warning/info).
 ```
 
-### Frontmatter Fields
+### Field Reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | required | Unique identifier for the sub-agent |
+| `name` | string | required | Unique identifier |
 | `description` | string | required | Human-readable description |
-| `model` | string | inherited | LLM model override (uses main agent model if omitted) |
-| `tools.allow` | string[] | - | Allowlist of tool IDs (mutually exclusive with `deny`) |
-| `tools.deny` | string[] | - | Denylist of tool IDs (mutually exclusive with `allow`) |
-| `permissions.secrets` | string[] | `[]` | Vault keys this agent MAY request (not granted by default) |
-| `permissions.max_turns` | u32 | `20` | Maximum LLM turns before forced stop |
-| `permissions.background` | bool | `false` | Run in background (non-blocking) |
-| `permissions.timeout_secs` | u64 | `600` | Hard kill deadline in seconds |
-| `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions and secrets |
-| `skills.include` | string[] | `[]` (all) | Glob patterns for skill names to include |
-| `skills.exclude` | string[] | `[]` | Glob patterns for skill names to exclude |
+| `model` | string | inherited | LLM model override |
+| `tools.allow` | string[] | — | Only these tools are available (mutually exclusive with `deny`) |
+| `tools.deny` | string[] | — | All tools except these (mutually exclusive with `allow`) |
+| `permissions.secrets` | string[] | `[]` | Vault keys the agent MAY request |
+| `permissions.max_turns` | u32 | `20` | Maximum LLM turns |
+| `permissions.timeout_secs` | u64 | `600` | Hard kill deadline |
+| `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |
+| `skills.include` | string[] | all | Glob patterns to include (`*` wildcard) |
+| `skills.exclude` | string[] | `[]` | Glob patterns to exclude (takes precedence) |
 
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
-The body after the closing `+++` becomes the sub-agent's system prompt.
+### Definition Locations
 
-## SubAgentManager API
+| Path | Scope | Priority |
+|------|-------|----------|
+| `.zeph/agents/` | Project | Higher (wins on name conflict) |
+| `~/.config/zeph/agents/` | User (global) | Lower |
 
-`SubAgentManager` lives in `zeph-core` and manages the full sub-agent lifecycle:
+## Tool and Skill Access
 
-```rust
-let mut manager = SubAgentManager::new(/* max_concurrent */ 4);
+### Tool Filtering
 
-// Load definitions from project and user directories
-manager.load_definitions(&[
-    project_dir.join(".zeph/agents"),
-    dirs::config_dir().unwrap().join("zeph/agents"),
-])?;
+Control which tools a sub-agent can use:
 
-// Spawn a sub-agent by definition name
-let task_id = manager.spawn("code-reviewer", "Review src/main.rs")?;
+- **Allow list** — only listed tools are available: `allow = ["shell", "web_scrape"]`
+- **Deny list** — all tools except listed: `deny = ["shell"]`
+- **Inherit all** — omit both `allow` and `deny`
 
-// Check status
-let statuses = manager.statuses();
+Filtering is enforced at the executor level. The sub-agent's LLM only sees tool definitions it can actually call. Blocked tool calls return an error.
 
-// Cancel if needed
-manager.cancel(&task_id)?;
+### Skill Filtering
 
-// Collect result (removes from active set)
-let result = manager.collect(&task_id).await?;
+Skills are filtered by glob patterns with `*` wildcard:
+
+```toml
+[skills]
+include = ["git-*", "rust-*"]   # only matching skills
+exclude = ["deploy-*"]          # always excluded
 ```
 
-Key operations:
+- Empty `include` = all skills pass (unless excluded)
+- `exclude` always takes precedence over `include`
 
-| Method | Description |
-|--------|-------------|
-| `load_definitions(&[PathBuf])` | Load `.md` definitions from directories (first-wins deduplication) |
-| `spawn(name, prompt)` | Spawn a sub-agent, returns task ID |
-| `cancel(task_id)` | Cancel and revoke all grants |
-| `collect(task_id)` | Await result and remove from active set |
-| `statuses()` | Snapshot of all active sub-agent states |
-| `approve_secret(task_id, key, ttl)` | Grant a vault secret after user approval |
+## Security Model
 
-Concurrency is enforced: `spawn` returns an error if the active agent count reaches `max_concurrent`.
+Sub-agents follow a zero-trust principle: they start with **zero permissions** and can only access what you explicitly grant.
 
-## Zero-Trust Security Model
+### How It Works
 
-Every sub-agent starts with zero permissions. Access is never implicit.
+1. **Definitions declare capabilities, not permissions.** Writing `secrets = ["github-token"]` means the agent _may request_ that secret — it doesn't get it automatically.
 
-### Core Rules
+2. **Secrets require your approval.** When a sub-agent needs a secret, Zeph prompts you:
 
-1. **No default trust** -- the definition declares what a sub-agent MAY request, not what it has
-2. **Explicit user approval** -- every secret requires user consent at runtime
-3. **TTL on all grants** -- secrets and runtime permissions expire after `ttl_secs`
-4. **Automatic revocation** -- all grants revoked on completion, cancellation, or crash
-5. **No persistence** -- secrets exist only in memory, never written to disk or message history
-6. **Audit trail** -- every grant, revoke, and expiry event logged via `tracing`
-7. **Sweep before access** -- `PermissionGrants::sweep_expired()` called before every tool execution and secret read
+   > Sub-agent 'code-reviewer' requests 'github-token' (TTL: 120s). Allow? [y/n]
 
-### Grant Lifecycle
+3. **Everything expires.** Granted permissions and secrets are automatically revoked after `ttl_secs` or when the sub-agent finishes — whichever comes first.
 
-```
-Request -> User Approval -> Grant (with TTL) -> Active -> Expired/Revoked
-                |                                            |
-              Denied                                 Cleared from memory
-```
+4. **Secrets stay in memory only.** They are never written to disk, message history, or logs.
 
-### PermissionGrants
+### Permission Lifecycle
 
-`PermissionGrants` tracks active grants and enforces TTL:
-
-- `add(kind, ttl)` -- add a new time-bounded grant
-- `is_active(kind)` -- check if a grant is still valid (auto-sweeps expired)
-- `sweep_expired()` -- remove all expired grants
-- `revoke_all()` -- immediately revoke all grants
-- `Drop` impl revokes remaining grants as defense-in-depth
-
-Grant kinds:
-- `GrantKind::Secret(key)` -- vault secret access (redacted in logs and `Display`)
-- `GrantKind::Tool(name)` -- runtime tool access beyond static policy
-
-### Secret Delivery Protocol
-
-1. Sub-agent sends `InputRequired` status with `SecretRequest { secret_key, reason }`
-2. Main agent validates: is the key in the definition's allowed `secrets` list?
-3. If not in allowed list, auto-deny (no user prompt)
-4. If allowed, prompt user: agent name, key name, TTL
-5. User approves: vault read, in-memory grant with TTL via `approve_secret()`
-6. Sub-agent accesses secret via `PermissionGrants` (not via message channel)
-7. On TTL expiry or sub-agent end: grant swept, secret cleared from memory
-
-Secrets are never serialized into A2A messages, message history, or logs.
-
-## Tool Filtering
-
-`FilteredToolExecutor` wraps the main agent's tool executor and enforces the sub-agent's `ToolPolicy`:
-
-- **AllowList** -- only listed tools are permitted
-- **DenyList** -- all tools except listed ones are permitted
-- **InheritAll** -- all parent tools are available
-
-Enforcement happens at the executor level (not prompt level). Rejected tool calls return a `ToolError::Blocked`. Tool definitions exposed to the sub-agent's LLM are also filtered, so the model only sees tools it can actually use.
-
-## Skill Filtering
-
-Skills are filtered from the main agent's `SkillRegistry` using glob patterns:
-
-- `include = ["git-*", "rust-*"]` -- only skills matching these patterns
-- `exclude = ["deploy-*"]` -- remove skills matching these patterns
-- Empty `include` means all skills pass (unless excluded)
-- Exclude patterns always take precedence over include
-
-Supported glob syntax: `*` wildcard (e.g., `git-*`, `*-review`). Double-star `**` is not supported.
-
-Filtered skills are injected into the sub-agent's system prompt at spawn time.
-
-## A2A Channel Communication
-
-Sub-agents communicate with the main agent via in-process bidirectional channels (`tokio::sync::mpsc`) that carry A2A protocol messages:
-
-```
-Main Agent                          Sub-Agent
-    |                                   |
-    |--- SendMessage(task prompt) ----->|
-    |                                   |
-    |<-- StatusUpdate(working) ---------|
-    |<-- StatusUpdate(working, msg) ----|  (progress)
-    |                                   |
-    |<-- StatusUpdate(input-required) --|  (needs permission)
-    |--- SendMessage(approval) -------->|
-    |                                   |
-    |<-- ArtifactUpdate(result) --------|
-    |<-- StatusUpdate(completed) -------|
+```mermaid
+stateDiagram-v2
+    [*] --> Request
+    Request --> UserApproval
+    UserApproval --> Denied
+    UserApproval --> Grant: approved (with TTL)
+    Grant --> Active
+    Active --> Expired
+    Active --> Revoked
+    Expired --> [*]: cleared from memory
+    Revoked --> [*]: cleared from memory
+    Denied --> [*]
 ```
 
-Message types (`A2aMessage` enum):
-- `SendMessage` -- carries an A2A `Message`
-- `StatusUpdate` -- carries a `TaskStatusUpdateEvent`
-- `ArtifactUpdate` -- carries a `TaskArtifactUpdateEvent`
-- `Cancel` -- signals cancellation
+### Safety Guarantees
 
-The channel reuses A2A types from `zeph-a2a` directly. This means upgrading to HTTP-based A2A (remote sub-agents) in the future requires zero protocol changes.
+- Concurrency limit prevents resource exhaustion
+- `timeout_secs` provides a hard kill deadline
+- `max_turns` prevents runaway LLM loops
+- All grants are revoked on completion, cancellation, or crash
+- Secret key names are redacted in logs
 
-## Error Handling
+## TUI Dashboard Panel
 
-Sub-agent operations return `SubAgentError`:
-
-| Variant | When |
-|---------|------|
-| `Parse` | Definition file has invalid frontmatter or TOML |
-| `Invalid` | Validation failure (empty name, mutual exclusion, unauthorized secret) |
-| `NotFound` | Unknown definition name or task ID |
-| `Spawn` | Concurrency limit reached or task panic |
-| `Cancelled` | Sub-agent was cancelled |
-
-## Background Execution
-
-Sub-agents can run in the background without blocking the main agent loop. This is the default execution model: `spawn()` returns immediately with a task ID, and the sub-agent runs on a separate Tokio task.
-
-### Non-Blocking Spawn
-
-```rust
-// Spawn returns immediately — the sub-agent runs in the background
-let task_id = manager.spawn("code-reviewer", "Review src/main.rs", provider, executor)?;
-// Main agent continues processing user input
-```
-
-The `spawn()` call creates a `JoinHandle` via `tokio::spawn` and inserts the handle into the active agents map. The main agent loop is never blocked.
-
-### Polling for Completed Results
-
-The agent loop calls `poll_subagents()` on every iteration to check for finished sub-agents:
-
-```rust
-let completed = agent.poll_subagents().await;
-for (task_id, result) in completed {
-    // Notify user about completed background work
-}
-```
-
-`poll_subagents()` is non-blocking: it inspects each active sub-agent's `watch::Receiver<SubAgentStatus>` for terminal states (`Completed`, `Failed`, `Canceled`) and collects results from finished agents. Collected agents are removed from the active set.
-
-### Graceful Shutdown
-
-On main agent shutdown, `shutdown_all()` cancels every active sub-agent via their `CancellationToken` and revokes all permission grants:
-
-```rust
-manager.shutdown_all();
-```
-
-This iterates over all active agents and calls `cancel()` on each. The `CancellationToken` is checked inside the agent loop, so the sub-agent stops at the next iteration boundary.
-
-## TUI Sub-Agent Panel
-
-When the `tui` feature is enabled, the TUI dashboard displays a dedicated sub-agent panel in the side bar.
-
-### Layout
-
-The TUI uses a 4-panel side bar layout (each panel takes 25% of the side bar height):
-
-| Panel | Content |
-|-------|---------|
-| Skills | Loaded skills list |
-| Memory | Memory/context stats |
-| Resources | System resource usage |
-| **Sub-Agents** | Active sub-agent list |
-
-The side bar is visible when the terminal width is 80 columns or wider and can be toggled on/off. On narrow terminals (< 80 columns), the side bar is hidden automatically.
-
-### Widget
-
-The sub-agent widget (`crates/zeph-tui/src/widgets/subagents.rs`) renders a bordered list with:
-
-- **Agent name** with a `[bg]` marker for background agents
-- **State** in uppercase, color-coded:
-  - Yellow: `WORKING` / `SUBMITTED`
-  - Green: `COMPLETED`
-  - Red: `FAILED`
-  - Cyan: `INPUT_REQUIRED`
-  - Dark gray: other/unknown
-- **Turn counter**: `turns_used/max_turns`
-- **Elapsed time** in seconds
-
-Example rendering:
+When the `tui` feature is enabled, a Sub-Agents panel appears in the sidebar showing active agents with color-coded status:
 
 ```
 ┌ Sub-Agents (2) ──────────┐
@@ -332,110 +211,73 @@ Example rendering:
 └──────────────────────────┘
 ```
 
-The widget reads from `MetricsSnapshot.sub_agents` (a `Vec<SubAgentMetrics>` published via the metrics watch channel) and renders nothing when the list is empty.
+Colors: yellow = working, green = completed, red = failed, cyan = input required.
 
-## CLI `/agent` Commands
+## Architecture
 
-The `/agent` family of commands provides interactive control over sub-agents from the CLI and TUI chat input.
+Sub-agents run as in-process tokio tasks — not separate processes. The main agent communicates with them via lightweight primitives:
 
-### Command Reference
-
-| Command | Description |
-|---------|-------------|
-| `/agent list` | Show all loaded sub-agent definitions |
-| `/agent spawn <name> <prompt>` | Spawn a sub-agent in the background |
-| `/agent bg <name> <prompt>` | Alias for `spawn` |
-| `/agent status` | Show all active sub-agents with state, turns, and elapsed time |
-| `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
-| `/agent approve <id>` | Approve a pending permission request (not yet implemented) |
-| `/agent deny <id>` | Deny a pending permission request (not yet implemented) |
-
-### Usage Examples
-
-**List available sub-agent definitions:**
-
-```
-> /agent list
-Available sub-agents:
-  code-reviewer — Reviews code changes for correctness and style
-  test-writer — Generates unit tests for Rust modules
+```mermaid
+sequenceDiagram
+    participant M as SubAgentManager
+    participant S as Sub-Agent (tokio task)
+    M->>S: tokio::spawn(run_agent_loop)
+    S-->>M: watch::send(Working)
+    S-->>M: watch::send(Working, msg)
+    M->>S: CancellationToken::cancel()
+    S-->>M: watch::send(Completed)
+    S-->>M: JoinHandle.await → Result
 ```
 
-**Spawn a sub-agent:**
+| Primitive | Direction | Purpose |
+|-----------|-----------|---------|
+| `watch::channel` | Agent → Manager | Real-time status updates |
+| `JoinHandle` | Agent → Manager | Final result collection |
+| `CancellationToken` | Manager → Agent | Graceful cancellation |
+
+### `@mention` vs File References
+
+The TUI uses `@` for both sub-agent mentions and file references. Zeph resolves ambiguity by checking the token after `@` against known agent names:
 
 ```
-> /agent spawn code-reviewer Review the authentication module
-Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+@code-reviewer review src/main.rs   → sub-agent mention
+@src/main.rs                        → file reference
 ```
 
-**Check status of active sub-agents:**
+## API Reference
 
-```
-> /agent status
-Active sub-agents:
-  [a1b2c3d4] working  turns=3  elapsed=42s  Analyzing auth flow...
-```
-
-**Cancel a sub-agent by ID prefix:**
-
-```
-> /agent cancel a1b2
-Cancelled sub-agent a1b2c3d4-...
-```
-
-The `cancel` command accepts a prefix of the task UUID. If the prefix matches multiple agents, the command reports ambiguity and requires a longer prefix.
-
-**Ambiguous cancel:**
-
-```
-> /agent cancel a1
-Ambiguous id prefix 'a1': matches 2 agents
-```
-
-## `@mention` Syntax
-
-In addition to `/agent spawn`, sub-agents can be invoked with `@agent_name` mention syntax directly in the chat input:
-
-```
-> @code-reviewer check the authentication module
-Sub-agent 'code-reviewer' started (id: a1b2c3d4)
-```
-
-This is equivalent to `/agent spawn code-reviewer check the authentication module` but more concise.
-
-### Disambiguation from File References
-
-The TUI file picker also uses `@` as a trigger for fuzzy file search. `AgentCommand::parse()` resolves this ambiguity by checking the token after `@` against the list of loaded sub-agent definition names. If the token matches a known agent, it is treated as a mention; otherwise, parsing returns an error and the caller falls back to file-reference handling.
-
-```
-@code-reviewer review src/main.rs   -> sub-agent mention (code-reviewer is a known agent)
-@src/main.rs                        -> file reference (no matching agent name)
-```
-
-### AgentCommand Enum
-
-All `/agent` subcommands and `@mention` inputs are parsed into a typed `AgentCommand` enum via `AgentCommand::parse()`:
+For programmatic use, `SubAgentManager` provides the full lifecycle API:
 
 ```rust
-pub enum AgentCommand {
-    List,
-    Spawn { name: String, prompt: String },
-    Background { name: String, prompt: String },
-    Status,
-    Cancel { id: String },
-    Approve { id: String },
-    Deny { id: String },
-    Mention { agent: String, prompt: String },
-}
+let mut manager = SubAgentManager::new(/* max_concurrent */ 4);
+
+manager.load_definitions(&[
+    project_dir.join(".zeph/agents"),
+    dirs::config_dir().unwrap().join("zeph/agents"),
+])?;
+
+let task_id = manager.spawn("code-reviewer", "Review src/main.rs", provider, executor)?;
+let statuses = manager.statuses();
+manager.cancel(&task_id)?;
+let result = manager.collect(&task_id).await?;
 ```
 
-`parse()` accepts the raw input string and a slice of known agent names. It dispatches to `parse_mention()` when the input starts with `@`, and to `/agent` subcommand parsing otherwise. This centralizes command validation and eliminates string matching in the agent loop.
+| Method | Description |
+|--------|-------------|
+| `load_definitions(&[PathBuf])` | Load `.md` definitions (first-wins deduplication) |
+| `spawn(name, prompt, provider, executor)` | Spawn a sub-agent, returns task ID |
+| `cancel(task_id)` | Cancel and revoke all grants |
+| `collect(task_id)` | Await result and remove from active set |
+| `statuses()` | Snapshot of all active sub-agent states |
+| `approve_secret(task_id, key, ttl)` | Grant a vault secret after user approval |
+| `shutdown_all()` | Cancel all active sub-agents (used on exit) |
 
-## Safety Guarantees
+### Error Types
 
-- `SubAgentHandle::Drop` cancels the task and revokes all grants
-- `PermissionGrants::Drop` revokes remaining grants with a warning log
-- Concurrency limit prevents resource exhaustion
-- `timeout_secs` provides a hard kill deadline
-- `max_turns` prevents runaway LLM loops
-- Secret key names are redacted in `Display` and log output
+| Variant | When |
+|---------|------|
+| `Parse` | Invalid frontmatter or TOML |
+| `Invalid` | Validation failure (empty name, mutual exclusion) |
+| `NotFound` | Unknown definition name or task ID |
+| `Spawn` | Concurrency limit reached or task panic |
+| `Cancelled` | Sub-agent was cancelled |

@@ -12,13 +12,10 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_tools::executor::ErasedToolExecutor;
 
-use super::channel::{AgentHalf, OrchestratorHalf, new_channel};
 use super::def::SubAgentDef;
 use super::error::SubAgentError;
 use super::filter::FilteredToolExecutor;
 use super::grants::PermissionGrants;
-
-const CHANNEL_BUFFER: usize = 32;
 
 struct AgentLoopArgs {
     provider: AnyProvider,
@@ -29,7 +26,6 @@ struct AgentLoopArgs {
     cancel: CancellationToken,
     status_tx: watch::Sender<SubAgentStatus>,
     started_at: Instant,
-    _channel: AgentHalf,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -81,7 +77,6 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         cancel,
         status_tx,
         started_at,
-        _channel,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: TaskState::Working,
@@ -161,17 +156,13 @@ pub struct SubAgentStatus {
 pub struct SubAgentHandle {
     pub(crate) id: String,
     pub(crate) def: SubAgentDef,
-    /// A2A task ID — currently the same UUID as `id`; separated for future
-    /// compatibility when sub-agents may have distinct internal/external IDs.
+    /// Task ID (UUID). Currently the same as `id`; separated for future use.
     pub(crate) task_id: String,
     pub(crate) state: TaskState,
     pub(crate) join_handle: Option<JoinHandle<anyhow::Result<String>>>,
     pub(crate) cancel: CancellationToken,
     pub(crate) status_rx: watch::Receiver<SubAgentStatus>,
     pub(crate) grants: PermissionGrants,
-    /// Orchestrator-side channel half for communicating with the sub-agent.
-    #[allow(dead_code)]
-    pub(crate) channel: OrchestratorHalf,
 }
 
 impl std::fmt::Debug for SubAgentHandle {
@@ -294,7 +285,6 @@ impl SubAgentManager {
 
         let task_id = Uuid::new_v4().to_string();
         let cancel = CancellationToken::new();
-        let (orch_half, agent_half): (OrchestratorHalf, AgentHalf) = new_channel(CHANNEL_BUFFER);
 
         let started_at = Instant::now();
         let initial_status = SubAgentStatus {
@@ -321,7 +311,6 @@ impl SubAgentManager {
                 cancel: cancel_clone,
                 status_tx,
                 started_at,
-                _channel: agent_half,
             }));
 
         let handle = SubAgentHandle {
@@ -333,7 +322,6 @@ impl SubAgentManager {
             cancel,
             status_rx,
             grants: PermissionGrants::default(),
-            channel: orch_half,
         };
 
         self.agents.insert(task_id.clone(), handle);
