@@ -2401,6 +2401,353 @@ Connecting to example.com|93.184.216.34|:443...
         assert!(result.output.contains("lines omitted"));
     }
 
+    // --- behavior tests for remaining TOML rules ---
+
+    #[test]
+    fn git_log_filter_truncates_to_head20() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "git-log")
+            .expect("git-log rule missing");
+        assert!(f.matcher().matches("git log --oneline"));
+        assert!(!f.matcher().matches("git diff"));
+
+        let lines: Vec<String> = (0..30)
+            .map(|i| format!("abc{i:04} commit message {i}"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("git log --oneline", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("abc0000"));
+        assert!(result.output.contains("abc0019"));
+        assert!(!result.output.contains("abc0020"));
+    }
+
+    #[test]
+    fn git_push_filter_keeps_matching_lines() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "git-push")
+            .expect("git-push rule missing");
+        assert!(f.matcher().matches("git push origin main"));
+
+        let raw = "\
+Enumerating objects: 5, done.
+Counting objects: 100% (5/5), done.
+To github.com:user/repo.git
+   abc1234..def5678  main -> main
+Branch 'main' set up to track remote branch 'main' from 'origin'.
+";
+        let result = f.filter("git push origin main", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("->"));
+        assert!(result.output.contains("To github.com"));
+        assert!(result.output.contains("Branch"));
+        assert!(!result.output.contains("Enumerating"));
+        assert!(!result.output.contains("Counting"));
+    }
+
+    #[test]
+    fn ls_filter_strips_noise_dirs() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "ls")
+            .expect("ls rule missing");
+        assert!(f.matcher().matches("ls -la"));
+        assert!(f.matcher().matches("ls"));
+        assert!(!f.matcher().matches("lsblk"));
+
+        let raw = "src\nnode_modules\n.git\ntarget\n__pycache__\n.venv\nCargo.toml\nREADME.md";
+        let result = f.filter("ls", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("src"));
+        assert!(result.output.contains("Cargo.toml"));
+        assert!(!result.output.contains("node_modules"));
+        assert!(!result.output.contains(".git"));
+        assert!(!result.output.contains("target"));
+        assert!(!result.output.contains("__pycache__"));
+    }
+
+    #[test]
+    fn docker_build_filter_strips_step_lines() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "docker-build")
+            .expect("docker-build rule missing");
+        assert!(f.matcher().matches("docker build -t myapp ."));
+
+        let raw = "\
+Step 1/5 : FROM ubuntu:22.04
+ ---> a72860cb95fd
+Step 2/5 : RUN apt-get update
+Removing intermediate container b1c2d3e4f5a6
+Successfully built 1a2b3c4d5e6f
+Successfully tagged myapp:latest";
+        let result = f.filter("docker build -t myapp .", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("Successfully built"));
+        assert!(result.output.contains("Successfully tagged"));
+        assert!(!result.output.contains("Step 1/5"));
+        assert!(!result.output.contains("Removing intermediate container"));
+    }
+
+    #[test]
+    fn docker_compose_filter_strips_container_lines() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "docker-compose")
+            .expect("docker-compose rule missing");
+        assert!(f.matcher().matches("docker compose up -d"));
+
+        let raw = "\
+ Network myapp_default  Created
+ Container myapp_db_1  Creating
+ Container myapp_db_1  Created
+ Container myapp_web_1  Starting
+ Container myapp_web_1  Started
+All containers up";
+        let result = f.filter("docker compose up -d", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("All containers up"));
+        assert!(!result.output.contains("Network myapp_default  Created"));
+        assert!(!result.output.contains("Container myapp_db_1  Created"));
+    }
+
+    #[test]
+    fn npm_install_filter_strips_warn_notice() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "npm-install")
+            .expect("npm-install rule missing");
+        assert!(f.matcher().matches("npm install"));
+        assert!(f.matcher().matches("yarn add lodash"));
+        assert!(f.matcher().matches("pnpm install"));
+
+        let raw = "\
+npm warn deprecated pkg@1.0.0: Use newpkg instead
+npm notice created a lockfile
+added 120 packages in 3s
+up to date, audited 121 packages in 1s
+Packages successfully installed";
+        let result = f.filter("npm install", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("Packages successfully installed"));
+        assert!(!result.output.contains("npm warn"));
+        assert!(!result.output.contains("npm notice"));
+        assert!(!result.output.contains("added 120 packages"));
+        assert!(!result.output.contains("up to date"));
+    }
+
+    #[test]
+    fn pip_install_filter_strips_collecting_lines() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "pip-install")
+            .expect("pip-install rule missing");
+        assert!(f.matcher().matches("pip install requests"));
+        assert!(f.matcher().matches("pip3 install -r requirements.txt"));
+
+        let raw = "\
+  Collecting requests
+  Downloading requests-2.31.0-py3-none-any.whl (62 kB)
+  Installing collected packages: requests
+  Using cached certifi-2024.2.2-py3-none-any.whl
+Successfully installed requests-2.31.0";
+        let result = f.filter("pip install requests", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("Successfully installed"));
+        assert!(!result.output.contains("Collecting"));
+        assert!(!result.output.contains("Downloading"));
+        assert!(!result.output.contains("Using cached"));
+        assert!(!result.output.contains("Installing collected"));
+    }
+
+    #[test]
+    fn make_filter_truncates_long_output() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "make")
+            .expect("make rule missing");
+        assert!(f.matcher().matches("make all"));
+        assert!(f.matcher().matches("make -j4 build"));
+
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("gcc -o obj/file_{i}.o src/file_{i}.c"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("make all", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("file_0.o"));
+        assert!(result.output.contains("file_99.o"));
+    }
+
+    #[test]
+    fn pytest_filter_truncates_long_output() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "pytest")
+            .expect("pytest rule missing");
+        assert!(f.matcher().matches("pytest tests/"));
+        assert!(f.matcher().matches("python -m pytest -v"));
+
+        let lines: Vec<String> = (0..150)
+            .map(|i| format!("tests/test_module_{i}.py::test_fn PASSED"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("pytest tests/", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("test_module_0"));
+        assert!(result.output.contains("test_module_149"));
+    }
+
+    #[test]
+    fn go_test_filter_truncates_long_output() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "go-test")
+            .expect("go-test rule missing");
+        assert!(f.matcher().matches("go test ./..."));
+        assert!(f.matcher().matches("go test -v -run TestFoo ./pkg/..."));
+
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("--- PASS: TestFunc{i} (0.00s)"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("go test ./...", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("TestFunc0"));
+        assert!(result.output.contains("TestFunc99"));
+    }
+
+    #[test]
+    fn terraform_plan_filter_truncates_long_output() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "terraform-plan")
+            .expect("terraform-plan rule missing");
+        assert!(f.matcher().matches("terraform plan -out=tfplan"));
+        assert!(f.matcher().matches("terraform apply tfplan"));
+        assert!(!f.matcher().matches("terraform init"));
+
+        let lines: Vec<String> = (0..80)
+            .map(|i| format!("  + resource \"aws_instance\" \"web_{i}\" {{"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("terraform plan", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("web_0"));
+        assert!(result.output.contains("web_79"));
+    }
+
+    #[test]
+    fn kubectl_get_filter_truncates_long_output() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "kubectl-get")
+            .expect("kubectl-get rule missing");
+        assert!(f.matcher().matches("kubectl get pods -n default"));
+        assert!(f.matcher().matches("kubectl describe node worker-1"));
+        assert!(!f.matcher().matches("kubectl apply -f manifest.yaml"));
+
+        let lines: Vec<String> = (0..70)
+            .map(|i| format!("pod-{i:03}   1/1   Running   0   5d"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("kubectl get pods", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+        assert!(result.output.contains("pod-000"));
+        assert!(result.output.contains("pod-069"));
+    }
+
+    #[test]
+    fn brew_install_filter_strips_download_lines() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "brew-install")
+            .expect("brew-install rule missing");
+        assert!(f.matcher().matches("brew install ripgrep"));
+        assert!(f.matcher().matches("brew upgrade git"));
+        assert!(!f.matcher().matches("brew list"));
+
+        let raw = "\
+==> Downloading https://ghcr.io/v2/homebrew/core/ripgrep/manifests/14.1.0
+==> Fetching ripgrep
+==> Installing ripgrep
+==> Pouring ripgrep--14.1.0.arm64_sonoma.bottle.tar.gz
+Already downloaded: /Users/user/Library/Caches/Homebrew/ripgrep-14.1.0.bottle.tar.gz
+ripgrep installed successfully";
+        let result = f.filter("brew install ripgrep", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("ripgrep installed successfully"));
+        assert!(!result.output.contains("==> Downloading"));
+        assert!(!result.output.contains("==> Fetching"));
+        assert!(!result.output.contains("==> Pouring"));
+        assert!(!result.output.contains("Already downloaded"));
+    }
+
+    // --- edge case tests ---
+
+    #[test]
+    fn truncate_exactly_at_threshold_returns_fallback() {
+        let f = truncate_filter(10, 5, 5);
+        let lines: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        let raw = lines.join("\n");
+        let result = f.filter("cmd", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+        assert!(!result.output.contains("lines omitted"));
+    }
+
+    #[test]
+    fn dedup_cap_hit_reports_capped() {
+        let f = DeclarativeFilter {
+            name: "test-dedup-capped",
+            matcher: CommandMatcher::Prefix("journalctl"),
+            strategy: CompiledStrategy::Dedup {
+                normalize_patterns: vec![],
+                max_unique_patterns: 3,
+            },
+        };
+        // 6 unique lines → exceeds cap of 3
+        let raw = "line_a\nline_b\nline_c\nline_d\nline_e\nline_f";
+        let result = f.filter("journalctl", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("capped at 3"));
+    }
+
+    #[test]
+    fn strip_annotated_with_summary_pattern_but_no_summary_line() {
+        let f = strip_annotated_filter(&[r"^\s*Compiling "], Some(r"^\s*Finished "));
+        // Input has noise lines but no "Finished" summary line
+        let raw = "\
+    Compiling foo v1.0
+    Compiling bar v2.0
+error: build failed";
+        let result = f.filter("cargo build", raw, 0);
+        // Must not panic; noise was removed, so Full confidence expected
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("noise lines removed"));
+        assert!(result.output.contains("error: build failed"));
+    }
+
     use proptest::prelude::*;
 
     proptest! {
