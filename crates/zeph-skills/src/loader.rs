@@ -83,8 +83,23 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     let mut metadata = Vec::new();
     let mut allowed_tools = Vec::new();
     let mut requires_secrets = Vec::new();
+    let mut in_metadata = false;
 
     for line in yaml_str.lines() {
+        if in_metadata {
+            if line.starts_with("  ") || line.starts_with('\t') {
+                let trimmed = line.trim();
+                if let Some((k, v)) = trimmed.split_once(':') {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        metadata.push((k.trim().to_string(), v.to_string()));
+                    }
+                }
+                continue;
+            }
+            in_metadata = false;
+        }
+
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -95,14 +110,18 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
             match key {
                 "name" => name = Some(value),
                 "description" => description = Some(value),
-                "compatibility" => compatibility = Some(value),
-                "license" => license = Some(value),
+                "compatibility" => {
+                    if !value.is_empty() {
+                        compatibility = Some(value);
+                    }
+                }
+                "license" => {
+                    if !value.is_empty() {
+                        license = Some(value);
+                    }
+                }
                 "allowed-tools" => {
-                    allowed_tools = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                    allowed_tools = value.split_whitespace().map(ToString::to_string).collect();
                 }
                 "requires-secrets" => {
                     requires_secrets = value
@@ -110,6 +129,9 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
                         .map(|s| s.trim().to_lowercase().replace('-', "_"))
                         .filter(|s| !s.is_empty())
                         .collect();
+                }
+                "metadata" if value.is_empty() => {
+                    in_metadata = true;
                 }
                 _ => {
                     if !value.is_empty() {
@@ -203,6 +225,24 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         ))
     })?;
 
+    if description.len() > 1024 {
+        return Err(SkillError::Invalid(format!(
+            "description exceeds 1024 characters ({}) in {}",
+            description.len(),
+            path.display()
+        )));
+    }
+
+    if let Some(ref c) = raw.compatibility
+        && c.len() > 500
+    {
+        return Err(SkillError::Invalid(format!(
+            "compatibility exceeds 500 characters ({}) in {}",
+            c.len(),
+            path.display()
+        )));
+    }
+
     let skill_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
 
     let dir_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -234,6 +274,14 @@ pub fn load_skill_body(meta: &SkillMeta) -> Result<String, SkillError> {
 
     let (_yaml_str, body) = split_frontmatter(&content)
         .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
+
+    if body.len() > 20_000 {
+        tracing::warn!(
+            skill = %meta.name,
+            bytes = body.len(),
+            "skill body exceeds 20000 bytes; consider trimming to stay within ~5000 token budget"
+        );
+    }
 
     Ok(body.to_string())
 }
@@ -354,7 +402,7 @@ mod tests {
         let path = write_skill(
             dir.path(),
             "my-skill",
-            "---\nname: my-skill\ndescription: desc\ncompatibility: linux\nlicense: MIT\nallowed-tools: bash, python\ncustom-key: custom-value\n---\nbody",
+            "---\nname: my-skill\ndescription: desc\ncompatibility: linux\nlicense: MIT\nallowed-tools: bash python\ncustom-key: custom-value\n---\nbody",
         );
 
         let meta = load_skill_meta(&path).unwrap();
@@ -365,6 +413,88 @@ mod tests {
             meta.metadata,
             vec![("custom-key".into(), "custom-value".into())]
         );
+    }
+
+    #[test]
+    fn allowed_tools_with_parens() {
+        let raw = parse_frontmatter("allowed-tools: Bash(git:*) Bash(jq:*) Read\n");
+        assert_eq!(raw.allowed_tools, vec!["Bash(git:*)", "Bash(jq:*)", "Read"]);
+    }
+
+    #[test]
+    fn allowed_tools_empty() {
+        let raw = parse_frontmatter("allowed-tools:\n");
+        assert!(raw.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn metadata_nested_block() {
+        let yaml = "metadata:\n  author: example-org\n  version: \"1.0\"\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.metadata,
+            vec![
+                ("author".into(), "example-org".into()),
+                ("version".into(), "\"1.0\"".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_nested_with_other_fields() {
+        let yaml = "name: my-skill\nmetadata:\n  author: example-org\nlicense: MIT\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+        assert_eq!(raw.license.as_deref(), Some("MIT"));
+        assert_eq!(raw.metadata, vec![("author".into(), "example-org".into())]);
+    }
+
+    #[test]
+    fn metadata_flat_still_works() {
+        let yaml = "custom-key: custom-value\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.metadata,
+            vec![("custom-key".into(), "custom-value".into())]
+        );
+    }
+
+    #[test]
+    fn description_exceeds_max_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let desc = "a".repeat(1025);
+        let path = write_skill(
+            dir.path(),
+            "my-skill",
+            &format!("---\nname: my-skill\ndescription: {desc}\n---\nbody"),
+        );
+        let err = load_skill_meta(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("description exceeds 1024 characters"));
+    }
+
+    #[test]
+    fn description_at_max_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let desc = "a".repeat(1024);
+        let path = write_skill(
+            dir.path(),
+            "my-skill",
+            &format!("---\nname: my-skill\ndescription: {desc}\n---\nbody"),
+        );
+        assert!(load_skill_meta(&path).is_ok());
+    }
+
+    #[test]
+    fn compatibility_exceeds_max_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let compat = "a".repeat(501);
+        let path = write_skill(
+            dir.path(),
+            "my-skill",
+            &format!("---\nname: my-skill\ndescription: desc\ncompatibility: {compat}\n---\nbody"),
+        );
+        let err = load_skill_meta(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("compatibility exceeds 500 characters"));
     }
 
     #[test]
@@ -523,5 +653,41 @@ mod tests {
         );
         let meta = load_skill_meta(&path).unwrap();
         assert_eq!(meta.requires_secrets, vec!["my_api_key", "another_token"]);
+    }
+
+    #[test]
+    fn empty_compatibility_produces_none() {
+        let raw = parse_frontmatter("compatibility:\n");
+        assert!(raw.compatibility.is_none());
+    }
+
+    #[test]
+    fn empty_license_produces_none() {
+        let raw = parse_frontmatter("license:\n");
+        assert!(raw.license.is_none());
+    }
+
+    #[test]
+    fn nonempty_compatibility_produces_some() {
+        let raw = parse_frontmatter("compatibility: linux\n");
+        assert_eq!(raw.compatibility.as_deref(), Some("linux"));
+    }
+
+    #[test]
+    fn metadata_value_with_colon() {
+        let yaml = "metadata:\n  url: https://example.com\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.metadata,
+            vec![("url".into(), "https://example.com".into())]
+        );
+    }
+
+    #[test]
+    fn metadata_empty_block() {
+        let yaml = "metadata:\nname: my-skill\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.metadata.is_empty());
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
     }
 }

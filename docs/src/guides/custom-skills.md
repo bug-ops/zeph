@@ -32,7 +32,7 @@ into the LLM context when the skill is matched.
 | `name` | Yes | Unique identifier (1-64 chars, lowercase, hyphens allowed) |
 | `description` | Yes | Used for embedding-based matching against user queries |
 | `compatibility` | No | Runtime requirements (e.g., "requires curl") |
-| `allowed-tools` | No | Comma-separated tool names this skill can use |
+| `allowed-tools` | No | Space-separated tool names this skill can use |
 | `requires-secrets` | No | Comma-separated secret names the skill needs (see below) |
 
 ### Secret-Gated Skills

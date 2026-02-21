@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
+
 ### Added
+- Nested `metadata:` block support in SKILL.md frontmatter: indented key-value pairs under `metadata:` are parsed as structured metadata (#686)
+- Field length validation in SKILL.md loader: `description` capped at 1024 characters, `compatibility` capped at 500 characters (#686)
+- Warning log in `load_skill_body()` when body exceeds 20,000 bytes (~5000 tokens) per spec recommendation (#686)
+- Empty value normalization for `compatibility` and `license` frontmatter fields: bare `compatibility:` now produces `None` instead of `Some("")` (#686)
 - `SkillManager` in zeph-skills — install skills from git URLs or local paths, remove, verify blake3 integrity, list with trust metadata
 - CLI subcommands: `zeph skill {install, remove, list, verify, trust, block, unblock}` — runs without agent loop
 - In-session `/skill install <url|path>` and `/skill remove <name>` with hot reload
