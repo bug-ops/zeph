@@ -251,6 +251,11 @@ impl SubAgentManager {
         &self.definitions
     }
 
+    /// Return mutable access to definitions, for testing and dynamic registration.
+    pub fn definitions_mut(&mut self) -> &mut Vec<SubAgentDef> {
+        &mut self.definitions
+    }
+
     /// Spawn a sub-agent by definition name with real background execution.
     ///
     /// Returns the `task_id` (UUID string) that can be used with [`cancel`](Self::cancel)

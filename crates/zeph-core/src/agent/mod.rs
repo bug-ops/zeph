@@ -2267,4 +2267,144 @@ pub(super) mod agent_tests {
         let sent = agent.channel.sent_messages();
         assert!(sent.iter().any(|m| m.contains("Image loaded")));
     }
+
+    // ── handle_agent_command tests ────────────────────────────────────────────
+
+    fn make_agent_with_manager() -> Agent<MockChannel> {
+        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::{SubAgentDef, SubAgentManager};
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "helper".into(),
+            description: "A helper bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are helpful.".into(),
+        });
+        agent.subagent_manager = Some(mgr);
+        agent
+    }
+
+    #[test]
+    fn agent_command_no_manager_returns_none() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // no subagent_manager set
+        assert!(agent.handle_agent_command("/agent list").is_none());
+    }
+
+    #[test]
+    fn agent_command_no_args_returns_usage() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent").unwrap();
+        assert!(resp.contains("Usage"));
+    }
+
+    #[test]
+    fn agent_command_list_returns_definitions() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent list").unwrap();
+        assert!(resp.contains("helper"));
+        assert!(resp.contains("A helper bot"));
+    }
+
+    #[test]
+    fn agent_command_spawn_missing_args_returns_usage() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent spawn helper").unwrap();
+        assert!(resp.contains("Usage"));
+    }
+
+    #[test]
+    fn agent_command_spawn_unknown_name_returns_error() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent
+            .handle_agent_command("/agent spawn unknown-bot do something")
+            .unwrap();
+        assert!(resp.contains("Failed to spawn"));
+    }
+
+    #[test]
+    fn agent_command_spawn_known_name_returns_started() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut agent = make_agent_with_manager();
+        let resp = agent
+            .handle_agent_command("/agent spawn helper do some work")
+            .unwrap();
+        assert!(resp.contains("helper"));
+        assert!(resp.contains("started"));
+    }
+
+    #[test]
+    fn agent_command_status_no_agents_returns_empty_message() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent status").unwrap();
+        assert!(resp.contains("No active sub-agents"));
+    }
+
+    #[test]
+    fn agent_command_cancel_no_args_returns_usage() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent cancel").unwrap();
+        assert!(resp.contains("Usage"));
+    }
+
+    #[test]
+    fn agent_command_cancel_unknown_id_returns_not_found() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent
+            .handle_agent_command("/agent cancel deadbeef")
+            .unwrap();
+        assert!(resp.contains("No sub-agent"));
+    }
+
+    #[test]
+    fn agent_command_cancel_valid_id_succeeds() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut agent = make_agent_with_manager();
+        // spawn first so we have a task to cancel
+        let spawn_resp = agent
+            .handle_agent_command("/agent spawn helper cancel this")
+            .unwrap();
+        // extract short id from "started (id: XXXXXXXX)"
+        let short_id = spawn_resp
+            .split("id: ")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(')')
+            .trim()
+            .to_string();
+        let resp = agent
+            .handle_agent_command(&format!("/agent cancel {short_id}"))
+            .unwrap();
+        assert!(resp.contains("Cancelled"));
+    }
+
+    #[test]
+    fn agent_command_unknown_subcommand_returns_error() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent frobnicate").unwrap();
+        assert!(resp.contains("Unknown /agent subcommand"));
+    }
+
+    #[test]
+    fn agent_command_approve_returns_not_implemented() {
+        let mut agent = make_agent_with_manager();
+        let resp = agent.handle_agent_command("/agent approve abc123").unwrap();
+        assert!(resp.contains("not yet implemented"));
+    }
 }
