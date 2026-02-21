@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 
-Core agent loop, configuration, context builder, metrics, and vault for Zeph.
+Core agent loop, configuration, context builder, metrics, vault, and sub-agent orchestration for Zeph.
 
 ## Overview
 
-Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. All other workspace crates are coordinated through `zeph-core`.
+Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, filtered tool/skill access, and A2A-based in-process communication channels. All other workspace crates are coordinated through `zeph-core`.
 
 ## Key modules
 
@@ -33,6 +33,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection |
 | `diff` | Diff rendering utilities |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
+| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels |
 
 **Re-exports:** `Agent`
 

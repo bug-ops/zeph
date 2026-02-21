@@ -231,6 +231,7 @@ flowchart TD
 | **Rate limiter** | TTL-based eviction, per-IP limits on gateway |
 | **Doom-loop detection** | Runaway tool cycles (3 identical outputs = break) |
 | **Skill trust quarantine** | 4-tier model (Trusted/Verified/Quarantined/Blocked) with blake3 integrity |
+| **Sub-agent sandboxing** | Zero-trust permission grants: each sub-agent receives only explicitly delegated tools, skills, and secrets |
 | **Container scanning** | Trivy in CI — 0 HIGH/CRITICAL CVEs |
 
 [Security model →](https://bug-ops.github.io/zeph/reference/security.html) · [MCP security →](https://bug-ops.github.io/zeph/reference/security/mcp.html)
@@ -288,6 +289,7 @@ Skills can declare **required secrets** via the `x-requires-secrets` frontmatter
 |----------|-------------|
 | **MCP** | Connect external tool servers (stdio + HTTP) with SSRF protection, command allowlist, and env var blocklist |
 | **A2A** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming |
+| **Sub-agent orchestration** | Spawn scoped sub-agents with zero-trust permissions, filtered tools/skills, and A2A-based in-process channels |
 | **Audio input** | Speech-to-text via OpenAI Whisper API or local Candle Whisper (offline, feature-gated); Telegram and Slack audio files transcribed automatically |
 | **Vision** | Image input via CLI (`/image`), TUI (`/image`), and Telegram photo messages; supported by Claude, OpenAI, and Ollama providers (20 MB max, automatic MIME detection) |
 | **Channels** | CLI (with persistent input history), Telegram (text + voice), Discord, Slack, TUI — all with streaming support |

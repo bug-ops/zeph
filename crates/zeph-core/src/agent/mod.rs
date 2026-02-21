@@ -153,6 +153,8 @@ pub struct Agent<C: Channel> {
     cached_prompt_tokens: u64,
     stt: Option<Box<dyn SpeechToText>>,
     update_notify_rx: Option<mpsc::Receiver<String>>,
+    #[allow(dead_code)]
+    pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -253,6 +255,7 @@ impl<C: Channel> Agent<C> {
             cached_prompt_tokens: initial_prompt_tokens,
             stt: None,
             update_notify_rx: None,
+            subagent_manager: None,
         }
     }
 

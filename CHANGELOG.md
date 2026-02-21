@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ReDoS protection: RegexBuilder with size_limit, 512-char pattern cap, 1 MiB file size limit
 - Dedup strategy with configurable normalization patterns and HashMap pre-allocation
 - NormalizeEntry replacement validation (rejects unescaped `$` capture group refs)
+- Sub-agent orchestration system with A2A protocol integration (#709)
+- Sub-agent definition format with TOML frontmatter parser (#710)
+- `SubAgentManager` with spawn/cancel/collect lifecycle (#711)
+- Tool filtering (AllowList/DenyList/InheritAll) and skill filtering with glob patterns (#712)
+- Zero-trust permission model with TTL-based grants and automatic revocation (#713)
+- In-process A2A channels for orchestrator-to-sub-agent communication
+- `PermissionGrants` with audit trail via tracing
 
 ### Changed
 - Migrated all 6 hardcoded filters (cargo_build, test_output, clippy, git, dir_listing, log_dedup) into the declarative TOML engine

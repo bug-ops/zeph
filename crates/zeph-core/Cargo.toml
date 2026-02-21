@@ -36,6 +36,8 @@ tokio-util.workspace = true
 tokio-stream.workspace = true
 toml.workspace = true
 tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zeph-a2a.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
 zeph-mcp.workspace = true
