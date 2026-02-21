@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Declarative TOML-based output filter engine with `strip_noise` and `truncate` strategies
+- Embedded `default-filters.toml` with 10 pre-configured rules for common CLI tools (docker, npm, pip, make, pytest, go test, terraform, kubectl, brew)
+- `filters_path` option in `FilterConfig` for user-provided filter rules override
+- RegexBuilder with size_limit and pattern length cap for ReDoS protection
+
 ## [0.11.4] - 2026-02-21
 
 ### Added

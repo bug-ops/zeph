@@ -143,6 +143,8 @@ Raw tool output is the #1 context window polluter. A `cargo test` run produces 3
 | **Directory** | Hide noise dirs (target, node_modules, .git) | 60-80% |
 | **Log dedup** | Normalize timestamps/UUIDs, count repeats | 70-85% |
 
+Additional tools (Docker, npm/yarn/pnpm, pip, Make, pytest, Go test, Terraform, kubectl, Homebrew) are covered by **declarative TOML-based filter rules** with `strip_noise` and `truncate` strategies. 10 built-in rules ship embedded; drop a custom `filters.toml` next to your config to add or override rules without code changes.
+
 Per-command stats shown inline, so you see exactly what was saved:
 
 ```

@@ -157,11 +157,74 @@ In CLI mode, after each filtered tool execution a one-line summary is printed to
 
 This appears only when lines were actually removed. It lets you verify the filter is working and estimate token savings without opening the TUI.
 
+### Declarative Filters
+
+In addition to the built-in filters above, you can define custom filter rules in a `filters.toml` file. Rules are loaded at startup and compiled into the same pipeline alongside the built-in filters.
+
+When no user file is present, Zeph uses embedded defaults that cover common noisy commands (`docker build`, `npm install`, `pip install`, `make`, `pytest`, `go test`, `terraform`, `kubectl`, `brew`).
+
+To override, place a `filters.toml` next to your `config.toml` or set `filters_path`:
+
+```toml
+[tools.filters]
+filters_path = "/path/to/my/filters.toml"
+```
+
+#### Rule format
+
+Each rule has a `name`, a `match` block, and a `strategy` block:
+
+```toml
+[[rules]]
+name = "docker-build"
+match = { prefix = "docker build" }
+strategy = { type = "strip_noise", patterns = [
+  "^Step \\d+/\\d+ : ",
+  "^ ---> [a-f0-9]+$",
+  "^Removing intermediate container",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "make"
+match = { prefix = "make" }
+strategy = { type = "truncate", max_lines = 80, head = 15, tail = 15 }
+
+[[rules]]
+name = "npm-install"
+match = { regex = "^(npm|yarn|pnpm)\\s+(install|ci|add)" }
+strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
+enabled = false  # disable without removing
+```
+
+#### Match types
+
+| Field | Description |
+|-------|-------------|
+| `exact` | Matches the command string exactly |
+| `prefix` | Matches if the command starts with the value |
+| `regex` | Matches the command against a regex (max 512 chars) |
+
+Exactly one of `exact`, `prefix`, or `regex` must be set.
+
+#### Strategies
+
+**`strip_noise`** — removes lines matching any of the provided regex patterns. Reports `Full` confidence when lines were removed, `Fallback` otherwise.
+
+**`truncate`** — keeps the first `head` lines and last `tail` lines when output exceeds `max_lines`. Reports `Partial` confidence when truncation occurs. Defaults: `head = 20`, `tail = 20`.
+
+#### Safety limits
+
+- `filters.toml` files larger than 1 MiB are rejected (falls back to defaults).
+- Regex patterns longer than 512 characters are rejected.
+- Invalid rules are skipped with a warning; valid rules in the same file still load.
+
 ### Configuration
 
 ```toml
 [tools.filters]
 enabled = true            # Master switch (default: true)
+filters_path = ""         # Custom filters.toml path (default: config dir)
 
 [tools.filters.test]
 enabled = true

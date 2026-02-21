@@ -20,7 +20,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `file` | File operation executor |
 | `scrape` | Web scraping executor with SSRF protection (post-DNS private IP validation, pinned address client) |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
-| `filter` | Output filtering pipeline |
+| `filter` | Output filtering pipeline — built-in command-aware filters plus declarative TOML-based rules (`strip_noise`, `truncate`) with 10 embedded defaults; user-configurable via `filters.toml` |
 | `permissions` | Permission checks for tool invocation |
 | `audit` | `AuditLogger` — tool execution audit trail |
 | `registry` | Tool registry and discovery |
