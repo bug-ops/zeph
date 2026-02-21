@@ -33,24 +33,24 @@ into the LLM context when the skill is matched.
 | `description` | Yes | Used for embedding-based matching against user queries |
 | `compatibility` | No | Runtime requirements (e.g., "requires curl") |
 | `allowed-tools` | No | Space-separated tool names this skill can use |
-| `requires-secrets` | No | Comma-separated secret names the skill needs (see below) |
+| `x-requires-secrets` | No | Comma-separated secret names the skill needs (see below) |
 
 ### Secret-Gated Skills
 
-If a skill requires API credentials or tokens, declare them with `requires-secrets`:
+If a skill requires API credentials or tokens, declare them with `x-requires-secrets`:
 
 ```markdown
 ---
 name: github-api
 description: GitHub API integration — search repos, create issues, review PRs.
-requires-secrets: github-token, github-org
+x-requires-secrets: github-token, github-org
 ---
 ```
 
 Secret names use lowercase with hyphens. They map to vault keys with the `ZEPH_SECRET_` prefix:
 
-| `requires-secrets` name | Vault key | Env var injected |
-|------------------------|-----------|-----------------|
+| `x-requires-secrets` name | Vault key | Env var injected |
+|--------------------------|-----------|-----------------|
 | `github-token` | `ZEPH_SECRET_GITHUB_TOKEN` | `GITHUB_TOKEN` |
 | `github-org` | `ZEPH_SECRET_GITHUB_ORG` | `GITHUB_ORG` |
 

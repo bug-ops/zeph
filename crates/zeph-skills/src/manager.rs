@@ -610,7 +610,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: api-skill\ndescription: Needs secrets.\nrequires-secrets: github_token, slack_webhook\n---\n# Body\nHello",
+            "---\nname: api-skill\ndescription: Needs secrets.\nx-requires-secrets: github_token, slack_webhook\n---\n# Body\nHello",
         )
         .unwrap();
 

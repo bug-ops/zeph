@@ -1547,7 +1547,7 @@ mod tests {
         std::fs::create_dir(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: gh-skill\ndescription: GitHub.\nrequires-secrets: github_token\n---\nbody",
+            "---\nname: gh-skill\ndescription: GitHub.\nx-requires-secrets: github_token\n---\nbody",
         )
         .unwrap();
         let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
@@ -1587,7 +1587,7 @@ mod tests {
         std::fs::create_dir(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: tok-skill\ndescription: Token.\nrequires-secrets: api_token\n---\nbody",
+            "---\nname: tok-skill\ndescription: Token.\nx-requires-secrets: api_token\n---\nbody",
         )
         .unwrap();
         let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Body sanitization applied automatically to all non-`Trusted` skills in `format_skills_prompt()` (#689)
 
 ### Changed
+- `requires-secrets` SKILL.md frontmatter field renamed to `x-requires-secrets` to follow JSON Schema vendor extension convention and avoid future spec collisions — **breaking change**: update skill frontmatter to use `x-requires-secrets`; the old `requires-secrets` form is still parsed with a deprecation warning (#688)
 - `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
 
 ### Added

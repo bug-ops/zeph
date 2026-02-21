@@ -35,9 +35,9 @@ zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_yourtokenhere
 zeph vault set ZEPH_SECRET_STRIPE_KEY sk_live_...
 ```
 
-Skills declare which secrets they require via `requires-secrets` in their frontmatter. Skills with unsatisfied secrets are excluded from the prompt automatically — they will not be matched or executed until the secret is available.
+Skills declare which secrets they require via `x-requires-secrets` in their frontmatter. Skills with unsatisfied secrets are excluded from the prompt automatically — they will not be matched or executed until the secret is available.
 
-When a skill with `requires-secrets` is active, its secrets are injected as environment variables into shell commands it runs. The prefix is stripped and the name is uppercased:
+When a skill with `x-requires-secrets` is active, its secrets are injected as environment variables into shell commands it runs. The prefix is stripped and the name is uppercased:
 
 | Vault key | Env var injected |
 |-----------|-----------------|

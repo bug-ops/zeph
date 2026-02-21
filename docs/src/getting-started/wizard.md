@@ -56,7 +56,7 @@ Skip this step if you do not plan to run Zeph in headless mode.
 
 If the `age` vault backend was selected, the wizard offers to add custom secrets for skill authentication.
 
-When prompted, enter a secret name and value. The wizard stores each secret with the `ZEPH_SECRET_` prefix in the vault. If any installed skills declare `requires-secrets`, the wizard lists them so you know which keys to provide.
+When prompted, enter a secret name and value. The wizard stores each secret with the `ZEPH_SECRET_` prefix in the vault. If any installed skills declare `x-requires-secrets`, the wizard lists them so you know which keys to provide.
 
 Skip this step if your skills do not require external API credentials.
 

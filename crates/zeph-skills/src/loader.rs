@@ -73,6 +73,8 @@ struct RawFrontmatter {
     metadata: Vec<(String, String)>,
     allowed_tools: Vec<String>,
     requires_secrets: Vec<String>,
+    /// Whether `requires-secrets` (deprecated) was used instead of `x-requires-secrets`.
+    deprecated_requires_secrets: bool,
 }
 
 fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
@@ -83,6 +85,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     let mut metadata = Vec::new();
     let mut allowed_tools = Vec::new();
     let mut requires_secrets = Vec::new();
+    let mut deprecated_requires_secrets = false;
     let mut in_metadata = false;
 
     for line in yaml_str.lines() {
@@ -123,12 +126,24 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
                 "allowed-tools" => {
                     allowed_tools = value.split_whitespace().map(ToString::to_string).collect();
                 }
-                "requires-secrets" => {
+                "x-requires-secrets" => {
                     requires_secrets = value
                         .split(',')
                         .map(|s| s.trim().to_lowercase().replace('-', "_"))
                         .filter(|s| !s.is_empty())
                         .collect();
+                }
+                "requires-secrets" => {
+                    deprecated_requires_secrets = true;
+                    // Only apply if x-requires-secrets was not already parsed.
+                    // The canonical x-requires-secrets always wins over the deprecated form.
+                    if requires_secrets.is_empty() {
+                        requires_secrets = value
+                            .split(',')
+                            .map(|s| s.trim().to_lowercase().replace('-', "_"))
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
                 }
                 "metadata" if value.is_empty() => {
                     in_metadata = true;
@@ -150,6 +165,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         metadata,
         allowed_tools,
         requires_secrets,
+        deprecated_requires_secrets,
     }
 }
 
@@ -249,6 +265,13 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
 
     validate_skill_name(&name, dir_name)
         .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
+
+    if raw.deprecated_requires_secrets {
+        tracing::warn!(
+            "'requires-secrets' is deprecated, use 'x-requires-secrets' in {}",
+            path.display()
+        );
+    }
 
     Ok(SkillMeta {
         name,
@@ -626,15 +649,36 @@ mod tests {
     }
 
     #[test]
-    fn requires_secrets_parsed_from_frontmatter() {
+    fn x_requires_secrets_parsed_from_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "github-api",
+            "---\nname: github-api\ndescription: GitHub integration.\nx-requires-secrets: github-token, github-org\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.requires_secrets, vec!["github_token", "github_org"]);
+    }
+
+    #[test]
+    fn requires_secrets_deprecated_backward_compat() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_skill(
             dir.path(),
             "github-api",
             "---\nname: github-api\ndescription: GitHub integration.\nrequires-secrets: github-token, github-org\n---\nbody",
         );
+        // Old form still works (backward compat), but emits a deprecation warning.
         let meta = load_skill_meta(&path).unwrap();
         assert_eq!(meta.requires_secrets, vec!["github_token", "github_org"]);
+    }
+
+    #[test]
+    fn x_requires_secrets_takes_precedence_over_deprecated() {
+        // When both are present, x-requires-secrets wins regardless of order.
+        let raw = parse_frontmatter("x-requires-secrets: key_a\nrequires-secrets: key_b\n");
+        assert_eq!(raw.requires_secrets, vec!["key_a"]);
+        assert!(raw.deprecated_requires_secrets);
     }
 
     #[test]

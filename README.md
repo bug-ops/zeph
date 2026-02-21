@@ -269,7 +269,7 @@ Skills **evolve**: failure detection triggers self-reflection, and the agent gen
 
 **External skill management**: install, remove, verify, and control trust for skills via `zeph skill` CLI subcommands or in-session `/skill install` and `/skill remove` commands with automatic hot-reload. Managed skills are stored in `~/.config/zeph/skills/`.
 
-Skills can declare **required secrets** via the `requires-secrets` frontmatter field. Zeph resolves each named secret from the vault and injects it as an environment variable scoped to tool execution for that skill — no hardcoded credentials, no secret leakage across skills. Store custom secrets under the `ZEPH_SECRET_<NAME>` key; the `zeph init` wizard includes a dedicated step for this.
+Skills can declare **required secrets** via the `x-requires-secrets` frontmatter field. Zeph resolves each named secret from the vault and injects it as an environment variable scoped to tool execution for that skill — no hardcoded credentials, no secret leakage across skills. Store custom secrets under the `ZEPH_SECRET_<NAME>` key; the `zeph init` wizard includes a dedicated step for this.
 
 [Self-learning →](https://bug-ops.github.io/zeph/guide/self-learning.html) · [Skill trust →](https://bug-ops.github.io/zeph/guide/skill-trust.html)
 
