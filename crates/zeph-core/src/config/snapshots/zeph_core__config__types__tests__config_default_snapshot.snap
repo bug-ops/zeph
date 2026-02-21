@@ -83,28 +83,6 @@ destination = "stdout"
 [tools.filters]
 enabled = true
 
-[tools.filters.test]
-enabled = true
-max_failures = 10
-truncate_stack_trace = 50
-
-[tools.filters.git]
-enabled = true
-max_log_entries = 20
-max_diff_lines = 500
-
-[tools.filters.clippy]
-enabled = true
-
-[tools.filters.cargo_build]
-enabled = true
-
-[tools.filters.dir_listing]
-enabled = true
-
-[tools.filters.log_dedup]
-enabled = true
-
 [tools.filters.security]
 enabled = true
 extra_patterns = []

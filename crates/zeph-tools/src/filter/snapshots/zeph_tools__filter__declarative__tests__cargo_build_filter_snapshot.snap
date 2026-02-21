@@ -1,9 +1,9 @@
 ---
-source: crates/zeph-tools/src/filter/cargo_build.rs
+source: crates/zeph-tools/src/filter/declarative.rs
 expression: result.output
 ---
 Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s
-(4 compile/fetch lines removed)
+(4 noise lines removed)
 
 warning: unused import: `std::fmt`
   --> crates/zeph-core/src/lib.rs:3:5

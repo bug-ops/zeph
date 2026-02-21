@@ -1,6 +1,91 @@
 # Default declarative filter rules (embedded fallback).
 # User can override by placing filters.toml next to config.toml.
 
+# --- Cargo ecosystem ---
+
+[[rules]]
+name = "cargo-build"
+match = { regex = "^cargo\\s+(?!test\\b|nextest\\b|clippy\\b)" }
+strategy = { type = "strip_annotated", patterns = [
+  "^\\s*Compiling ",
+  "^\\s*Downloading ",
+  "^\\s*Downloaded ",
+  "^\\s*Updating ",
+  "^\\s*Fetching ",
+  "^\\s*Fresh ",
+  "^\\s*Packaging ",
+  "^\\s*Verifying ",
+  "^\\s*Archiving ",
+  "^\\s*Locking ",
+  "^\\s*Adding ",
+  "^\\s*Removing ",
+  "^\\s*Checking ",
+  "^\\s*Documenting ",
+  "^\\s*Running ",
+  "^\\s*Loaded ",
+  "^\\s*Blocking ",
+  "^\\s*Unpacking ",
+], summary_pattern = "^\\s*Finished " }
+
+[[rules]]
+name = "cargo-test"
+match = { regex = "^cargo\\s+(\\+\\S+\\s+)?(test|nextest)" }
+strategy = { type = "test_summary", max_failures = 10, truncate_stack_trace = 50 }
+
+[[rules]]
+name = "cargo-clippy"
+match = { regex = "^cargo\\s+(\\+\\S+\\s+)?clippy" }
+strategy = { type = "group_by_rule", location_pattern = "^\\s*-->\\s*(.+:\\d+)", rule_pattern = "#\\[warn\\(([^)]+)\\)\\]" }
+
+# --- Git ---
+
+[[rules]]
+name = "git-status"
+match = { regex = "^git\\s+status" }
+strategy = { type = "git_status" }
+
+[[rules]]
+name = "git-diff"
+match = { regex = "^git\\s+diff" }
+strategy = { type = "git_diff", max_diff_lines = 500 }
+
+[[rules]]
+name = "git-log"
+match = { regex = "^git\\s+log" }
+strategy = { type = "truncate", max_lines = 20, head = 20, tail = 0 }
+
+[[rules]]
+name = "git-push"
+match = { regex = "^git\\s+push" }
+strategy = { type = "keep_matching", patterns = ["->", "^To ", "^Branch"] }
+
+# --- Directory listing ---
+
+[[rules]]
+name = "ls"
+match = { regex = "^ls(\\s|$)" }
+strategy = { type = "strip_annotated", patterns = [
+  "node_modules",
+  "^target$",
+  "^\\.git$",
+  "__pycache__",
+  "^\\.venv$",
+  "^venv$",
+  "^dist$",
+  "^build$",
+  "^\\.next$",
+  "^\\.cache$",
+] }
+
+# --- Log deduplication ---
+
+[[rules]]
+name = "log-dedup"
+match = { regex = "(journalctl|tail -f|docker logs|cat .+\\.log)" }
+strategy = { type = "dedup" }
+
+# --- External tools ---
+
 [[rules]]
 name = "docker-build"
 match = { prefix = "docker build" }

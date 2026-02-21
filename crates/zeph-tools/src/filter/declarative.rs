@@ -1,8 +1,9 @@
 //! Declarative TOML-based output filter engine.
 //!
 //! Loads filter rules from a TOML file and compiles them into [`OutputFilter`]
-//! implementations at startup. Supports `strip_noise` and `truncate` strategies.
+//! implementations at startup.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -42,6 +43,69 @@ pub(crate) struct MatchConfig {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct NormalizeEntry {
+    pub pattern: String,
+    pub replacement: String,
+}
+
+fn default_head() -> usize {
+    20
+}
+
+fn default_tail() -> usize {
+    20
+}
+
+fn default_long_threshold() -> usize {
+    30
+}
+
+fn default_keep_head() -> usize {
+    10
+}
+
+fn default_keep_tail() -> usize {
+    5
+}
+
+fn default_max_failures() -> usize {
+    10
+}
+
+fn default_truncate_stack_trace() -> usize {
+    50
+}
+
+fn default_max_diff_lines() -> usize {
+    500
+}
+
+fn default_max_unique() -> usize {
+    10_000
+}
+
+fn default_normalize_patterns() -> Vec<NormalizeEntry> {
+    vec![
+        NormalizeEntry {
+            pattern: r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}([.\d]*)?([Z+-][\d:]*)?".into(),
+            replacement: "<TS>".into(),
+        },
+        NormalizeEntry {
+            pattern: r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}".into(),
+            replacement: "<UUID>".into(),
+        },
+        NormalizeEntry {
+            pattern: r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}".into(),
+            replacement: "<IP>".into(),
+        },
+        NormalizeEntry {
+            pattern: r"(?:port|pid|PID)[=: ]+\d+".into(),
+            replacement: "<N>".into(),
+        },
+    ]
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum StrategyConfig {
     StripNoise {
@@ -54,14 +118,41 @@ pub(crate) enum StrategyConfig {
         #[serde(default = "default_tail")]
         tail: usize,
     },
-}
-
-fn default_head() -> usize {
-    20
-}
-
-fn default_tail() -> usize {
-    20
+    KeepMatching {
+        patterns: Vec<String>,
+    },
+    StripAnnotated {
+        patterns: Vec<String>,
+        #[serde(default)]
+        summary_pattern: Option<String>,
+        #[serde(default = "default_long_threshold")]
+        long_output_threshold: usize,
+        #[serde(default = "default_keep_head")]
+        keep_head: usize,
+        #[serde(default = "default_keep_tail")]
+        keep_tail: usize,
+    },
+    TestSummary {
+        #[serde(default = "default_max_failures")]
+        max_failures: usize,
+        #[serde(default = "default_truncate_stack_trace")]
+        truncate_stack_trace: usize,
+    },
+    GroupByRule {
+        location_pattern: String,
+        rule_pattern: String,
+    },
+    GitStatus {},
+    GitDiff {
+        #[serde(default = "default_max_diff_lines")]
+        max_diff_lines: usize,
+    },
+    Dedup {
+        #[serde(default = "default_normalize_patterns")]
+        normalize_patterns: Vec<NormalizeEntry>,
+        #[serde(default = "default_max_unique")]
+        max_unique_patterns: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +167,32 @@ pub(crate) enum CompiledStrategy {
         max_lines: usize,
         head: usize,
         tail: usize,
+    },
+    KeepMatching {
+        patterns: Vec<Regex>,
+    },
+    StripAnnotated {
+        patterns: Vec<Regex>,
+        summary_pattern: Option<Regex>,
+        long_output_threshold: usize,
+        keep_head: usize,
+        keep_tail: usize,
+    },
+    TestSummary {
+        max_failures: usize,
+        truncate_stack_trace: usize,
+    },
+    GroupByRule {
+        location_re: Regex,
+        rule_re: Regex,
+    },
+    GitStatus,
+    GitDiff {
+        max_diff_lines: usize,
+    },
+    Dedup {
+        normalize_patterns: Vec<(Regex, String)>,
+        max_unique_patterns: usize,
     },
 }
 
@@ -96,6 +213,16 @@ impl DeclarativeFilter {
             strategy,
         })
     }
+}
+
+fn compile_regex(pattern: &str) -> Result<Regex, String> {
+    if pattern.len() > 512 {
+        return Err(format!("pattern '{pattern}': exceeds 512 character limit"));
+    }
+    RegexBuilder::new(pattern)
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| format!("pattern '{pattern}': {e}"))
 }
 
 fn compile_match(m: &MatchConfig) -> Result<CommandMatcher, String> {
@@ -119,22 +246,45 @@ fn compile_match(m: &MatchConfig) -> Result<CommandMatcher, String> {
     }
 }
 
+fn contains_unescaped_dollar(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            chars.next(); // skip escaped char
+        } else if c == '$' {
+            return true;
+        }
+    }
+    false
+}
+
+fn compile_patterns(patterns: &[String]) -> Result<Vec<Regex>, String> {
+    patterns
+        .iter()
+        .map(|p| compile_regex(p))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn compile_dedup_entry(e: NormalizeEntry) -> Result<(Regex, String), String> {
+    if contains_unescaped_dollar(&e.replacement) {
+        return Err(format!(
+            "replacement '{}': unescaped '$' is not allowed (use plain text like <TS>)",
+            e.replacement
+        ));
+    }
+    compile_regex(&e.pattern).map(|re| (re, e.replacement))
+}
+
 fn compile_strategy(s: StrategyConfig) -> Result<CompiledStrategy, String> {
     match s {
         StrategyConfig::StripNoise { patterns } => {
-            let compiled = patterns
-                .iter()
-                .map(|p| {
-                    if p.len() > 512 {
-                        return Err(format!("pattern '{p}': exceeds 512 character limit"));
-                    }
-                    RegexBuilder::new(p)
-                        .size_limit(1 << 20)
-                        .build()
-                        .map_err(|e| format!("pattern '{p}': {e}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(CompiledStrategy::StripNoise { patterns: compiled })
+            if patterns.is_empty() {
+                tracing::warn!("rule has empty patterns list");
+                return Err("strip_noise rule has empty patterns list".into());
+            }
+            Ok(CompiledStrategy::StripNoise {
+                patterns: compile_patterns(&patterns)?,
+            })
         }
         StrategyConfig::Truncate {
             max_lines,
@@ -150,8 +300,527 @@ fn compile_strategy(s: StrategyConfig) -> Result<CompiledStrategy, String> {
                 tail,
             })
         }
+        StrategyConfig::KeepMatching { patterns } => {
+            if patterns.is_empty() {
+                tracing::warn!("rule has empty patterns list");
+                return Err("keep_matching rule has empty patterns list".into());
+            }
+            Ok(CompiledStrategy::KeepMatching {
+                patterns: compile_patterns(&patterns)?,
+            })
+        }
+        StrategyConfig::StripAnnotated {
+            patterns,
+            summary_pattern,
+            long_output_threshold,
+            keep_head,
+            keep_tail,
+        } => {
+            if patterns.is_empty() {
+                tracing::warn!("rule has empty patterns list");
+                return Err("strip_annotated rule has empty patterns list".into());
+            }
+            let summary_re = summary_pattern.as_deref().map(compile_regex).transpose()?;
+            Ok(CompiledStrategy::StripAnnotated {
+                patterns: compile_patterns(&patterns)?,
+                summary_pattern: summary_re,
+                long_output_threshold,
+                keep_head,
+                keep_tail,
+            })
+        }
+        StrategyConfig::TestSummary {
+            max_failures,
+            truncate_stack_trace,
+        } => Ok(CompiledStrategy::TestSummary {
+            max_failures,
+            truncate_stack_trace,
+        }),
+        StrategyConfig::GroupByRule {
+            location_pattern,
+            rule_pattern,
+        } => {
+            let location_re = compile_regex(&location_pattern)?;
+            let rule_re = compile_regex(&rule_pattern)?;
+            Ok(CompiledStrategy::GroupByRule {
+                location_re,
+                rule_re,
+            })
+        }
+        StrategyConfig::GitStatus {} => Ok(CompiledStrategy::GitStatus),
+        StrategyConfig::GitDiff { max_diff_lines } => {
+            Ok(CompiledStrategy::GitDiff { max_diff_lines })
+        }
+        StrategyConfig::Dedup {
+            normalize_patterns,
+            max_unique_patterns,
+        } => {
+            let compiled = normalize_patterns
+                .into_iter()
+                .map(compile_dedup_entry)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(CompiledStrategy::Dedup {
+                normalize_patterns: compiled,
+                max_unique_patterns,
+            })
+        }
     }
 }
+
+// ---------------------------------------------------------------------------
+// is_cargo_noise helper (used by GroupByRule)
+// ---------------------------------------------------------------------------
+
+const CARGO_NOISE_PREFIXES: &[&str] = &[
+    "Compiling ",
+    "Downloading ",
+    "Downloaded ",
+    "Updating ",
+    "Fetching ",
+    "Fresh ",
+    "Packaging ",
+    "Verifying ",
+    "Archiving ",
+    "Locking ",
+    "Adding ",
+    "Removing ",
+    "Checking ",
+    "Documenting ",
+    "Running ",
+    "Loaded ",
+    "Blocking ",
+    "Unpacking ",
+    "Finished ",
+];
+
+pub(crate) fn is_cargo_noise(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    CARGO_NOISE_PREFIXES.iter().any(|p| trimmed.starts_with(p))
+}
+
+// ---------------------------------------------------------------------------
+// Strategy implementations
+// ---------------------------------------------------------------------------
+
+fn apply_strip_annotated(
+    raw: &str,
+    patterns: &[Regex],
+    summary_pattern: Option<&Regex>,
+    long_output_threshold: usize,
+    keep_head: usize,
+    keep_tail: usize,
+    exit_code: i32,
+) -> FilterResult {
+    let clean = sanitize_output(raw);
+    let mut noise_count = 0usize;
+    let mut kept: Vec<&str> = Vec::new();
+    let mut summary_line: Option<String> = None;
+
+    for line in clean.lines() {
+        if summary_pattern.is_some_and(|sp| sp.is_match(line)) {
+            summary_line = Some(line.trim_start().to_owned());
+            noise_count += 1;
+            continue;
+        }
+        if patterns.iter().any(|p| p.is_match(line)) {
+            noise_count += 1;
+        } else {
+            kept.push(line);
+        }
+    }
+
+    if noise_count == 0 {
+        if exit_code != 0 {
+            return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        }
+        let lines: Vec<&str> = clean.lines().collect();
+        if lines.len() > long_output_threshold {
+            return truncate_kept(raw, &lines, keep_head, keep_tail, FilterConfidence::Partial);
+        }
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut output = String::new();
+    if let Some(ref fin) = summary_line {
+        let _ = writeln!(output, "{fin}");
+    }
+    let _ = writeln!(output, "({noise_count} noise lines removed)");
+    if !kept.is_empty() {
+        output.push('\n');
+        if kept.len() > long_output_threshold {
+            let actual_head = keep_head.min(kept.len());
+            let actual_tail = keep_tail.min(kept.len().saturating_sub(actual_head));
+            let omitted = kept.len() - actual_head - actual_tail;
+            for line in &kept[..actual_head] {
+                let _ = writeln!(output, "{line}");
+            }
+            let _ = writeln!(output, "\n... ({omitted} lines omitted) ...\n");
+            for line in &kept[kept.len() - actual_tail..] {
+                let _ = writeln!(output, "{line}");
+            }
+        } else {
+            for line in &kept {
+                let _ = writeln!(output, "{line}");
+            }
+        }
+    }
+    make_result(raw, output.trim_end().to_owned(), FilterConfidence::Full)
+}
+
+fn truncate_kept(
+    raw: &str,
+    lines: &[&str],
+    keep_head: usize,
+    keep_tail: usize,
+    confidence: FilterConfidence,
+) -> FilterResult {
+    let total = lines.len();
+    let omitted = total - keep_head - keep_tail;
+    let mut output = String::new();
+    for line in &lines[..keep_head] {
+        let _ = writeln!(output, "{line}");
+    }
+    let _ = writeln!(output, "\n... ({omitted} lines omitted) ...\n");
+    for line in &lines[total - keep_tail..] {
+        let _ = writeln!(output, "{line}");
+    }
+    make_result(raw, output.trim_end().to_owned(), confidence)
+}
+
+fn apply_test_summary(
+    raw: &str,
+    exit_code: i32,
+    max_failures: usize,
+    truncate_stack_trace: usize,
+) -> FilterResult {
+    let mut passed = 0u64;
+    let mut failed = 0u64;
+    let mut ignored = 0u64;
+    let mut filtered_out = 0u64;
+    let mut failure_blocks: Vec<String> = Vec::new();
+    let mut in_failure_block = false;
+    let mut current_block = String::new();
+    let mut has_summary = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("FAIL [") || trimmed.starts_with("FAIL  [") {
+            failed += 1;
+            continue;
+        }
+        if trimmed.starts_with("PASS [") || trimmed.starts_with("PASS  [") {
+            passed += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("---- ") && trimmed.ends_with(" stdout ----") {
+            in_failure_block = true;
+            current_block.clear();
+            current_block.push_str(line);
+            current_block.push('\n');
+            continue;
+        }
+
+        if in_failure_block {
+            current_block.push_str(line);
+            current_block.push('\n');
+            if trimmed == "failures:" || trimmed.starts_with("---- ") {
+                failure_blocks.push(current_block.clone());
+                in_failure_block = trimmed.starts_with("---- ");
+                if in_failure_block {
+                    current_block.clear();
+                    current_block.push_str(line);
+                    current_block.push('\n');
+                }
+            }
+            continue;
+        }
+
+        if trimmed == "failures:" && !current_block.is_empty() {
+            failure_blocks.push(current_block.clone());
+            current_block.clear();
+        }
+
+        if trimmed.starts_with("test result:") {
+            has_summary = true;
+            for part in trimmed.split(';') {
+                let part = part.trim();
+                if let Some(n) = extract_count(part, "passed") {
+                    passed += n;
+                } else if let Some(n) = extract_count(part, "failed") {
+                    failed += n;
+                } else if let Some(n) = extract_count(part, "ignored") {
+                    ignored += n;
+                } else if let Some(n) = extract_count(part, "filtered out") {
+                    filtered_out += n;
+                }
+            }
+        }
+
+        if trimmed.contains("tests run:") {
+            has_summary = true;
+        }
+    }
+
+    if in_failure_block && !current_block.is_empty() {
+        failure_blocks.push(current_block);
+    }
+
+    if !has_summary && passed == 0 && failed == 0 {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut output = String::new();
+
+    if exit_code != 0 && !failure_blocks.is_empty() {
+        output.push_str("FAILURES:\n\n");
+        for block in failure_blocks.iter().take(max_failures) {
+            let lines: Vec<&str> = block.lines().collect();
+            if lines.len() > truncate_stack_trace {
+                for line in &lines[..truncate_stack_trace] {
+                    output.push_str(line);
+                    output.push('\n');
+                }
+                let remaining = lines.len() - truncate_stack_trace;
+                let _ = writeln!(output, "... ({remaining} more lines)");
+            } else {
+                output.push_str(block);
+            }
+            output.push('\n');
+        }
+        if failure_blocks.len() > max_failures {
+            let _ = writeln!(
+                output,
+                "... and {} more failure(s)",
+                failure_blocks.len() - max_failures
+            );
+        }
+    }
+
+    let status = if failed > 0 { "FAILED" } else { "ok" };
+    let _ = write!(
+        output,
+        "test result: {status}. {passed} passed; {failed} failed; \
+         {ignored} ignored; {filtered_out} filtered out"
+    );
+
+    make_result(raw, output, FilterConfidence::Full)
+}
+
+fn extract_count(s: &str, label: &str) -> Option<u64> {
+    let idx = s.find(label)?;
+    let before = s[..idx].trim();
+    let num_str = before.rsplit_once(' ').map_or(before, |(_, n)| n);
+    let num_str = num_str.trim_end_matches('.');
+    let num_str = num_str.rsplit('.').next().unwrap_or(num_str).trim();
+    num_str.parse().ok()
+}
+
+fn apply_group_by_rule(
+    raw: &str,
+    exit_code: i32,
+    location_re: &Regex,
+    rule_re: &Regex,
+) -> FilterResult {
+    let has_error = raw.contains("error[") || raw.contains("error:");
+    if has_error && exit_code != 0 {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut pending_location: Option<String> = None;
+
+    for line in raw.lines() {
+        if let Some(caps) = location_re.captures(line) {
+            pending_location = Some(caps[1].to_owned());
+        }
+        if let Some(caps) = rule_re.captures(line) {
+            let rule = caps[1].to_owned();
+            if let Some(loc) = pending_location.take() {
+                warnings.entry(rule).or_default().push(loc);
+            }
+        }
+    }
+
+    if warnings.is_empty() {
+        let kept: Vec<&str> = raw.lines().filter(|l| !is_cargo_noise(l)).collect();
+        if kept.len() < raw.lines().count() {
+            let output = kept.join("\n");
+            return make_result(raw, output, FilterConfidence::Partial);
+        }
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let total: usize = warnings.values().map(Vec::len).sum();
+    let rules = warnings.len();
+    let mut output = String::new();
+
+    for (rule, locations) in &warnings {
+        let count = locations.len();
+        let label = if count == 1 { "warning" } else { "warnings" };
+        let _ = writeln!(output, "{rule} ({count} {label}):");
+        for loc in locations {
+            let _ = writeln!(output, "  {loc}");
+        }
+        output.push('\n');
+    }
+    let _ = write!(output, "{total} warnings total ({rules} rules)");
+
+    make_result(raw, output, FilterConfidence::Full)
+}
+
+fn apply_git_status(raw: &str) -> FilterResult {
+    let mut modified = 0u32;
+    let mut added = 0u32;
+    let mut deleted = 0u32;
+    let mut untracked = 0u32;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("M ") || trimmed.starts_with("MM") || trimmed.starts_with(" M") {
+            modified += 1;
+        } else if trimmed.starts_with("A ") || trimmed.starts_with("AM") {
+            added += 1;
+        } else if trimmed.starts_with("D ") || trimmed.starts_with(" D") {
+            deleted += 1;
+        } else if trimmed.starts_with("??") {
+            untracked += 1;
+        } else if trimmed.starts_with("modified:") {
+            modified += 1;
+        } else if trimmed.starts_with("new file:") {
+            added += 1;
+        } else if trimmed.starts_with("deleted:") {
+            deleted += 1;
+        }
+    }
+
+    let total = modified + added + deleted + untracked;
+    if total == 0 {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut output = String::new();
+    let _ = write!(
+        output,
+        "M  {modified} files | A  {added} files | D  {deleted} files | ??  {untracked} files"
+    );
+    make_result(raw, output, FilterConfidence::Full)
+}
+
+fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
+    let mut files: Vec<(String, i32, i32)> = Vec::new();
+    let mut current_file = String::new();
+    let mut additions = 0i32;
+    let mut deletions = 0i32;
+
+    for line in raw.lines() {
+        if line.starts_with("diff --git ") {
+            if !current_file.is_empty() {
+                files.push((current_file.clone(), additions, deletions));
+            }
+            line.strip_prefix("diff --git a/")
+                .and_then(|s| s.split(" b/").next())
+                .unwrap_or("unknown")
+                .clone_into(&mut current_file);
+            additions = 0;
+            deletions = 0;
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            additions += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            deletions += 1;
+        }
+    }
+    if !current_file.is_empty() {
+        files.push((current_file, additions, deletions));
+    }
+
+    if files.is_empty() {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let total_lines: usize = raw.lines().count();
+    let total_add: i32 = files.iter().map(|(_, a, _)| a).sum();
+    let total_del: i32 = files.iter().map(|(_, _, d)| d).sum();
+    let mut output = String::new();
+    for (file, add, del) in &files {
+        let _ = writeln!(output, "{file}    | +{add} -{del}");
+    }
+    let _ = write!(
+        output,
+        "{} files changed, {} insertions(+), {} deletions(-)",
+        files.len(),
+        total_add,
+        total_del
+    );
+    if total_lines > max_diff_lines {
+        let _ = write!(output, " (truncated from {total_lines} lines)");
+    }
+    make_result(raw, output, FilterConfidence::Full)
+}
+
+fn apply_dedup(
+    raw: &str,
+    normalize_patterns: &[(Regex, String)],
+    max_unique_patterns: usize,
+) -> FilterResult {
+    let lines: Vec<&str> = raw.lines().collect();
+    if lines.len() < 3 {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut pattern_counts: HashMap<String, (usize, String)> =
+        HashMap::with_capacity(max_unique_patterns.min(4096));
+    let mut order: Vec<String> = Vec::new();
+    let mut capped = false;
+
+    for line in &lines {
+        let normalized = dedup_normalize(line, normalize_patterns);
+        if let Some(entry) = pattern_counts.get_mut(&normalized) {
+            entry.0 += 1;
+        } else if pattern_counts.len() < max_unique_patterns {
+            order.push(normalized.clone());
+            pattern_counts.insert(normalized, (1, (*line).to_owned()));
+        } else {
+            capped = true;
+        }
+    }
+
+    let unique = order.len();
+    let total = lines.len();
+
+    if unique == total && !capped {
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+    }
+
+    let mut output = String::new();
+    for key in &order {
+        let (count, example) = &pattern_counts[key];
+        if *count > 1 {
+            let _ = writeln!(output, "{example} (x{count})");
+        } else {
+            let _ = writeln!(output, "{example}");
+        }
+    }
+    let _ = write!(output, "{unique} unique patterns ({total} total lines)");
+    if capped {
+        let _ = write!(output, " (capped at {max_unique_patterns})");
+    }
+
+    make_result(raw, output, FilterConfidence::Full)
+}
+
+fn dedup_normalize(line: &str, patterns: &[(Regex, String)]) -> String {
+    let mut s = line.to_owned();
+    for (re, replacement) in patterns {
+        s = re.replace_all(&s, replacement.as_str()).into_owned();
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------
+// OutputFilter impl
+// ---------------------------------------------------------------------------
 
 impl OutputFilter for DeclarativeFilter {
     fn name(&self) -> &'static str {
@@ -162,7 +831,7 @@ impl OutputFilter for DeclarativeFilter {
         &self.matcher
     }
 
-    fn filter(&self, _command: &str, raw_output: &str, _exit_code: i32) -> FilterResult {
+    fn filter(&self, _command: &str, raw_output: &str, exit_code: i32) -> FilterResult {
         let clean = sanitize_output(raw_output);
         match &self.strategy {
             CompiledStrategy::StripNoise { patterns } => {
@@ -203,6 +872,47 @@ impl OutputFilter for DeclarativeFilter {
                     FilterConfidence::Partial,
                 )
             }
+            CompiledStrategy::KeepMatching { patterns } => {
+                let kept: Vec<&str> = clean
+                    .lines()
+                    .filter(|line| patterns.iter().any(|p| p.is_match(line)))
+                    .collect();
+                if kept.is_empty() {
+                    return make_result(raw_output, clean, FilterConfidence::Fallback);
+                }
+                make_result(raw_output, kept.join("\n"), FilterConfidence::Full)
+            }
+            CompiledStrategy::StripAnnotated {
+                patterns,
+                summary_pattern,
+                long_output_threshold,
+                keep_head,
+                keep_tail,
+            } => apply_strip_annotated(
+                raw_output,
+                patterns,
+                summary_pattern.as_ref(),
+                *long_output_threshold,
+                *keep_head,
+                *keep_tail,
+                exit_code,
+            ),
+            CompiledStrategy::TestSummary {
+                max_failures,
+                truncate_stack_trace,
+            } => apply_test_summary(raw_output, exit_code, *max_failures, *truncate_stack_trace),
+            CompiledStrategy::GroupByRule {
+                location_re,
+                rule_re,
+            } => apply_group_by_rule(raw_output, exit_code, location_re, rule_re),
+            CompiledStrategy::GitStatus => apply_git_status(raw_output),
+            CompiledStrategy::GitDiff { max_diff_lines } => {
+                apply_git_diff(raw_output, *max_diff_lines)
+            }
+            CompiledStrategy::Dedup {
+                normalize_patterns,
+                max_unique_patterns,
+            } => apply_dedup(raw_output, normalize_patterns, *max_unique_patterns),
         }
     }
 }
@@ -290,6 +1000,103 @@ mod tests {
                 max_lines,
                 head,
                 tail,
+            },
+        }
+    }
+
+    fn keep_matching_filter(patterns: &[&str]) -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-keep",
+            matcher: CommandMatcher::Prefix("cmd"),
+            strategy: CompiledStrategy::KeepMatching {
+                patterns: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
+            },
+        }
+    }
+
+    fn strip_annotated_filter(
+        patterns: &[&str],
+        summary_pattern: Option<&str>,
+    ) -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-annotated",
+            matcher: CommandMatcher::Prefix("cmd"),
+            strategy: CompiledStrategy::StripAnnotated {
+                patterns: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
+                summary_pattern: summary_pattern.map(|p| Regex::new(p).unwrap()),
+                long_output_threshold: 30,
+                keep_head: 10,
+                keep_tail: 5,
+            },
+        }
+    }
+
+    fn test_summary_filter() -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-summary",
+            matcher: CommandMatcher::Prefix("cargo test"),
+            strategy: CompiledStrategy::TestSummary {
+                max_failures: 10,
+                truncate_stack_trace: 50,
+            },
+        }
+    }
+
+    fn group_by_rule_filter(location_pattern: &str, rule_pattern: &str) -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-group",
+            matcher: CommandMatcher::Prefix("cargo clippy"),
+            strategy: CompiledStrategy::GroupByRule {
+                location_re: Regex::new(location_pattern).unwrap(),
+                rule_re: Regex::new(rule_pattern).unwrap(),
+            },
+        }
+    }
+
+    fn git_status_filter() -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-git-status",
+            matcher: CommandMatcher::Prefix("git status"),
+            strategy: CompiledStrategy::GitStatus,
+        }
+    }
+
+    fn git_diff_filter(max_diff_lines: usize) -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-git-diff",
+            matcher: CommandMatcher::Prefix("git diff"),
+            strategy: CompiledStrategy::GitDiff { max_diff_lines },
+        }
+    }
+
+    fn dedup_filter() -> DeclarativeFilter {
+        DeclarativeFilter {
+            name: "test-dedup",
+            matcher: CommandMatcher::Prefix("journalctl"),
+            strategy: CompiledStrategy::Dedup {
+                normalize_patterns: vec![
+                    (
+                        Regex::new(
+                            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}([.\d]*)?([Z+-][\d:]*)?",
+                        )
+                        .unwrap(),
+                        "<TS>".into(),
+                    ),
+                    (
+                        Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                            .unwrap(),
+                        "<UUID>".into(),
+                    ),
+                    (
+                        Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap(),
+                        "<IP>".into(),
+                    ),
+                    (
+                        Regex::new(r"(?:port|pid|PID)[=: ]+\d+").unwrap(),
+                        "<N>".into(),
+                    ),
+                ],
+                max_unique_patterns: 10_000,
             },
         }
     }
@@ -398,6 +1205,23 @@ mod tests {
         assert!(compile_strategy(s).is_err());
     }
 
+    #[test]
+    fn compile_strategy_keep_matching_valid() {
+        let s = StrategyConfig::KeepMatching {
+            patterns: vec!["->".into(), r"^To ".into()],
+        };
+        assert!(compile_strategy(s).is_ok());
+    }
+
+    #[test]
+    fn compile_strategy_group_by_rule_invalid_regex() {
+        let s = StrategyConfig::GroupByRule {
+            location_pattern: "[broken".into(),
+            rule_pattern: r"#\[warn\(([^)]+)\)\]".into(),
+        };
+        assert!(compile_strategy(s).is_err());
+    }
+
     // --- DeclarativeFilter::filter (strip_noise) ---
 
     #[test]
@@ -465,8 +1289,337 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
         let raw = lines.join("\n");
         let result = f.filter("cmd", &raw, 0);
-        // 20 total, head=2, tail=2 → 16 omitted
         assert!(result.output.contains("16 lines omitted"));
+    }
+
+    // --- keep_matching ---
+
+    #[test]
+    fn keep_matching_keeps_only_matching_lines() {
+        let f = keep_matching_filter(&["->", r"^To "]);
+        let raw = "\
+Enumerating objects: 5, done.
+To github.com:user/repo.git
+   abc1234..def5678  main -> main
+";
+        let result = f.filter("cmd", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("->"));
+        assert!(result.output.contains("To github.com"));
+        assert!(!result.output.contains("Enumerating"));
+    }
+
+    #[test]
+    fn keep_matching_fallback_when_nothing_matches() {
+        let f = keep_matching_filter(&[r"^NOMATCH"]);
+        let raw = "some output\nno matches here";
+        let result = f.filter("cmd", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- strip_annotated ---
+
+    #[test]
+    fn strip_annotated_removes_noise_with_count() {
+        let f = strip_annotated_filter(
+            &[r"^\s*Compiling ", r"^\s*Checking "],
+            Some(r"^\s*Finished "),
+        );
+        let raw = "    Compiling serde v1.0\n    Checking foo\n    Finished dev in 1s\nerror: oops";
+        let result = f.filter("cargo build", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("noise lines removed"));
+        assert!(result.output.contains("Finished"));
+        assert!(!result.output.contains("Compiling"));
+    }
+
+    #[test]
+    fn strip_annotated_passthrough_on_error_no_noise() {
+        let f = strip_annotated_filter(&[r"^\s*Compiling "], None);
+        let raw = "error[E0308]: mismatched types\n  --> src/main.rs:10:5";
+        let result = f.filter("cargo build", raw, 1);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+        assert_eq!(result.output, raw);
+    }
+
+    #[test]
+    fn strip_annotated_passthrough_short_no_noise() {
+        let f = strip_annotated_filter(&[r"^\s*Compiling "], None);
+        let raw = "short output\nno noise";
+        let result = f.filter("cargo build", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- test_summary ---
+
+    #[test]
+    fn test_summary_success_compresses() {
+        let f = test_summary_filter();
+        let raw = "\
+running 3 tests
+test foo::test_a ... ok
+test foo::test_b ... ok
+test foo::test_c ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s
+";
+        let result = f.filter("cargo test", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("3 passed"));
+        assert!(result.output.contains("0 failed"));
+        assert!(!result.output.contains("test_a"));
+        assert!(result.savings_pct() > 30.0);
+    }
+
+    #[test]
+    fn test_summary_failure_preserves_details() {
+        let f = test_summary_filter();
+        let raw = "\
+running 2 tests
+test foo::test_a ... ok
+test foo::test_b ... FAILED
+
+---- foo::test_b stdout ----
+thread 'foo::test_b' panicked at 'assertion failed: false'
+
+failures:
+    foo::test_b
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 filtered out; finished in 0.01s
+";
+        let result = f.filter("cargo test", raw, 1);
+        assert!(result.output.contains("FAILURES:"));
+        assert!(result.output.contains("assertion failed"));
+        assert!(result.output.contains("1 failed"));
+    }
+
+    #[test]
+    fn test_summary_no_summary_passthrough() {
+        let f = test_summary_filter();
+        let raw = "some random output with no test results";
+        let result = f.filter("cargo test", raw, 0);
+        assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- group_by_rule (clippy) ---
+
+    #[test]
+    fn group_by_rule_groups_warnings() {
+        let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
+        let raw = "\
+warning: needless pass by value
+  --> src/foo.rs:12:5
+   |
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: needless pass by value
+  --> src/bar.rs:45:10
+   |
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: unused import
+  --> src/main.rs:5:1
+   |
+   = note: `#[warn(clippy::unused_imports)]` on by default
+";
+        let result = f.filter("cargo clippy", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(
+            result
+                .output
+                .contains("clippy::needless_pass_by_value (2 warnings):")
+        );
+        assert!(result.output.contains("src/foo.rs:12"));
+        assert!(
+            result
+                .output
+                .contains("clippy::unused_imports (1 warning):")
+        );
+        assert!(result.output.contains("3 warnings total (2 rules)"));
+    }
+
+    #[test]
+    fn group_by_rule_error_passthrough() {
+        let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
+        let raw = "error[E0308]: mismatched types\n  --> src/main.rs:10:5\nfull details here";
+        let result = f.filter("cargo clippy", raw, 1);
+        assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn group_by_rule_no_warnings_strips_cargo_noise() {
+        let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
+        let raw = "Checking my-crate v0.1.0\n    Finished dev [unoptimized] target(s)";
+        let result = f.filter("cargo clippy", raw, 0);
+        assert!(result.output.is_empty());
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+    }
+
+    // --- git_status ---
+
+    #[test]
+    fn git_status_summarizes_short_format() {
+        let f = git_status_filter();
+        let raw = " M src/main.rs\n M src/lib.rs\n?? new_file.txt\nA  added.rs\n";
+        let result = f.filter("git status --short", raw, 0);
+        assert!(result.output.contains("M  2 files"));
+        assert!(result.output.contains("??  1 files"));
+        assert!(result.output.contains("A  1 files"));
+        assert_eq!(result.confidence, FilterConfidence::Full);
+    }
+
+    #[test]
+    fn git_status_summarizes_long_format() {
+        let f = git_status_filter();
+        let raw = "\
+On branch main
+Changes not staged for commit:
+        modified:   src/main.rs
+        modified:   src/lib.rs
+        deleted:    old_file.rs
+
+Untracked files:
+        new_file.txt
+";
+        let result = f.filter("git status", raw, 0);
+        assert!(result.output.contains("M  2 files"));
+        assert!(result.output.contains("D  1 files"));
+    }
+
+    #[test]
+    fn git_status_empty_fallback() {
+        let f = git_status_filter();
+        let raw = "nothing to commit, working tree clean";
+        let result = f.filter("git status", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- git_diff ---
+
+    #[test]
+    fn git_diff_compresses() {
+        let f = git_diff_filter(500);
+        let raw = "\
+diff --git a/src/main.rs b/src/main.rs
+index abc..def 100644
+--- a/src/main.rs
++++ b/src/main.rs
++new line 1
++new line 2
+-old line 1
+diff --git a/src/lib.rs b/src/lib.rs
+index ghi..jkl 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
++added
+";
+        let result = f.filter("git diff", raw, 0);
+        assert!(result.output.contains("src/main.rs"));
+        assert!(result.output.contains("src/lib.rs"));
+        assert!(result.output.contains("2 files changed"));
+        assert!(result.output.contains("3 insertions(+)"));
+        assert!(result.output.contains("1 deletions(-)"));
+        assert_eq!(result.confidence, FilterConfidence::Full);
+    }
+
+    #[test]
+    fn git_diff_empty_fallback() {
+        let f = git_diff_filter(500);
+        let result = f.filter("git diff", "", 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn git_diff_truncation_note() {
+        let f = git_diff_filter(5);
+        // Build a diff with more than 5 lines
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n".to_owned();
+        for i in 0..10 {
+            raw.push_str(&format!("+line {i}\n"));
+        }
+        let result = f.filter("git diff", &raw, 0);
+        assert!(result.output.contains("truncated from"));
+    }
+
+    // --- dedup ---
+
+    #[test]
+    fn dedup_deduplicates_log_lines() {
+        let f = dedup_filter();
+        let raw = "\
+2024-01-15T12:00:01Z INFO request handled path=/api/health
+2024-01-15T12:00:02Z INFO request handled path=/api/health
+2024-01-15T12:00:03Z INFO request handled path=/api/health
+2024-01-15T12:00:04Z WARN connection timeout addr=10.0.0.1
+2024-01-15T12:00:05Z WARN connection timeout addr=10.0.0.2
+2024-01-15T12:00:06Z ERROR database unreachable
+";
+        let result = f.filter("journalctl -u app", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("(x3)"));
+        assert!(result.output.contains("(x2)"));
+        assert!(result.output.contains("3 unique patterns (6 total lines)"));
+        assert!(result.savings_pct() > 20.0);
+    }
+
+    #[test]
+    fn dedup_all_unique_fallback() {
+        let f = dedup_filter();
+        let raw = "line one\nline two\nline three";
+        let result = f.filter("cat app.log", raw, 0);
+        assert_eq!(result.output, raw);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn dedup_short_fallback() {
+        let f = dedup_filter();
+        let raw = "single line";
+        let result = f.filter("cat app.log", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn dedup_normalize_replaces_patterns() {
+        let patterns = vec![
+            (
+                Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}([.\d]*)?([Z+-][\d:]*)?")
+                    .unwrap(),
+                "<TS>".into(),
+            ),
+            (
+                Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                    .unwrap(),
+                "<UUID>".into(),
+            ),
+            (
+                Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap(),
+                "<IP>".into(),
+            ),
+            (
+                Regex::new(r"(?:port|pid|PID)[=: ]+\d+").unwrap(),
+                "<N>".into(),
+            ),
+        ];
+        let line = "2024-01-15T12:00:00Z req=abc12345-1234-1234-1234-123456789012 addr=192.168.1.1 pid=1234";
+        let n = dedup_normalize(line, &patterns);
+        assert!(n.contains("<TS>"));
+        assert!(n.contains("<UUID>"));
+        assert!(n.contains("<IP>"));
+        assert!(n.contains("<N>"));
+    }
+
+    // --- is_cargo_noise ---
+
+    #[test]
+    fn is_cargo_noise_detects_prefixes() {
+        assert!(is_cargo_noise("   Compiling foo v1.0"));
+        assert!(is_cargo_noise("   Finished dev profile"));
+        assert!(is_cargo_noise("   Checking foo v1.0"));
+        assert!(!is_cargo_noise("error[E0308]: mismatched types"));
+        assert!(!is_cargo_noise("warning: unused import"));
     }
 
     // --- load_declarative_filters ---
@@ -563,10 +1716,8 @@ enabled = false
     fn load_declarative_filters_oversized_file_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("filters.toml");
-        // Write > 1 MiB
         let chunk = "# filler\n".repeat(120_000);
         std::fs::write(&path, chunk).unwrap();
-        // Should fall back to defaults, not panic or return empty
         let filters = load_declarative_filters(Some(dir.path()));
         assert!(!filters.is_empty(), "should fall back to embedded defaults");
     }
@@ -661,6 +1812,60 @@ strategy = { type = "truncate", max_lines = 100 }
     }
 
     #[test]
+    fn toml_parse_test_summary_rule() {
+        let toml = r#"
+[[rules]]
+name = "cargo-test"
+match = { regex = "^cargo\\s+test" }
+strategy = { type = "test_summary", max_failures = 5, truncate_stack_trace = 30 }
+"#;
+        let f: DeclarativeFilterFile = toml::from_str(toml).unwrap();
+        if let StrategyConfig::TestSummary {
+            max_failures,
+            truncate_stack_trace,
+        } = f.rules[0].strategy
+        {
+            assert_eq!(max_failures, 5);
+            assert_eq!(truncate_stack_trace, 30);
+        } else {
+            panic!("expected test_summary strategy");
+        }
+    }
+
+    #[test]
+    fn toml_parse_git_status_rule() {
+        let toml = r#"
+[[rules]]
+name = "git-status"
+match = { regex = "^git\\s+status" }
+strategy = { type = "git_status" }
+"#;
+        let f: DeclarativeFilterFile = toml::from_str(toml).unwrap();
+        assert!(matches!(f.rules[0].strategy, StrategyConfig::GitStatus {}));
+    }
+
+    #[test]
+    fn toml_parse_dedup_default_patterns() {
+        let toml = r#"
+[[rules]]
+name = "log-dedup"
+match = { regex = "journalctl" }
+strategy = { type = "dedup" }
+"#;
+        let f: DeclarativeFilterFile = toml::from_str(toml).unwrap();
+        if let StrategyConfig::Dedup {
+            normalize_patterns,
+            max_unique_patterns,
+        } = &f.rules[0].strategy
+        {
+            assert_eq!(normalize_patterns.len(), 4);
+            assert_eq!(*max_unique_patterns, 10_000);
+        } else {
+            panic!("expected dedup strategy");
+        }
+    }
+
+    #[test]
     fn toml_parse_empty_rules() {
         let f: DeclarativeFilterFile = toml::from_str("").unwrap();
         assert!(f.rules.is_empty());
@@ -694,6 +1899,139 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
         assert!(out.output.contains("Done installing"));
     }
 
+    // --- REQ-1: HashMap::with_capacity for dedup ---
+
+    #[test]
+    fn dedup_cap_respected_does_not_panic_with_large_max_unique() {
+        // Validates that HashMap::with_capacity(max_unique.min(4096)) doesn't OOM
+        let f = DeclarativeFilter {
+            name: "test-dedup-cap",
+            matcher: CommandMatcher::Prefix("cmd"),
+            strategy: CompiledStrategy::Dedup {
+                normalize_patterns: vec![],
+                max_unique_patterns: usize::MAX,
+            },
+        };
+        let raw = "line a\nline b\nline c\nline d";
+        let result = f.filter("cmd", raw, 0);
+        // All unique → fallback
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- REQ-2: reject unescaped $ in Dedup replacement ---
+
+    #[test]
+    fn compile_dedup_rejects_dollar_replacement() {
+        let s = StrategyConfig::Dedup {
+            normalize_patterns: vec![NormalizeEntry {
+                pattern: r"\d+".into(),
+                replacement: "$1".into(),
+            }],
+            max_unique_patterns: 100,
+        };
+        match compile_strategy(s) {
+            Err(e) => assert!(e.contains("unescaped '$'"), "got: {e}"),
+            Ok(_) => panic!("expected error for unescaped '$' in replacement"),
+        }
+    }
+
+    #[test]
+    fn compile_dedup_rejects_dollar_brace_replacement() {
+        let s = StrategyConfig::Dedup {
+            normalize_patterns: vec![NormalizeEntry {
+                pattern: r"\w+".into(),
+                replacement: "${name}".into(),
+            }],
+            max_unique_patterns: 100,
+        };
+        assert!(compile_strategy(s).is_err());
+    }
+
+    #[test]
+    fn compile_dedup_accepts_plain_text_replacement() {
+        let s = StrategyConfig::Dedup {
+            normalize_patterns: vec![NormalizeEntry {
+                pattern: r"\d{4}-\d{2}-\d{2}".into(),
+                replacement: "<TS>".into(),
+            }],
+            max_unique_patterns: 100,
+        };
+        assert!(compile_strategy(s).is_ok());
+    }
+
+    // --- REQ-3: empty patterns rejected for strip_noise, keep_matching, strip_annotated ---
+
+    #[test]
+    fn compile_strip_noise_empty_patterns_rejected() {
+        let s = StrategyConfig::StripNoise { patterns: vec![] };
+        assert!(compile_strategy(s).is_err());
+    }
+
+    #[test]
+    fn compile_keep_matching_empty_patterns_rejected() {
+        let s = StrategyConfig::KeepMatching { patterns: vec![] };
+        assert!(compile_strategy(s).is_err());
+    }
+
+    #[test]
+    fn compile_strip_annotated_empty_patterns_rejected() {
+        let s = StrategyConfig::StripAnnotated {
+            patterns: vec![],
+            summary_pattern: None,
+            long_output_threshold: 30,
+            keep_head: 10,
+            keep_tail: 5,
+        };
+        assert!(compile_strategy(s).is_err());
+    }
+
+    // --- ADV-2: no panic when head+tail > remaining non-noise lines ---
+
+    #[test]
+    fn strip_annotated_no_panic_when_head_tail_exceeds_kept() {
+        // keep_head=10, keep_tail=5, but only 3 non-noise lines remain after filtering
+        // long_output_threshold=2 so truncation path is triggered
+        let f = DeclarativeFilter {
+            name: "test-adv2",
+            matcher: CommandMatcher::Prefix("cmd"),
+            strategy: CompiledStrategy::StripAnnotated {
+                patterns: vec![Regex::new(r"^NOISE").unwrap()],
+                summary_pattern: None,
+                long_output_threshold: 2,
+                keep_head: 10,
+                keep_tail: 5,
+            },
+        };
+        // 10 noise lines + 3 kept → kept.len()=3 < long_output_threshold=2? No, 3>2, so truncation
+        let mut raw = String::new();
+        for i in 0..10 {
+            raw.push_str(&format!("NOISE line {i}\n"));
+        }
+        raw.push_str("kept 1\nkept 2\nkept 3\n");
+        // Must not panic
+        let result = f.filter("cmd", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+    }
+
+    #[test]
+    fn strip_annotated_no_panic_single_kept_line_large_head_tail() {
+        let f = DeclarativeFilter {
+            name: "test-adv2-single",
+            matcher: CommandMatcher::Prefix("cmd"),
+            strategy: CompiledStrategy::StripAnnotated {
+                patterns: vec![Regex::new(r"^NOISE").unwrap()],
+                summary_pattern: None,
+                long_output_threshold: 0,
+                keep_head: 20,
+                keep_tail: 20,
+            },
+        };
+        let raw = "NOISE a\nNOISE b\nNOISE c\nonly kept line\n";
+        let result = f.filter("cmd", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("only kept line"));
+    }
+
     // --- edge cases ---
 
     #[test]
@@ -708,6 +2046,140 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
         let f = truncate_filter(10, 3, 3);
         let result = f.filter("cmd", "", 0);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- snapshot tests (migrated from deleted modules) ---
+
+    #[test]
+    fn cargo_build_filter_snapshot() {
+        let f = strip_annotated_filter(
+            &[
+                r"^\s*Compiling ",
+                r"^\s*Downloading ",
+                r"^\s*Downloaded ",
+                r"^\s*Updating ",
+                r"^\s*Fetching ",
+                r"^\s*Fresh ",
+                r"^\s*Packaging ",
+                r"^\s*Verifying ",
+                r"^\s*Archiving ",
+                r"^\s*Locking ",
+                r"^\s*Adding ",
+                r"^\s*Removing ",
+                r"^\s*Checking ",
+                r"^\s*Documenting ",
+                r"^\s*Running ",
+                r"^\s*Loaded ",
+                r"^\s*Blocking ",
+                r"^\s*Unpacking ",
+            ],
+            Some(r"^\s*Finished "),
+        );
+        let raw = "\
+   Compiling zeph-core v0.11.0
+   Compiling zeph-tools v0.11.0
+   Compiling zeph-llm v0.11.0
+warning: unused import: `std::fmt`
+  --> crates/zeph-core/src/lib.rs:3:5
+   |
+3  |     use std::fmt;
+   |         ^^^^^^^^
+   = note: `#[warn(unused_imports)]` on by default
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s";
+        let result = f.filter("cargo build", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn cargo_build_error_snapshot() {
+        let f = strip_annotated_filter(
+            &[
+                r"^\s*Compiling ",
+                r"^\s*Downloading ",
+                r"^\s*Downloaded ",
+                r"^\s*Updating ",
+                r"^\s*Fetching ",
+                r"^\s*Fresh ",
+                r"^\s*Packaging ",
+                r"^\s*Verifying ",
+                r"^\s*Archiving ",
+                r"^\s*Locking ",
+                r"^\s*Adding ",
+                r"^\s*Removing ",
+                r"^\s*Checking ",
+                r"^\s*Documenting ",
+                r"^\s*Running ",
+                r"^\s*Loaded ",
+                r"^\s*Blocking ",
+                r"^\s*Unpacking ",
+            ],
+            Some(r"^\s*Finished "),
+        );
+        let raw = "\
+   Compiling zeph-core v0.11.0
+error[E0308]: mismatched types
+  --> crates/zeph-core/src/lib.rs:10:5
+   |
+10 |     return 42;
+   |            ^^ expected `()`, found integer
+error: could not compile `zeph-core` due to 1 previous error";
+        let result = f.filter("cargo build", raw, 1);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn clippy_grouped_warnings_snapshot() {
+        let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
+        let raw = "\
+warning: needless pass by value
+  --> src/foo.rs:12:5
+   |
+   = help: use a reference instead
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: needless pass by value
+  --> src/bar.rs:45:10
+   |
+   = help: use a reference instead
+   = note: `#[warn(clippy::needless_pass_by_value)]` on by default
+
+warning: unused import
+  --> src/main.rs:5:1
+   |
+   = note: `#[warn(clippy::unused_imports)]` on by default
+
+warning: `my-crate` (lib) generated 3 warnings
+";
+        let result = f.filter("cargo clippy", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn filter_diff_snapshot() {
+        let f = git_diff_filter(500);
+        let raw = "\
+diff --git a/src/main.rs b/src/main.rs
+index abc..def 100644
+--- a/src/main.rs
++++ b/src/main.rs
++new line 1
+-old line 1
+diff --git a/src/lib.rs b/src/lib.rs
+index ghi..jkl 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
++added line
+";
+        let result = f.filter("git diff", raw, 0);
+        insta::assert_snapshot!(result.output);
+    }
+
+    #[test]
+    fn filter_status_snapshot() {
+        let f = git_status_filter();
+        let raw = " M src/main.rs\n M src/lib.rs\n?? new_file.txt\nA  added.rs\n";
+        let result = f.filter("git status --short", raw, 0);
+        insta::assert_snapshot!(result.output);
     }
 
     use proptest::prelude::*;
@@ -730,6 +2202,26 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
             exit_code in -1i32..=255,
         ) {
             let f = truncate_filter(10, 3, 3);
+            let _ = f.filter(&cmd, &input, exit_code);
+        }
+
+        #[test]
+        fn declarative_filter_never_panics_test_summary(
+            input in ".*",
+            cmd in ".*",
+            exit_code in -1i32..=255,
+        ) {
+            let f = test_summary_filter();
+            let _ = f.filter(&cmd, &input, exit_code);
+        }
+
+        #[test]
+        fn declarative_filter_never_panics_dedup(
+            input in ".*",
+            cmd in ".*",
+            exit_code in -1i32..=255,
+        ) {
+            let f = dedup_filter();
             let _ = f.filter(&cmd, &input, exit_code);
         }
     }

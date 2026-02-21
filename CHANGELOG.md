@@ -7,10 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Declarative TOML-based output filter engine with `strip_noise` and `truncate` strategies
-- Embedded `default-filters.toml` with 10 pre-configured rules for common CLI tools (docker, npm, pip, make, pytest, go test, terraform, kubectl, brew)
+- Declarative TOML-based output filter engine with 9 strategy types: `strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`
+- Embedded `default-filters.toml` with 19 pre-configured rules for CLI tools (cargo, git, docker, npm, pip, make, pytest, go, terraform, kubectl, brew, ls, journalctl)
 - `filters_path` option in `FilterConfig` for user-provided filter rules override
-- RegexBuilder with size_limit and pattern length cap for ReDoS protection
+- ReDoS protection: RegexBuilder with size_limit, 512-char pattern cap, 1 MiB file size limit
+- Dedup strategy with configurable normalization patterns and HashMap pre-allocation
+- NormalizeEntry replacement validation (rejects unescaped `$` capture group refs)
+
+### Changed
+- Migrated all 6 hardcoded filters (cargo_build, test_output, clippy, git, dir_listing, log_dedup) into the declarative TOML engine
+
+### Removed
+- `FilterConfig` per-filter config structs (`TestFilterConfig`, `GitFilterConfig`, `ClippyFilterConfig`, `CargoBuildFilterConfig`, `DirListingFilterConfig`, `LogDedupFilterConfig`) — filter params now in TOML strategy fields
 
 ## [0.11.4] - 2026-02-21
 
