@@ -9,7 +9,7 @@ Core agent loop, configuration, context builder, metrics, vault, and sub-agent o
 
 ## Overview
 
-Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, filtered tool/skill access, and A2A-based in-process communication channels. All other workspace crates are coordinated through `zeph-core`.
+Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, background execution, filtered tool/skill access, A2A-based in-process communication channels, and `/agent` CLI commands for runtime management. All other workspace crates are coordinated through `zeph-core`.
 
 ## Key modules
 
@@ -19,7 +19,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `agent::tool_execution` | Tool call handling, redaction, and result processing |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
-| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, etc.) |
+| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, sub-agent management via `/agent`, etc.) |
 | `agent::utils` | Shared agent utilities |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `Attachment` / `AttachmentKind` for multimodal inputs |
@@ -33,7 +33,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection |
 | `diff` | Diff rendering utilities |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
-| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels |
+| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, real-time status tracking |
 
 **Re-exports:** `Agent`
 
@@ -54,6 +54,20 @@ auto_update_check = true   # set to false to disable update notifications
 ```
 
 Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable without changing the config file.
+
+## Sub-agent Commands
+
+In-session commands for managing sub-agents:
+
+| Command | Description |
+|---------|-------------|
+| `/agent list` | List available sub-agent definitions |
+| `/agent spawn <name> <prompt>` | Spawn a sub-agent with a task prompt |
+| `/agent bg <name> <prompt>` | Spawn a background sub-agent |
+| `/agent status` | Show active sub-agents with state, turns, and elapsed time |
+| `/agent cancel <id>` | Cancel a running sub-agent by ID prefix |
+
+Sub-agents run as independent tokio tasks with their own LLM provider and filtered tool executor. Each sub-agent receives only explicitly granted tools, skills, and secrets via `PermissionGrants`.
 
 ## Installation
 

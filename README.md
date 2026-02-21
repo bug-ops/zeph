@@ -117,6 +117,13 @@ zeph skill unblock <name>      Unblock a previously blocked skill
 
 # Custom skill secrets use the ZEPH_SECRET_* prefix:
 zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_...   # injected as GITHUB_TOKEN for skills that require it
+
+# In-session sub-agent commands:
+/agent list                    List available sub-agent definitions
+/agent spawn <name> <prompt>   Spawn a sub-agent with a task prompt
+/agent bg <name> <prompt>      Spawn a background sub-agent
+/agent status                  Show active sub-agents with state, turns, and elapsed time
+/agent cancel <id>             Cancel a running sub-agent by ID prefix
 ```
 
 ## Automated Context Engineering
@@ -289,7 +296,7 @@ Skills can declare **required secrets** via the `x-requires-secrets` frontmatter
 |----------|-------------|
 | **MCP** | Connect external tool servers (stdio + HTTP) with SSRF protection, command allowlist, and env var blocklist |
 | **A2A** | Agent-to-agent communication via JSON-RPC 2.0 with SSE streaming |
-| **Sub-agent orchestration** | Spawn scoped sub-agents with zero-trust permissions, filtered tools/skills, and A2A-based in-process channels |
+| **Sub-agent orchestration** | Spawn scoped sub-agents with zero-trust permissions, background execution, filtered tools/skills, and A2A-based in-process channels; manage via `/agent` CLI commands |
 | **Audio input** | Speech-to-text via OpenAI Whisper API or local Candle Whisper (offline, feature-gated); Telegram and Slack audio files transcribed automatically |
 | **Vision** | Image input via CLI (`/image`), TUI (`/image`), and Telegram photo messages; supported by Claude, OpenAI, and Ollama providers (20 MB max, automatic MIME detection) |
 | **Channels** | CLI (with persistent input history), Telegram (text + voice), Discord, Slack, TUI — all with streaming support |
@@ -308,6 +315,7 @@ A full terminal UI powered by ratatui — not a separate monitoring tool, but an
 - Command palette for quick access to agent actions
 - Live metrics: token usage, filter savings, cost tracking, confidence distribution
 - Conversation history with message queueing
+- Sub-agent panel: live status, turn count, elapsed time, and background markers for all active sub-agents
 - Responsive input handling during streaming with render cache and event batching
 - Deferred model warmup with progress indicator
 

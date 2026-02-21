@@ -253,6 +253,145 @@ Sub-agent operations return `SubAgentError`:
 | `Spawn` | Concurrency limit reached or task panic |
 | `Cancelled` | Sub-agent was cancelled |
 
+## Background Execution
+
+Sub-agents can run in the background without blocking the main agent loop. This is the default execution model: `spawn()` returns immediately with a task ID, and the sub-agent runs on a separate Tokio task.
+
+### Non-Blocking Spawn
+
+```rust
+// Spawn returns immediately — the sub-agent runs in the background
+let task_id = manager.spawn("code-reviewer", "Review src/main.rs", provider, executor)?;
+// Main agent continues processing user input
+```
+
+The `spawn()` call creates a `JoinHandle` via `tokio::spawn` and inserts the handle into the active agents map. The main agent loop is never blocked.
+
+### Polling for Completed Results
+
+The agent loop calls `poll_subagents()` on every iteration to check for finished sub-agents:
+
+```rust
+let completed = agent.poll_subagents().await;
+for (task_id, result) in completed {
+    // Notify user about completed background work
+}
+```
+
+`poll_subagents()` is non-blocking: it inspects each active sub-agent's `watch::Receiver<SubAgentStatus>` for terminal states (`Completed`, `Failed`, `Canceled`) and collects results from finished agents. Collected agents are removed from the active set.
+
+### Graceful Shutdown
+
+On main agent shutdown, `shutdown_all()` cancels every active sub-agent via their `CancellationToken` and revokes all permission grants:
+
+```rust
+manager.shutdown_all();
+```
+
+This iterates over all active agents and calls `cancel()` on each. The `CancellationToken` is checked inside the agent loop, so the sub-agent stops at the next iteration boundary.
+
+## TUI Sub-Agent Panel
+
+When the `tui` feature is enabled, the TUI dashboard displays a dedicated sub-agent panel in the side bar.
+
+### Layout
+
+The TUI uses a 4-panel side bar layout (each panel takes 25% of the side bar height):
+
+| Panel | Content |
+|-------|---------|
+| Skills | Loaded skills list |
+| Memory | Memory/context stats |
+| Resources | System resource usage |
+| **Sub-Agents** | Active sub-agent list |
+
+The side bar is visible when the terminal width is 80 columns or wider and can be toggled on/off. On narrow terminals (< 80 columns), the side bar is hidden automatically.
+
+### Widget
+
+The sub-agent widget (`crates/zeph-tui/src/widgets/subagents.rs`) renders a bordered list with:
+
+- **Agent name** with a `[bg]` marker for background agents
+- **State** in uppercase, color-coded:
+  - Yellow: `WORKING` / `SUBMITTED`
+  - Green: `COMPLETED`
+  - Red: `FAILED`
+  - Cyan: `INPUT_REQUIRED`
+  - Dark gray: other/unknown
+- **Turn counter**: `turns_used/max_turns`
+- **Elapsed time** in seconds
+
+Example rendering:
+
+```
+┌ Sub-Agents (2) ──────────┐
+│  code-reviewer  WORKING  │
+│    3/20  42s             │
+│  test-writer [bg]  COMPLETED │
+│    10/20  100s           │
+└──────────────────────────┘
+```
+
+The widget reads from `MetricsSnapshot.sub_agents` (a `Vec<SubAgentMetrics>` published via the metrics watch channel) and renders nothing when the list is empty.
+
+## CLI `/agent` Commands
+
+The `/agent` family of commands provides interactive control over sub-agents from the CLI and TUI chat input.
+
+### Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `/agent list` | Show all loaded sub-agent definitions |
+| `/agent spawn <name> <prompt>` | Spawn a sub-agent in the background |
+| `/agent bg <name> <prompt>` | Alias for `spawn` |
+| `/agent status` | Show all active sub-agents with state, turns, and elapsed time |
+| `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `/agent approve <id>` | Approve a pending permission request (not yet implemented) |
+| `/agent deny <id>` | Deny a pending permission request (not yet implemented) |
+
+### Usage Examples
+
+**List available sub-agent definitions:**
+
+```
+> /agent list
+Available sub-agents:
+  code-reviewer — Reviews code changes for correctness and style
+  test-writer — Generates unit tests for Rust modules
+```
+
+**Spawn a sub-agent:**
+
+```
+> /agent spawn code-reviewer Review the authentication module
+Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+```
+
+**Check status of active sub-agents:**
+
+```
+> /agent status
+Active sub-agents:
+  [a1b2c3d4] working  turns=3  elapsed=42s  Analyzing auth flow...
+```
+
+**Cancel a sub-agent by ID prefix:**
+
+```
+> /agent cancel a1b2
+Cancelled sub-agent a1b2c3d4-...
+```
+
+The `cancel` command accepts a prefix of the task UUID. If the prefix matches multiple agents, the command reports ambiguity and requires a longer prefix.
+
+**Ambiguous cancel:**
+
+```
+> /agent cancel a1
+Ambiguous id prefix 'a1': matches 2 agents
+```
+
 ## Safety Guarantees
 
 - `SubAgentHandle::Drop` cancels the task and revokes all grants
