@@ -103,14 +103,18 @@ jobs:
             zeph-${{ matrix.target }}.zip.sha256
           retention-days: 3
 
-  create-release:
-    name: Create GitHub Release
+  publish-crates:
+    name: Publish to crates.io
     needs: [build-binaries]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
     permissions:
-      contents: write
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
       - name: Verify version matches tag
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
@@ -119,6 +123,24 @@ jobs:
             echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
+      - name: Authenticate with crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish crates to crates.io
+        uses: katyo/publish-crates@v2
+        with:
+          registry-token: ${{ steps.auth.outputs.token }}
+          ignore-unpublished-changes: true
+          publish-delay: 15000
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-binaries, publish-crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
