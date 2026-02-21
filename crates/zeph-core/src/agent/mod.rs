@@ -570,11 +570,15 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
-        if trimmed.starts_with("/agent")
-            && let Some(response) = self.handle_agent_command(trimmed)
-        {
-            self.channel.send(&response).await?;
-            return Ok(());
+        if trimmed.starts_with("/agent") {
+            let response = match crate::subagent::AgentCommand::parse(trimmed) {
+                Ok(cmd) => self.handle_agent_command(cmd),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(msg) = response {
+                self.channel.send(&msg).await?;
+                return Ok(());
+            }
         }
 
         self.rebuild_system_prompt(&text).await;
@@ -750,18 +754,12 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    fn handle_agent_command(&mut self, text: &str) -> Option<String> {
+    fn handle_agent_command(&mut self, cmd: crate::subagent::AgentCommand) -> Option<String> {
+        use crate::subagent::AgentCommand;
         use std::fmt::Write as _;
-        let rest = text.strip_prefix("/agent")?.trim();
-        if rest.is_empty() {
-            return Some("Usage: /agent <list|spawn|bg|status|cancel|approve|deny> [args]".into());
-        }
-        let (cmd, args) = rest.split_once(' ').unwrap_or((rest, ""));
-        let cmd = cmd.trim();
-        let args = args.trim();
 
         match cmd {
-            "list" => {
+            AgentCommand::List => {
                 let mgr = self.subagent_manager.as_ref()?;
                 let defs = mgr.definitions();
                 if defs.is_empty() {
@@ -773,16 +771,11 @@ impl<C: Channel> Agent<C> {
                 }
                 Some(out)
             }
-            "spawn" | "bg" => {
-                let Some((name, prompt)) = args.split_once(' ') else {
-                    return Some(format!("Usage: /agent {cmd} <name> <prompt>"));
-                };
-                let name = name.trim();
-                let prompt = prompt.trim();
+            AgentCommand::Spawn { name, prompt } | AgentCommand::Background { name, prompt } => {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let mgr = self.subagent_manager.as_mut()?;
-                match mgr.spawn(name, prompt, provider, tool_executor) {
+                match mgr.spawn(&name, &prompt, provider, tool_executor) {
                     Ok(id) => Some(format!(
                         "Sub-agent '{name}' started (id: {short})",
                         short = &id[..8.min(id.len())]
@@ -790,7 +783,7 @@ impl<C: Channel> Agent<C> {
                     Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
                 }
             }
-            "status" => {
+            AgentCommand::Status => {
                 let mgr = self.subagent_manager.as_ref()?;
                 let statuses = mgr.statuses();
                 if statuses.is_empty() {
@@ -810,38 +803,32 @@ impl<C: Channel> Agent<C> {
                 }
                 Some(out)
             }
-            "cancel" => {
-                if args.is_empty() {
-                    return Some("Usage: /agent cancel <id>".into());
-                }
+            AgentCommand::Cancel { id } => {
                 let mgr = self.subagent_manager.as_mut()?;
-                // Accept prefix match on task_id
+                // Accept prefix match on task_id.
                 let ids: Vec<String> = mgr
                     .statuses()
                     .into_iter()
-                    .map(|(id, _)| id)
-                    .filter(|id| id.starts_with(args))
+                    .map(|(task_id, _)| task_id)
+                    .filter(|task_id| task_id.starts_with(&id))
                     .collect();
                 match ids.as_slice() {
-                    [] => Some(format!("No sub-agent with id prefix '{args}'")),
-                    [id] => {
-                        let id = id.clone();
-                        match mgr.cancel(&id) {
-                            Ok(()) => Some(format!("Cancelled sub-agent {id}.")),
+                    [] => Some(format!("No sub-agent with id prefix '{id}'")),
+                    [full_id] => {
+                        let full_id = full_id.clone();
+                        match mgr.cancel(&full_id) {
+                            Ok(()) => Some(format!("Cancelled sub-agent {full_id}.")),
                             Err(e) => Some(format!("Cancel failed: {e}")),
                         }
                     }
                     _ => Some(format!(
-                        "Ambiguous id prefix '{args}': matches {} agents",
+                        "Ambiguous id prefix '{id}': matches {} agents",
                         ids.len()
                     )),
                 }
             }
-            "approve" | "deny" => Some(format!(
-                "/{cmd} <id>: permission approval is not yet implemented"
-            )),
-            _ => Some(format!(
-                "Unknown /agent subcommand: '{cmd}'. Try /agent list"
+            AgentCommand::Approve { id } | AgentCommand::Deny { id } => Some(format!(
+                "Permission approval for '{id}' is not yet implemented"
             )),
         }
     }
@@ -2270,6 +2257,8 @@ pub(super) mod agent_tests {
 
     // ── handle_agent_command tests ────────────────────────────────────────────
 
+    use crate::subagent::AgentCommand;
+
     fn make_agent_with_manager() -> Agent<MockChannel> {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
         use crate::subagent::{SubAgentDef, SubAgentManager};
@@ -2301,37 +2290,28 @@ pub(super) mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        // no subagent_manager set
-        assert!(agent.handle_agent_command("/agent list").is_none());
-    }
-
-    #[test]
-    fn agent_command_no_args_returns_usage() {
-        let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent").unwrap();
-        assert!(resp.contains("Usage"));
+        // no subagent_manager set — List needs manager to return Some
+        assert!(agent.handle_agent_command(AgentCommand::List).is_none());
     }
 
     #[test]
     fn agent_command_list_returns_definitions() {
         let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent list").unwrap();
+        let resp = agent.handle_agent_command(AgentCommand::List).unwrap();
         assert!(resp.contains("helper"));
         assert!(resp.contains("A helper bot"));
     }
 
     #[test]
-    fn agent_command_spawn_missing_args_returns_usage() {
-        let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent spawn helper").unwrap();
-        assert!(resp.contains("Usage"));
-    }
-
-    #[test]
     fn agent_command_spawn_unknown_name_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
         let mut agent = make_agent_with_manager();
         let resp = agent
-            .handle_agent_command("/agent spawn unknown-bot do something")
+            .handle_agent_command(AgentCommand::Spawn {
+                name: "unknown-bot".into(),
+                prompt: "do something".into(),
+            })
             .unwrap();
         assert!(resp.contains("Failed to spawn"));
     }
@@ -2342,7 +2322,10 @@ pub(super) mod agent_tests {
         let _guard = rt.enter();
         let mut agent = make_agent_with_manager();
         let resp = agent
-            .handle_agent_command("/agent spawn helper do some work")
+            .handle_agent_command(AgentCommand::Spawn {
+                name: "helper".into(),
+                prompt: "do some work".into(),
+            })
             .unwrap();
         assert!(resp.contains("helper"));
         assert!(resp.contains("started"));
@@ -2351,22 +2334,17 @@ pub(super) mod agent_tests {
     #[test]
     fn agent_command_status_no_agents_returns_empty_message() {
         let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent status").unwrap();
+        let resp = agent.handle_agent_command(AgentCommand::Status).unwrap();
         assert!(resp.contains("No active sub-agents"));
-    }
-
-    #[test]
-    fn agent_command_cancel_no_args_returns_usage() {
-        let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent cancel").unwrap();
-        assert!(resp.contains("Usage"));
     }
 
     #[test]
     fn agent_command_cancel_unknown_id_returns_not_found() {
         let mut agent = make_agent_with_manager();
         let resp = agent
-            .handle_agent_command("/agent cancel deadbeef")
+            .handle_agent_command(AgentCommand::Cancel {
+                id: "deadbeef".into(),
+            })
             .unwrap();
         assert!(resp.contains("No sub-agent"));
     }
@@ -2378,7 +2356,10 @@ pub(super) mod agent_tests {
         let mut agent = make_agent_with_manager();
         // spawn first so we have a task to cancel
         let spawn_resp = agent
-            .handle_agent_command("/agent spawn helper cancel this")
+            .handle_agent_command(AgentCommand::Spawn {
+                name: "helper".into(),
+                prompt: "cancel this".into(),
+            })
             .unwrap();
         // extract short id from "started (id: XXXXXXXX)"
         let short_id = spawn_resp
@@ -2389,22 +2370,19 @@ pub(super) mod agent_tests {
             .trim()
             .to_string();
         let resp = agent
-            .handle_agent_command(&format!("/agent cancel {short_id}"))
+            .handle_agent_command(AgentCommand::Cancel { id: short_id })
             .unwrap();
         assert!(resp.contains("Cancelled"));
     }
 
     #[test]
-    fn agent_command_unknown_subcommand_returns_error() {
-        let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent frobnicate").unwrap();
-        assert!(resp.contains("Unknown /agent subcommand"));
-    }
-
-    #[test]
     fn agent_command_approve_returns_not_implemented() {
         let mut agent = make_agent_with_manager();
-        let resp = agent.handle_agent_command("/agent approve abc123").unwrap();
+        let resp = agent
+            .handle_agent_command(AgentCommand::Approve {
+                id: "abc123".into(),
+            })
+            .unwrap();
         assert!(resp.contains("not yet implemented"));
     }
 }

@@ -15,6 +15,9 @@ pub enum SubAgentError {
     #[error("cancelled")]
     Cancelled,
 
+    #[error("invalid command: {0}")]
+    InvalidCommand(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
