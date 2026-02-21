@@ -1,5 +1,18 @@
 use tokio::sync::watch;
 
+/// Snapshot of a single sub-agent's runtime status.
+#[derive(Debug, Clone, Default)]
+pub struct SubAgentMetrics {
+    pub id: String,
+    pub name: String,
+    /// Stringified `TaskState`: "working", "completed", "failed", "canceled", etc.
+    pub state: String,
+    pub turns_used: u32,
+    pub max_turns: u32,
+    pub background: bool,
+    pub elapsed_secs: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MetricsSnapshot {
     pub prompt_tokens: u64,
@@ -35,6 +48,7 @@ pub struct MetricsSnapshot {
     pub filter_confidence_partial: u64,
     pub filter_confidence_fallback: u64,
     pub cancellations: u64,
+    pub sub_agents: Vec<SubAgentMetrics>,
 }
 
 pub struct MetricsCollector {

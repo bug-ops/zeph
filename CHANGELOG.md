@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Zero-trust permission model with TTL-based grants and automatic revocation (#713)
 - In-process A2A channels for orchestrator-to-sub-agent communication
 - `PermissionGrants` with audit trail via tracing
+- Real LLM loop wired into `SubAgentManager::spawn()` with background tokio task execution (#714)
+- `poll_subagents()` on `Agent<C>` for collecting completed sub-agent results (#714)
+- `shutdown_all()` on `SubAgentManager` for graceful teardown (#714)
+- `SubAgentMetrics` in `MetricsSnapshot` with state, turns, elapsed time (#715)
+- TUI sub-agents panel (`zeph-tui` widgets/subagents) with color-coded states (#715)
+- `/agent` CLI commands: `list`, `spawn`, `bg`, `status`, `cancel`, `approve`, `deny` (#716)
 
 ### Changed
 - Migrated all 6 hardcoded filters (cargo_build, test_output, clippy, git, dir_listing, log_dedup) into the declarative TOML engine

@@ -633,6 +633,7 @@ impl App {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
         widgets::resources::render(&self.metrics, frame, layout.resources);
+        widgets::subagents::render(&self.metrics, frame, layout.subagents);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {

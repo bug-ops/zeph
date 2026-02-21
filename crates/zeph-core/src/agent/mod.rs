@@ -127,7 +127,7 @@ pub(super) struct RuntimeConfig {
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
-    pub(crate) tool_executor: Box<dyn ErasedToolExecutor>,
+    pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
     messages: Vec<Message>,
     pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
@@ -183,7 +183,7 @@ impl<C: Channel> Agent<C> {
         Self {
             provider,
             channel,
-            tool_executor: Box::new(tool_executor),
+            tool_executor: Arc::new(tool_executor),
             messages: vec![Message {
                 role: Role::System,
                 content: system_prompt,
@@ -259,8 +259,50 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Poll all active sub-agents for completed/failed/canceled results.
+    ///
+    /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
+    /// for agents that have finished. Each completed agent is removed from the manager.
+    pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
+        let Some(mgr) = &mut self.subagent_manager else {
+            return vec![];
+        };
+
+        let finished: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .filter_map(|(id, status)| {
+                if matches!(
+                    status.state,
+                    zeph_a2a::types::TaskState::Completed
+                        | zeph_a2a::types::TaskState::Failed
+                        | zeph_a2a::types::TaskState::Canceled
+                ) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut results = vec![];
+        for task_id in finished {
+            match mgr.collect(&task_id).await {
+                Ok(result) => results.push((task_id, result)),
+                Err(e) => {
+                    tracing::warn!(task_id, error = %e, "failed to collect sub-agent result");
+                }
+            }
+        }
+        results
+    }
+
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
+
+        if let Some(ref mut mgr) = self.subagent_manager {
+            mgr.shutdown_all();
+        }
 
         if let Some(ref manager) = self.mcp.manager {
             manager.shutdown_all_shared().await;
@@ -303,6 +345,43 @@ impl<C: Channel> Agent<C> {
         }
 
         loop {
+            // Refresh sub-agent status in metrics before polling.
+            if let Some(ref mgr) = self.subagent_manager {
+                let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
+                    .statuses()
+                    .into_iter()
+                    .map(|(id, s)| {
+                        let def = mgr.agents_def(&id);
+                        crate::metrics::SubAgentMetrics {
+                            name: def.map_or_else(
+                                || id[..8.min(id.len())].to_owned(),
+                                |d| d.name.clone(),
+                            ),
+                            id: id.clone(),
+                            state: format!("{:?}", s.state).to_lowercase(),
+                            turns_used: s.turns_used,
+                            max_turns: def.map_or(20, |d| d.permissions.max_turns),
+                            background: def.is_some_and(|d| d.permissions.background),
+                            elapsed_secs: s.started_at.elapsed().as_secs(),
+                        }
+                    })
+                    .collect();
+                self.update_metrics(|m| m.sub_agents = sub_agent_metrics);
+            }
+
+            // Non-blocking poll: notify user when background sub-agents complete.
+            let completed = self.poll_subagents().await;
+            for (task_id, result) in completed {
+                let notice = if result.is_empty() {
+                    format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
+                } else {
+                    format!("[sub-agent {id}] completed:\n{result}", id = &task_id[..8])
+                };
+                if let Err(e) = self.channel.send(&notice).await {
+                    tracing::warn!(error = %e, "failed to send sub-agent completion notice");
+                }
+            }
+
             self.drain_channel();
 
             let (text, image_parts) = if let Some(queued) = self.message_queue.pop_front() {
@@ -491,6 +570,13 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
+        if trimmed.starts_with("/agent")
+            && let Some(response) = self.handle_agent_command(trimmed)
+        {
+            self.channel.send(&response).await?;
+            return Ok(());
+        }
+
         self.rebuild_system_prompt(&text).await;
 
         if let Err(e) = self.maybe_compact().await {
@@ -662,6 +748,102 @@ impl<C: Channel> Agent<C> {
             .send(&format!("Feedback recorded for \"{skill_name}\"."))
             .await?;
         Ok(())
+    }
+
+    fn handle_agent_command(&mut self, text: &str) -> Option<String> {
+        use std::fmt::Write as _;
+        let rest = text.strip_prefix("/agent")?.trim();
+        if rest.is_empty() {
+            return Some("Usage: /agent <list|spawn|bg|status|cancel|approve|deny> [args]".into());
+        }
+        let (cmd, args) = rest.split_once(' ').unwrap_or((rest, ""));
+        let cmd = cmd.trim();
+        let args = args.trim();
+
+        match cmd {
+            "list" => {
+                let mgr = self.subagent_manager.as_ref()?;
+                let defs = mgr.definitions();
+                if defs.is_empty() {
+                    return Some("No sub-agent definitions found.".into());
+                }
+                let mut out = String::from("Available sub-agents:\n");
+                for d in defs {
+                    let _ = writeln!(out, "  {} — {}", d.name, d.description);
+                }
+                Some(out)
+            }
+            "spawn" | "bg" => {
+                let Some((name, prompt)) = args.split_once(' ') else {
+                    return Some(format!("Usage: /agent {cmd} <name> <prompt>"));
+                };
+                let name = name.trim();
+                let prompt = prompt.trim();
+                let provider = self.provider.clone();
+                let tool_executor = Arc::clone(&self.tool_executor);
+                let mgr = self.subagent_manager.as_mut()?;
+                match mgr.spawn(name, prompt, provider, tool_executor) {
+                    Ok(id) => Some(format!(
+                        "Sub-agent '{name}' started (id: {short})",
+                        short = &id[..8.min(id.len())]
+                    )),
+                    Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
+                }
+            }
+            "status" => {
+                let mgr = self.subagent_manager.as_ref()?;
+                let statuses = mgr.statuses();
+                if statuses.is_empty() {
+                    return Some("No active sub-agents.".into());
+                }
+                let mut out = String::from("Active sub-agents:\n");
+                for (id, s) in &statuses {
+                    let state = format!("{:?}", s.state).to_lowercase();
+                    let elapsed = s.started_at.elapsed().as_secs();
+                    let _ = writeln!(
+                        out,
+                        "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
+                        short = &id[..8.min(id.len())],
+                        t = s.turns_used,
+                        msg = s.last_message.as_deref().unwrap_or(""),
+                    );
+                }
+                Some(out)
+            }
+            "cancel" => {
+                if args.is_empty() {
+                    return Some("Usage: /agent cancel <id>".into());
+                }
+                let mgr = self.subagent_manager.as_mut()?;
+                // Accept prefix match on task_id
+                let ids: Vec<String> = mgr
+                    .statuses()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| id.starts_with(args))
+                    .collect();
+                match ids.as_slice() {
+                    [] => Some(format!("No sub-agent with id prefix '{args}'")),
+                    [id] => {
+                        let id = id.clone();
+                        match mgr.cancel(&id) {
+                            Ok(()) => Some(format!("Cancelled sub-agent {id}.")),
+                            Err(e) => Some(format!("Cancel failed: {e}")),
+                        }
+                    }
+                    _ => Some(format!(
+                        "Ambiguous id prefix '{args}': matches {} agents",
+                        ids.len()
+                    )),
+                }
+            }
+            "approve" | "deny" => Some(format!(
+                "/{cmd} <id>: permission approval is not yet implemented"
+            )),
+            _ => Some(format!(
+                "Unknown /agent subcommand: '{cmd}'. Try /agent list"
+            )),
+        }
     }
 
     async fn reload_skills(&mut self) {

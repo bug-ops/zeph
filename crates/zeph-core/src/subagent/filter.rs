@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use zeph_skills::loader::Skill;
 use zeph_skills::registry::SkillRegistry;
@@ -17,14 +18,14 @@ use super::error::SubAgentError;
 /// All calls are checked against the policy before being forwarded to the inner
 /// executor. Rejected calls return a descriptive [`ToolError`].
 pub struct FilteredToolExecutor {
-    inner: Box<dyn ErasedToolExecutor>,
+    inner: Arc<dyn ErasedToolExecutor>,
     policy: ToolPolicy,
 }
 
 impl FilteredToolExecutor {
     /// Create a new filtered executor.
     #[must_use]
-    pub fn new(inner: Box<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
+    pub fn new(inner: Arc<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
         Self { inner, policy }
     }
 
@@ -254,8 +255,8 @@ mod tests {
         }
     }
 
-    fn stub_box(tools: &[&'static str]) -> Box<dyn ErasedToolExecutor> {
-        Box::new(StubExecutor {
+    fn stub_box(tools: &[&'static str]) -> Arc<dyn ErasedToolExecutor> {
+        Arc::new(StubExecutor {
             tools: tools.to_vec(),
         })
     }

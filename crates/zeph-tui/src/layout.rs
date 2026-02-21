@@ -25,6 +25,7 @@ pub struct AppLayout {
     pub skills: Rect,
     pub memory: Rect,
     pub resources: Rect,
+    pub subagents: Rect,
     pub activity: Rect,
     pub input: Rect,
     pub status: Rect,
@@ -52,6 +53,7 @@ impl AppLayout {
                 skills: Rect::default(),
                 memory: Rect::default(),
                 resources: Rect::default(),
+                subagents: Rect::default(),
                 activity: outer[2],
                 input: outer[3],
                 status: outer[4],
@@ -66,9 +68,10 @@ impl AppLayout {
         let side_split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(33),
-                Constraint::Percentage(34),
-                Constraint::Percentage(33),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
             ])
             .split(main_split[1]);
 
@@ -79,6 +82,7 @@ impl AppLayout {
             skills: side_split[0],
             memory: side_split[1],
             resources: side_split[2],
+            subagents: side_split[3],
             activity: outer[2],
             input: outer[3],
             status: outer[4],
@@ -115,6 +119,7 @@ mod tests {
         let layout = AppLayout::compute(area, true);
         assert!(layout.skills.y < layout.memory.y);
         assert!(layout.memory.y < layout.resources.y);
+        assert!(layout.resources.y < layout.subagents.y);
     }
 
     #[test]
@@ -133,6 +138,7 @@ mod tests {
         assert_eq!(layout.skills, Rect::default());
         assert_eq!(layout.memory, Rect::default());
         assert_eq!(layout.resources, Rect::default());
+        assert_eq!(layout.subagents, Rect::default());
         assert_eq!(layout.chat.width, area.width);
     }
 
@@ -167,6 +173,7 @@ mod tests {
         assert_eq!(layout.skills, Rect::default());
         assert_eq!(layout.memory, Rect::default());
         assert_eq!(layout.resources, Rect::default());
+        assert_eq!(layout.subagents, Rect::default());
         assert_eq!(layout.chat.width, area.width);
     }
 
@@ -252,6 +259,7 @@ mod tests {
                     assert_within_bounds(layout.skills, area);
                     assert_within_bounds(layout.memory, area);
                     assert_within_bounds(layout.resources, area);
+                    assert_within_bounds(layout.subagents, area);
                 }
             }
 
