@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `validate_skill_references(body, skill_dir)` in zeph-skills loader: parses Markdown links targeting `references/`, `scripts/`, or `assets/` subdirs, warns on missing files and symlink traversal attempts (#689)
+- `sanitize_skill_body(body)` in zeph-skills prompt: escapes XML structural tags (`<skill`, `</skill>`, `<instructions`, `</instructions>`, `<available_skills`, `</available_skills>`) to prevent prompt injection (#689)
+- Body sanitization applied automatically to all non-`Trusted` skills in `format_skills_prompt()` (#689)
+
 ### Changed
 - `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
 

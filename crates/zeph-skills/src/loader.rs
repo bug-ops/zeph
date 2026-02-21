@@ -286,6 +286,43 @@ pub fn load_skill_body(meta: &SkillMeta) -> Result<String, SkillError> {
     Ok(body.to_string())
 }
 
+/// Parse Markdown link targets from skill body and warn about broken or out-of-bounds references.
+///
+/// Checks links whose targets start with `references/`, `scripts/`, or `assets/`.
+/// Missing files or paths escaping `skill_dir` are returned as warning strings.
+/// This does not block skill loading.
+#[must_use]
+pub fn validate_skill_references(body: &str, skill_dir: &Path) -> Vec<String> {
+    let mut warnings = Vec::new();
+    // Match ](references/...), ](scripts/...), ](assets/...)
+    let mut rest = body;
+    while let Some(open) = rest.find("](") {
+        rest = &rest[open + 2..];
+        let Some(close) = rest.find(')') else {
+            break;
+        };
+        let target = &rest[..close];
+        rest = &rest[close + 1..];
+
+        if !target.starts_with("references/")
+            && !target.starts_with("scripts/")
+            && !target.starts_with("assets/")
+        {
+            continue;
+        }
+
+        let full = skill_dir.join(target);
+        if !full.exists() {
+            warnings.push(format!("broken reference: {target} does not exist"));
+            continue;
+        }
+        if let Err(e) = validate_path_within(&full, skill_dir) {
+            warnings.push(format!("unsafe reference {target}: {e}"));
+        }
+    }
+    warnings
+}
+
 /// Load a skill from a SKILL.md file with YAML frontmatter.
 ///
 /// # Errors
@@ -294,6 +331,11 @@ pub fn load_skill_body(meta: &SkillMeta) -> Result<String, SkillError> {
 pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
     let meta = load_skill_meta(path)?;
     let body = load_skill_body(&meta)?;
+
+    for warning in validate_skill_references(&body, &meta.skill_dir) {
+        tracing::warn!(skill = %meta.name, "{warning}");
+    }
+
     Ok(Skill { meta, body })
 }
 
@@ -641,6 +683,90 @@ mod tests {
         );
         let meta = load_skill_meta(&path).unwrap();
         assert_eq!(meta.requires_secrets, vec!["key_a", "key_b"]);
+    }
+
+    #[test]
+    fn validate_references_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = dir.path().join("references");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("api.md"), "api docs").unwrap();
+
+        let body = "Use [api docs](references/api.md) for details.";
+        let warnings = validate_skill_references(body, dir.path());
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_references_broken_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "See [missing](references/missing.md).";
+        let warnings = validate_skill_references(body, dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("broken reference"));
+        assert!(warnings[0].contains("references/missing.md"));
+    }
+
+    #[test]
+    fn validate_references_multiple_links_on_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = dir.path().join("references");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("a.md"), "a").unwrap();
+        // b.md does not exist
+
+        let body = "See [a](references/a.md) and [b](references/b.md) on the same line.";
+        let warnings = validate_skill_references(body, dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("references/b.md"));
+    }
+
+    #[test]
+    fn validate_references_ignores_external_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "See [external](https://example.com) and [local](docs/guide.md).";
+        let warnings = validate_skill_references(body, dir.path());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_references_scripts_and_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        // scripts/run.sh exists, assets/logo.png does not
+        let scripts = dir.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("run.sh"), "#!/bin/sh").unwrap();
+
+        let body = "Run [script](scripts/run.sh). See [logo](assets/logo.png).";
+        let warnings = validate_skill_references(body, dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("assets/logo.png"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_references_rejects_traversal() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let refs = base.path().join("references");
+        std::fs::create_dir_all(&refs).unwrap();
+        let link = refs.join("evil.md");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let body = "See [evil](references/evil.md).";
+        let warnings = validate_skill_references(body, base.path());
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("unsafe reference"),
+            "expected traversal warning, got: {:?}",
+            warnings[0]
+        );
     }
 
     #[test]
