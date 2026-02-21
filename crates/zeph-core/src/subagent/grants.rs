@@ -204,4 +204,42 @@ mod tests {
         let k = GrantKind::Tool("shell".into());
         assert_eq!(k.to_string(), "Tool(shell)");
     }
+
+    #[test]
+    fn partial_sweep_keeps_non_expired_grants() {
+        let mut pg = PermissionGrants::default();
+
+        // Add one already-expired grant.
+        pg.grants.push(Grant {
+            kind: GrantKind::Tool("expired-tool".into()),
+            granted_at: Instant::now() - Duration::from_secs(10),
+            ttl: Duration::from_secs(1),
+        });
+
+        // Add one live grant with long TTL.
+        pg.add(
+            GrantKind::Secret("live-key".into()),
+            Duration::from_secs(300),
+        );
+
+        pg.sweep_expired();
+
+        assert_eq!(pg.grants.len(), 1, "only live grant should remain");
+        assert_eq!(pg.grants[0].kind, GrantKind::Secret("live-key".into()));
+    }
+
+    #[test]
+    fn duplicate_grant_for_same_key_both_tracked() {
+        let mut pg = PermissionGrants::default();
+        pg.add(GrantKind::Secret("my-key".into()), Duration::from_secs(60));
+        pg.add(GrantKind::Secret("my-key".into()), Duration::from_secs(60));
+
+        // Both grants are stored; is_active just checks any match.
+        assert_eq!(pg.grants.len(), 2);
+        assert!(pg.is_active(&GrantKind::Secret("my-key".into())));
+
+        // After revoking all, none remain.
+        pg.revoke_all();
+        assert!(pg.grants.is_empty());
+    }
 }

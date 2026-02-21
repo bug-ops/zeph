@@ -767,4 +767,185 @@ mod tests {
         // SubAgentHandle Debug must not expose grant contents or secrets
         assert!(!debug_str.contains("api-key"));
     }
+
+    #[tokio::test]
+    async fn llm_failure_transitions_to_failed_state() {
+        let rt_handle = tokio::runtime::Handle::current();
+        let _guard = rt_handle.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let failing = AnyProvider::Mock(MockProvider::failing());
+        let task_id = mgr
+            .spawn("bot", "do work", failing, noop_executor())
+            .unwrap();
+
+        // Wait for the background task to complete.
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let statuses = mgr.statuses();
+        let status = statuses
+            .iter()
+            .find(|(id, _)| id == &task_id)
+            .map(|(_, s)| s);
+        // The background loop should have caught the LLM error and reported Failed.
+        assert!(
+            status.is_some_and(|s| s.state == TaskState::Failed),
+            "expected Failed, got: {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_call_loop_two_turns() {
+        use std::sync::Mutex;
+        use zeph_tools::ToolCall;
+
+        struct ToolOnceExecutor {
+            calls: Mutex<u32>,
+        }
+
+        impl ErasedToolExecutor for ToolOnceExecutor {
+            fn execute_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn execute_confirmed_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+                vec![]
+            }
+
+            fn execute_tool_call_erased<'a>(
+                &'a self,
+                call: &'a ToolCall,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                let mut n = self.calls.lock().unwrap();
+                *n += 1;
+                let result = if *n == 1 {
+                    // First call: return tool output (simulates tool call)
+                    Ok(Some(ToolOutput {
+                        tool_name: call.tool_id.clone(),
+                        summary: "step 1 done".into(),
+                        blocks_executed: 1,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                    }))
+                } else {
+                    Ok(None)
+                };
+                Box::pin(std::future::ready(result))
+            }
+        }
+
+        let rt_handle = tokio::runtime::Handle::current();
+        let _guard = rt_handle.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        // Two responses: first triggers tool handling, second is final.
+        let provider = mock_provider(vec!["turn 1 response", "final answer"]);
+        let executor = Arc::new(ToolOnceExecutor {
+            calls: Mutex::new(0),
+        });
+
+        let task_id = mgr
+            .spawn("bot", "run two turns", provider, executor)
+            .unwrap();
+
+        // Wait for background loop to finish.
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+        let result = mgr.collect(&task_id).await;
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn collect_on_running_task_completes_eventually() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        // Spawn with a slow response so the task is still running.
+        let task_id = do_spawn(&mut mgr, "bot", "slow work").unwrap();
+
+        // collect() awaits the JoinHandle, so it will finish when the task completes.
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), mgr.collect(&task_id)).await;
+
+        assert!(result.is_ok(), "collect timed out after 5s");
+        let inner = result.unwrap();
+        assert!(inner.is_ok(), "collect returned error: {inner:?}");
+    }
+
+    #[test]
+    fn concurrency_slot_freed_after_cancel() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = SubAgentManager::new(1); // limit to 1
+        mgr.definitions.push(sample_def());
+
+        let id1 = do_spawn(&mut mgr, "bot", "task 1").unwrap();
+
+        // Concurrency limit reached — second spawn should fail.
+        let err = do_spawn(&mut mgr, "bot", "task 2").unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            "expected concurrency limit error, got: {err}"
+        );
+
+        // Cancel the first agent to free the slot.
+        mgr.cancel(&id1).unwrap();
+
+        // Now a new spawn should succeed.
+        let result = do_spawn(&mut mgr, "bot", "task 3");
+        assert!(
+            result.is_ok(),
+            "expected spawn to succeed after cancel, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn statuses_does_not_include_collected_task() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let task_id = do_spawn(&mut mgr, "bot", "task").unwrap();
+        assert_eq!(mgr.statuses().len(), 1);
+
+        // Wait for task completion then collect.
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        let _ = mgr.collect(&task_id).await;
+
+        // After collect(), the task should no longer appear in statuses.
+        assert!(
+            mgr.statuses().is_empty(),
+            "expected empty statuses after collect"
+        );
+    }
 }

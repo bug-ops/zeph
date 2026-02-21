@@ -172,6 +172,14 @@ impl SubAgentDef {
     fn parse_with_path(content: &str, path: &str) -> Result<Self, SubAgentError> {
         let (toml_str, body) = split_toml_frontmatter(content, path)?;
 
+        // Normalize CRLF in the TOML block — the `toml` crate rejects bare `\r`.
+        let toml_normalized;
+        let toml_str = if toml_str.contains('\r') {
+            toml_normalized = toml_str.replace("\r\n", "\n").replace('\r', "\n");
+            &toml_normalized
+        } else {
+            toml_str
+        };
         let raw: RawSubAgentDef = toml::from_str(toml_str).map_err(|e| SubAgentError::Parse {
             path: path.to_owned(),
             reason: e.to_string(),
@@ -437,6 +445,25 @@ You are a code reviewer. Report findings with severity.
         let err =
             SubAgentDef::load(std::path::Path::new("/tmp/does-not-exist-zeph.md")).unwrap_err();
         assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_crlf_line_endings() {
+        // Windows-style CRLF line endings must be accepted without error.
+        let content =
+            "+++\r\nname = \"bot\"\r\ndescription = \"A bot\"\r\n+++\r\n\r\nDo things.\r\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.name, "bot");
+        assert_eq!(def.description, "A bot");
+        assert!(!def.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn parse_crlf_closing_delimiter() {
+        // Verify that \r\n after the closing +++ is stripped correctly.
+        let content = "+++\r\nname = \"bot\"\r\ndescription = \"A bot\"\r\n+++\r\nPrompt here.\r\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(def.system_prompt.contains("Prompt here"));
     }
 
     #[test]

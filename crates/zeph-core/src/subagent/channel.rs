@@ -81,4 +81,38 @@ mod tests {
         let back = orch.rx.recv().await.unwrap();
         assert!(matches!(back, A2aMessage::SendMessage(_)));
     }
+
+    #[tokio::test]
+    async fn cancel_variant_round_trip() {
+        let (mut orch, mut agent) = new_channel(4);
+        orch.tx.send(A2aMessage::Cancel).await.unwrap();
+        let msg = agent.rx.recv().await.unwrap();
+        assert!(matches!(msg, A2aMessage::Cancel));
+    }
+
+    #[tokio::test]
+    async fn artifact_update_variant_round_trip() {
+        use zeph_a2a::types::{Artifact, TaskArtifactUpdateEvent};
+
+        let (mut orch, mut agent) = new_channel(4);
+        let event = TaskArtifactUpdateEvent {
+            kind: "artifact-update".into(),
+            task_id: "task-2".into(),
+            context_id: None,
+            artifact: Artifact {
+                artifact_id: "art-1".into(),
+                name: Some("result.txt".into()),
+                parts: vec![],
+                metadata: None,
+            },
+            is_final: true,
+        };
+        agent
+            .tx
+            .send(A2aMessage::ArtifactUpdate(event))
+            .await
+            .unwrap();
+        let msg = orch.rx.recv().await.unwrap();
+        assert!(matches!(msg, A2aMessage::ArtifactUpdate(_)));
+    }
 }
