@@ -162,3 +162,52 @@ strategy = { type = "strip_noise", patterns = [
   "^Already downloaded",
   "^\\s*$",
 ] }
+
+# --- File search ---
+
+[[rules]]
+name = "find"
+match = { regex = "^find\\s" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 10 }
+
+# --- Text search ---
+
+[[rules]]
+name = "grep-rg"
+match = { regex = "^(grep|rg)\\s" }
+strategy = { type = "truncate", max_lines = 80, head = 30, tail = 10 }
+
+# --- HTTP clients ---
+
+[[rules]]
+name = "curl-wget"
+match = { regex = "^(curl|wget)\\s" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*%",
+  "^--\\d{4}-\\d{2}-\\d{2}",
+  "^\\s*\\d+K",
+  "Resolving\\s",
+  "Connecting to\\s",
+  "^\\s*$",
+] }
+
+# --- System info ---
+
+[[rules]]
+name = "du-df-ps"
+match = { regex = "^(du|df|ps)(\\s|$)" }
+strategy = { type = "truncate", max_lines = 50, head = 20, tail = 5 }
+
+# --- JS test runners ---
+
+[[rules]]
+name = "js-test"
+match = { regex = "^(jest|mocha|vitest|npx jest|npx vitest)(\\s|$)" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 30 }
+
+# --- Generic linters ---
+
+[[rules]]
+name = "linter"
+match = { regex = "^(eslint|ruff|mypy|pylint|flake8)\\s|^(npx eslint|python -m (mypy|pylint|ruff))\\s" }
+strategy = { type = "truncate", max_lines = 80, head = 20, tail = 15 }

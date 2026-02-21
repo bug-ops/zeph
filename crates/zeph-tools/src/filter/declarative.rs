@@ -2268,6 +2268,139 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 filtered out; finished in 
         insta::assert_snapshot!(result.output);
     }
 
+    // --- new rules: find, grep-rg, curl-wget, du-df-ps, js-test, linter ---
+
+    #[test]
+    fn find_filter_matches_and_truncates() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "find")
+            .expect("find rule missing");
+        assert!(f.matcher().matches("find . -name '*.rs'"));
+        assert!(!f.matcher().matches("grep foo bar"));
+
+        let lines: Vec<String> = (0..150).map(|i| format!("/path/file_{i}.rs")).collect();
+        let raw = lines.join("\n");
+        let result = f.filter("find . -name '*.rs'", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+    }
+
+    #[test]
+    fn grep_rg_filter_matches_and_truncates() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "grep-rg")
+            .expect("grep-rg rule missing");
+        assert!(f.matcher().matches("grep -r foo ."));
+        assert!(f.matcher().matches("rg pattern src/"));
+        assert!(!f.matcher().matches("find . -name foo"));
+
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("src/file_{i}.rs:10:match here"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("rg pattern src/", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+    }
+
+    #[test]
+    fn curl_wget_filter_strips_noise() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "curl-wget")
+            .expect("curl-wget rule missing");
+        assert!(f.matcher().matches("curl https://example.com"));
+        assert!(f.matcher().matches("wget https://example.com/file.tar.gz"));
+        assert!(!f.matcher().matches("git clone https://example.com"));
+
+        let raw = "\
+Resolving example.com... 93.184.216.34
+Connecting to example.com|93.184.216.34|:443...
+  % Total    % Received % Xferd
+  100  1234    0  1234    0     0   5000      0 --:--:-- --:--:-- --:--:--  5000
+{\"result\": \"ok\"}";
+        let result = f.filter("curl https://example.com", raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Full);
+        assert!(result.output.contains("{\"result\": \"ok\"}"));
+        assert!(!result.output.contains("Resolving"));
+        assert!(!result.output.contains("Connecting to"));
+    }
+
+    #[test]
+    fn du_df_ps_filter_matches_and_truncates() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "du-df-ps")
+            .expect("du-df-ps rule missing");
+        assert!(f.matcher().matches("du -sh *"));
+        assert!(f.matcher().matches("df -h"));
+        assert!(f.matcher().matches("ps aux"));
+        assert!(f.matcher().matches("du"));
+        assert!(!f.matcher().matches("docker ps"));
+
+        let lines: Vec<String> = (0..80).map(|i| format!("{i}K\t/path/dir_{i}")).collect();
+        let raw = lines.join("\n");
+        let result = f.filter("du -sh *", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+    }
+
+    #[test]
+    fn js_test_filter_matches_and_truncates() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "js-test")
+            .expect("js-test rule missing");
+        assert!(f.matcher().matches("jest --coverage"));
+        assert!(f.matcher().matches("vitest run"));
+        assert!(f.matcher().matches("npx jest src/"));
+        assert!(f.matcher().matches("npx vitest --reporter verbose"));
+        assert!(f.matcher().matches("mocha test/"));
+        assert!(!f.matcher().matches("pytest tests/"));
+
+        let lines: Vec<String> = (0..150)
+            .map(|i| format!("  PASS src/module_{i}.test.js"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("jest --coverage", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+    }
+
+    #[test]
+    fn linter_filter_matches_and_truncates() {
+        let filters = load_declarative_filters(None);
+        let f = filters
+            .iter()
+            .find(|f| f.name() == "linter")
+            .expect("linter rule missing");
+        assert!(f.matcher().matches("eslint src/"));
+        assert!(f.matcher().matches("ruff check ."));
+        assert!(f.matcher().matches("mypy src/"));
+        assert!(f.matcher().matches("pylint mymodule"));
+        assert!(f.matcher().matches("flake8 ."));
+        assert!(f.matcher().matches("npx eslint src/"));
+        assert!(f.matcher().matches("python -m mypy src/"));
+        assert!(f.matcher().matches("python -m pylint mymodule"));
+        assert!(f.matcher().matches("python -m ruff check ."));
+        assert!(!f.matcher().matches("cargo clippy"));
+
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("src/file_{i}.py:10:1: E501 line too long"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = f.filter("ruff check .", &raw, 0);
+        assert_eq!(result.confidence, FilterConfidence::Partial);
+        assert!(result.output.contains("lines omitted"));
+    }
+
     use proptest::prelude::*;
 
     proptest! {
