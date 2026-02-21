@@ -1,0 +1,13 @@
+# Lychee link checker configuration
+# https://lychee.cli.rs/usage/config/
+
+# Exclude badge image URLs and external services
+exclude = [
+  "https://img.shields.io/.*",
+  "https://codecov.io/.*",
+  "https://docs.rs/.*",
+  "https://crates.io/.*",
+]
+
+# Skip URLs that require authentication
+exclude_loopback = true

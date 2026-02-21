@@ -3,9 +3,9 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: [docs/**]
+    paths: [docs/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
   pull_request:
-    paths: [docs/**]
+    paths: [docs/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -36,6 +36,17 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           path: docs/book
+
+  link-check:
+    name: Check links (lychee)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: "--config .github/lychee.toml README.md crates/*/README.md docs/src/**/*.md --offline --no-progress"
+          fail: true
 
   deploy:
     if: github.ref == 'refs/heads/main'
