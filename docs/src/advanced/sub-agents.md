@@ -392,6 +392,45 @@ The `cancel` command accepts a prefix of the task UUID. If the prefix matches mu
 Ambiguous id prefix 'a1': matches 2 agents
 ```
 
+## `@mention` Syntax
+
+In addition to `/agent spawn`, sub-agents can be invoked with `@agent_name` mention syntax directly in the chat input:
+
+```
+> @code-reviewer check the authentication module
+Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+```
+
+This is equivalent to `/agent spawn code-reviewer check the authentication module` but more concise.
+
+### Disambiguation from File References
+
+The TUI file picker also uses `@` as a trigger for fuzzy file search. `AgentCommand::parse()` resolves this ambiguity by checking the token after `@` against the list of loaded sub-agent definition names. If the token matches a known agent, it is treated as a mention; otherwise, parsing returns an error and the caller falls back to file-reference handling.
+
+```
+@code-reviewer review src/main.rs   -> sub-agent mention (code-reviewer is a known agent)
+@src/main.rs                        -> file reference (no matching agent name)
+```
+
+### AgentCommand Enum
+
+All `/agent` subcommands and `@mention` inputs are parsed into a typed `AgentCommand` enum via `AgentCommand::parse()`:
+
+```rust
+pub enum AgentCommand {
+    List,
+    Spawn { name: String, prompt: String },
+    Background { name: String, prompt: String },
+    Status,
+    Cancel { id: String },
+    Approve { id: String },
+    Deny { id: String },
+    Mention { agent: String, prompt: String },
+}
+```
+
+`parse()` accepts the raw input string and a slice of known agent names. It dispatches to `parse_mention()` when the input starts with `@`, and to `/agent` subcommand parsing otherwise. This centralizes command validation and eliminates string matching in the agent loop.
+
 ## Safety Guarantees
 
 - `SubAgentHandle::Drop` cancels the task and revokes all grants

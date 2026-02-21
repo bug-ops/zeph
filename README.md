@@ -124,6 +124,9 @@ zeph vault set ZEPH_SECRET_GITHUB_TOKEN ghp_...   # injected as GITHUB_TOKEN for
 /agent bg <name> <prompt>      Spawn a background sub-agent
 /agent status                  Show active sub-agents with state, turns, and elapsed time
 /agent cancel <id>             Cancel a running sub-agent by ID prefix
+
+# @mention shorthand (equivalent to /agent spawn):
+@code-reviewer check the auth module
 ```
 
 ## Automated Context Engineering

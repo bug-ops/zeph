@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `SubAgentMetrics` in `MetricsSnapshot` with state, turns, elapsed time (#715)
 - TUI sub-agents panel (`zeph-tui` widgets/subagents) with color-coded states (#715)
 - `/agent` CLI commands: `list`, `spawn`, `bg`, `status`, `cancel`, `approve`, `deny` (#716)
+- Typed `AgentCommand` enum with `parse()` for type-safe command dispatch replacing string matching in the agent loop
+- `@agent_name` mention syntax for quick sub-agent invocation with disambiguation from `@`-triggered file references
 
 ### Changed
 - Migrated all 6 hardcoded filters (cargo_build, test_output, clippy, git, dir_listing, log_dedup) into the declarative TOML engine
