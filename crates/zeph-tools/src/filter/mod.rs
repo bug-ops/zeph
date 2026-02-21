@@ -2,12 +2,14 @@
 
 pub(crate) mod cargo_build;
 mod clippy;
+pub(crate) mod declarative;
 mod dir_listing;
 mod git;
 mod log_dedup;
 pub mod security;
 mod test_output;
 
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
@@ -294,6 +296,11 @@ pub struct FilterConfig {
 
     #[serde(default)]
     pub security: SecurityFilterConfig,
+
+    /// Directory containing a `filters.toml` override file.
+    /// Falls back to embedded defaults when `None` or when the file is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters_path: Option<PathBuf>,
 }
 
 impl Default for FilterConfig {
@@ -307,6 +314,7 @@ impl Default for FilterConfig {
             dir_listing: DirListingFilterConfig::default(),
             log_dedup: LogDedupFilterConfig::default(),
             security: SecurityFilterConfig::default(),
+            filters_path: None,
         }
     }
 }
@@ -482,6 +490,9 @@ impl OutputFilterRegistry {
         }
         if config.log_dedup.enabled {
             r.register(Box::new(LogDedupFilter::new(config.log_dedup.clone())));
+        }
+        for f in declarative::load_declarative_filters(config.filters_path.as_deref()) {
+            r.register(f);
         }
         r
     }

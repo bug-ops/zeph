@@ -1,0 +1,79 @@
+# Default declarative filter rules (embedded fallback).
+# User can override by placing filters.toml next to config.toml.
+
+[[rules]]
+name = "docker-build"
+match = { prefix = "docker build" }
+strategy = { type = "strip_noise", patterns = [
+  "^Step \\d+/\\d+ : ",
+  "^ ---> [a-f0-9]+$",
+  "^Removing intermediate container",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "docker-compose"
+match = { prefix = "docker compose" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*Network\\s+\\S+\\s+Created$",
+  "^\\s*Container\\s+\\S+\\s+(Creating|Created|Starting|Started)$",
+] }
+
+[[rules]]
+name = "npm-install"
+match = { regex = "^(npm|yarn|pnpm)\\s+(install|ci|add)" }
+strategy = { type = "strip_noise", patterns = [
+  "^npm warn",
+  "^npm notice",
+  "^added \\d+ packages",
+  "^up to date",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "pip-install"
+match = { regex = "^pip3?\\s+install" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*Downloading\\s",
+  "^\\s*Installing collected",
+  "^\\s*Using cached",
+  "^\\s*Collecting\\s",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "make"
+match = { prefix = "make" }
+strategy = { type = "truncate", max_lines = 80, head = 15, tail = 15 }
+
+[[rules]]
+name = "pytest"
+match = { regex = "^(pytest|python -m pytest)" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 30 }
+
+[[rules]]
+name = "go-test"
+match = { regex = "^go\\s+test" }
+strategy = { type = "truncate", max_lines = 80, head = 15, tail = 20 }
+
+[[rules]]
+name = "terraform-plan"
+match = { regex = "^terraform\\s+(plan|apply)" }
+strategy = { type = "truncate", max_lines = 60, head = 10, tail = 15 }
+
+[[rules]]
+name = "kubectl-get"
+match = { regex = "^kubectl\\s+(get|describe)" }
+strategy = { type = "truncate", max_lines = 50, head = 10, tail = 10 }
+
+[[rules]]
+name = "brew-install"
+match = { regex = "^brew\\s+(install|upgrade)" }
+strategy = { type = "strip_noise", patterns = [
+  "^==> Downloading",
+  "^==> Fetching",
+  "^==> Installing",
+  "^==> Pouring",
+  "^Already downloaded",
+  "^\\s*$",
+] }
