@@ -53,6 +53,7 @@ pub enum CommandMatcher {
     Exact(&'static str),
     Prefix(&'static str),
     Regex(regex::Regex),
+    #[cfg(test)]
     Custom(Box<dyn Fn(&str) -> bool + Send + Sync>),
 }
 
@@ -68,6 +69,7 @@ impl CommandMatcher {
             Self::Exact(s) => command == *s,
             Self::Prefix(s) => command.starts_with(s),
             Self::Regex(re) => re.is_match(command),
+            #[cfg(test)]
             Self::Custom(f) => f(command),
         }
     }
@@ -102,6 +104,7 @@ impl std::fmt::Debug for CommandMatcher {
             Self::Exact(s) => write!(f, "Exact({s:?})"),
             Self::Prefix(s) => write!(f, "Prefix({s:?})"),
             Self::Regex(re) => write!(f, "Regex({:?})", re.as_str()),
+            #[cfg(test)]
             Self::Custom(_) => write!(f, "Custom(...)"),
         }
     }
