@@ -1,0 +1,15 @@
+---
+source: crates/zeph-tools/src/filter/declarative.rs
+assertion_line: 2268
+expression: result.output
+---
+FAILURES:
+
+---- foo::test_b stdout ----
+thread 'foo::test_b' panicked at 'assertion `left == right` failed
+  left: 1
+ right: 2', src/foo.rs:42:9
+
+failures:
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 filtered out

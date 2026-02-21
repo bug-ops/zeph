@@ -2182,6 +2182,92 @@ index ghi..jkl 100644
         insta::assert_snapshot!(result.output);
     }
 
+    // --- empty input edge cases ---
+
+    #[test]
+    fn keep_matching_empty_input_returns_fallback() {
+        let f = keep_matching_filter(&[r"->"]);
+        let result = f.filter("cmd", "", 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn strip_annotated_empty_input_returns_fallback() {
+        let f = strip_annotated_filter(&[r"^\s*Compiling "], None);
+        let result = f.filter("cargo build", "", 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn test_summary_empty_input_returns_fallback() {
+        let f = test_summary_filter();
+        let result = f.filter("cargo test", "", 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    #[test]
+    fn group_by_rule_empty_input_returns_fallback() {
+        let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
+        let result = f.filter("cargo clippy", "", 0);
+        assert_eq!(result.confidence, FilterConfidence::Fallback);
+    }
+
+    // --- compound command matching ---
+
+    #[test]
+    fn compound_command_prefix_matches_last_segment() {
+        // "cd /path && cargo test" extracts "cargo test" as last segment,
+        // so a Prefix("cargo test") filter should apply to compound commands.
+        let f = DeclarativeFilter {
+            name: "test-compound",
+            matcher: CommandMatcher::Prefix("cargo test"),
+            strategy: CompiledStrategy::StripNoise {
+                patterns: vec![Regex::new(r"^NOISE").unwrap()],
+            },
+        };
+        assert!(f.matcher().matches("cd /path && cargo test"));
+        assert!(f.matcher().matches("cargo test --lib"));
+        assert!(!f.matcher().matches("cd /path && npm test"));
+    }
+
+    #[test]
+    fn compound_command_regex_match() {
+        // A regex matcher can be written to match compound commands.
+        let m = MatchConfig {
+            exact: None,
+            prefix: None,
+            regex: Some(r"cargo\s+test".into()),
+        };
+        let matcher = compile_match(&m).unwrap();
+        assert!(matcher.matches("cd /workspace && cargo test --lib"));
+        assert!(matcher.matches("cargo test --workspace"));
+    }
+
+    // --- test_summary snapshot ---
+
+    #[test]
+    fn test_summary_failures_snapshot() {
+        let f = test_summary_filter();
+        let raw = "\
+running 3 tests
+test foo::test_a ... ok
+test foo::test_b ... FAILED
+test foo::test_c ... ok
+
+---- foo::test_b stdout ----
+thread 'foo::test_b' panicked at 'assertion `left == right` failed
+  left: 1
+ right: 2', src/foo.rs:42:9
+
+failures:
+    foo::test_b
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 filtered out; finished in 0.02s
+";
+        let result = f.filter("cargo test", raw, 1);
+        insta::assert_snapshot!(result.output);
+    }
+
     use proptest::prelude::*;
 
     proptest! {
