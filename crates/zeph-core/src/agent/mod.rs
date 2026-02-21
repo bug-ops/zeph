@@ -570,14 +570,27 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
-        if trimmed.starts_with("/agent") {
-            let response = match crate::subagent::AgentCommand::parse(trimmed) {
-                Ok(cmd) => self.handle_agent_command(cmd),
-                Err(e) => Some(e.to_string()),
-            };
-            if let Some(msg) = response {
-                self.channel.send(&msg).await?;
-                return Ok(());
+        if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
+            let known: Vec<String> = self
+                .subagent_manager
+                .as_ref()
+                .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
+                .unwrap_or_default();
+            match crate::subagent::AgentCommand::parse(trimmed, &known) {
+                Ok(cmd) => {
+                    if let Some(msg) = self.handle_agent_command(cmd) {
+                        self.channel.send(&msg).await?;
+                    }
+                    return Ok(());
+                }
+                Err(e) if trimmed.starts_with('@') => {
+                    // Unknown @token — fall through to normal LLM processing
+                    tracing::debug!("@mention not matched as agent: {e}");
+                }
+                Err(e) => {
+                    self.channel.send(&e.to_string()).await?;
+                    return Ok(());
+                }
             }
         }
 
@@ -830,6 +843,19 @@ impl<C: Channel> Agent<C> {
             AgentCommand::Approve { id } | AgentCommand::Deny { id } => Some(format!(
                 "Permission approval for '{id}' is not yet implemented"
             )),
+            AgentCommand::Mention { agent, prompt } => {
+                // Foreground spawn: same as Spawn but triggered by @agent_name syntax.
+                let provider = self.provider.clone();
+                let tool_executor = Arc::clone(&self.tool_executor);
+                let mgr = self.subagent_manager.as_mut()?;
+                match mgr.spawn(&agent, &prompt, provider, tool_executor) {
+                    Ok(id) => Some(format!(
+                        "Sub-agent '{agent}' started (id: {short})",
+                        short = &id[..8.min(id.len())]
+                    )),
+                    Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
+                }
+            }
         }
     }
 
