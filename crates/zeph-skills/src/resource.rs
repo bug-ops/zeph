@@ -32,16 +32,15 @@ pub(crate) fn discover_resources(skill_dir: &Path) -> SkillResources {
     resources
 }
 
-/// Load a resource file content with path traversal protection.
+/// Load a skill resource file as a UTF-8 string with path traversal protection.
 ///
 /// # Errors
 ///
 /// Returns an error if the path escapes the skill directory or the file cannot be read.
-#[cfg(test)]
-fn load_resource(
+pub fn load_skill_resource(
     skill_dir: &Path,
     relative_path: &str,
-) -> Result<Vec<u8>, crate::error::SkillError> {
+) -> Result<String, crate::error::SkillError> {
     use crate::error::SkillError;
     let canonical_base = skill_dir.canonicalize().map_err(|e| {
         SkillError::Other(format!(
@@ -66,7 +65,7 @@ fn load_resource(
         )));
     }
 
-    std::fs::read(&canonical_target).map_err(|e| {
+    std::fs::read_to_string(&canonical_target).map_err(|e| {
         SkillError::Other(format!(
             "failed to read resource {}: {e}",
             canonical_target.display()
@@ -109,30 +108,30 @@ mod tests {
     }
 
     #[test]
-    fn load_resource_valid() {
+    fn load_skill_resource_valid() {
         let dir = tempfile::tempdir().unwrap();
         let scripts = dir.path().join("scripts");
         std::fs::create_dir(&scripts).unwrap();
         std::fs::write(scripts.join("run.sh"), "echo hello").unwrap();
 
-        let content = load_resource(dir.path(), "scripts/run.sh").unwrap();
-        assert_eq!(content, b"echo hello");
+        let content = load_skill_resource(dir.path(), "scripts/run.sh").unwrap();
+        assert_eq!(content, "echo hello");
     }
 
     #[test]
-    fn load_resource_path_traversal() {
+    fn load_skill_resource_path_traversal() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("scripts")).unwrap();
         std::fs::write(dir.path().join("scripts/ok.sh"), "ok").unwrap();
 
-        let err = load_resource(dir.path(), "../../../etc/passwd").unwrap_err();
+        let err = load_skill_resource(dir.path(), "../../../etc/passwd").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("path traversal") || msg.contains("canonicalize"));
     }
 
     #[test]
-    fn load_resource_not_found() {
+    fn load_skill_resource_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_resource(dir.path(), "nonexistent.txt").is_err());
+        assert!(load_skill_resource(dir.path(), "nonexistent.txt").is_err());
     }
 }

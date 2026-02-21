@@ -5,8 +5,6 @@ use crate::loader::Skill;
 use crate::resource::discover_resources;
 use crate::trust::TrustLevel;
 
-const OS_NAMES: &[&str] = &["linux", "macos", "windows"];
-
 // XML tag patterns (lowercase) that could break prompt structure if injected verbatim.
 // Matching is case-insensitive; the replacement is always the canonical escaped form.
 const SANITIZE_PATTERNS: &[(&str, &str)] = &[
@@ -50,19 +48,9 @@ pub fn sanitize_skill_body(body: &str) -> String {
     out
 }
 
-fn should_include_reference(filename: &str, os_family: &str) -> bool {
-    let stem = filename.strip_suffix(".md").unwrap_or(filename);
-    if OS_NAMES.contains(&stem) {
-        stem == os_family
-    } else {
-        true
-    }
-}
-
 #[must_use]
 pub fn format_skills_prompt<S: std::hash::BuildHasher>(
     skills: &[Skill],
-    os_family: &str,
     trust_levels: &HashMap<String, TrustLevel, S>,
 ) -> String {
     if skills.is_empty() {
@@ -95,19 +83,32 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher>(
         );
 
         let resources = discover_resources(&skill.meta.skill_dir);
-        for ref_path in &resources.references {
-            let Some(filename) = ref_path.file_name().and_then(|f| f.to_str()) else {
-                continue;
-            };
-            if !should_include_reference(filename, os_family) {
-                continue;
-            }
-            if let Ok(content) = std::fs::read_to_string(ref_path) {
-                let _ = write!(
-                    out,
-                    "\n<reference name=\"{filename}\">\n{content}\n</reference>",
-                );
-            }
+
+        let ref_names: Vec<&str> = resources
+            .references
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        if !ref_names.is_empty() {
+            let _ = write!(out, "\nAvailable references: {}", ref_names.join(", "));
+        }
+
+        let script_names: Vec<&str> = resources
+            .scripts
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        if !script_names.is_empty() {
+            let _ = write!(out, "\nAvailable scripts: {}", script_names.join(", "));
+        }
+
+        let asset_names: Vec<&str> = resources
+            .assets
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        if !asset_names.is_empty() {
+            let _ = write!(out, "\nAvailable assets: {}", asset_names.join(", "));
         }
 
         out.push_str("\n    </instructions>\n  </skill>\n");
@@ -187,14 +188,14 @@ mod tests {
     #[test]
     fn empty_skills_returns_empty_string() {
         let empty: &[Skill] = &[];
-        assert_eq!(format_skills_prompt(empty, "linux", &HashMap::new()), "");
+        assert_eq!(format_skills_prompt(empty, &HashMap::new()), "");
     }
 
     #[test]
     fn single_skill_format() {
         let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
-        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new());
         assert!(output.starts_with("<available_skills>"));
         assert!(output.ends_with("</available_skills>"));
         assert!(output.contains("<skill name=\"test\">"));
@@ -209,39 +210,18 @@ mod tests {
             make_skill("b", "desc b", "body b"),
         ];
 
-        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new());
         assert!(output.contains("<skill name=\"a\">"));
         assert!(output.contains("<skill name=\"b\">"));
     }
 
     #[test]
-    fn should_include_os_matching_reference() {
-        assert!(should_include_reference("linux.md", "linux"));
-        assert!(!should_include_reference("linux.md", "macos"));
-        assert!(!should_include_reference("linux.md", "windows"));
-
-        assert!(should_include_reference("macos.md", "macos"));
-        assert!(!should_include_reference("macos.md", "linux"));
-
-        assert!(should_include_reference("windows.md", "windows"));
-        assert!(!should_include_reference("windows.md", "linux"));
-    }
-
-    #[test]
-    fn should_include_generic_reference() {
-        assert!(should_include_reference("api.md", "linux"));
-        assert!(should_include_reference("api.md", "macos"));
-        assert!(should_include_reference("usage.md", "windows"));
-    }
-
-    #[test]
-    fn references_injected_for_matching_os() {
+    fn references_listed_not_injected() {
         let dir = tempfile::tempdir().unwrap();
         let refs = dir.path().join("references");
         std::fs::create_dir(&refs).unwrap();
-        std::fs::write(refs.join("linux.md"), "# Linux commands").unwrap();
-        std::fs::write(refs.join("macos.md"), "# macOS commands").unwrap();
-        std::fs::write(refs.join("common.md"), "# Common docs").unwrap();
+        std::fs::write(refs.join("api-guide.md"), "# API Guide content").unwrap();
+        std::fs::write(refs.join("common.md"), "# Common docs content").unwrap();
 
         let skills = vec![make_skill_with_dir(
             "test",
@@ -250,16 +230,56 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, "linux", &HashMap::new());
-        assert!(output.contains("# Linux commands"));
-        assert!(!output.contains("# macOS commands"));
-        assert!(output.contains("# Common docs"));
-        assert!(output.contains("<reference name=\"linux.md\">"));
-        assert!(output.contains("<reference name=\"common.md\">"));
+        let output = format_skills_prompt(&skills, &HashMap::new());
+        // filenames listed
+        assert!(output.contains("Available references:"));
+        assert!(output.contains("api-guide.md"));
+        assert!(output.contains("common.md"));
+        // content NOT injected
+        assert!(!output.contains("# API Guide content"));
+        assert!(!output.contains("# Common docs content"));
+        assert!(!output.contains("<reference"));
     }
 
     #[test]
-    fn no_references_dir_produces_body_only() {
+    fn scripts_listed_not_injected() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::write(scripts.join("extract.py"), "print('hi')").unwrap();
+
+        let skills = vec![make_skill_with_dir(
+            "test",
+            "desc",
+            "body",
+            dir.path().to_path_buf(),
+        )];
+
+        let output = format_skills_prompt(&skills, &HashMap::new());
+        assert!(output.contains("Available scripts: extract.py"));
+        assert!(!output.contains("print('hi')"));
+    }
+
+    #[test]
+    fn assets_listed_not_injected() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(assets.join("logo.png"), &[0u8; 4]).unwrap();
+
+        let skills = vec![make_skill_with_dir(
+            "test",
+            "desc",
+            "body",
+            dir.path().to_path_buf(),
+        )];
+
+        let output = format_skills_prompt(&skills, &HashMap::new());
+        assert!(output.contains("Available assets: logo.png"));
+    }
+
+    #[test]
+    fn no_resources_dir_produces_body_only() {
         let dir = tempfile::tempdir().unwrap();
         let skills = vec![make_skill_with_dir(
             "test",
@@ -268,9 +288,11 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, "macos", &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new());
         assert!(output.contains("skill body"));
-        assert!(!output.contains("<reference"));
+        assert!(!output.contains("Available references"));
+        assert!(!output.contains("Available scripts"));
+        assert!(!output.contains("Available assets"));
     }
 
     #[test]
@@ -278,7 +300,7 @@ mod tests {
         let skills = vec![make_skill("untrusted", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("untrusted".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, "linux", &trust);
+        let output = format_skills_prompt(&skills, &trust);
         assert!(output.contains("[QUARANTINED SKILL: untrusted]"));
         assert!(output.contains("restricted tool access"));
     }
@@ -288,14 +310,13 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, "linux", &trust);
+        let output = format_skills_prompt(&skills, &trust);
         assert!(!output.contains("QUARANTINED"));
         assert!(output.contains("do stuff"));
     }
 
     #[test]
     fn sanitize_case_insensitive() {
-        // Mixed-case variants must be escaped
         let body = "Close </Skill> and </INSTRUCTIONS> and </Available_Skills>.";
         let sanitized = sanitize_skill_body(body);
         assert!(!sanitized.contains("</Skill>"));
@@ -332,10 +353,7 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, "linux", &trust);
-        // Trusted skills are injected verbatim
-        assert!(output.contains("</skill>") || output.contains("&lt;/skill&gt;"));
-        // Specifically, it must NOT have been sanitized (verbatim pass-through)
+        let output = format_skills_prompt(&skills, &trust);
         assert!(output.contains("Some </skill> content."));
     }
 
@@ -345,8 +363,7 @@ mod tests {
         let skills = vec![make_skill("ver", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("ver".into(), TrustLevel::Verified);
-        let output = format_skills_prompt(&skills, "linux", &trust);
-        // Escaped tag must appear; raw body text must not appear verbatim
+        let output = format_skills_prompt(&skills, &trust);
         assert!(output.contains("&lt;/skill&gt;"));
         assert!(!output.contains("Inject </skill> here."));
     }
@@ -357,12 +374,10 @@ mod tests {
         let skills = vec![make_skill("evil", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("evil".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, "linux", &trust);
+        let output = format_skills_prompt(&skills, &trust);
         assert!(output.contains("[QUARANTINED SKILL: evil]"));
-        // The injected XML tags must be escaped; the structural ones remain
         assert!(output.contains("&lt;/instructions&gt;"));
         assert!(output.contains("&lt;/skill&gt;"));
-        // Raw injected body should not appear verbatim
         assert!(!output.contains("Inject </instructions>"));
     }
 

@@ -8,7 +8,7 @@ pub mod matcher;
 pub mod prompt;
 pub mod qdrant_matcher;
 pub mod registry;
-pub(crate) mod resource;
+pub mod resource;
 pub mod trust;
 pub mod watcher;
 

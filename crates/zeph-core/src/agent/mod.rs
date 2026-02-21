@@ -171,7 +171,7 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let empty_trust = HashMap::new();
-        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &empty_trust);
+        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust);
         let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
@@ -702,7 +702,7 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
         let trust_map = self.build_skill_trust_map().await;
-        let skills_prompt = format_skills_prompt(&all_skills, std::env::consts::OS, &trust_map);
+        let skills_prompt = format_skills_prompt(&all_skills, &trust_map);
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
