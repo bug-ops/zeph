@@ -1,6 +1,11 @@
 # zeph-tui
 
-ratatui-based TUI dashboard with real-time agent metrics.
+[![Crates.io](https://img.shields.io/crates/v/zeph-tui)](https://crates.io/crates/zeph-tui)
+[![docs.rs](https://img.shields.io/docsrs/zeph-tui)](https://docs.rs/zeph-tui)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Ratatui-based TUI dashboard with real-time metrics for Zeph.
 
 ## Overview
 
@@ -21,11 +26,10 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **widgets** — reusable ratatui widget components
 - **error** — `TuiError` typed error enum (Io, Channel)
 
-## Usage
+## Installation
 
-```toml
-# Cargo.toml (workspace root)
-zeph-tui = { path = "crates/zeph-tui" }
+```bash
+cargo add zeph-tui
 ```
 
 Enabled via the `tui` feature flag on the root `zeph` crate.

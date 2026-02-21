@@ -1,6 +1,11 @@
 # zeph-llm
 
-LLM provider abstraction and backend implementations.
+[![Crates.io](https://img.shields.io/crates/v/zeph-llm)](https://crates.io/crates/zeph-llm)
+[![docs.rs](https://img.shields.io/docsrs/zeph-llm)](https://docs.rs/zeph-llm)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+LLM provider abstraction with Ollama, Claude, OpenAI, and Candle backends.
 
 ## Overview
 
@@ -28,11 +33,10 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 
 **Re-exports:** `LlmProvider`, `LlmError`
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-llm = { path = "../zeph-llm" }
+```bash
+cargo add zeph-llm
 ```
 
 ## License

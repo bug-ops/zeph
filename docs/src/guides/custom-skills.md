@@ -85,7 +85,9 @@ skills/
         └── windows.md
 ```
 
-Resources in `scripts/`, `references/`, and `assets/` are loaded on demand. OS-specific files (`linux.md`, `macos.md`, `windows.md`) are filtered by platform automatically.
+Resources in `scripts/`, `references/`, and `assets/` are loaded lazily on first skill activation (not at startup). OS-specific files (`linux.md`, `macos.md`, `windows.md`) are filtered by platform automatically.
+
+Local file references in the skill body (e.g., `[see config](references/config.md)`) are validated at load time. Broken links and path traversal attempts (`../../../etc/passwd`) are rejected.
 
 ## Configuration
 

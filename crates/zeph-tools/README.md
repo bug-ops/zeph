@@ -1,6 +1,11 @@
 # zeph-tools
 
-Tool execution abstraction and shell backend.
+[![Crates.io](https://img.shields.io/crates/v/zeph-tools)](https://crates.io/crates/zeph-tools)
+[![docs.rs](https://img.shields.io/docsrs/zeph-tools)](https://docs.rs/zeph-tools)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Tool executor trait with shell, web scrape, and composite executors for Zeph.
 
 ## Overview
 
@@ -26,11 +31,10 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-tools = { path = "../zeph-tools" }
+```bash
+cargo add zeph-tools
 ```
 
 ## License

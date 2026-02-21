@@ -46,7 +46,9 @@ SKILL.md loader, skill registry, and prompt formatter.
 - `QdrantSkillMatcher` — persistent embeddings with BLAKE3 delta sync
 - `format_skills_prompt()` — assembles prompt with OS-filtered resources
 - `format_skills_catalog()` — description-only entries for non-matched skills
-- `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection and canonical path validation
+- `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection and canonical path validation; lazy resource loading (resources resolved on first activation, not at startup)
+- File reference validation — local links in skill bodies are checked against the skill directory; broken references and path traversal attempts are rejected at load time
+- `sanitize_skill_body()` — escapes XML-like structural tags in untrusted (non-`Trusted`) skill bodies before prompt injection, preventing prompt boundary confusion
 - Filesystem watcher for hot-reload (500ms debounce)
 
 ## zeph-memory

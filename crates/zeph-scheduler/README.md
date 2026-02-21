@@ -1,6 +1,11 @@
 # zeph-scheduler
 
-Cron-based periodic task scheduler with SQLite persistence.
+[![Crates.io](https://img.shields.io/crates/v/zeph-scheduler)](https://crates.io/crates/zeph-scheduler)
+[![docs.rs](https://img.shields.io/docsrs/zeph-scheduler)](https://docs.rs/zeph-scheduler)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Cron-based periodic task scheduler with SQLite persistence for Zeph.
 
 ## Overview
 
@@ -47,17 +52,16 @@ scheduler.register_handler(&TaskKind::UpdateCheck, Box::new(handler));
 Notification format sent via the channel:
 
 ```
-New version available: v0.12.0 (current: v0.11.3).
+New version available: v0.12.0 (current: v0.11.4).
 Update: https://github.com/bug-ops/zeph/releases/tag/v0.12.0
 ```
 
 Behaviour on error (network failure, non-2xx response, oversized body, parse error, invalid semver) — logs a `warn` message and returns `Ok(())`. The check is best-effort and never crashes the agent.
 
-## Usage
+## Installation
 
-```toml
-# Cargo.toml (workspace root)
-zeph-scheduler = { path = "crates/zeph-scheduler" }
+```bash
+cargo add zeph-scheduler
 ```
 
 Enabled via the `scheduler` feature flag on the root `zeph` crate.

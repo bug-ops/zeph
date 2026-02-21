@@ -1,6 +1,11 @@
 # zeph-mcp
 
-MCP client lifecycle, tool discovery, and execution.
+[![Crates.io](https://img.shields.io/crates/v/zeph-mcp)](https://crates.io/crates/zeph-mcp)
+[![docs.rs](https://img.shields.io/docsrs/zeph-mcp)](https://docs.rs/zeph-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+MCP client with multi-server lifecycle and Qdrant tool registry for Zeph.
 
 ## Overview
 
@@ -16,11 +21,10 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 - **prompt** — MCP prompt template support
 - **error** — `McpError` error types
 
-## Usage
+## Installation
 
-```toml
-# Cargo.toml (workspace root)
-zeph-mcp = { path = "crates/zeph-mcp" }
+```bash
+cargo add zeph-mcp
 ```
 
 ## License

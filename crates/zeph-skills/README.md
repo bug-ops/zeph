@@ -1,6 +1,11 @@
 # zeph-skills
 
-SKILL.md loader, skill registry, skill manager, and prompt formatter.
+[![Crates.io](https://img.shields.io/crates/v/zeph-skills)](https://crates.io/crates/zeph-skills)
+[![docs.rs](https://img.shields.io/docsrs/zeph-skills)](https://docs.rs/zeph-skills)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+SKILL.md parser, registry, embedding matcher, and hot-reload for Zeph.
 
 ## Overview
 
@@ -22,11 +27,10 @@ Parses SKILL.md files (YAML frontmatter + markdown body) from the `skills/` dire
 
 **Re-exports:** `SkillError`, `SkillTrust`, `TrustLevel`, `compute_skill_hash`
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-skills = { path = "../zeph-skills" }
+```bash
+cargo add zeph-skills
 ```
 
 ## License

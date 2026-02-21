@@ -1,6 +1,11 @@
 # zeph-channels
 
-Channel implementations for the Zeph agent.
+[![Crates.io](https://img.shields.io/crates/v/zeph-channels)](https://crates.io/crates/zeph-channels)
+[![docs.rs](https://img.shields.io/docsrs/zeph-channels)](https://docs.rs/zeph-channels)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Multi-channel I/O adapters (CLI, Telegram, Discord, Slack) for Zeph.
 
 ## Overview
 
@@ -20,11 +25,10 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 
 **Re-exports:** `AnyChannel`, `CliChannel`, `ChannelError`
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-channels = { path = "../zeph-channels" }
+```bash
+cargo add zeph-channels
 ```
 
 ## License

@@ -6,17 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-02-21
+
 ### Added
 - `validate_skill_references(body, skill_dir)` in zeph-skills loader: parses Markdown links targeting `references/`, `scripts/`, or `assets/` subdirs, warns on missing files and symlink traversal attempts (#689)
 - `sanitize_skill_body(body)` in zeph-skills prompt: escapes XML structural tags (`<skill`, `</skill>`, `<instructions`, `</instructions>`, `<available_skills`, `</available_skills>`) to prevent prompt injection (#689)
 - Body sanitization applied automatically to all non-`Trusted` skills in `format_skills_prompt()` (#689)
-
-### Changed
-- `requires-secrets` SKILL.md frontmatter field renamed to `x-requires-secrets` to follow JSON Schema vendor extension convention and avoid future spec collisions — **breaking change**: update skill frontmatter to use `x-requires-secrets`; the old `requires-secrets` form is still parsed with a deprecation warning (#688)
-- `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
-- Skill resource files (references, scripts, assets) are no longer eagerly injected into the system prompt on skill activation; only filenames are listed as available resources — **breaking change** for skills relying on auto-injected reference content (#687)
-
-### Added
 - `load_skill_resource(skill_dir, relative_path)` public function in `zeph-skills::resource` for on-demand loading of skill resource files with path traversal protection (#687)
 - Nested `metadata:` block support in SKILL.md frontmatter: indented key-value pairs under `metadata:` are parsed as structured metadata (#686)
 - Field length validation in SKILL.md loader: `description` capped at 1024 characters, `compatibility` capped at 500 characters (#686)
@@ -35,6 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Gate skill activation on required secrets availability in system prompt builder (#682)
 - Inject active skill's secrets as scoped env vars into `ShellExecutor` at execution time (#682)
 - Custom secrets step in interactive config wizard (`--init`) (#682)
+- crates.io publishing metadata (description, readme, homepage, keywords, categories) for all workspace crates (#702)
+
+### Changed
+- `requires-secrets` SKILL.md frontmatter field renamed to `x-requires-secrets` to follow JSON Schema vendor extension convention and avoid future spec collisions — **breaking change**: update skill frontmatter to use `x-requires-secrets`; the old `requires-secrets` form is still parsed with a deprecation warning (#688)
+- `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
+- Skill resource files (references, scripts, assets) are no longer eagerly injected into the system prompt on skill activation; only filenames are listed as available resources — **breaking change** for skills relying on auto-injected reference content (#687)
 
 ## [0.11.3] - 2026-02-20
 
@@ -1083,7 +1084,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/bug-ops/zeph/compare/v0.11.0...v0.11.1

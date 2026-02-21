@@ -1,6 +1,11 @@
 # zeph-memory
 
-SQLite-backed conversation persistence with Qdrant vector search.
+[![Crates.io](https://img.shields.io/crates/v/zeph-memory)](https://crates.io/crates/zeph-memory)
+[![docs.rs](https://img.shields.io/docsrs/zeph-memory)](https://docs.rs/zeph-memory)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Semantic memory with SQLite and Qdrant for Zeph agent.
 
 ## Overview
 
@@ -36,14 +41,13 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `pdf` | PDF document loading via `pdf-extract` |
 | `mock` | In-memory `VectorStore` implementation for testing |
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-memory = { path = "../zeph-memory" }
+```bash
+cargo add zeph-memory
 
 # With PDF support
-zeph-memory = { path = "../zeph-memory", features = ["pdf"] }
+cargo add zeph-memory --features pdf
 ```
 
 ## License

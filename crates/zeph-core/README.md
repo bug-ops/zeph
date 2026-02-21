@@ -1,6 +1,11 @@
 # zeph-core
 
-Agent loop, configuration loading, and context builder.
+[![Crates.io](https://img.shields.io/crates/v/zeph-core)](https://crates.io/crates/zeph-core)
+[![docs.rs](https://img.shields.io/docsrs/zeph-core)](https://docs.rs/zeph-core)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+
+Core agent loop, configuration, context builder, metrics, and vault for Zeph.
 
 ## Overview
 
@@ -49,11 +54,10 @@ auto_update_check = true   # set to false to disable update notifications
 
 Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable without changing the config file.
 
-## Usage
+## Installation
 
-```toml
-[dependencies]
-zeph-core = { path = "../zeph-core" }
+```bash
+cargo add zeph-core
 ```
 
 ## License

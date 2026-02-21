@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-02-21
+
+### Added
+- crates.io publishing metadata (description, readme, homepage, keywords, categories) for all workspace crates (#702)
+- Skill file reference validation and untrusted body sanitization (#691)
+- Lazy resource loading per spec progressive disclosure (#692)
+- `x-requires-secrets` vendor extension rename (#693)
+- agentskills.io spec alignment for SKILL.md parser (#690)
+- `SkillManager` for installing, removing, verifying skills from git URLs or local paths
+- Custom vault secrets support with `list_keys()` on `VaultProvider` trait (#685)
+
+### Changed
+- `requires-secrets` renamed to `x-requires-secrets` — breaking change (#693)
+- `allowed-tools` now uses space-separated values per spec — breaking change (#690)
+- Skill resource files use lazy loading instead of eager injection — breaking change (#692)
+
 ## [0.11.3] - 2026-02-20
 
 ### Added
@@ -1053,7 +1069,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/bug-ops/zeph/compare/v0.11.0...v0.11.1

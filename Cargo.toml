@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-version = "0.11.3"
+version = "0.11.4"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
@@ -28,12 +28,12 @@ clap = { version = "4.5", features = ["derive"] }
 criterion = "0.8"
 cron = "0.15"
 crossterm = "0.29"
-dialoguer = "0.11"
+dialoguer = "0.12"
 eventsource-stream = "0.2"
 futures = "0.3"
 futures-core = "0.3"
 glob = "0.3.3"
-hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls", "ureq"] }
+hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls", "ureq"] }
 http-body-util = "0.1"
 ignore = "0.4"
 insta = { version = "1.46.3", features = ["toml", "filters"] }
@@ -44,15 +44,15 @@ ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-pdf-extract = "0.7"
+pdf-extract = "0.10"
 proptest = "1.10"
 pulldown-cmark = "0.13"
-qdrant-client = { version = "1.16", default-features = false }
+qdrant-client = { version = "1.17", default-features = false }
 ratatui = "0.30"
 regex = "1.12"
 reqwest = { version = "0.13", default-features = false }
-rmcp = "0.15"
-rubato = "0.16"
+rmcp = "0.16"
+rubato = "1.0"
 schemars = "1.2"
 scrape-core = "0.2.2"
 semver = "1.0.27"
@@ -93,18 +93,18 @@ unicode-width = "0.2"
 url = "2.5"
 uuid = "1.21"
 wiremock = "0.6.5"
-zeph-a2a = { path = "crates/zeph-a2a", version = "0.11.3" }
-zeph-channels = { path = "crates/zeph-channels", version = "0.11.3" }
-zeph-core = { path = "crates/zeph-core", version = "0.11.3" }
-zeph-gateway = { path = "crates/zeph-gateway", version = "0.11.3" }
-zeph-index = { path = "crates/zeph-index", version = "0.11.3" }
-zeph-llm = { path = "crates/zeph-llm", version = "0.11.3" }
-zeph-mcp = { path = "crates/zeph-mcp", version = "0.11.3" }
-zeph-memory = { path = "crates/zeph-memory", version = "0.11.3" }
-zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.11.3" }
-zeph-skills = { path = "crates/zeph-skills", version = "0.11.3" }
-zeph-tools = { path = "crates/zeph-tools", version = "0.11.3" }
-zeph-tui = { path = "crates/zeph-tui", version = "0.11.3" }
+zeph-a2a = { path = "crates/zeph-a2a", version = "0.11.4" }
+zeph-channels = { path = "crates/zeph-channels", version = "0.11.4" }
+zeph-core = { path = "crates/zeph-core", version = "0.11.4" }
+zeph-gateway = { path = "crates/zeph-gateway", version = "0.11.4" }
+zeph-index = { path = "crates/zeph-index", version = "0.11.4" }
+zeph-llm = { path = "crates/zeph-llm", version = "0.11.4" }
+zeph-mcp = { path = "crates/zeph-mcp", version = "0.11.4" }
+zeph-memory = { path = "crates/zeph-memory", version = "0.11.4" }
+zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.11.4" }
+zeph-skills = { path = "crates/zeph-skills", version = "0.11.4" }
+zeph-tools = { path = "crates/zeph-tools", version = "0.11.4" }
+zeph-tui = { path = "crates/zeph-tui", version = "0.11.4" }
 
 [workspace.lints.clippy]
 all = "warn"

@@ -99,7 +99,7 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
     ];
     let sel = Select::new()
         .with_prompt(format!("{label} provider"))
-        .items(&sub_providers)
+        .items(sub_providers)
         .default(0)
         .interact()?;
 
@@ -201,7 +201,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
     ];
     let selection = Select::new()
         .with_prompt("Select LLM provider")
-        .items(&providers)
+        .items(providers)
         .default(0)
         .interact()?;
 
@@ -331,7 +331,7 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
     let channels = ["CLI only (default)", "Telegram", "Discord", "Slack"];
     let selection = Select::new()
         .with_prompt("Select communication channel")
-        .items(&channels)
+        .items(channels)
         .default(0)
         .interact()?;
 
@@ -396,7 +396,7 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     let backends = ["env (environment variables)", "age (encrypted file)"];
     let selection = Select::new()
         .with_prompt("Select secrets backend")
-        .items(&backends)
+        .items(backends)
         .default(0)
         .interact()?;
 

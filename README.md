@@ -6,6 +6,8 @@
   Single binary. Minimal hardware. Maximum context efficiency.<br>
   Every token counts — Zeph makes sure none are wasted.
 
+  [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
+  [![docs.rs](https://img.shields.io/docsrs/zeph)](https://docs.rs/zeph)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Trivy](https://img.shields.io/badge/Trivy-0%20CVEs-success)](https://github.com/bug-ops/zeph/security)

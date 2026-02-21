@@ -29,7 +29,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 
 ```text
 +-------------------------------------------------------------+
-| Zeph v0.11.3 | Provider: orchestrator | Model: claude-son... |
+| Zeph v0.11.4 | Provider: orchestrator | Model: claude-son...|
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |
@@ -37,13 +37,13 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 |                                        |                    |
 | [user] Can you check my code?         +--------------------+
 |                                        | Memory             |
-| [zeph] Sure, let me look at           | SQLite: 142 msgs   |
+| [zeph] Sure, let me look at            | SQLite: 142 msgs   |
 |        the code structure...           | Qdrant: connected  |
 |                                       ▲+--------------------+
 +----------------------------------------+--------------------+
 | You: write a rust function for fibon_                       |
 +-------------------------------------------------------------+
-| [Insert] | Skills: 3 | Tokens: 4.2k | Qdrant: OK | 2m 15s |
+| [Insert] | Skills: 3 | Tokens: 4.2k | Qdrant: OK | 2m 15s   |
 +-------------------------------------------------------------+
 ```
 

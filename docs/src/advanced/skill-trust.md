@@ -28,6 +28,10 @@ Quarantined skill bodies are also wrapped with a structural prefix in the system
 It has restricted tool access (no bash, file_write, web_scrape).
 ```
 
+## Body Sanitization
+
+Skill bodies from non-`Trusted` sources are sanitized before prompt injection. XML-like structural tags (e.g., `</skill>`, `</system>`) are escaped to prevent prompt boundary confusion. This is applied automatically — no configuration required.
+
 ## Anomaly Detection
 
 An `AnomalyDetector` tracks tool execution outcomes in a sliding window (default: 10 events). If the error/blocked ratio exceeds configurable thresholds, an anomaly is reported:
