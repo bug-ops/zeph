@@ -28,6 +28,18 @@ After installation, run the configuration wizard:
 zeph init
 ```
 
+## From crates.io
+
+```bash
+cargo install zeph
+```
+
+With optional features:
+
+```bash
+cargo install zeph --features tui,a2a
+```
+
 ## From Source
 
 ```bash

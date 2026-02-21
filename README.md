@@ -36,6 +36,9 @@ Zeph takes the opposite approach: **automated context engineering**. Only releva
 <summary>Other installation methods</summary>
 
 ```bash
+# From crates.io
+cargo install zeph
+
 # From source
 cargo install --git https://github.com/bug-ops/zeph
 
