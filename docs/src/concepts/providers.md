@@ -45,6 +45,18 @@ provider = "claude"   # ollama, claude, openai, candle, compatible, orchestrator
 
 Or via environment variable: `ZEPH_LLM_PROVIDER`.
 
+## Response Caching
+
+Enable SQLite-backed response caching to avoid redundant LLM calls for identical requests. The cache key is a blake3 hash of the full message history and model name. Streaming responses bypass the cache.
+
+```toml
+[llm]
+response_cache_enabled = true
+response_cache_ttl_secs = 3600  # 1 hour (default)
+```
+
+See [Memory and Context — LLM Response Cache](memory.md#llm-response-cache) for details.
+
 ## Deep Dives
 
 - [Use a Cloud Provider](../guides/cloud-provider.md) — Claude, OpenAI, and compatible API setup

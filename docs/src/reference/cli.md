@@ -14,6 +14,7 @@ zeph [OPTIONS] [COMMAND]
 |---------|-------------|
 | `init`  | Interactive configuration wizard (see [Configuration Wizard](../getting-started/wizard.md)) |
 | `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
+| `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 
 When no subcommand is given, Zeph starts the agent loop.
@@ -64,6 +65,25 @@ zeph skill trust my-skill trusted
 # Remove a skill
 zeph skill remove my-skill
 ```
+
+### `zeph memory`
+
+Export and import conversation history as portable JSON snapshots.
+
+| Subcommand | Description |
+|------------|-------------|
+| `memory export <path>` | Export all conversations, messages, and summaries to a JSON file |
+| `memory import <path>` | Import a snapshot file into the local database (duplicates are skipped) |
+
+```bash
+# Back up all conversation data
+zeph memory export backup.json
+
+# Restore on another machine
+zeph memory import backup.json
+```
+
+The snapshot format is versioned (currently v1). Import uses `INSERT OR IGNORE` — re-importing the same file is safe and skips existing records.
 
 ### `zeph vault`
 

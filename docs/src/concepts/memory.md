@@ -95,6 +95,44 @@ The `Embeddable` trait provides a generic interface for any type that can be emb
 
 When `memory.redact_credentials` is enabled (default: `true`), Zeph scrubs credential patterns from message content before sending it to the LLM context pipeline. This prevents accidental leakage of API keys, tokens, and passwords stored in conversation history. The scrubbing runs via `scrub_content()` in the context builder and covers the same patterns as the output redaction system (see [Security — Secret Redaction](../reference/security.md#secret-redaction)).
 
+## Autosave Assistant Responses
+
+By default, only user messages generate vector embeddings. Enable `autosave_assistant` to persist assistant responses to SQLite and optionally embed them for semantic recall:
+
+```toml
+[memory]
+autosave_assistant = true    # Save assistant messages (default: false)
+autosave_min_length = 20     # Minimum content length for embedding (default: 20)
+```
+
+When enabled, assistant responses shorter than `autosave_min_length` are saved to SQLite without generating an embedding (via `save_only()`). Responses meeting the threshold go through the full embedding pipeline. User messages always generate embeddings regardless of this setting.
+
+## Memory Snapshots
+
+Export and import conversation history as portable JSON files for backup, migration, or sharing between instances.
+
+```bash
+# Export all conversations, messages, and summaries
+zeph memory export backup.json
+
+# Import into another instance (duplicates are skipped)
+zeph memory import backup.json
+```
+
+The snapshot format (version 1) includes conversations, messages with multipart content, and summaries. Import uses `INSERT OR IGNORE` semantics — existing messages with matching IDs are skipped, so importing the same file twice is safe.
+
+## LLM Response Cache
+
+Cache identical LLM requests to avoid redundant API calls. The cache is SQLite-backed, keyed by a blake3 hash of the message history and model name.
+
+```toml
+[llm]
+response_cache_enabled = true   # Enable response caching (default: false)
+response_cache_ttl_secs = 3600  # Cache entry lifetime in seconds (default: 3600)
+```
+
+A background task runs every 10 minutes to clean up expired entries. Streaming responses bypass the cache entirely — only non-streaming completions are cached.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

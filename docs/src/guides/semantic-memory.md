@@ -97,6 +97,29 @@ mmr_lambda = 0.7  # 0.0 = max diversity, 1.0 = pure relevance
 
 MMR iteratively selects results that are both relevant to the query and dissimilar to already-selected items. The default `mmr_lambda = 0.7` works well for most use cases. Lower it if you see too many semantically similar results in recall.
 
+## Autosave Assistant Responses
+
+By default, only user messages are embedded. Enable `autosave_assistant` to also embed assistant responses for richer semantic recall:
+
+```toml
+[memory]
+autosave_assistant = true
+autosave_min_length = 20  # Skip embedding for very short replies
+```
+
+Short responses (below `autosave_min_length` bytes) are still saved to SQLite but skip the embedding step. User messages always generate embeddings regardless of this setting.
+
+## Memory Export and Import
+
+Back up or migrate conversation data with portable JSON snapshots:
+
+```bash
+zeph memory export conversations.json
+zeph memory import conversations.json
+```
+
+See [CLI Reference — `zeph memory`](../reference/cli.md#zeph-memory) for details.
+
 ## Storage Architecture
 
 | Store | Purpose |

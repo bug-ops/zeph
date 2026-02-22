@@ -64,6 +64,8 @@ base_url = "http://localhost:11434"
 model = "mistral:7b"
 embedding_model = "qwen3-embedding"  # Model for text embeddings
 # vision_model = "llava:13b"        # Ollama only: dedicated model for image requests
+# response_cache_enabled = false     # SQLite-backed LLM response cache (default: false)
+# response_cache_ttl_secs = 3600     # Cache TTL in seconds (default: 3600)
 
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"
@@ -102,6 +104,8 @@ cross_session_score_threshold = 0.35  # Minimum relevance for cross-session resu
 vector_backend = "qdrant"     # Vector store: "qdrant" (default) or "sqlite" (embedded)
 token_safety_margin = 1.0     # Multiplier for token budget safety margin (default: 1.0)
 redact_credentials = true     # Scrub credential patterns from LLM context (default: true)
+autosave_assistant = false    # Persist assistant responses to SQLite and embed (default: false)
+autosave_min_length = 20      # Min content length for assistant embedding (default: 20)
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -253,6 +257,10 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_VECTOR_BACKEND` | Vector backend: `qdrant` or `sqlite` (default: `qdrant`) |
 | `ZEPH_MEMORY_TOKEN_SAFETY_MARGIN` | Token budget safety margin multiplier (default: 1.0) |
 | `ZEPH_MEMORY_REDACT_CREDENTIALS` | Scrub credentials from LLM context (default: true) |
+| `ZEPH_MEMORY_AUTOSAVE_ASSISTANT` | Persist assistant responses to SQLite (default: false) |
+| `ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH` | Min content length for assistant embedding (default: 20) |
+| `ZEPH_LLM_RESPONSE_CACHE_ENABLED` | Enable SQLite-backed LLM response cache (default: false) |
+| `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` | Response cache TTL in seconds (default: 3600) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED` | Enable temporal decay scoring (default: false) |

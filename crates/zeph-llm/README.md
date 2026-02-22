@@ -9,7 +9,7 @@ LLM provider abstraction with Ollama, Claude, OpenAI, and Candle backends.
 
 ## Overview
 
-Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, and an optional Candle backend for local inference.
+Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
 
 ## Key modules
 

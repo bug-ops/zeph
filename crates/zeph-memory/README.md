@@ -30,12 +30,32 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `document::pipeline` | `IngestionPipeline` — load, split, embed, store via Qdrant |
 | `vector_store` | `VectorStore` trait and `VectorPoint` types |
 | `sqlite_vector` | `SqliteVectorStore` — embedded SQLite-backed vector search as zero-dependency Qdrant alternative |
+| `snapshot` | `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` — portable memory export/import |
+| `response_cache` | `ResponseCache` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry |
 | `embedding_store` | `EmbeddingStore` — high-level embedding CRUD |
 | `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`
+
+## Snapshot export/import
+
+Memory snapshots allow exporting all conversations and messages to a portable JSON file and importing them back into another instance.
+
+```bash
+zeph memory export backup.json
+zeph memory import backup.json
+```
+
+## Response cache
+
+`ResponseCache` deduplicates LLM calls by caching responses in SQLite. Cache keys are computed via blake3 hashing of the prompt content. Entries expire after a configurable TTL (default: 1 hour). A background task runs every 10 minutes to clean up expired entries.
+
+| Config field | Type | Default | Env override |
+|-------------|------|---------|--------------|
+| `response_cache_enabled` | bool | `false` | `ZEPH_LLM_RESPONSE_CACHE_ENABLED` |
+| `response_cache_ttl_secs` | u64 | `3600` | `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` |
 
 ## Ranking options
 

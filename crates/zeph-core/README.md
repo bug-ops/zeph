@@ -55,6 +55,8 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `vector_backend` | `"qdrant"` / `"sqlite"` | `"qdrant"` | Vector search backend |
 | `token_safety_margin` | f32 | `1.0` | Safety multiplier for token budget estimation (validated: must be >= 1.0) |
 | `redact_credentials` | bool | `true` | Scrub secrets and paths before LLM context injection |
+| `autosave_assistant` | bool | `false` | Persist assistant responses to semantic memory automatically |
+| `autosave_min_length` | usize | `20` | Minimum response length (chars) to trigger autosave |
 
 ```toml
 [agent]
