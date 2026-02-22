@@ -198,6 +198,10 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         }
 
+        if let Some(resp) = self.check_response_cache().await? {
+            return Ok(Some(resp));
+        }
+
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
         let prompt_estimate = self.cached_prompt_tokens;
@@ -230,9 +234,8 @@ impl<C: Channel> Agent<C> {
                 self.record_cache_usage();
                 self.record_cost(prompt_estimate, completion_estimate_for_cost);
                 let raw = r?;
-                // Redact secrets from the full response before it is persisted to history.
-                // Streaming chunks were already sent to the channel without per-chunk redaction
-                // (acceptable trade-off: ephemeral display vs allocation per chunk).
+                // Redact secrets from the full accumulated response before it is persisted to
+                // history. Per-chunk redaction is applied during streaming (see send_chunk above).
                 let redacted = self.maybe_redact(&raw).into_owned();
                 Ok(Some(redacted))
             } else {
@@ -269,6 +272,7 @@ impl<C: Channel> Agent<C> {
                     self.record_cost(prompt_estimate, completion_estimate);
                     let display = self.maybe_redact(&resp);
                     self.channel.send(&display).await?;
+                    self.store_response_in_cache(&resp).await;
                     Ok(Some(resp))
                 }
                 Ok(Err(e)) => Err(e.into()),
@@ -510,7 +514,8 @@ impl<C: Channel> Agent<C> {
             };
             let chunk: String = chunk_result?;
             response.push_str(&chunk);
-            self.channel.send_chunk(&chunk).await?;
+            let display_chunk = self.maybe_redact(&chunk);
+            self.channel.send_chunk(&display_chunk).await?;
         }
 
         self.channel.flush_chunks().await?;
@@ -534,6 +539,32 @@ impl<C: Channel> Agent<C> {
             }
         } else {
             std::borrow::Cow::Borrowed(text)
+        }
+    }
+
+    async fn check_response_cache(&mut self) -> Result<Option<String>, super::error::AgentError> {
+        if let Some(ref cache) = self.response_cache
+            && !self.provider.supports_streaming()
+        {
+            let key =
+                zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
+            if let Ok(Some(cached)) = cache.get(&key).await {
+                tracing::debug!("response cache hit");
+                let display = self.maybe_redact(&cached);
+                self.channel.send(&display).await?;
+                return Ok(Some(cached));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn store_response_in_cache(&self, response: &str) {
+        if let Some(ref cache) = self.response_cache {
+            let key =
+                zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
+            if let Err(e) = cache.put(&key, response, &self.runtime.model_name).await {
+                tracing::warn!("failed to store response in cache: {e:#}");
+            }
         }
     }
 
@@ -1628,5 +1659,78 @@ mod tests {
         assert_eq!(calls.len(), 2, "inject + clear = 2 calls");
         assert!(calls[0].is_some(), "first call must set env");
         assert!(calls[1].is_none(), "second call must clear env");
+    }
+
+    #[test]
+    fn check_response_cache_bypassed_when_streaming() {
+        // Verifies that the streaming provider flag correctly identifies the bypass condition.
+        // The cache check guard is `!self.provider.supports_streaming()`, so a streaming
+        // provider must return true from supports_streaming() and a non-streaming one must not.
+        use super::super::agent_tests::*;
+        use zeph_llm::LlmProvider;
+
+        let streaming_provider = mock_provider_streaming(vec!["hello".into()]);
+        let non_streaming_provider = mock_provider(vec!["hello".into()]);
+
+        assert!(
+            streaming_provider.supports_streaming(),
+            "streaming mock must report supports_streaming=true"
+        );
+        assert!(
+            !non_streaming_provider.supports_streaming(),
+            "non-streaming mock must report supports_streaming=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_returns_cached_response_without_provider_call() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // Non-streaming provider — cache path is active for non-streaming.
+        let provider = mock_provider(vec!["uncached response".into()]);
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Set up a response cache with a pre-populated entry.
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+
+        // Build the key for the current agent messages.
+        let key = ResponseCache::compute_key(&agent.messages, &agent.runtime.model_name);
+        cache
+            .put(&key, "cached response", "test-model")
+            .await
+            .unwrap();
+
+        agent.response_cache = Some(cache);
+
+        // push a user message so the conversation is non-empty
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "what is 2+2?".into(),
+            parts: vec![],
+        });
+
+        // Recompute key after adding user message
+        let key2 = ResponseCache::compute_key(&agent.messages, &agent.runtime.model_name);
+        if let Some(ref c) = agent.response_cache {
+            c.put(&key2, "cached response", "test-model").await.unwrap();
+        }
+
+        let result = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(result.as_deref(), Some("cached response"));
+        // Channel should have received the cached response
+        assert!(
+            agent
+                .channel
+                .sent_messages()
+                .iter()
+                .any(|s| s == "cached response")
+        );
     }
 }

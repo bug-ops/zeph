@@ -123,6 +123,14 @@ pub struct LlmConfig {
     pub stt: Option<SttConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_model: Option<String>,
+    #[serde(default)]
+    pub response_cache_enabled: bool,
+    #[serde(default = "default_response_cache_ttl_secs")]
+    pub response_cache_ttl_secs: u64,
+}
+
+fn default_response_cache_ttl_secs() -> u64 {
+    3600
 }
 
 fn default_embedding_model() -> String {
@@ -468,6 +476,14 @@ pub struct MemoryConfig {
     pub token_safety_margin: f32,
     #[serde(default = "default_redact_credentials")]
     pub redact_credentials: bool,
+    #[serde(default)]
+    pub autosave_assistant: bool,
+    #[serde(default = "default_autosave_min_length")]
+    pub autosave_min_length: usize,
+}
+
+fn default_autosave_min_length() -> usize {
+    20
 }
 
 fn default_token_safety_margin() -> f32 {
@@ -1085,6 +1101,8 @@ impl Default for Config {
                 router: None,
                 stt: None,
                 vision_model: None,
+                response_cache_enabled: false,
+                response_cache_ttl_secs: default_response_cache_ttl_secs(),
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
@@ -1109,6 +1127,8 @@ impl Default for Config {
                 vector_backend: VectorBackend::default(),
                 token_safety_margin: default_token_safety_margin(),
                 redact_credentials: default_redact_credentials(),
+                autosave_assistant: false,
+                autosave_min_length: default_autosave_min_length(),
             },
             telegram: None,
             discord: None,

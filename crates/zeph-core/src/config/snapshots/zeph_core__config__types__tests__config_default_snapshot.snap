@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1156
 expression: toml_str
 ---
 [agent]
@@ -13,6 +12,8 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "mistral:7b"
 embedding_model = "qwen3-embedding"
+response_cache_enabled = false
+response_cache_ttl_secs = 3600
 
 [skills]
 paths = ["./skills"]
@@ -49,6 +50,8 @@ cross_session_score_threshold = 0.35
 vector_backend = "qdrant"
 token_safety_margin = 1.0
 redact_credentials = true
+autosave_assistant = false
+autosave_min_length = 20
 
 [memory.semantic]
 enabled = true

@@ -453,6 +453,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         router: None,
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
+        response_cache_enabled: false,
+        response_cache_ttl_secs: 3600,
     };
 
     config.memory = MemoryConfig {

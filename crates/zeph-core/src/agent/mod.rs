@@ -75,6 +75,8 @@ pub(super) struct MemoryState {
     pub(super) recall_limit: usize,
     pub(super) summarization_threshold: usize,
     pub(super) cross_session_score_threshold: f32,
+    pub(super) autosave_assistant: bool,
+    pub(super) autosave_min_length: usize,
 }
 
 pub(super) struct SkillState {
@@ -158,6 +160,7 @@ pub struct Agent<C: Channel> {
     update_notify_rx: Option<mpsc::Receiver<String>>,
     #[allow(dead_code)]
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
+    pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -199,6 +202,8 @@ impl<C: Channel> Agent<C> {
                 recall_limit: 5,
                 summarization_threshold: 50,
                 cross_session_score_threshold: 0.35,
+                autosave_assistant: false,
+                autosave_min_length: 20,
             },
             skill_state: SkillState {
                 registry,
@@ -262,6 +267,7 @@ impl<C: Channel> Agent<C> {
             stt: None,
             update_notify_rx: None,
             subagent_manager: None,
+            response_cache: None,
         }
     }
 

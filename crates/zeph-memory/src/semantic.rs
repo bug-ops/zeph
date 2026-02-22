@@ -376,6 +376,25 @@ impl SemanticMemory {
         Ok((message_id, embedding_stored))
     }
 
+    /// Save a message to `SQLite` without generating an embedding.
+    ///
+    /// Use this when embedding is intentionally skipped (e.g. autosave disabled for assistant).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    pub async fn save_only(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+    ) -> Result<MessageId, MemoryError> {
+        self.sqlite
+            .save_message_with_parts(conversation_id, role, content, parts_json)
+            .await
+    }
+
     /// Recall relevant messages using hybrid search (vector + FTS5 keyword).
     ///
     /// When Qdrant is available, runs both vector and keyword searches, then merges

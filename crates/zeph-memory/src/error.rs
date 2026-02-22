@@ -21,6 +21,9 @@ pub enum MemoryError {
     #[error("integer conversion: {0}")]
     IntConversion(#[from] std::num::TryFromIntError),
 
+    #[error("snapshot error: {0}")]
+    Snapshot(String),
+
     #[error("{0}")]
     Other(String),
 }

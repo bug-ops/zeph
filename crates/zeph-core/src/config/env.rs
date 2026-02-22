@@ -243,6 +243,26 @@ impl Config {
         {
             self.a2a.rate_limit = rate;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_ASSISTANT")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.autosave_assistant = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH")
+            && let Ok(len) = v.parse::<usize>()
+        {
+            self.memory.autosave_min_length = len;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.llm.response_cache_enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_TTL_SECS")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.llm.response_cache_ttl_secs = secs;
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

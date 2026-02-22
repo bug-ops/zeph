@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig` — assistant responses skip embedding when disabled (#748)
+- `SemanticMemory::save_only()` — persist message to SQLite without generating a vector embedding (#748)
+- `ResponseCache` in `zeph-memory` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry (#750)
+- `response_cache_enabled` and `response_cache_ttl_secs` config fields in `LlmConfig` (#750)
+- Background `cleanup_expired()` task for response cache (runs every 10 minutes) (#750)
+- `ZEPH_MEMORY_AUTOSAVE_ASSISTANT`, `ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH` env overrides (#748)
+- `ZEPH_LLM_RESPONSE_CACHE_ENABLED`, `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` env overrides (#750)
+- `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` in `zeph-memory/src/snapshot.rs` (#749)
+- `zeph memory export <path>` and `zeph memory import <path>` CLI subcommands (#749)
+- SQLite migration `012_response_cache.sql` for the response cache table (#750)
 - Temporal decay scoring in `SemanticMemory::recall()` — time-based score attenuation with configurable half-life (#745)
 - MMR (Maximal Marginal Relevance) re-ranking in `SemanticMemory::recall()` — post-processing for result diversity (#744)
 - Compact XML skills prompt format (`format_skills_prompt_compact`) for low-budget contexts (#747)

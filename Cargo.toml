@@ -138,7 +138,7 @@ slack = ["zeph-channels/slack"]
 index = ["dep:zeph-index", "zeph-core/index"]
 gateway = ["dep:zeph-gateway"]
 daemon = ["zeph-core/daemon"]
-scheduler = ["dep:zeph-scheduler", "dep:serde_json"]
+scheduler = ["dep:zeph-scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 mock = ["zeph-llm/mock", "zeph-memory/mock"]
@@ -170,7 +170,7 @@ zeph-gateway = { workspace = true, optional = true }
 zeph-scheduler = { workspace = true, optional = true }
 zeph-tui = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 
 [dev-dependencies]
 serial_test.workspace = true

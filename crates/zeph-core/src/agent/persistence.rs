@@ -66,16 +66,38 @@ impl<C: Channel> Agent<C> {
             .and_then(|m| serde_json::to_string(&m.parts).ok())
             .unwrap_or_else(|| "[]".to_string());
 
+        let should_embed = match role {
+            Role::Assistant => {
+                self.memory_state.autosave_assistant
+                    && content.len() >= self.memory_state.autosave_min_length
+            }
+            _ => true,
+        };
+
         let _ = self.channel.send_status("saving...").await;
-        let (_message_id, embedding_stored) = match memory
-            .remember_with_parts(cid, role_str(role), content, &parts_json)
-            .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                let _ = self.channel.send_status("").await;
-                tracing::error!("failed to persist message: {e:#}");
-                return;
+        let embedding_stored = if should_embed {
+            match memory
+                .remember_with_parts(cid, role_str(role), content, &parts_json)
+                .await
+            {
+                Ok((_message_id, stored)) => stored,
+                Err(e) => {
+                    let _ = self.channel.send_status("").await;
+                    tracing::error!("failed to persist message: {e:#}");
+                    return;
+                }
+            }
+        } else {
+            match memory
+                .save_only(cid, role_str(role), content, &parts_json)
+                .await
+            {
+                Ok(_) => false,
+                Err(e) => {
+                    let _ = self.channel.send_status("").await;
+                    tracing::error!("failed to persist message: {e:#}");
+                    return;
+                }
             }
         };
         let _ = self.channel.send_status("").await;
@@ -138,7 +160,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::super::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        MetricsSnapshot, MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
     use zeph_llm::any::AnyProvider;
@@ -260,5 +282,108 @@ mod tests {
 
         // Must not panic and must complete
         agent.persist_message(Role::User, "hello").await;
+    }
+
+    #[tokio::test]
+    async fn persist_message_assistant_autosave_false_uses_save_only() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_autosave_config(false, 20);
+
+        agent
+            .persist_message(Role::Assistant, "short assistant reply")
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1, "message must be saved");
+        assert_eq!(history[0].content, "short assistant reply");
+        // embeddings_generated must remain 0 — save_only path does not embed
+        assert_eq!(rx.borrow().embeddings_generated, 0);
+    }
+
+    #[tokio::test]
+    async fn persist_message_assistant_below_min_length_uses_save_only() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // autosave_assistant=true but min_length=1000 — short content falls back to save_only
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_autosave_config(true, 1000);
+
+        agent.persist_message(Role::Assistant, "too short").await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1, "message must be saved");
+        assert_eq!(history[0].content, "too short");
+        assert_eq!(rx.borrow().embeddings_generated, 0);
+    }
+
+    #[tokio::test]
+    async fn persist_message_user_always_embeds_regardless_of_autosave_flag() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // autosave_assistant=false — but User role always takes embedding path
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_autosave_config(false, 20);
+
+        let long_user_msg = "A".repeat(100);
+        agent.persist_message(Role::User, &long_user_msg).await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1, "user message must be saved");
+        // User messages go through remember_with_parts (embedding path).
+        // sqlite_message_count must increment regardless of Qdrant availability.
+        assert_eq!(rx.borrow().sqlite_message_count, 1);
     }
 }

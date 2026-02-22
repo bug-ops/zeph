@@ -171,6 +171,25 @@ enum Command {
         #[command(subcommand)]
         command: SkillCommand,
     },
+    /// Manage memory snapshots
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCommand {
+    /// Export memory to a JSON snapshot file
+    Export {
+        /// Output file path
+        path: PathBuf,
+    },
+    /// Import memory from a JSON snapshot file
+    Import {
+        /// Input file path
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -255,6 +274,10 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Skill { command: skill_cmd }) => {
             tracing_subscriber::fmt::init();
             return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
+        }
+        Some(Command::Memory { command: mem_cmd }) => {
+            tracing_subscriber::fmt::init();
+            return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
         }
         None => {}
     }
@@ -461,6 +484,7 @@ async fn main() -> anyhow::Result<()> {
     let summary_provider = app.build_summary_provider();
     let config = app.config();
     let config_path = app.config_path().to_owned();
+    let cache_pool = memory.sqlite().pool().clone();
 
     let agent = Agent::new(
         provider,
@@ -502,7 +526,32 @@ async fn main() -> anyhow::Result<()> {
             .custom
             .iter()
             .map(|(k, v)| (k.clone(), v.clone())),
+    )
+    .with_autosave_config(
+        config.memory.autosave_assistant,
+        config.memory.autosave_min_length,
     );
+
+    let agent = if config.llm.response_cache_enabled {
+        let pool = cache_pool;
+        let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(
+            pool,
+            config.llm.response_cache_ttl_secs,
+        ));
+        let cache_clone = std::sync::Arc::clone(&cache);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                interval.tick().await;
+                if let Err(e) = cache_clone.cleanup_expired().await {
+                    tracing::warn!("response cache cleanup failed: {e:#}");
+                }
+            }
+        });
+        agent.with_response_cache(cache)
+    } else {
+        agent
+    };
 
     let agent = if config.cost.enabled {
         let tracker = CostTracker::new(true, f64::from(config.cost.max_daily_cents));
@@ -1061,6 +1110,66 @@ async fn handle_skill_command(
             } else {
                 anyhow::bail!("skill \"{name}\" not found in trust database");
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_memory_command(
+    cmd: MemoryCommand,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use zeph_core::bootstrap::resolve_config_path;
+    use zeph_memory::sqlite::SqliteStore;
+
+    let config_file = resolve_config_path(config_path);
+    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let sqlite = SqliteStore::new(&config.memory.sqlite_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+
+    match cmd {
+        MemoryCommand::Export { path } => {
+            let snapshot = zeph_memory::export_snapshot(&sqlite)
+                .await
+                .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
+            let json = serde_json::to_string_pretty(&snapshot)
+                .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
+            std::fs::write(&path, json)
+                .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+            let convs = snapshot.conversations.len();
+            let msgs: usize = snapshot
+                .conversations
+                .iter()
+                .map(|c| c.messages.len())
+                .sum();
+            println!(
+                "Exported {convs} conversation(s) with {msgs} message(s) to {}",
+                path.display()
+            );
+            if config.memory.redact_credentials {
+                eprintln!(
+                    "Warning: snapshot may contain sensitive conversation data predating \
+                     redaction. Store the file securely and restrict access."
+                );
+            }
+        }
+        MemoryCommand::Import { path } => {
+            let json = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+            let snapshot: zeph_memory::MemorySnapshot = serde_json::from_str(&json)
+                .map_err(|e| anyhow::anyhow!("invalid snapshot format: {e}"))?;
+            let stats = zeph_memory::import_snapshot(&sqlite, snapshot)
+                .await
+                .map_err(|e| anyhow::anyhow!("import failed: {e}"))?;
+            println!(
+                "Imported: {} conversation(s), {} message(s), {} summary(ies), {} skipped",
+                stats.conversations_imported,
+                stats.messages_imported,
+                stats.summaries_imported,
+                stats.skipped,
+            );
         }
     }
 
