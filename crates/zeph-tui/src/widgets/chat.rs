@@ -494,7 +494,7 @@ fn render_md(
     base_style: Style,
     theme: &Theme,
 ) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
-    let options = Options::ENABLE_STRIKETHROUGH;
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(content, options);
     let mut renderer = MdRenderer::new(base_style, theme);
     for event in parser {
@@ -516,6 +516,9 @@ struct MdRenderer<'t> {
     link_text_buf: String,
     /// Collected markdown links for this render pass.
     md_links: Vec<MdLink>,
+    in_table: bool,
+    table_rows: Vec<Vec<String>>,
+    current_cell: String,
 }
 
 impl<'t> MdRenderer<'t> {
@@ -531,6 +534,9 @@ impl<'t> MdRenderer<'t> {
             link_url: None,
             link_text_buf: String::new(),
             md_links: Vec::new(),
+            in_table: false,
+            table_rows: Vec::new(),
+            current_cell: String::new(),
         }
     }
 
@@ -586,7 +592,9 @@ impl<'t> MdRenderer<'t> {
                     .push(Span::styled(text.to_string(), self.theme.code_inline));
             }
             Event::Text(text) => {
-                if self.in_code_block {
+                if self.in_table && !self.in_code_block {
+                    self.current_cell.push_str(&text);
+                } else if self.in_code_block {
                     self.push_code_block_text(&text);
                 } else {
                     if self.link_url.is_some() {
@@ -639,8 +647,120 @@ impl<'t> MdRenderer<'t> {
                     self.base_style.add_modifier(Modifier::DIM),
                 ));
             }
+            Event::Start(Tag::Table(_)) => {
+                self.in_table = true;
+                self.table_rows.clear();
+            }
+            Event::Start(Tag::TableHead | Tag::TableRow) => {
+                self.table_rows.push(Vec::new());
+            }
+            Event::Start(Tag::TableCell) => {
+                self.current_cell.clear();
+            }
+            Event::End(TagEnd::TableCell) => {
+                let cell = self.current_cell.clone();
+                if let Some(row) = self.table_rows.last_mut() {
+                    row.push(cell);
+                }
+            }
+            Event::End(TagEnd::Table) => {
+                self.emit_table();
+                self.in_table = false;
+            }
             _ => {}
         }
+    }
+
+    fn emit_table(&mut self) {
+        if self.table_rows.is_empty() {
+            return;
+        }
+        let col_count = self.table_rows.iter().map(Vec::len).max().unwrap_or(0);
+        if col_count == 0 {
+            return;
+        }
+
+        if !self.current.is_empty() {
+            self.newline();
+        }
+
+        let mut col_widths = vec![3usize; col_count];
+        for row in &self.table_rows {
+            for (ci, cell) in row.iter().enumerate() {
+                col_widths[ci] = col_widths[ci].max(cell.chars().count());
+            }
+        }
+
+        let border_style = self.theme.table_border;
+        let base_style = self.base_style;
+
+        let top = {
+            let mut spans = Vec::new();
+            spans.push(Span::styled("\u{250c}".to_string(), border_style));
+            for (ci, &w) in col_widths.iter().enumerate() {
+                spans.push(Span::styled("\u{2500}".repeat(w + 2), border_style));
+                if ci + 1 < col_count {
+                    spans.push(Span::styled("\u{252c}".to_string(), border_style));
+                }
+            }
+            spans.push(Span::styled("\u{2510}".to_string(), border_style));
+            spans
+        };
+        self.current = top;
+        self.newline();
+
+        let sep = {
+            let mut spans = Vec::new();
+            spans.push(Span::styled("\u{251c}".to_string(), border_style));
+            for (ci, &w) in col_widths.iter().enumerate() {
+                spans.push(Span::styled("\u{2500}".repeat(w + 2), border_style));
+                if ci + 1 < col_count {
+                    spans.push(Span::styled("\u{253c}".to_string(), border_style));
+                }
+            }
+            spans.push(Span::styled("\u{2524}".to_string(), border_style));
+            spans
+        };
+
+        let bottom = {
+            let mut spans = Vec::new();
+            spans.push(Span::styled("\u{2514}".to_string(), border_style));
+            for (ci, &w) in col_widths.iter().enumerate() {
+                spans.push(Span::styled("\u{2500}".repeat(w + 2), border_style));
+                if ci + 1 < col_count {
+                    spans.push(Span::styled("\u{2534}".to_string(), border_style));
+                }
+            }
+            spans.push(Span::styled("\u{2518}".to_string(), border_style));
+            spans
+        };
+
+        let rows = std::mem::take(&mut self.table_rows);
+        for (ri, row) in rows.iter().enumerate() {
+            let cell_style = if ri == 0 {
+                base_style.add_modifier(Modifier::BOLD)
+            } else {
+                base_style
+            };
+            let mut spans = Vec::new();
+            spans.push(Span::styled("\u{2502}".to_string(), border_style));
+            for (ci, &w) in col_widths.iter().enumerate() {
+                let text = row.get(ci).map_or("", String::as_str);
+                let padded = format!(" {text:<w$} ");
+                spans.push(Span::styled(padded, cell_style));
+                spans.push(Span::styled("\u{2502}".to_string(), border_style));
+            }
+            self.current = spans;
+            self.newline();
+
+            if ri == 0 {
+                self.current.clone_from(&sep);
+                self.newline();
+            }
+        }
+
+        self.current = bottom;
+        self.newline();
     }
 
     fn push_code_block_text(&mut self, text: &str) {
@@ -915,5 +1035,104 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].spans[0].content, "abc");
         assert_eq!(result[1].spans[0].content, "def");
+    }
+
+    #[test]
+    fn render_md_table_basic() {
+        let theme = Theme::default();
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        // top border + header + separator + data row + bottom border = 5 lines
+        assert_eq!(lines.len(), 5);
+        let top: String = lines[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(top.starts_with('\u{250c}'));
+        assert!(top.ends_with('\u{2510}'));
+        let sep: String = lines[2].iter().map(|s| s.content.as_ref()).collect();
+        assert!(sep.starts_with('\u{251c}'));
+        let bottom: String = lines[4].iter().map(|s| s.content.as_ref()).collect();
+        assert!(bottom.starts_with('\u{2514}'));
+        assert!(bottom.ends_with('\u{2518}'));
+    }
+
+    #[test]
+    fn render_md_table_header_bold() {
+        let theme = Theme::default();
+        let md = "| Col |\n|-----|\n| val |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        // header row is lines[1]; cell text span should be bold
+        let header_line = &lines[1];
+        let cell_span = header_line
+            .iter()
+            .find(|s| s.content.contains("Col"))
+            .expect("Col span not found");
+        assert!(cell_span.style.add_modifier == Modifier::BOLD);
+    }
+
+    #[test]
+    fn render_md_table_header_only() {
+        let theme = Theme::default();
+        let md = "| X | Y |\n|---|---|";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        // top + header + separator + bottom = 4 lines (no data rows)
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn render_md_table_single_column() {
+        let theme = Theme::default();
+        let md = "| Name |\n|------|\n| Alice |\n| Bob |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        // top + header + sep + 2 data rows + bottom = 6 lines
+        assert_eq!(lines.len(), 6);
+        let top: String = lines[0].iter().map(|s| s.content.as_ref()).collect();
+        // single column: top border has no ┬ in the middle
+        assert!(!top.contains('\u{252c}'));
+        assert!(top.starts_with('\u{250c}'));
+        assert!(top.ends_with('\u{2510}'));
+        // verify data row contains cell text
+        let row1: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
+        assert!(row1.contains("Alice"));
+    }
+
+    #[test]
+    fn render_md_table_many_columns() {
+        let theme = Theme::default();
+        let md = "| A | B | C | D | E |\n|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        // top + header + sep + data + bottom = 5 lines
+        assert_eq!(lines.len(), 5);
+        let header: String = lines[1].iter().map(|s| s.content.as_ref()).collect();
+        assert!(header.contains('A'));
+        assert!(header.contains('E'));
+        let data: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
+        assert!(data.contains('1'));
+        assert!(data.contains('5'));
+    }
+
+    #[test]
+    fn render_md_table_column_width_alignment() {
+        // Cells with varying widths — column should expand to widest cell
+        let theme = Theme::default();
+        let md = "| Short | LongerHeader |\n|-------|--------|\n| x | y |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        assert_eq!(lines.len(), 5);
+        // Header row: "LongerHeader" cell must appear in full
+        let header: String = lines[1].iter().map(|s| s.content.as_ref()).collect();
+        assert!(header.contains("LongerHeader"));
+        // Data row: cell content must be padded to same column width
+        let data: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
+        // "x" cell is padded to width of "Short" (5 chars)
+        assert!(data.contains(" x     ") || data.contains(" x    "));
+    }
+
+    #[test]
+    fn render_md_table_empty_data_cells() {
+        // Row with missing cells — should not panic, missing cells render as empty
+        let theme = Theme::default();
+        let md = "| A | B | C |\n|---|---|---|\n| 1 |   |   |";
+        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        assert_eq!(lines.len(), 5);
+        let data: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
+        assert!(data.contains('1'));
     }
 }

@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `redact_credentials` config option (default: true) to toggle context scrubbing
 - Filter diagnostics mode: `kept_lines` tracking in `FilterResult` for all 9 filter strategies
 - TUI expand ('e') highlights kept lines vs filtered-out lines with dim styling and legend
+- Markdown table rendering in TUI chat panel — Unicode box-drawing borders, bold headers, column auto-width
 
 ### Changed
 - Token estimation uses `chars/4` heuristic instead of `bytes/3` for better accuracy on multi-byte text (#742)

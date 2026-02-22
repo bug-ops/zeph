@@ -42,6 +42,7 @@ pub struct Theme {
     pub diff_gutter_remove: Style,
     pub diff_header: Style,
     pub link: Style,
+    pub table_border: Style,
 }
 
 impl Default for Theme {
@@ -87,6 +88,7 @@ impl Default for Theme {
             link: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::UNDERLINED),
+            table_border: Style::default().fg(Color::DarkGray),
         }
     }
 }
