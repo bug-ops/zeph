@@ -2490,3 +2490,44 @@ fn env_override_auto_update_check_invalid_ignored() {
 
     assert!(config.agent.auto_update_check);
 }
+
+#[test]
+fn vector_backend_sqlite_roundtrip() {
+    let toml_str = r#"
+sqlite_path = "zeph.db"
+history_limit = 100
+vector_backend = "sqlite"
+"#;
+    let memory: MemoryConfig = toml::from_str(toml_str).unwrap();
+    assert_eq!(memory.vector_backend, VectorBackend::Sqlite);
+
+    let serialized = toml::to_string(&memory).unwrap();
+    let reparsed: MemoryConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(reparsed.vector_backend, VectorBackend::Sqlite);
+}
+
+#[test]
+fn redact_credentials_false_parse() {
+    let toml_str = r#"
+sqlite_path = "zeph.db"
+history_limit = 100
+redact_credentials = false
+"#;
+    let memory: MemoryConfig = toml::from_str(toml_str).unwrap();
+    assert!(!memory.redact_credentials);
+}
+
+#[test]
+fn token_safety_margin_custom_parse() {
+    let toml_str = r#"
+sqlite_path = "zeph.db"
+history_limit = 100
+token_safety_margin = 1.15
+"#;
+    let memory: MemoryConfig = toml::from_str(toml_str).unwrap();
+    assert!(
+        (memory.token_safety_margin - 1.15).abs() < 1e-5,
+        "token_safety_margin must parse to 1.15, got {}",
+        memory.token_safety_margin
+    );
+}

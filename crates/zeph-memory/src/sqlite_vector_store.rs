@@ -534,4 +534,191 @@ mod tests {
             .unwrap();
         assert!(results.is_empty());
     }
+
+    #[tokio::test]
+    async fn search_with_must_not_integer_filter() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![
+                VectorPoint {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([("conv_id".into(), serde_json::json!(1))]),
+                },
+                VectorPoint {
+                    id: "b".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([("conv_id".into(), serde_json::json!(2))]),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let filter = VectorFilter {
+            must: vec![],
+            must_not: vec![FieldCondition {
+                field: "conv_id".into(),
+                value: FieldValue::Integer(1),
+            }],
+        };
+        let results = vs
+            .search("c", vec![1.0, 0.0, 0.0, 0.0], 10, Some(filter))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "b");
+    }
+
+    #[tokio::test]
+    async fn search_with_combined_must_and_must_not() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![
+                VectorPoint {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([
+                        ("role".into(), serde_json::json!("user")),
+                        ("conv_id".into(), serde_json::json!(1)),
+                    ]),
+                },
+                VectorPoint {
+                    id: "b".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([
+                        ("role".into(), serde_json::json!("user")),
+                        ("conv_id".into(), serde_json::json!(2)),
+                    ]),
+                },
+                VectorPoint {
+                    id: "c".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([
+                        ("role".into(), serde_json::json!("assistant")),
+                        ("conv_id".into(), serde_json::json!(1)),
+                    ]),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let filter = VectorFilter {
+            must: vec![FieldCondition {
+                field: "role".into(),
+                value: FieldValue::Text("user".into()),
+            }],
+            must_not: vec![FieldCondition {
+                field: "conv_id".into(),
+                value: FieldValue::Integer(2),
+            }],
+        };
+        let results = vs
+            .search("c", vec![1.0, 0.0, 0.0, 0.0], 10, Some(filter))
+            .await
+            .unwrap();
+        // Only "a": role=user AND conv_id != 2
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn scroll_all_missing_key_field() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![VectorPoint {
+                id: "p1".into(),
+                vector: vec![1.0, 0.0, 0.0, 0.0],
+                payload: HashMap::from([("other".into(), serde_json::json!("value"))]),
+            }],
+        )
+        .await
+        .unwrap();
+        // key_field "text" doesn't exist in payload → point excluded from result
+        let result = vs.scroll_all("c", "text").await.unwrap();
+        assert!(
+            result.is_empty(),
+            "points without the key field must not appear in scroll result"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_by_ids_empty_and_nonexistent() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![VectorPoint {
+                id: "a".into(),
+                vector: vec![1.0, 0.0, 0.0, 0.0],
+                payload: HashMap::new(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Empty list: no-op, must succeed
+        vs.delete_by_ids("c", vec![]).await.unwrap();
+
+        // Non-existent id: must succeed (idempotent)
+        vs.delete_by_ids("c", vec!["nonexistent".into()])
+            .await
+            .unwrap();
+
+        // Original point still present
+        let results = vs
+            .search("c", vec![1.0, 0.0, 0.0, 0.0], 10, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn search_corrupt_blob_skipped() {
+        let (vs, store) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+
+        // Insert a valid point first
+        vs.upsert(
+            "c",
+            vec![VectorPoint {
+                id: "valid".into(),
+                vector: vec![1.0, 0.0, 0.0, 0.0],
+                payload: HashMap::new(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Insert raw invalid bytes directly into vector_points table
+        // 3 bytes cannot be cast to f32 (needs multiples of 4)
+        let corrupt_blob: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
+        let payload_json = r#"{}"#;
+        sqlx::query(
+            "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?)",
+        )
+        .bind("corrupt")
+        .bind("c")
+        .bind(&corrupt_blob)
+        .bind(payload_json)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        // Search must not panic and must skip the corrupt point
+        let results = vs
+            .search("c", vec![1.0, 0.0, 0.0, 0.0], 10, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "valid");
+    }
 }

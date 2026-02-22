@@ -1261,6 +1261,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
+        // Build SemanticMemory with EmbeddingStore backed by SQLite instead of Qdrant
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        // Provide deterministic embedding vectors: embed returns a fixed 4-element vector
+        // MockProvider.embed always returns the same vector, so cosine similarity = 1.0
+        let provider = AnyProvider::Mock(mock);
+
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let qdrant = Some(crate::embedding_store::EmbeddingStore::new_sqlite(pool));
+
+        let memory = SemanticMemory {
+            sqlite,
+            qdrant,
+            provider,
+            embedding_model: "test-model".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
+        };
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // remember → stores in SQLite + SQLite vector store
+        let id1 = memory
+            .remember(cid, "user", "rust async programming")
+            .await
+            .unwrap();
+        let id2 = memory
+            .remember(cid, "assistant", "use tokio for async")
+            .await
+            .unwrap();
+        assert!(id1 < id2);
+
+        // recall → should return results via FTS5 keyword search
+        let recalled = memory.recall("rust", 5, None).await.unwrap();
+        assert!(
+            !recalled.is_empty(),
+            "recall must return at least one result"
+        );
+
+        // Verify history is accessible
+        let history = memory.sqlite().load_history(cid, 50).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "rust async programming");
+    }
+
+    #[tokio::test]
     async fn remember_with_embeddings_supported_but_no_qdrant() {
         let memory = test_semantic_memory(true).await;
         let cid = memory.sqlite.create_conversation().await.unwrap();
