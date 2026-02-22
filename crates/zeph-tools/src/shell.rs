@@ -260,6 +260,7 @@ impl ShellExecutor {
                             filtered_lines: fr.filtered_lines,
                             confidence: Some(fr.confidence),
                             command: Some((*block).to_owned()),
+                            kept_lines: fr.kept_lines.clone(),
                         };
                         let stats =
                             cumulative_filter_stats.get_or_insert_with(FilterStats::default);
@@ -273,6 +274,9 @@ impl ShellExecutor {
                         });
                         if stats.command.is_none() {
                             stats.command = Some((*block).to_owned());
+                        }
+                        if stats.kept_lines.is_empty() && !fr.kept_lines.is_empty() {
+                            stats.kept_lines.clone_from(&fr.kept_lines);
                         }
                         per_block_stats = Some(block_fs);
                         fr.output

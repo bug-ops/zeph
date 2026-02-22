@@ -306,7 +306,7 @@ fn render_scrollbar(
 
 const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_tool_message(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
@@ -376,36 +376,65 @@ fn render_tool_message(
             )));
         } else {
             let output_lines = &content_lines[1..];
+            let has_diagnostics = tool_expanded
+                && msg.kept_lines.is_some()
+                && !msg.kept_lines.as_ref().unwrap().is_empty();
 
             let mut wrapped: Vec<Line<'static>> = Vec::new();
-            for line in output_lines {
-                let spans = vec![
-                    Span::styled(indent.to_string(), Style::default()),
-                    Span::styled((*line).to_string(), theme.code_block),
-                ];
-                wrapped.extend(wrap_spans(spans, wrap_width));
-            }
-
-            let total_visual = wrapped.len();
-            let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
-
-            if show_all {
-                lines.extend(wrapped);
-            } else {
-                lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
-                let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
-                let dim = Style::default().add_modifier(Modifier::DIM);
-                let stats_style = Style::default().fg(ratatui::style::Color::Indexed(243));
-                let mut spans = vec![Span::styled(
-                    format!(
-                        "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
-                    ),
-                    dim,
-                )];
-                if let Some(ref stats) = msg.filter_stats {
-                    spans.push(Span::styled(format!(" | {stats}"), stats_style));
+            if has_diagnostics {
+                let kept_set: std::collections::HashSet<usize> =
+                    msg.kept_lines.as_ref().unwrap().iter().copied().collect();
+                for (raw_idx, line) in output_lines.iter().enumerate() {
+                    let is_kept = kept_set.contains(&raw_idx);
+                    let line_style = if is_kept {
+                        theme.code_block
+                    } else {
+                        theme.code_block.add_modifier(Modifier::DIM)
+                    };
+                    let spans = vec![
+                        Span::styled(indent.to_string(), Style::default()),
+                        Span::styled((*line).to_string(), line_style),
+                    ];
+                    wrapped.extend(wrap_spans(spans, wrap_width));
                 }
-                lines.push(Line::from(spans));
+                lines.extend(wrapped);
+                let legend_style = Style::default()
+                    .fg(ratatui::style::Color::Indexed(243))
+                    .add_modifier(Modifier::ITALIC);
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}[filter diagnostics: highlighted = kept, dim = filtered out]"),
+                    legend_style,
+                )));
+            } else {
+                for line in output_lines {
+                    let spans = vec![
+                        Span::styled(indent.to_string(), Style::default()),
+                        Span::styled((*line).to_string(), theme.code_block),
+                    ];
+                    wrapped.extend(wrap_spans(spans, wrap_width));
+                }
+
+                let total_visual = wrapped.len();
+                let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
+
+                if show_all {
+                    lines.extend(wrapped);
+                } else {
+                    lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
+                    let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
+                    let dim = Style::default().add_modifier(Modifier::DIM);
+                    let stats_style = Style::default().fg(ratatui::style::Color::Indexed(243));
+                    let mut spans = vec![Span::styled(
+                        format!(
+                            "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
+                        ),
+                        dim,
+                    )];
+                    if let Some(ref stats) = msg.filter_stats {
+                        spans.push(Span::styled(format!(" | {stats}"), stats_style));
+                    }
+                    lines.push(Line::from(spans));
+                }
             }
         }
     }

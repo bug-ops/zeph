@@ -431,13 +431,13 @@ fn apply_strip_annotated(
 
     if noise_count == 0 {
         if exit_code != 0 {
-            return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+            return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
         }
         let lines: Vec<&str> = clean.lines().collect();
         if lines.len() > long_output_threshold {
             return truncate_kept(raw, &lines, keep_head, keep_tail, FilterConfidence::Partial);
         }
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let mut output = String::new();
@@ -464,7 +464,12 @@ fn apply_strip_annotated(
             }
         }
     }
-    make_result(raw, output.trim_end().to_owned(), FilterConfidence::Full)
+    make_result(
+        raw,
+        output.trim_end().to_owned(),
+        FilterConfidence::Full,
+        vec![],
+    )
 }
 
 fn truncate_kept(
@@ -484,7 +489,8 @@ fn truncate_kept(
     for line in &lines[total - keep_tail..] {
         let _ = writeln!(output, "{line}");
     }
-    make_result(raw, output.trim_end().to_owned(), confidence)
+    let kept_indices: Vec<usize> = (0..keep_head).chain(total - keep_tail..total).collect();
+    make_result(raw, output.trim_end().to_owned(), confidence, kept_indices)
 }
 
 fn apply_test_summary(
@@ -568,7 +574,7 @@ fn apply_test_summary(
     }
 
     if !has_summary && passed == 0 && failed == 0 {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let mut output = String::new();
@@ -605,7 +611,7 @@ fn apply_test_summary(
          {ignored} ignored; {filtered_out} filtered out"
     );
 
-    make_result(raw, output, FilterConfidence::Full)
+    make_result(raw, output, FilterConfidence::Full, vec![])
 }
 
 fn extract_count(s: &str, label: &str) -> Option<u64> {
@@ -625,15 +631,17 @@ fn apply_group_by_rule(
 ) -> FilterResult {
     let has_error = raw.contains("error[") || raw.contains("error:");
     if has_error && exit_code != 0 {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let mut warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut pending_location: Option<String> = None;
+    let mut kept_indices: Vec<usize> = Vec::new();
 
-    for line in raw.lines() {
+    for (idx, line) in raw.lines().enumerate() {
         if let Some(caps) = location_re.captures(line) {
             pending_location = Some(caps[1].to_owned());
+            kept_indices.push(idx);
         }
         if let Some(caps) = rule_re.captures(line) {
             let rule = caps[1].to_owned();
@@ -644,12 +652,19 @@ fn apply_group_by_rule(
     }
 
     if warnings.is_empty() {
-        let kept: Vec<&str> = raw.lines().filter(|l| !is_cargo_noise(l)).collect();
-        if kept.len() < raw.lines().count() {
-            let output = kept.join("\n");
-            return make_result(raw, output, FilterConfidence::Partial);
+        let all_lines: Vec<&str> = raw.lines().collect();
+        let kept: Vec<(usize, &str)> = all_lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !is_cargo_noise(l))
+            .map(|(i, l)| (i, *l))
+            .collect();
+        if kept.len() < all_lines.len() {
+            let output = kept.iter().map(|(_, l)| *l).collect::<Vec<_>>().join("\n");
+            let ki: Vec<usize> = kept.iter().map(|(i, _)| *i).collect();
+            return make_result(raw, output, FilterConfidence::Partial, ki);
         }
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let total: usize = warnings.values().map(Vec::len).sum();
@@ -667,7 +682,7 @@ fn apply_group_by_rule(
     }
     let _ = write!(output, "{total} warnings total ({rules} rules)");
 
-    make_result(raw, output, FilterConfidence::Full)
+    make_result(raw, output, FilterConfidence::Full, kept_indices)
 }
 
 fn apply_git_status(raw: &str) -> FilterResult {
@@ -675,29 +690,37 @@ fn apply_git_status(raw: &str) -> FilterResult {
     let mut added = 0u32;
     let mut deleted = 0u32;
     let mut untracked = 0u32;
+    let mut kept_indices: Vec<usize> = Vec::new();
 
-    for line in raw.lines() {
+    for (idx, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("M ") || trimmed.starts_with("MM") || trimmed.starts_with(" M") {
             modified += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("A ") || trimmed.starts_with("AM") {
             added += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("D ") || trimmed.starts_with(" D") {
             deleted += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("??") {
             untracked += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("modified:") {
             modified += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("new file:") {
             added += 1;
+            kept_indices.push(idx);
         } else if trimmed.starts_with("deleted:") {
             deleted += 1;
+            kept_indices.push(idx);
         }
     }
 
     let total = modified + added + deleted + untracked;
     if total == 0 {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let mut output = String::new();
@@ -705,7 +728,7 @@ fn apply_git_status(raw: &str) -> FilterResult {
         output,
         "M  {modified} files | A  {added} files | D  {deleted} files | ??  {untracked} files"
     );
-    make_result(raw, output, FilterConfidence::Full)
+    make_result(raw, output, FilterConfidence::Full, kept_indices)
 }
 
 fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
@@ -713,8 +736,9 @@ fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
     let mut current_file = String::new();
     let mut additions = 0i32;
     let mut deletions = 0i32;
+    let mut kept_indices: Vec<usize> = Vec::new();
 
-    for line in raw.lines() {
+    for (idx, line) in raw.lines().enumerate() {
         if line.starts_with("diff --git ") {
             if !current_file.is_empty() {
                 files.push((current_file.clone(), additions, deletions));
@@ -725,10 +749,13 @@ fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
                 .clone_into(&mut current_file);
             additions = 0;
             deletions = 0;
+            kept_indices.push(idx);
         } else if line.starts_with('+') && !line.starts_with("+++") {
             additions += 1;
+            kept_indices.push(idx);
         } else if line.starts_with('-') && !line.starts_with("---") {
             deletions += 1;
+            kept_indices.push(idx);
         }
     }
     if !current_file.is_empty() {
@@ -736,7 +763,7 @@ fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
     }
 
     if files.is_empty() {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let total_lines: usize = raw.lines().count();
@@ -756,7 +783,7 @@ fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
     if total_lines > max_diff_lines {
         let _ = write!(output, " (truncated from {total_lines} lines)");
     }
-    make_result(raw, output, FilterConfidence::Full)
+    make_result(raw, output, FilterConfidence::Full, kept_indices)
 }
 
 fn apply_dedup(
@@ -766,21 +793,21 @@ fn apply_dedup(
 ) -> FilterResult {
     let lines: Vec<&str> = raw.lines().collect();
     if lines.len() < 3 {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
-    let mut pattern_counts: HashMap<String, (usize, String)> =
+    let mut pattern_counts: HashMap<String, (usize, String, usize)> =
         HashMap::with_capacity(max_unique_patterns.min(4096));
     let mut order: Vec<String> = Vec::new();
     let mut capped = false;
 
-    for line in &lines {
+    for (idx, line) in lines.iter().enumerate() {
         let normalized = dedup_normalize(line, normalize_patterns);
         if let Some(entry) = pattern_counts.get_mut(&normalized) {
             entry.0 += 1;
         } else if pattern_counts.len() < max_unique_patterns {
             order.push(normalized.clone());
-            pattern_counts.insert(normalized, (1, (*line).to_owned()));
+            pattern_counts.insert(normalized, (1, (*line).to_owned(), idx));
         } else {
             capped = true;
         }
@@ -790,12 +817,14 @@ fn apply_dedup(
     let total = lines.len();
 
     if unique == total && !capped {
-        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback);
+        return make_result(raw, raw.to_owned(), FilterConfidence::Fallback, vec![]);
     }
 
     let mut output = String::new();
+    let mut kept_indices: Vec<usize> = Vec::new();
     for key in &order {
-        let (count, example) = &pattern_counts[key];
+        let (count, example, first_idx) = &pattern_counts[key];
+        kept_indices.push(*first_idx);
         if *count > 1 {
             let _ = writeln!(output, "{example} (x{count})");
         } else {
@@ -807,7 +836,7 @@ fn apply_dedup(
         let _ = write!(output, " (capped at {max_unique_patterns})");
     }
 
-    make_result(raw, output, FilterConfidence::Full)
+    make_result(raw, output, FilterConfidence::Full, kept_indices)
 }
 
 fn dedup_normalize(line: &str, patterns: &[(Regex, String)]) -> String {
@@ -831,19 +860,27 @@ impl OutputFilter for DeclarativeFilter {
         &self.matcher
     }
 
+    #[allow(clippy::too_many_lines)]
     fn filter(&self, _command: &str, raw_output: &str, exit_code: i32) -> FilterResult {
         let clean = sanitize_output(raw_output);
         match &self.strategy {
             CompiledStrategy::StripNoise { patterns } => {
-                let filtered: String = clean
-                    .lines()
-                    .filter(|line| !patterns.iter().any(|p| p.is_match(line)))
+                let raw_lines: Vec<&str> = clean.lines().collect();
+                let kept_indices: Vec<usize> = raw_lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| !patterns.iter().any(|p| p.is_match(line)))
+                    .map(|(i, _)| i)
+                    .collect();
+                let filtered: String = kept_indices
+                    .iter()
+                    .map(|&i| raw_lines[i])
                     .collect::<Vec<_>>()
                     .join("\n");
                 if filtered.len() < clean.len() {
-                    make_result(raw_output, filtered, FilterConfidence::Full)
+                    make_result(raw_output, filtered, FilterConfidence::Full, kept_indices)
                 } else {
-                    make_result(raw_output, clean, FilterConfidence::Fallback)
+                    make_result(raw_output, clean, FilterConfidence::Fallback, vec![])
                 }
             }
             CompiledStrategy::Truncate {
@@ -853,34 +890,46 @@ impl OutputFilter for DeclarativeFilter {
             } => {
                 let lines: Vec<&str> = clean.lines().collect();
                 if lines.len() <= *max_lines {
-                    return make_result(raw_output, clean, FilterConfidence::Fallback);
+                    return make_result(raw_output, clean, FilterConfidence::Fallback, vec![]);
                 }
-                let omitted = lines.len() - head - tail;
+                let total = lines.len();
+                let omitted = total - head - tail;
                 let mut output = String::new();
                 for line in &lines[..*head] {
                     output.push_str(line);
                     output.push('\n');
                 }
                 let _ = write!(output, "\n... ({omitted} lines omitted) ...\n\n");
-                for line in &lines[lines.len() - tail..] {
+                for line in &lines[total - tail..] {
                     output.push_str(line);
                     output.push('\n');
                 }
+                let kept_indices: Vec<usize> = (0..*head).chain(total - tail..total).collect();
                 make_result(
                     raw_output,
                     output.trim_end().to_owned(),
                     FilterConfidence::Partial,
+                    kept_indices,
                 )
             }
             CompiledStrategy::KeepMatching { patterns } => {
-                let kept: Vec<&str> = clean
-                    .lines()
-                    .filter(|line| patterns.iter().any(|p| p.is_match(line)))
+                let raw_lines: Vec<&str> = clean.lines().collect();
+                let kept_indices: Vec<usize> = raw_lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| patterns.iter().any(|p| p.is_match(line)))
+                    .map(|(i, _)| i)
                     .collect();
-                if kept.is_empty() {
-                    return make_result(raw_output, clean, FilterConfidence::Fallback);
+                if kept_indices.is_empty() {
+                    return make_result(raw_output, clean, FilterConfidence::Fallback, vec![]);
                 }
-                make_result(raw_output, kept.join("\n"), FilterConfidence::Full)
+                let kept: Vec<&str> = kept_indices.iter().map(|&i| raw_lines[i]).collect();
+                make_result(
+                    raw_output,
+                    kept.join("\n"),
+                    FilterConfidence::Full,
+                    kept_indices,
+                )
             }
             CompiledStrategy::StripAnnotated {
                 patterns,

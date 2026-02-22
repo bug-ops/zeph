@@ -138,6 +138,7 @@ pub trait Channel: Send {
         display: &str,
         _diff: Option<crate::DiffData>,
         _filter_stats: Option<String>,
+        _kept_lines: Option<Vec<usize>>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         self.send(display)
     }
@@ -168,6 +169,7 @@ pub enum LoopbackEvent {
         display: String,
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     },
 }
 
@@ -241,6 +243,7 @@ impl Channel for LoopbackChannel {
         display: &str,
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
@@ -248,6 +251,7 @@ impl Channel for LoopbackChannel {
                 display: display.to_owned(),
                 diff,
                 filter_stats,
+                kept_lines,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -450,7 +454,7 @@ mod tests {
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_tool_output("bash", "exit 0", None, None)
+            .send_tool_output("bash", "exit 0", None, None, None)
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -460,11 +464,13 @@ mod tests {
                 display,
                 diff,
                 filter_stats,
+                kept_lines,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
                 assert!(diff.is_none());
                 assert!(filter_stats.is_none());
+                assert!(kept_lines.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }

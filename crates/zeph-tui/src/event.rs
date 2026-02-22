@@ -69,6 +69,7 @@ pub enum AgentEvent {
         success: bool,
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     },
     ConfirmRequest {
         prompt: String,

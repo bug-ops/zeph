@@ -124,6 +124,7 @@ impl Channel for TuiChannel {
         display: &str,
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
             %tool_name,
@@ -138,6 +139,7 @@ impl Channel for TuiChannel {
                 success: true,
                 diff,
                 filter_stats,
+                kept_lines,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
@@ -357,6 +359,7 @@ mod tests {
             "[tool output: bash]\n```\nok\n```",
             Some(diff),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -371,9 +374,15 @@ mod tests {
     #[tokio::test]
     async fn send_tool_output_without_diff_sends_tool_event() {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
-        ch.send_tool_output("read", "[tool output: read]\n```\ncontent\n```", None, None)
-            .await
-            .unwrap();
+        ch.send_tool_output(
+            "read",
+            "[tool output: read]\n```\ncontent\n```",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let evt = agent_rx.recv().await.unwrap();
         assert!(

@@ -105,6 +105,7 @@ pub struct ChatMessage {
     pub tool_name: Option<String>,
     pub diff_data: Option<zeph_core::DiffData>,
     pub filter_stats: Option<String>,
+    pub kept_lines: Option<Vec<usize>>,
     pub timestamp: String,
 }
 
@@ -117,6 +118,7 @@ impl ChatMessage {
             tool_name: None,
             diff_data: None,
             filter_stats: None,
+            kept_lines: None,
             timestamp: format_local_time(),
         }
     }
@@ -490,6 +492,7 @@ impl App {
                 output,
                 diff,
                 filter_stats,
+                kept_lines,
                 ..
             } => {
                 debug!(
@@ -509,13 +512,15 @@ impl App {
                     self.messages[pos].streaming = false;
                     self.messages[pos].diff_data = diff;
                     self.messages[pos].filter_stats = filter_stats;
+                    self.messages[pos].kept_lines = kept_lines;
                     self.render_cache.invalidate(pos);
-                } else if diff.is_some() || filter_stats.is_some() {
+                } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
                     // Native tool_use path: no prior ToolStart, create the message now.
                     debug!("creating new Tool message with diff (native path)");
                     let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
                     msg.diff_data = diff;
                     msg.filter_stats = filter_stats;
+                    msg.kept_lines = kept_lines;
                     self.messages.push(msg);
                 } else if let Some(msg) = self
                     .messages
@@ -1669,6 +1674,7 @@ mod tests {
             success: true,
             diff: Some(diff),
             filter_stats: None,
+            kept_lines: None,
         });
 
         assert_eq!(app.messages().len(), 1);
@@ -1688,6 +1694,7 @@ mod tests {
             success: true,
             diff: None,
             filter_stats: None,
+            kept_lines: None,
         });
 
         // No prior ToolStart and no diff/filter_stats: nothing to display.

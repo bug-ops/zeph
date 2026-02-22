@@ -32,6 +32,8 @@ pub struct FilterResult {
     pub raw_lines: usize,
     pub filtered_lines: usize,
     pub confidence: FilterConfidence,
+    /// 0-indexed line indices from raw output that the filter considers informative.
+    pub kept_lines: Vec<usize>,
 }
 
 impl FilterResult {
@@ -145,10 +147,14 @@ impl<'a> FilterPipeline<'a> {
         let initial_len = output.len();
         let mut current = output.to_owned();
         let mut worst = FilterConfidence::Full;
+        let mut kept_lines: Vec<usize> = Vec::new();
 
         for stage in &self.stages {
             let result = stage.filter(command, &current, exit_code);
             worst = worse_confidence(worst, result.confidence);
+            if !result.kept_lines.is_empty() {
+                kept_lines.clone_from(&result.kept_lines);
+            }
             current = result.output;
         }
 
@@ -159,6 +165,7 @@ impl<'a> FilterPipeline<'a> {
             filtered_lines: count_lines(&current),
             output: current,
             confidence: worst,
+            kept_lines,
         }
     }
 }
@@ -449,7 +456,12 @@ fn count_lines(s: &str) -> usize {
     if s.is_empty() { 0 } else { s.lines().count() }
 }
 
-fn make_result(raw: &str, output: String, confidence: FilterConfidence) -> FilterResult {
+fn make_result(
+    raw: &str,
+    output: String,
+    confidence: FilterConfidence,
+    kept_lines: Vec<usize>,
+) -> FilterResult {
     let filtered_chars = output.len();
     FilterResult {
         raw_lines: count_lines(raw),
@@ -458,6 +470,7 @@ fn make_result(raw: &str, output: String, confidence: FilterConfidence) -> Filte
         raw_chars: raw.len(),
         filtered_chars,
         confidence,
+        kept_lines,
     }
 }
 
@@ -500,6 +513,7 @@ mod tests {
             raw_lines: 0,
             filtered_lines: 0,
             confidence: FilterConfidence::Full,
+            kept_lines: vec![],
         };
         assert!((r.savings_pct() - 80.0).abs() < 0.01);
     }
@@ -513,6 +527,7 @@ mod tests {
             raw_lines: 0,
             filtered_lines: 0,
             confidence: FilterConfidence::Full,
+            kept_lines: vec![],
         };
         assert!((r.savings_pct()).abs() < 0.01);
     }
@@ -529,7 +544,7 @@ mod tests {
     fn make_result_counts_lines() {
         let raw = "line1\nline2\nline3\nline4\nline5";
         let filtered = "line1\nline3".to_owned();
-        let r = make_result(raw, filtered, FilterConfidence::Full);
+        let r = make_result(raw, filtered, FilterConfidence::Full, vec![]);
         assert_eq!(r.raw_lines, 5);
         assert_eq!(r.filtered_lines, 2);
     }
@@ -687,6 +702,7 @@ extra_patterns = ["TODO: security review"]
             raw_lines: 10,
             filtered_lines: 1,
             confidence: FilterConfidence::Full,
+            kept_lines: vec![],
         };
         m.record(&r);
         assert_eq!(m.total_commands, 1);
@@ -755,7 +771,7 @@ extra_patterns = ["TODO: security review"]
         }
         fn filter(&self, _cmd: &str, raw: &str, _exit: i32) -> FilterResult {
             let output = raw.replace(self.from, self.to);
-            make_result(raw, output, self.confidence)
+            make_result(raw, output, self.confidence, vec![])
         }
     }
 

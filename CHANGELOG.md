@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `vector_backend` config option to select between `qdrant` and `sqlite` vector backends
 - Credential scrubbing in LLM context pipeline via `scrub_content()` — redacts secrets and paths before LLM calls (#743)
 - `redact_credentials` config option (default: true) to toggle context scrubbing
+- Filter diagnostics mode: `kept_lines` tracking in `FilterResult` for all 9 filter strategies
+- TUI expand ('e') highlights kept lines vs filtered-out lines with dim styling and legend
 
 ### Changed
 - Token estimation uses `chars/4` heuristic instead of `bytes/3` for better accuracy on multi-byte text (#742)

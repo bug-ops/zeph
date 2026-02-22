@@ -786,45 +786,49 @@ impl<C: Channel> Agent<C> {
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
         for (tc, tool_result) in tool_calls.iter().zip(tool_results) {
-            let (output, is_error, diff, inline_stats, already_streamed) = match tool_result {
-                Ok(Some(out)) => {
-                    if let Some(ref fs) = out.filter_stats {
-                        let saved = fs.estimated_tokens_saved() as u64;
-                        let raw = (fs.raw_chars / 4) as u64;
-                        let confidence = fs.confidence;
-                        let was_filtered = fs.filtered_chars < fs.raw_chars;
-                        self.update_metrics(|m| {
-                            m.filter_raw_tokens += raw;
-                            m.filter_saved_tokens += saved;
-                            m.filter_applications += 1;
-                            m.filter_total_commands += 1;
-                            if was_filtered {
-                                m.filter_filtered_commands += 1;
-                            }
-                            if let Some(c) = confidence {
-                                match c {
-                                    zeph_tools::FilterConfidence::Full => {
-                                        m.filter_confidence_full += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Partial => {
-                                        m.filter_confidence_partial += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Fallback => {
-                                        m.filter_confidence_fallback += 1;
+            let (output, is_error, diff, inline_stats, already_streamed, kept_lines) =
+                match tool_result {
+                    Ok(Some(out)) => {
+                        if let Some(ref fs) = out.filter_stats {
+                            let saved = fs.estimated_tokens_saved() as u64;
+                            let raw = (fs.raw_chars / 4) as u64;
+                            let confidence = fs.confidence;
+                            let was_filtered = fs.filtered_chars < fs.raw_chars;
+                            self.update_metrics(|m| {
+                                m.filter_raw_tokens += raw;
+                                m.filter_saved_tokens += saved;
+                                m.filter_applications += 1;
+                                m.filter_total_commands += 1;
+                                if was_filtered {
+                                    m.filter_filtered_commands += 1;
+                                }
+                                if let Some(c) = confidence {
+                                    match c {
+                                        zeph_tools::FilterConfidence::Full => {
+                                            m.filter_confidence_full += 1;
+                                        }
+                                        zeph_tools::FilterConfidence::Partial => {
+                                            m.filter_confidence_partial += 1;
+                                        }
+                                        zeph_tools::FilterConfidence::Fallback => {
+                                            m.filter_confidence_fallback += 1;
+                                        }
                                     }
                                 }
-                            }
+                            });
+                        }
+                        let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
+                            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
                         });
+                        let kept = out.filter_stats.as_ref().and_then(|fs| {
+                            (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone())
+                        });
+                        let streamed = out.streamed;
+                        (out.summary, false, out.diff, inline_stats, streamed, kept)
                     }
-                    let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
-                    });
-                    let streamed = out.streamed;
-                    (out.summary, false, out.diff, inline_stats, streamed)
-                }
-                Ok(None) => ("(no output)".to_owned(), false, None, None, false),
-                Err(e) => (format!("[error] {e}"), true, None, None, false),
-            };
+                    Ok(None) => ("(no output)".to_owned(), false, None, None, false, None),
+                    Err(e) => (format!("[error] {e}"), true, None, None, false, None),
+                };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
             let body = if let Some(ref stats) = inline_stats {
@@ -838,7 +842,7 @@ impl<C: Channel> Agent<C> {
             // output displayed by the TUI event forwarder; skip duplicate send.
             if !already_streamed {
                 self.channel
-                    .send_tool_output(&tc.name, &display, diff, inline_stats)
+                    .send_tool_output(&tc.name, &display, diff, inline_stats, kept_lines)
                     .await?;
             }
 

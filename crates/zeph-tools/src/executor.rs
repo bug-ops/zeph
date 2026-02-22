@@ -24,6 +24,7 @@ pub struct FilterStats {
     pub filtered_lines: usize,
     pub confidence: Option<crate::FilterConfidence>,
     pub command: Option<String>,
+    pub kept_lines: Vec<usize>,
 }
 
 impl FilterStats {

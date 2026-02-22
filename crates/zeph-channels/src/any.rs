@@ -85,6 +85,7 @@ impl Channel for AnyChannel {
         display: &str,
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     ) -> Result<(), ChannelError> {
         dispatch_channel!(
             self,
@@ -92,7 +93,8 @@ impl Channel for AnyChannel {
             tool_name,
             display,
             diff,
-            filter_stats
+            filter_stats,
+            kept_lines
         )
     }
 }
