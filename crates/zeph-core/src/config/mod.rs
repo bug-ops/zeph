@@ -75,6 +75,12 @@ impl Config {
                 "gateway.rate_limit must be > 0".into(),
             ));
         }
+        if self.memory.token_safety_margin <= 0.0 {
+            return Err(ConfigError::Validation(format!(
+                "token_safety_margin must be > 0.0, got {}",
+                self.memory.token_safety_margin
+            )));
+        }
         Ok(())
     }
 

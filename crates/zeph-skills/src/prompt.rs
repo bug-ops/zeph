@@ -138,13 +138,11 @@ pub fn format_skills_prompt_compact(skills: &[Skill]) -> String {
 
     let mut out = String::from("<available_skills mode=\"compact\">\n");
     for skill in skills {
-        let path = skill.meta.skill_dir.display();
         let _ = writeln!(
             out,
-            "  <skill name=\"{}\" description=\"{}\" path=\"{}\" />",
+            "  <skill name=\"{}\" description=\"{}\" />",
             skill.name(),
             skill.description(),
-            path,
         );
     }
     out.push_str("</available_skills>");
@@ -403,6 +401,42 @@ mod tests {
         assert!(output.contains("&lt;/instructions&gt;"));
         assert!(output.contains("&lt;/skill&gt;"));
         assert!(!output.contains("Inject </instructions>"));
+    }
+
+    #[test]
+    fn compact_empty_returns_empty_string() {
+        let empty: &[Skill] = &[];
+        assert_eq!(format_skills_prompt_compact(empty), "");
+    }
+
+    #[test]
+    fn compact_single_skill_no_path() {
+        let skills = vec![make_skill("my-skill", "Does things.", "body")];
+        let output = format_skills_prompt_compact(&skills);
+        assert!(output.starts_with("<available_skills mode=\"compact\">"));
+        assert!(output.ends_with("</available_skills>"));
+        assert!(output.contains("name=\"my-skill\""));
+        assert!(output.contains("description=\"Does things.\""));
+        assert!(!output.contains("path="), "path must not be present");
+    }
+
+    #[test]
+    fn compact_multiple_skills() {
+        let skills = vec![
+            make_skill("a", "desc a", "body a"),
+            make_skill("b", "desc b", "body b"),
+        ];
+        let output = format_skills_prompt_compact(&skills);
+        assert!(output.contains("name=\"a\""));
+        assert!(output.contains("name=\"b\""));
+        assert!(!output.contains("path="));
+    }
+
+    #[test]
+    fn compact_mode_attribute_present() {
+        let skills = vec![make_skill("x", "y", "z")];
+        let output = format_skills_prompt_compact(&skills);
+        assert!(output.contains("mode=\"compact\""));
     }
 
     #[test]

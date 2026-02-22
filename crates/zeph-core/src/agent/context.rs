@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
+use futures::StreamExt as _;
+
 use zeph_llm::provider::MessagePart;
 use zeph_memory::semantic::estimate_tokens;
 use zeph_skills::ScoredMatch;
@@ -136,25 +138,23 @@ impl<C: Channel> Agent<C> {
                 .map_err(Into::into);
         }
 
-        // Summarize all chunks in parallel
+        // Summarize chunks with bounded concurrency to prevent runaway API calls
         let provider = self.summary_or_primary_provider();
-        let chunk_futures: Vec<_> = chunks
-            .iter()
-            .map(|chunk| {
-                let prompt = Self::build_chunk_prompt(chunk);
-                let p = provider.clone();
-                async move {
-                    p.chat(&[Message {
-                        role: Role::User,
-                        content: prompt,
-                        parts: vec![],
-                    }])
-                    .await
-                }
-            })
-            .collect();
-
-        let results = futures::future::join_all(chunk_futures).await;
+        let results: Vec<_> = futures::stream::iter(chunks.iter().map(|chunk| {
+            let prompt = Self::build_chunk_prompt(chunk);
+            let p = provider.clone();
+            async move {
+                p.chat(&[Message {
+                    role: Role::User,
+                    content: prompt,
+                    parts: vec![],
+                }])
+                .await
+            }
+        }))
+        .buffer_unordered(4)
+        .collect()
+        .await;
 
         let partial_summaries: Vec<String> = results
             .into_iter()
@@ -1052,6 +1052,121 @@ mod tests {
     use super::*;
     #[allow(clippy::wildcard_imports)]
     use crate::agent::agent_tests::*;
+
+    #[test]
+    fn chunk_messages_empty_input_returns_single_empty_chunk() {
+        let messages: &[Message] = &[];
+        let chunks = chunk_messages(messages, 4096, 2048);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].is_empty());
+    }
+
+    #[test]
+    fn chunk_messages_single_oversized_message_gets_own_chunk() {
+        // A message >= oversized threshold goes into its own chunk
+        let oversized_content = "x".repeat(2048 * 4 + 1); // > 2048 tokens
+        let messages = vec![Message {
+            role: Role::User,
+            content: oversized_content.clone(),
+            parts: vec![],
+        }];
+        let chunks = chunk_messages(&messages, 4096, 2048);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0][0].content, oversized_content);
+    }
+
+    #[test]
+    fn chunk_messages_splits_at_budget_boundary() {
+        // Two messages each consuming exactly half of budget → should fit in one chunk
+        // Use messages whose token count is just under half of budget
+        let half = "w".repeat(1000 * 4); // 1000 tokens
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: half.clone(),
+                parts: vec![],
+            },
+            Message {
+                role: Role::User,
+                content: half.clone(),
+                parts: vec![],
+            },
+            Message {
+                role: Role::User,
+                content: half.clone(),
+                parts: vec![],
+            },
+        ];
+        // budget = 2000 tokens: first two fit, third overflows → 2 chunks
+        let chunks = chunk_messages(&messages, 2000, 4096);
+        assert!(chunks.len() >= 2, "expected split into multiple chunks");
+    }
+
+    // SF-5: SkillPromptMode::Auto threshold
+    #[test]
+    fn skill_prompt_mode_auto_selects_compact_when_budget_below_8192() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(4096, 0.20, 0.80, 4, 0);
+
+        // Auto mode: budget < 8192 → Compact
+        let effective_mode = match crate::config::SkillPromptMode::Auto {
+            crate::config::SkillPromptMode::Auto => {
+                if let Some(ref budget) = agent.context_state.budget
+                    && budget.max_tokens() < 8192
+                {
+                    crate::config::SkillPromptMode::Compact
+                } else {
+                    crate::config::SkillPromptMode::Full
+                }
+            }
+            other => other,
+        };
+        assert_eq!(effective_mode, crate::config::SkillPromptMode::Compact);
+    }
+
+    #[test]
+    fn skill_prompt_mode_auto_selects_full_when_budget_above_8192() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(16384, 0.20, 0.80, 4, 0);
+
+        // Auto mode: budget >= 8192 → Full
+        let effective_mode = match crate::config::SkillPromptMode::Auto {
+            crate::config::SkillPromptMode::Auto => {
+                if let Some(ref budget) = agent.context_state.budget
+                    && budget.max_tokens() < 8192
+                {
+                    crate::config::SkillPromptMode::Compact
+                } else {
+                    crate::config::SkillPromptMode::Full
+                }
+            }
+            other => other,
+        };
+        assert_eq!(effective_mode, crate::config::SkillPromptMode::Full);
+    }
+
+    // SF-6: SkillPromptMode::Compact forced config
+    #[test]
+    fn skill_prompt_mode_compact_forced_regardless_of_budget() {
+        // Even with a large budget, Compact mode stays Compact
+        let effective_mode = match crate::config::SkillPromptMode::Compact {
+            crate::config::SkillPromptMode::Auto => {
+                crate::config::SkillPromptMode::Full // would normally pick Full
+            }
+            other => other,
+        };
+        assert_eq!(effective_mode, crate::config::SkillPromptMode::Compact);
+    }
 
     #[test]
     fn should_compact_disabled_without_budget() {

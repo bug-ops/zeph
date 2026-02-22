@@ -67,6 +67,9 @@ fn apply_temporal_decay(
     timestamps: &std::collections::HashMap<MessageId, i64>,
     half_life_days: u32,
 ) {
+    if half_life_days == 0 {
+        return;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2011,6 +2014,127 @@ mod tests {
         assert_eq!(result[0].0, MessageId(1));
         // msg 2 should be preferred over msg 3 (diverse)
         assert_eq!(result[1].0, MessageId(2));
+    }
+
+    #[test]
+    fn temporal_decay_half_life_zero_is_noop() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        let age_secs = 30i64 * 86400;
+        let ts = now - age_secs;
+        let mut ranked = vec![(MessageId(1), 1.0f64)];
+        let mut timestamps = std::collections::HashMap::new();
+        timestamps.insert(MessageId(1), ts);
+        // half_life=0 → guard returns early, score must remain 1.0
+        apply_temporal_decay(&mut ranked, &timestamps, 0);
+        assert!(
+            (ranked[0].1 - 1.0).abs() < f64::EPSILON,
+            "score was {}",
+            ranked[0].1
+        );
+    }
+
+    #[test]
+    fn temporal_decay_huge_age_near_zero() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        // 10 years = ~3650 days
+        let age_secs = 3650i64 * 86400;
+        let ts = now - age_secs;
+        let mut ranked = vec![(MessageId(1), 1.0f64)];
+        let mut timestamps = std::collections::HashMap::new();
+        timestamps.insert(MessageId(1), ts);
+        apply_temporal_decay(&mut ranked, &timestamps, 30);
+        // After 3650 days with half_life=30, score should be essentially 0
+        assert!(ranked[0].1 < 0.001, "score was {}", ranked[0].1);
+    }
+
+    #[test]
+    fn temporal_decay_small_half_life() {
+        // Very small half_life (1 day), age = 7 days → 2^(-7) ≈ 0.0078
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        let ts = now - 7 * 86400i64;
+        let mut ranked = vec![(MessageId(1), 1.0f64)];
+        let mut timestamps = std::collections::HashMap::new();
+        timestamps.insert(MessageId(1), ts);
+        apply_temporal_decay(&mut ranked, &timestamps, 1);
+        assert!(ranked[0].1 < 0.01, "score was {}", ranked[0].1);
+    }
+
+    #[test]
+    fn mmr_lambda_zero_max_diversity() {
+        // lambda=0 → pure diversity: second item should be most dissimilar
+        let ranked = vec![
+            (MessageId(1), 1.0f64),  // selected first (always highest relevance)
+            (MessageId(2), 0.9f64),  // orthogonal to 1
+            (MessageId(3), 0.85f64), // parallel to 1 (max_sim=1.0)
+        ];
+        let mut vectors = std::collections::HashMap::new();
+        vectors.insert(MessageId(1), vec![1.0f32, 0.0]);
+        vectors.insert(MessageId(2), vec![0.0f32, 1.0]); // orthogonal
+        vectors.insert(MessageId(3), vec![1.0f32, 0.0]); // same direction
+        let result = apply_mmr(&ranked, &vectors, 0.0, 3);
+        assert_eq!(result.len(), 3);
+        // After 1 is selected: mmr(2) = 0 - (1-0)*0 = 0, mmr(3) = 0 - 1*1 = -1 → 2 wins
+        assert_eq!(result[1].0, MessageId(2));
+    }
+
+    #[test]
+    fn mmr_lambda_one_pure_relevance() {
+        // lambda=1 → pure relevance, should pick in relevance order
+        let ranked = vec![
+            (MessageId(1), 1.0f64),
+            (MessageId(2), 0.8f64),
+            (MessageId(3), 0.6f64),
+        ];
+        let mut vectors = std::collections::HashMap::new();
+        vectors.insert(MessageId(1), vec![1.0f32, 0.0]);
+        vectors.insert(MessageId(2), vec![0.0f32, 1.0]);
+        vectors.insert(MessageId(3), vec![0.5f32, 0.5]);
+        let result = apply_mmr(&ranked, &vectors, 1.0, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].0, MessageId(1));
+        assert_eq!(result[1].0, MessageId(2));
+        assert_eq!(result[2].0, MessageId(3));
+    }
+
+    #[test]
+    fn mmr_limit_zero_returns_empty() {
+        let ranked = vec![(MessageId(1), 1.0f64), (MessageId(2), 0.8f64)];
+        let mut vectors = std::collections::HashMap::new();
+        vectors.insert(MessageId(1), vec![1.0f32, 0.0]);
+        vectors.insert(MessageId(2), vec![0.0f32, 1.0]);
+        let result = apply_mmr(&ranked, &vectors, 0.7, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn mmr_duplicate_vectors_penalizes_second() {
+        // Two items with identical embeddings: second should be heavily penalized
+        let ranked = vec![
+            (MessageId(1), 1.0f64),
+            (MessageId(2), 1.0f64), // same relevance, same direction
+            (MessageId(3), 0.9f64), // orthogonal, lower relevance
+        ];
+        let mut vectors = std::collections::HashMap::new();
+        vectors.insert(MessageId(1), vec![1.0f32, 0.0]);
+        vectors.insert(MessageId(2), vec![1.0f32, 0.0]); // duplicate
+        vectors.insert(MessageId(3), vec![0.0f32, 1.0]); // orthogonal
+        let result = apply_mmr(&ranked, &vectors, 0.5, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].0, MessageId(1));
+        // msg3 (orthogonal) should be preferred over msg2 (duplicate) with lambda=0.5
+        assert_eq!(result[1].0, MessageId(3));
     }
 
     // Priority 3: proptest

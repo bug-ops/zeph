@@ -124,6 +124,11 @@ impl Config {
         {
             self.memory.semantic.mmr_lambda = lambda;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_TOKEN_SAFETY_MARGIN")
+            && let Ok(margin) = v.parse::<f32>()
+        {
+            self.memory.token_safety_margin = margin.clamp(0.1, 10.0);
+        }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SUMMARIZE_OUTPUT")
             && let Ok(enabled) = v.parse::<bool>()
         {
