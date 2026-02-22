@@ -665,6 +665,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut agent = agent;
+    agent
+        .check_vector_store_health(config.memory.vector_backend.as_str())
+        .await;
 
     // Double Ctrl+C: first cancels current operation, second within 2s shuts down
     let cancel_signal = agent.cancel_signal();
@@ -1495,6 +1498,9 @@ async fn run_daemon(
     };
 
     agent.load_history().await?;
+    agent
+        .check_vector_store_health(config.memory.vector_backend.as_str())
+        .await;
 
     spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle);
 

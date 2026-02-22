@@ -753,11 +753,16 @@ impl App {
                 self.push_system_message(tools);
             }
             TuiCommand::MemoryStats => {
+                let vector_status = if self.metrics.qdrant_available {
+                    format!("{} (connected)", self.metrics.vector_backend)
+                } else if !self.metrics.vector_backend.is_empty() {
+                    format!("{} (offline)", self.metrics.vector_backend)
+                } else {
+                    "none".into()
+                };
                 let msg = format!(
-                    "Memory stats:\n  SQLite messages: {}\n  Qdrant available: {}\n  Embeddings generated: {}",
-                    self.metrics.sqlite_message_count,
-                    self.metrics.qdrant_available,
-                    self.metrics.embeddings_generated,
+                    "Memory stats:\n  SQLite messages: {}\n  Vector store: {vector_status}\n  Embeddings generated: {}",
+                    self.metrics.sqlite_message_count, self.metrics.embeddings_generated,
                 );
                 self.push_system_message(msg);
             }

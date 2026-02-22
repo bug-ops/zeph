@@ -418,6 +418,16 @@ pub enum VectorBackend {
     Sqlite,
 }
 
+impl VectorBackend {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Qdrant => "qdrant",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
     pub sqlite_path: String,

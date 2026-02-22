@@ -5,6 +5,19 @@ use crate::channel::Channel;
 use crate::metrics::MetricsSnapshot;
 
 impl<C: Channel> Agent<C> {
+    /// Perform a real health check on the vector store and update metrics.
+    pub async fn check_vector_store_health(&self, backend_name: &str) {
+        let connected = match self.memory_state.memory.as_ref() {
+            Some(m) => m.is_vector_store_connected().await,
+            None => false,
+        };
+        let name = backend_name.to_owned();
+        self.update_metrics(|m| {
+            m.qdrant_available = connected;
+            m.vector_backend = name;
+        });
+    }
+
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics_tx {
             let elapsed = self.start_time.elapsed().as_secs();

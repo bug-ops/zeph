@@ -28,6 +28,7 @@ pub struct MetricsSnapshot {
     pub sqlite_message_count: u64,
     pub sqlite_conversation_id: Option<zeph_memory::ConversationId>,
     pub qdrant_available: bool,
+    pub vector_backend: String,
     pub embeddings_generated: u64,
     pub last_llm_latency_ms: u64,
     pub uptime_seconds: u64,

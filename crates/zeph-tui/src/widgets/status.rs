@@ -15,8 +15,6 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         InputMode::Insert => "Insert",
     };
 
-    let qdrant = if metrics.qdrant_available { "OK" } else { "--" };
-
     let uptime = format_uptime(metrics.uptime_seconds);
 
     let panel = if app.show_side_panels() { "ON" } else { "OFF" };
@@ -27,8 +25,14 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         ""
     };
 
+    let qdrant_segment = if metrics.qdrant_available {
+        format!(" | {}: OK", metrics.vector_backend)
+    } else {
+        String::new()
+    };
+
     let text = format!(
-        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok} | Qdrant: {qdrant} | API: {api} | {uptime}{cancel_hint}",
+        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment} | API: {api} | {uptime}{cancel_hint}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),
@@ -108,6 +112,7 @@ mod tests {
         metrics.active_skills = vec!["web".into(), "code".into()];
         metrics.total_skills = 5;
         metrics.qdrant_available = true;
+        metrics.vector_backend = "qdrant".into();
         metrics.uptime_seconds = 135;
 
         let output = render_to_string(100, 1, |frame, area| {

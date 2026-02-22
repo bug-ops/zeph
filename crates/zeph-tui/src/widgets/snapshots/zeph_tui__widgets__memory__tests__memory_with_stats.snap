@@ -4,7 +4,7 @@ expression: output
 ---
 ┌ Memory ────────────────────┐
 │  SQLite: 42 msgs           │
-│  Qdrant: connected         │
+│  Vector: qdrant (connected)│
 │  Conv ID: ---              │
 │  Embeddings: 10            │
 │                            │
