@@ -158,8 +158,8 @@ impl AppBuilder {
         )
         .await?;
 
-        if self.config.memory.semantic.enabled && memory.has_qdrant() {
-            tracing::info!("semantic memory enabled, Qdrant connected");
+        if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
+            tracing::info!("semantic memory enabled, vector store connected");
             match memory.embed_missing().await {
                 Ok(n) if n > 0 => tracing::info!("backfilled {n} missing embedding(s)"),
                 Ok(_) => {}
@@ -427,7 +427,7 @@ pub async fn create_skill_matcher(
 ) -> Option<SkillMatcherBackend> {
     let embed_fn = provider.embed_fn();
 
-    if config.memory.semantic.enabled && memory.has_qdrant() {
+    if config.memory.semantic.enabled && memory.is_vector_store_connected().await {
         match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
             Ok(mut qm) => match qm.sync(meta, embedding_model, &embed_fn).await {
                 Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),

@@ -43,7 +43,7 @@ impl<C: Channel> Agent<C> {
         recall_limit: usize,
         summarization_threshold: usize,
     ) -> Self {
-        let has_qdrant = memory.has_qdrant();
+        let has_qdrant = memory.has_vector_store();
         self.memory_state.memory = Some(memory);
         self.memory_state.conversation_id = Some(conversation_id);
         self.memory_state.history_limit = history_limit;
@@ -231,7 +231,7 @@ impl<C: Channel> Agent<C> {
             .memory_state
             .memory
             .as_ref()
-            .is_some_and(zeph_memory::semantic::SemanticMemory::has_qdrant);
+            .is_some_and(zeph_memory::semantic::SemanticMemory::has_vector_store);
         let conversation_id = self.memory_state.conversation_id;
         let prompt_estimate = self
             .messages

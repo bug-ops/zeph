@@ -236,6 +236,16 @@ impl VectorStore for SqliteVectorStore {
             Ok(result)
         })
     }
+
+    fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+        Box::pin(async move {
+            sqlx::query_scalar::<_, i32>("SELECT 1")
+                .fetch_one(&self.pool)
+                .await
+                .map(|_| true)
+                .map_err(|e| VectorStoreError::Collection(e.to_string()))
+        })
+    }
 }
 
 #[cfg(test)]

@@ -248,6 +248,10 @@ impl VectorStore for InMemoryVectorStore {
             Ok(result)
         })
     }
+
+    fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+        Box::pin(async { Ok(true) })
+    }
 }
 
 #[cfg(test)]

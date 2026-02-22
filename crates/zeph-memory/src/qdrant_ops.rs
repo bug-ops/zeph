@@ -343,6 +343,20 @@ impl crate::vector_store::VectorStore for QdrantOps {
                 .map_err(|e| crate::VectorStoreError::Scroll(e.to_string()))
         })
     }
+
+    fn health_check(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<bool, crate::VectorStoreError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.client
+                .health_check()
+                .await
+                .map(|_| true)
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
+        })
+    }
 }
 
 fn vector_filter_to_qdrant(filter: crate::VectorFilter) -> Filter {

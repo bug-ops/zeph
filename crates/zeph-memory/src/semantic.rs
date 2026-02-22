@@ -496,9 +496,20 @@ impl SemanticMemory {
         &self.sqlite
     }
 
-    /// Check if Qdrant is available for semantic search.
+    /// Check if the vector store backend is reachable.
+    ///
+    /// Performs a real health check (Qdrant gRPC ping or `SQLite` query)
+    /// instead of just checking whether the client was created.
+    pub async fn is_vector_store_connected(&self) -> bool {
+        match self.qdrant.as_ref() {
+            Some(store) => store.health_check().await,
+            None => false,
+        }
+    }
+
+    /// Check if a vector store client is configured (may not be connected).
     #[must_use]
-    pub fn has_qdrant(&self) -> bool {
+    pub fn has_vector_store(&self) -> bool {
         self.qdrant.is_some()
     }
 
@@ -880,9 +891,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn has_qdrant_returns_false_when_unavailable() {
+    async fn has_vector_store_returns_false_when_unavailable() {
         let memory = test_semantic_memory(false).await;
-        assert!(!memory.has_qdrant());
+        assert!(!memory.has_vector_store());
+    }
+
+    #[tokio::test]
+    async fn is_vector_store_connected_returns_false_when_unavailable() {
+        let memory = test_semantic_memory(false).await;
+        assert!(!memory.is_vector_store_connected().await);
     }
 
     #[tokio::test]

@@ -106,6 +106,10 @@ impl EmbeddingStore {
         }
     }
 
+    pub async fn health_check(&self) -> bool {
+        self.ops.health_check().await.unwrap_or(false)
+    }
+
     /// Ensure the collection exists in Qdrant with the given vector size.
     ///
     /// Idempotent: no-op if the collection already exists.

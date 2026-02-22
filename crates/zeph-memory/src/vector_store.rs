@@ -92,4 +92,6 @@ pub trait VectorStore: Send + Sync {
         collection: &str,
         key_field: &str,
     ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>>;
+
+    fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>>;
 }
