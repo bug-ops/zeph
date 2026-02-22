@@ -62,7 +62,7 @@ zeph --tui         # run with TUI dashboard
 |---|---|
 | **Hybrid inference** | Ollama, Claude, OpenAI, Candle (GGUF), any OpenAI-compatible API. Multi-model orchestrator with fallback chains |
 | **Skills-first architecture** | YAML+Markdown skill files with semantic matching, self-learning evolution, and 4-tier trust model |
-| **Semantic memory** | SQLite + Qdrant with summarization, cross-session recall, and vector retrieval |
+| **Semantic memory** | SQLite + Qdrant (or embedded SQLite vector search) with summarization, credential scrubbing, cross-session recall, and vector retrieval |
 | **Multi-channel I/O** | CLI, Telegram, Discord, Slack, TUI — all with streaming. Vision and speech-to-text input |
 | **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, sub-agent orchestration |
 | **Defense-in-depth** | Shell sandbox, tool permissions, secret redaction, SSRF protection, skill trust quarantine, audit logging |

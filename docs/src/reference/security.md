@@ -169,6 +169,17 @@ LLM responses are scanned for secret patterns using compiled regexes before disp
 - Regex-based matching replaces detected secrets with `[REDACTED]`, preserving original whitespace formatting
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
 
+## Credential Scrubbing in Context
+
+In addition to output redaction, Zeph scrubs credential patterns from conversation history **before** injecting it into the LLM context window. The `scrub_content()` function in the context builder detects the same secret prefixes and replaces them with `[REDACTED]`. This prevents credentials that appeared in past messages from leaking into future LLM prompts.
+
+```toml
+[memory]
+redact_credentials = true  # default: true
+```
+
+This is independent of `security.redact_secrets` — output redaction sanitizes LLM *responses*, while credential scrubbing sanitizes LLM *inputs* from stored history.
+
 ## Config Validation
 
 `Config::validate()` enforces upper bounds at startup to catch configuration errors early:

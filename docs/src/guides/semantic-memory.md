@@ -4,7 +4,33 @@ Enable semantic search to retrieve contextually relevant messages from conversat
 
 Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claude API does not support embeddings natively — use the [orchestrator](../advanced/orchestrator.md) to route embeddings through Ollama while using Claude for chat.
 
-## Setup
+## Vector Backend
+
+Zeph supports two vector backends for storing embeddings:
+
+| Backend | Best for | External dependencies |
+|---------|----------|----------------------|
+| `qdrant` (default) | Production, multi-user, large datasets | Qdrant server |
+| `sqlite` | Development, single-user, offline, quick setup | None |
+
+The `sqlite` backend stores vectors in the same SQLite database as conversation history and performs cosine similarity search in-process. It requires no external services, making it ideal for local development and single-user deployments.
+
+## Setup with SQLite Backend (Quickstart)
+
+No external services needed:
+
+```toml
+[memory]
+vector_backend = "sqlite"
+
+[memory.semantic]
+enabled = true
+recall_limit = 5
+```
+
+The vector tables are created automatically via migration `011_vector_store.sql`.
+
+## Setup with Qdrant Backend
 
 1. **Start Qdrant:**
 
@@ -15,6 +41,9 @@ Requires an embedding model. Ollama with `qwen3-embedding` is the default. Claud
 2. **Enable semantic memory in config:**
 
    ```toml
+   [memory]
+   vector_backend = "qdrant"  # default, can be omitted
+
    [memory.semantic]
    enabled = true
    recall_limit = 5
@@ -49,6 +78,6 @@ When Qdrant is unavailable, only keyword search runs (effectively `keyword_weigh
 | Store | Purpose |
 |-------|---------|
 | SQLite | Source of truth for message text, conversations, summaries, skill usage |
-| Qdrant | Vector index for semantic similarity search (embeddings only) |
+| Qdrant or SQLite vectors | Vector index for semantic similarity search (embeddings only) |
 
-Both stores work together: SQLite holds the data, Qdrant enables vector search over it. The `embeddings_metadata` table in SQLite maps message IDs to Qdrant point IDs.
+Both stores work together: SQLite holds the data, the vector backend enables similarity search over it. With the Qdrant backend, the `embeddings_metadata` table in SQLite maps message IDs to Qdrant point IDs. With the SQLite backend, vectors are stored directly in `vector_points` and `vector_point_payloads` tables.

@@ -47,7 +47,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, Telegram token, MCP servers, A2A config, skill paths.
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, skill paths.
 
 ## Configuration File
 
@@ -97,6 +97,9 @@ compaction_threshold = 0.75    # Compact when context usage exceeds this fractio
 compaction_preserve_tail = 4   # Keep last N messages during compaction
 prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
 cross_session_score_threshold = 0.35  # Minimum relevance for cross-session results
+vector_backend = "qdrant"     # Vector store: "qdrant" (default) or "sqlite" (embedded)
+token_safety_margin = 1.0     # Multiplier for token budget safety margin (default: 1.0)
+redact_credentials = true     # Scrub credential patterns from LLM context (default: true)
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -241,7 +244,10 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning (default: 40000) |
 | `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory (default: 0.35) |
-| `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory with Qdrant (default: false) |
+| `ZEPH_MEMORY_VECTOR_BACKEND` | Vector backend: `qdrant` or `sqlite` (default: `qdrant`) |
+| `ZEPH_MEMORY_TOKEN_SAFETY_MARGIN` | Token budget safety margin multiplier (default: 1.0) |
+| `ZEPH_MEMORY_REDACT_CREDENTIALS` | Scrub credentials from LLM context (default: true) |
+| `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
 | `ZEPH_AGENT_MAX_TOOL_ITERATIONS` | Max tool loop iterations per response (default: 10) |

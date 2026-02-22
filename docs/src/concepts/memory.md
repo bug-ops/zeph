@@ -1,6 +1,6 @@
 # Memory and Context
 
-Zeph uses a dual-store memory system: SQLite for structured conversation history and Qdrant for semantic search across past sessions.
+Zeph uses a dual-store memory system: SQLite for structured conversation history and a configurable vector backend (Qdrant or embedded SQLite) for semantic search across past sessions.
 
 ## Conversation History
 
@@ -10,13 +10,34 @@ When conversations grow long, Zeph generates summaries automatically (triggered 
 
 ## Semantic Memory
 
-With Qdrant enabled, messages are embedded as vectors for semantic search. Ask "what did we discuss about the API yesterday?" and Zeph retrieves relevant context from past sessions automatically.
+With semantic memory enabled, messages are embedded as vectors for similarity search. Ask "what did we discuss about the API yesterday?" and Zeph retrieves relevant context from past sessions automatically.
 
-Semantic memory uses hybrid search — vector similarity combined with SQLite FTS5 keyword search — to improve recall quality. When Qdrant is unavailable, Zeph falls back to keyword-only search.
+Two vector backends are available:
 
-Setup requires a running Qdrant instance and a config change:
+| Backend | Use case | Dependency |
+|---------|----------|------------|
+| `qdrant` (default) | Production, large datasets | External Qdrant server |
+| `sqlite` | Development, single-user, offline | None (embedded) |
+
+Semantic memory uses hybrid search — vector similarity combined with SQLite FTS5 keyword search — to improve recall quality. When the vector backend is unavailable, Zeph falls back to keyword-only search.
+
+Setup with embedded SQLite vectors (no external dependencies):
 
 ```toml
+[memory]
+vector_backend = "sqlite"
+
+[memory.semantic]
+enabled = true
+recall_limit = 5
+```
+
+For Qdrant (production):
+
+```toml
+[memory]
+vector_backend = "qdrant"  # default
+
 [memory.semantic]
 enabled = true
 recall_limit = 5
@@ -48,6 +69,10 @@ Drop a `ZEPH.md` file in your project root and Zeph discovers it automatically. 
 ## Embeddable Trait and EmbeddingRegistry
 
 The `Embeddable` trait provides a generic interface for any type that can be embedded in Qdrant. It requires `id()`, `content_for_embedding()`, `content_hash()`, and `to_payload()` methods. `EmbeddingRegistry<T: Embeddable>` is a generic sync/search engine that delta-syncs items by BLAKE3 content hash and performs cosine similarity search. This pattern is used internally by skill matching, MCP tool registry, and code indexing.
+
+## Credential Scrubbing
+
+When `memory.redact_credentials` is enabled (default: `true`), Zeph scrubs credential patterns from message content before sending it to the LLM context pipeline. This prevents accidental leakage of API keys, tokens, and passwords stored in conversation history. The scrubbing runs via `scrub_content()` in the context builder and covers the same patterns as the output redaction system (see [Security — Secret Redaction](../reference/security.md#secret-redaction)).
 
 ## Deep Dives
 

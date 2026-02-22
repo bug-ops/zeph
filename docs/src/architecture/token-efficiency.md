@@ -79,6 +79,10 @@ After each filtered execution, CLI mode prints a one-line stats summary and TUI 
 
 These feed into the [TUI filter metrics display](../advanced/tui.md#filter-metrics) and are emitted as `tracing::debug!` every 50 commands.
 
+### Token Estimation
+
+Zeph estimates token counts using a `chars / 4` heuristic instead of the naive `bytes / 3` approach. Character-based estimation handles multi-byte scripts (Cyrillic, CJK, Arabic) more accurately, preventing budget overallocation for non-ASCII content. The `token_safety_margin` config multiplier (default: 1.0) allows tuning the estimate conservatively when precision matters.
+
 ### Two-Tier Context Pruning
 
 Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to full LLM compaction only when Tier 1 is insufficient. See [Context Engineering](../advanced/context.md) for details.
