@@ -22,10 +22,20 @@ Parses SKILL.md files (YAML frontmatter + markdown body) from the `skills/` dire
 | `evolution` | Self-learning skill generation and refinement |
 | `trust` | `SkillTrust`, `TrustLevel` — skill trust scoring |
 | `watcher` | Filesystem watcher for skill hot-reload |
-| `prompt` | Skill-to-prompt formatting |
+| `prompt` | Skill-to-prompt formatting (`full`, `compact`, `auto` modes via `SkillPromptMode`) |
 | `manager` | `SkillManager` — install, remove, verify, and list external skills (`~/.config/zeph/skills/`) |
 
 **Re-exports:** `SkillError`, `SkillTrust`, `TrustLevel`, `compute_skill_hash`
+
+## Prompt modes
+
+The `prompt_mode` config option (`[skills]` section) controls how skills are serialized into the LLM system prompt:
+
+| Mode | Description |
+|------|-------------|
+| `full` | Full XML format with complete skill body (default) |
+| `compact` | Condensed XML with name, description, and trigger list only |
+| `auto` | Selects `compact` when context budget is below threshold, `full` otherwise |
 
 ## Installation
 

@@ -27,6 +27,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 |-------|-----------|
 | `memory.history_limit` | <= 10,000 |
 | `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
+| `memory.token_safety_margin` | > 0.0 |
 | `agent.max_tool_iterations` | <= 100 |
 | `a2a.rate_limit` | > 0 |
 | `gateway.rate_limit` | > 0 |
@@ -87,6 +88,7 @@ model = "whisper-1"
 paths = ["./skills"]
 max_active_skills = 5              # Top-K skills per query via embedding similarity
 disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
+prompt_mode = "auto"               # Skill prompt format: "full", "compact", or "auto" (default: "auto")
 
 [memory]
 sqlite_path = "./data/zeph.db"
@@ -104,6 +106,10 @@ redact_credentials = true     # Scrub credential patterns from LLM context (defa
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
 recall_limit = 5              # Number of semantically relevant messages to inject
+temporal_decay_enabled = false        # Attenuate scores by message age (default: false)
+temporal_decay_half_life_days = 30    # Half-life for temporal decay in days (default: 30)
+mmr_enabled = false                   # MMR re-ranking for result diversity (default: false)
+mmr_lambda = 0.7                      # MMR relevance-diversity trade-off, 0.0-1.0 (default: 0.7)
 
 [tools]
 enabled = true
@@ -249,6 +255,10 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_REDACT_CREDENTIALS` | Scrub credentials from LLM context (default: true) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
+| `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED` | Enable temporal decay scoring (default: false) |
+| `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_HALF_LIFE_DAYS` | Half-life for temporal decay in days (default: 30) |
+| `ZEPH_MEMORY_SEMANTIC_MMR_ENABLED` | Enable MMR re-ranking (default: false) |
+| `ZEPH_MEMORY_SEMANTIC_MMR_LAMBDA` | MMR relevance-diversity trade-off (default: 0.7) |
 | `ZEPH_SKILLS_MAX_ACTIVE` | Max skills per query via embedding match (default: 5) |
 | `ZEPH_AGENT_MAX_TOOL_ITERATIONS` | Max tool loop iterations per response (default: 10) |
 | `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization (default: false) |

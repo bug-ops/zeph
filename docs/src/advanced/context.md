@@ -68,7 +68,12 @@ Available tokens (after reserving 20% for response) are split proportionally. Wh
 
 ## Semantic Recall Injection
 
-When semantic memory is enabled, the agent queries Qdrant for messages relevant to the current user query. Results are injected as transient system messages (prefixed with `[semantic recall]`) that are:
+When semantic memory is enabled, the agent queries the vector backend for messages relevant to the current user query. Two optional post-processing stages improve result quality:
+
+- **Temporal decay** — exponential score attenuation based on message age. Configure via `memory.semantic.temporal_decay_enabled` and `temporal_decay_half_life_days` (default: 30).
+- **MMR re-ranking** — Maximal Marginal Relevance diversifies results by penalizing similarity to already-selected items. Configure via `memory.semantic.mmr_enabled` and `mmr_lambda` (default: 0.7, range 0.0-1.0).
+
+Results are injected as transient system messages (prefixed with `[semantic recall]`) that are:
 
 - Removed and re-injected on every turn (never stale)
 - Not persisted to SQLite
@@ -103,14 +108,17 @@ Before invoking the LLM for compaction, Zeph scans messages outside the protecte
 - Pruned parts are persisted to SQLite before clearing, so pruning state survives session restarts
 - The `tool_output_prunes` metric tracks how many parts were pruned
 
-### Tier 2: LLM Compaction (Fallback)
+### Tier 2: Chunked LLM Compaction (Fallback)
 
-If Tier 1 does not free enough tokens, the standard LLM compaction runs:
+If Tier 1 does not free enough tokens, adaptive chunked compaction runs:
 
-1. Middle messages (between system prompt and last N recent) are extracted
-2. Sent to the LLM with a structured summarization prompt
-3. Replaced with a single summary message
-4. Last `compaction_preserve_tail` messages (default: 4) are always preserved
+1. Middle messages (between system prompt and last N recent) are split into ~4096-token chunks
+2. Chunks are summarized in parallel via `futures::stream::buffer_unordered(4)` — up to 4 concurrent LLM calls
+3. Partial summaries are merged into a final summary via a second LLM pass
+4. All middle messages are replaced with a single summary message
+5. Last `compaction_preserve_tail` messages (default: 4) are always preserved
+
+If a single chunk fits all messages, or if chunked summarization fails, the system falls back to a single-pass summarization over the full message range.
 
 Both tiers are idempotent and run automatically during the agent loop.
 
@@ -128,9 +136,26 @@ When `tools.summarize_output = true`, long tool outputs are sent through the LLM
 export ZEPH_TOOLS_SUMMARIZE_OUTPUT=true
 ```
 
+## Skill Prompt Modes
+
+The `skills.prompt_mode` setting controls how matched skills are rendered in the system prompt:
+
+| Mode | Behavior |
+|------|----------|
+| `full` | Full XML skill bodies with instructions, examples, and references |
+| `compact` | Condensed XML with name, description, and trigger list only (~80% smaller) |
+| `auto` (default) | Selects `compact` when the remaining context budget is below 8192 tokens, `full` otherwise |
+
+```toml
+[skills]
+prompt_mode = "auto"  # "full", "compact", or "auto"
+```
+
+`compact` mode is useful for small context windows or when many skills are active. It preserves enough information for the model to select the right skill while minimizing token consumption.
+
 ## Progressive Skill Loading
 
-Skills matched by embedding similarity (top-K) are injected with their full body. Remaining skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all capabilities while consuming minimal tokens.
+Skills matched by embedding similarity (top-K) are injected with their full body (or compact summary, depending on `prompt_mode`). Remaining skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all capabilities while consuming minimal tokens.
 
 ## ZEPH.md Project Config
 
@@ -151,4 +176,8 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |
 | `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory results | `0.35` |
+| `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED` | Enable temporal decay scoring | `false` |
+| `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_HALF_LIFE_DAYS` | Half-life for temporal decay | `30` |
+| `ZEPH_MEMORY_SEMANTIC_MMR_ENABLED` | Enable MMR re-ranking | `false` |
+| `ZEPH_MEMORY_SEMANTIC_MMR_LAMBDA` | MMR relevance-diversity trade-off | `0.7` |
 | `ZEPH_TOOLS_SUMMARIZE_OUTPUT` | Enable LLM-based tool output summarization | `false` |

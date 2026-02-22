@@ -73,6 +73,30 @@ keyword_weight = 0.3  # Weight for FTS5 keyword relevance
 
 When Qdrant is unavailable, only keyword search runs (effectively `keyword_weight = 1.0`).
 
+## Temporal Decay
+
+Enable time-based score attenuation to prefer recent context over stale information:
+
+```toml
+[memory.semantic]
+temporal_decay_enabled = true
+temporal_decay_half_life_days = 30  # Score halves every 30 days
+```
+
+Scores decay exponentially: at 1 half-life a message retains 50% of its original score, at 2 half-lives 25%, and so on. Adjust `temporal_decay_half_life_days` based on how quickly your project context changes.
+
+## MMR Re-ranking
+
+Enable Maximal Marginal Relevance to diversify recall results and reduce redundancy:
+
+```toml
+[memory.semantic]
+mmr_enabled = true
+mmr_lambda = 0.7  # 0.0 = max diversity, 1.0 = pure relevance
+```
+
+MMR iteratively selects results that are both relevant to the query and dissimilar to already-selected items. The default `mmr_lambda = 0.7` works well for most use cases. Lower it if you see too many semantically similar results in recall.
+
 ## Storage Architecture
 
 | Store | Purpose |

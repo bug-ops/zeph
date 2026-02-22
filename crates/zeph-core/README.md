@@ -24,7 +24,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `context` | LLM context assembly from history, skills, memory |
+| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization |
 | `cost` | Token cost tracking and budgeting |
 | `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |
@@ -47,6 +47,14 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 | `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
 | `summary_model` | string? | `null` | — | Model used for context summarization |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
+
+Key `MemoryConfig` fields (TOML section `[memory]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vector_backend` | `"qdrant"` / `"sqlite"` | `"qdrant"` | Vector search backend |
+| `token_safety_margin` | f32 | `1.0` | Safety multiplier for token budget estimation (validated: must be >= 1.0) |
+| `redact_credentials` | bool | `true` | Scrub secrets and paths before LLM context injection |
 
 ```toml
 [agent]

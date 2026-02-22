@@ -38,6 +38,7 @@ Use `/skills` in chat to see active skills and their usage statistics.
 - **Hot-reload**: edit a `SKILL.md` file, changes apply without restart
 - **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash)
 - **Secret gating**: skills that declare `x-requires-secrets` in their frontmatter are excluded from the prompt if the required secrets are not present in the vault. This prevents the agent from attempting to use a skill that would fail due to missing credentials
+- **Compact prompt mode**: when context budget is tight, `skills.prompt_mode = "auto"` (default) switches to a condensed XML format that includes only name, description, and triggers — ~80% smaller than full bodies. Force with `"compact"` or disable with `"full"`. See [Context Engineering — Skill Prompt Modes](../advanced/context.md#skill-prompt-modes)
 
 ## External Skill Management
 

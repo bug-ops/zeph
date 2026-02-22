@@ -85,7 +85,7 @@ Zeph estimates token counts using a `chars / 4` heuristic instead of the naive `
 
 ### Two-Tier Context Pruning
 
-Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to full LLM compaction only when Tier 1 is insufficient. See [Context Engineering](../advanced/context.md) for details.
+Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to adaptive chunked LLM compaction — splitting messages into ~4096-token chunks, summarizing up to 4 in parallel, and merging results. See [Context Engineering](../advanced/context.md) for details.
 
 ## Configuration
 

@@ -21,7 +21,28 @@ Two vector backends are available:
 
 Semantic memory uses hybrid search — vector similarity combined with SQLite FTS5 keyword search — to improve recall quality. When the vector backend is unavailable, Zeph falls back to keyword-only search.
 
-Setup with embedded SQLite vectors (no external dependencies):
+### Result Quality: MMR and Temporal Decay
+
+Two post-processing stages improve recall quality beyond raw similarity:
+
+- **Temporal decay** attenuates scores based on message age. A configurable half-life (default: 30 days) ensures recent context is preferred over stale information. Scores decay exponentially: a message at 1 half-life gets 50% weight, at 2 half-lives 25%, etc.
+- **MMR re-ranking** (Maximal Marginal Relevance) reduces redundancy in results by penalizing candidates too similar to already-selected items. The `mmr_lambda` parameter (default: 0.7) controls the relevance-diversity trade-off: higher values favor relevance, lower values favor diversity.
+
+Both are disabled by default. Enable them in `[memory.semantic]`:
+
+```toml
+[memory.semantic]
+enabled = true
+recall_limit = 5
+temporal_decay_enabled = true
+temporal_decay_half_life_days = 30
+mmr_enabled = true
+mmr_lambda = 0.7
+```
+
+### Quick Setup
+
+Embedded SQLite vectors (no external dependencies):
 
 ```toml
 [memory]
@@ -32,7 +53,7 @@ enabled = true
 recall_limit = 5
 ```
 
-For Qdrant (production):
+Qdrant (production):
 
 ```toml
 [memory]
@@ -58,7 +79,7 @@ When `context_budget_tokens` is set (default: 0 = unlimited), Zeph allocates the
 A two-tier pruning system manages overflow:
 
 1. **Tool output pruning** (cheap) — replaces old tool outputs with short placeholders
-2. **LLM compaction** (fallback) — summarizes middle messages when pruning is not enough
+2. **Chunked LLM compaction** (fallback) — splits middle messages into ~4096-token chunks, summarizes them in parallel (up to 4 concurrent LLM calls), then merges partial summaries. Falls back to single-pass if any chunk fails.
 
 Both tiers run automatically. See [Context Engineering](../advanced/context.md) for tuning options.
 
