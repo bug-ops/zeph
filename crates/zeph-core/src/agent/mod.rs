@@ -37,7 +37,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::config::LearningConfig;
-use crate::config::{SecurityConfig, TimeoutConfig};
+use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use crate::cost::CostTracker;
@@ -88,6 +88,7 @@ pub(super) struct SkillState {
     pub(super) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     pub(super) active_skill_names: Vec<String>,
     pub(super) last_skills_prompt: String,
+    pub(super) prompt_mode: SkillPromptMode,
     /// Custom secrets available at runtime: key=hyphenated name, value=secret.
     pub(super) available_custom_secrets: HashMap<String, Secret>,
 }
@@ -210,6 +211,7 @@ impl<C: Channel> Agent<C> {
                 skill_reload_rx: None,
                 active_skill_names: Vec::new(),
                 last_skills_prompt: skills_prompt,
+                prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
             },
             context_state: ContextState {

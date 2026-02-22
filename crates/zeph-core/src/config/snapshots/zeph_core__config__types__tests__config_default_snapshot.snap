@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1113
+assertion_line: 1156
 expression: toml_str
 ---
 [agent]
@@ -18,6 +18,7 @@ embedding_model = "qwen3-embedding"
 paths = ["./skills"]
 max_active_skills = 5
 disambiguation_threshold = 0.05
+prompt_mode = "auto"
 
 [skills.learning]
 enabled = false
@@ -54,6 +55,10 @@ enabled = true
 recall_limit = 5
 vector_weight = 0.7
 keyword_weight = 0.3
+temporal_decay_enabled = false
+temporal_decay_half_life_days = 30
+mmr_enabled = false
+mmr_lambda = 0.7
 
 [tools]
 enabled = true

@@ -303,6 +303,52 @@ impl EmbeddingStore {
         Ok(results)
     }
 
+    /// Fetch raw vectors for the given message IDs from the `SQLite` vector store.
+    ///
+    /// Returns an empty map when using Qdrant backend (vectors not locally stored).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` query fails.
+    pub async fn get_vectors(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, Vec<f32>>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT em.message_id, vp.vector \
+             FROM embeddings_metadata em \
+             JOIN vector_points vp ON vp.id = em.qdrant_point_id \
+             WHERE em.message_id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (MessageId, Vec<u8>)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+
+        let rows = q.fetch_all(&self.pool).await.unwrap_or_default();
+
+        let map = rows
+            .into_iter()
+            .filter_map(|(msg_id, blob)| {
+                if blob.len() % 4 != 0 {
+                    return None;
+                }
+                let vec: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect();
+                Some((msg_id, vec))
+            })
+            .collect();
+
+        Ok(map)
+    }
+
     /// Check whether an embedding already exists for the given message ID.
     ///
     /// # Errors

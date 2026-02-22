@@ -298,6 +298,35 @@ impl SqliteStore {
         Ok(rows)
     }
 
+    /// Fetch creation timestamps (Unix epoch seconds) for the given message IDs.
+    ///
+    /// Messages without a `created_at` column fall back to 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn message_timestamps(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, i64>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT id, COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) \
+             FROM messages WHERE id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (MessageId, i64)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Load a range of messages after a given message ID.
     ///
     /// # Errors

@@ -96,6 +96,34 @@ impl Config {
         {
             self.skills.learning.auto_activate = auto_activate;
         }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_PROMPT_MODE") {
+            match v.to_lowercase().as_str() {
+                "full" => self.skills.prompt_mode = super::SkillPromptMode::Full,
+                "compact" => self.skills.prompt_mode = super::SkillPromptMode::Compact,
+                "auto" => self.skills.prompt_mode = super::SkillPromptMode::Auto,
+                _ => {}
+            }
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.semantic.temporal_decay_enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_HALF_LIFE_DAYS")
+            && let Ok(days) = v.parse::<u32>()
+        {
+            self.memory.semantic.temporal_decay_half_life_days = days;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SEMANTIC_MMR_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.semantic.mmr_enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SEMANTIC_MMR_LAMBDA")
+            && let Ok(lambda) = v.parse::<f32>()
+        {
+            self.memory.semantic.mmr_lambda = lambda;
+        }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SUMMARIZE_OUTPUT")
             && let Ok(enabled) = v.parse::<bool>()
         {

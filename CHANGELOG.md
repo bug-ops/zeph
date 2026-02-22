@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Temporal decay scoring in `SemanticMemory::recall()` — time-based score attenuation with configurable half-life (#745)
+- MMR (Maximal Marginal Relevance) re-ranking in `SemanticMemory::recall()` — post-processing for result diversity (#744)
+- Compact XML skills prompt format (`format_skills_prompt_compact`) for low-budget contexts (#747)
+- `SkillPromptMode` enum (`full`/`compact`/`auto`) with auto-selection based on context budget (#747)
+- Adaptive chunked context compaction — parallel chunk summarization via `join_all` (#746)
+- `with_ranking_options()` builder for `SemanticMemory` to configure temporal decay and MMR
+- `message_timestamps()` method on `SqliteStore` for Unix epoch retrieval via `strftime`
+- `get_vectors()` method on `EmbeddingStore` for raw vector fetch from SQLite `vector_points`
 - SQLite-backed `SqliteVectorStore` as embedded alternative to Qdrant for zero-dependency vector search (#741)
 - `vector_backend` config option to select between `qdrant` and `sqlite` vector backends
 - Credential scrubbing in LLM context pipeline via `scrub_content()` — redacts secrets and paths before LLM calls (#743)

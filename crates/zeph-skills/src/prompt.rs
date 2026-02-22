@@ -127,6 +127,30 @@ pub fn wrap_quarantined(skill_name: &str, body: &str) -> String {
     )
 }
 
+/// Format skills as a compact single-line XML list (name + description + path only).
+///
+/// Used when the model context window is small (< 8192 tokens) to save space.
+#[must_use]
+pub fn format_skills_prompt_compact(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("<available_skills mode=\"compact\">\n");
+    for skill in skills {
+        let path = skill.meta.skill_dir.display();
+        let _ = writeln!(
+            out,
+            "  <skill name=\"{}\" description=\"{}\" path=\"{}\" />",
+            skill.name(),
+            skill.description(),
+            path,
+        );
+    }
+    out.push_str("</available_skills>");
+    out
+}
+
 #[must_use]
 pub fn format_skills_catalog(skills: &[Skill]) -> String {
     if skills.is_empty() {

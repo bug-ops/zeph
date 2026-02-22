@@ -302,6 +302,16 @@ pub struct OrchestratorProviderConfig {
     pub device: Option<String>,
 }
 
+/// Controls how skills are formatted in the system prompt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillPromptMode {
+    Full,
+    Compact,
+    #[default]
+    Auto,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
     pub paths: Vec<String>,
@@ -313,6 +323,8 @@ pub struct SkillsConfig {
     pub learning: LearningConfig,
     #[serde(default)]
     pub trust: TrustConfig,
+    #[serde(default)]
+    pub prompt_mode: SkillPromptMode,
 }
 
 fn default_disambiguation_threshold() -> f32 {
@@ -564,6 +576,22 @@ pub struct SemanticConfig {
     pub vector_weight: f64,
     #[serde(default = "default_keyword_weight")]
     pub keyword_weight: f64,
+    #[serde(default)]
+    pub temporal_decay_enabled: bool,
+    #[serde(default = "default_temporal_decay_half_life_days")]
+    pub temporal_decay_half_life_days: u32,
+    #[serde(default)]
+    pub mmr_enabled: bool,
+    #[serde(default = "default_mmr_lambda")]
+    pub mmr_lambda: f32,
+}
+
+fn default_temporal_decay_half_life_days() -> u32 {
+    30
+}
+
+fn default_mmr_lambda() -> f32 {
+    0.7
 }
 
 impl Default for SemanticConfig {
@@ -573,6 +601,10 @@ impl Default for SemanticConfig {
             recall_limit: default_recall_limit(),
             vector_weight: default_vector_weight(),
             keyword_weight: default_keyword_weight(),
+            temporal_decay_enabled: false,
+            temporal_decay_half_life_days: default_temporal_decay_half_life_days(),
+            mmr_enabled: false,
+            mmr_lambda: default_mmr_lambda(),
         }
     }
 }
@@ -1060,6 +1092,7 @@ impl Default for Config {
                 disambiguation_threshold: default_disambiguation_threshold(),
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
+                prompt_mode: SkillPromptMode::Auto,
             },
             memory: MemoryConfig {
                 sqlite_path: "./data/zeph.db".into(),

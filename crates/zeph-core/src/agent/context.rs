@@ -5,7 +5,7 @@ use zeph_llm::provider::MessagePart;
 use zeph_memory::semantic::estimate_tokens;
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
-use zeph_skills::prompt::format_skills_catalog;
+use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
 use crate::redact::scrub_content;
 
@@ -14,6 +14,43 @@ use super::{
     LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, build_system_prompt,
     format_skills_prompt,
 };
+
+fn chunk_messages(messages: &[Message], budget: usize, oversized: usize) -> Vec<Vec<Message>> {
+    let mut chunks: Vec<Vec<Message>> = Vec::new();
+    let mut current: Vec<Message> = Vec::new();
+    let mut current_tokens = 0usize;
+
+    for msg in messages {
+        let msg_tokens = estimate_tokens(&msg.content);
+
+        if msg_tokens >= oversized {
+            // Oversized message gets its own chunk
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+                current_tokens = 0;
+            }
+            chunks.push(vec![msg.clone()]);
+        } else if current_tokens + msg_tokens > budget && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_tokens = 0;
+            current.push(msg.clone());
+            current_tokens += msg_tokens;
+        } else {
+            current.push(msg.clone());
+            current_tokens += msg_tokens;
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(Vec::new());
+    }
+
+    chunks
+}
 
 impl<C: Channel> Agent<C> {
     #[allow(
@@ -44,6 +81,128 @@ impl<C: Channel> Agent<C> {
         should
     }
 
+    fn build_chunk_prompt(messages: &[Message]) -> String {
+        let estimated_len: usize = messages
+            .iter()
+            .map(|m| "[assistant]: ".len() + m.content.len() + 2)
+            .sum();
+        let mut history_text = String::with_capacity(estimated_len);
+        for (i, m) in messages.iter().enumerate() {
+            if i > 0 {
+                history_text.push_str("\n\n");
+            }
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let _ = write!(history_text, "[{role}]: {}", m.content);
+        }
+
+        format!(
+            "Summarize this conversation excerpt into a structured continuation note. \
+             Include:\n\
+             1. Task overview\n\
+             2. Current state\n\
+             3. Key discoveries (file paths, errors, decisions)\n\
+             4. Next steps\n\
+             5. Critical context (variable names, config values)\n\
+             \n\
+             Keep it concise but preserve all actionable details.\n\
+             \n\
+             Conversation:\n{history_text}"
+        )
+    }
+
+    async fn summarize_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<String, super::error::AgentError> {
+        const CHUNK_TOKEN_BUDGET: usize = 4096;
+        const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
+
+        let chunks = chunk_messages(messages, CHUNK_TOKEN_BUDGET, OVERSIZED_THRESHOLD);
+
+        if chunks.len() <= 1 {
+            let prompt = Self::build_chunk_prompt(messages);
+            return self
+                .summary_or_primary_provider()
+                .chat(&[Message {
+                    role: Role::User,
+                    content: prompt,
+                    parts: vec![],
+                }])
+                .await
+                .map_err(Into::into);
+        }
+
+        // Summarize all chunks in parallel
+        let provider = self.summary_or_primary_provider();
+        let chunk_futures: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                let prompt = Self::build_chunk_prompt(chunk);
+                let p = provider.clone();
+                async move {
+                    p.chat(&[Message {
+                        role: Role::User,
+                        content: prompt,
+                        parts: vec![],
+                    }])
+                    .await
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(chunk_futures).await;
+
+        let partial_summaries: Vec<String> = results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|e| {
+                tracing::warn!("chunked compaction: one or more chunks failed: {e:#}, falling back to single-pass");
+                Vec::new()
+            });
+
+        if partial_summaries.is_empty() {
+            // Fallback: single-pass on full messages
+            let prompt = Self::build_chunk_prompt(messages);
+            return self
+                .summary_or_primary_provider()
+                .chat(&[Message {
+                    role: Role::User,
+                    content: prompt,
+                    parts: vec![],
+                }])
+                .await
+                .map_err(Into::into);
+        }
+
+        // Consolidate partial summaries
+        let numbered: String = partial_summaries
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("{}. {s}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let consolidation_prompt = format!(
+            "Merge these partial conversation summaries into a single coherent continuation note.\n\
+             Include: task overview, current state, key discoveries, next steps, critical context.\n\
+             \n\
+             Partial summaries:\n{numbered}"
+        );
+
+        self.summary_or_primary_provider()
+            .chat(&[Message {
+                role: Role::User,
+                content: consolidation_prompt,
+                parts: vec![],
+            }])
+            .await
+            .map_err(Into::into)
+    }
+
     pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
         let preserve_tail = self.context_state.compaction_preserve_tail;
 
@@ -57,46 +216,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let estimated_len: usize = to_compact
-            .iter()
-            .map(|m| "[assistant]: ".len() + m.content.len() + 2)
-            .sum();
-        let mut history_text = String::with_capacity(estimated_len);
-        for (i, m) in to_compact.iter().enumerate() {
-            if i > 0 {
-                history_text.push_str("\n\n");
-            }
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-            };
-            // write! to String never fails, safe to ignore
-            let _ = write!(history_text, "[{role}]: {}", m.content);
-        }
-
-        let compaction_prompt = format!(
-            "Summarize this conversation excerpt into a structured continuation note. \
-             Include:\n\
-             1. Task overview\n\
-             2. Current state\n\
-             3. Key discoveries (file paths, errors, decisions)\n\
-             4. Next steps\n\
-             5. Critical context (variable names, config values)\n\
-             \n\
-             Keep it concise but preserve all actionable details.\n\
-             \n\
-             Conversation:\n{history_text}"
-        );
-
-        let summary = self
-            .summary_or_primary_provider()
-            .chat(&[Message {
-                role: Role::User,
-                content: compaction_prompt,
-                parts: vec![],
-            }])
-            .await?;
+        let summary = self.summarize_messages(to_compact).await?;
 
         let compacted_count = to_compact.len();
         self.messages.drain(1..compact_end);
@@ -831,7 +951,25 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         let trust_map = self.build_skill_trust_map().await;
-        let skills_prompt = format_skills_prompt(&active_skills, &trust_map);
+
+        let effective_mode = match self.skill_state.prompt_mode {
+            crate::config::SkillPromptMode::Auto => {
+                if let Some(ref budget) = self.context_state.budget
+                    && budget.max_tokens() < 8192
+                {
+                    crate::config::SkillPromptMode::Compact
+                } else {
+                    crate::config::SkillPromptMode::Full
+                }
+            }
+            other => other,
+        };
+
+        let skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
+            format_skills_prompt_compact(&active_skills)
+        } else {
+            format_skills_prompt(&active_skills, &trust_map)
+        };
         let catalog_prompt = format_skills_catalog(&remaining_skills);
         self.skill_state
             .last_skills_prompt

@@ -68,6 +68,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_skill_prompt_mode(mut self, mode: crate::config::SkillPromptMode) -> Self {
+        self.skill_state.prompt_mode = mode;
+        self
+    }
+
+    #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
         self.shutdown = rx;
         self
