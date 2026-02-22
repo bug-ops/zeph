@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-02-22
+
 ### Added
 - Declarative TOML-based output filter engine with 9 strategy types: `strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`
 - Embedded `default-filters.toml` with 25 pre-configured rules for CLI tools (cargo, git, docker, npm, pip, make, pytest, go, terraform, kubectl, brew, ls, journalctl, find, grep/rg, curl/wget, du/df/ps, jest/mocha/vitest, eslint/ruff/mypy/pylint)
@@ -1113,7 +1115,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2

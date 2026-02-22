@@ -29,7 +29,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 
 ```text
 +-------------------------------------------------------------+
-| Zeph v0.11.4 | Provider: orchestrator | Model: claude-son...|
+| Zeph v0.11.5 | Provider: orchestrator | Model: claude-son...|
 +----------------------------------------+--------------------+
 |                                        | Skills (3/15)      |
 |                                        | - setup-guide      |

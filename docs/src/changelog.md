@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-02-22
+
+### Added
+- Declarative TOML-based output filter engine with 9 strategy types: `strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`
+- Embedded `default-filters.toml` with 25 pre-configured rules for CLI tools (cargo, git, docker, npm, pip, make, pytest, go, terraform, kubectl, brew, ls, journalctl, find, grep/rg, curl/wget, du/df/ps, jest/mocha/vitest, eslint/ruff/mypy/pylint)
+- `filters_path` option in `FilterConfig` for user-provided filter rules override
+- ReDoS protection: RegexBuilder with size_limit, 512-char pattern cap, 1 MiB file size limit
+- Dedup strategy with configurable normalization patterns and HashMap pre-allocation
+- Sub-agent orchestration system with A2A protocol integration
+- Sub-agent definition format with TOML frontmatter parser
+- `SubAgentManager` with spawn/cancel/collect lifecycle and background tokio task execution
+- Tool filtering (AllowList/DenyList/InheritAll) and skill filtering with glob patterns
+- Zero-trust permission model with TTL-based grants and automatic revocation
+- `SubAgentMetrics` in `MetricsSnapshot` with state, turns, elapsed time
+- TUI sub-agents panel with color-coded states
+- `/agent` CLI commands: `list`, `spawn`, `bg`, `status`, `cancel`, `approve`, `deny`
+- Typed `AgentCommand` enum with `parse()` for type-safe command dispatch
+- `@agent_name` mention syntax for quick sub-agent invocation
+
+### Changed
+- Migrated all 6 hardcoded filters into the declarative TOML engine
+
+### Removed
+- `FilterConfig` per-filter config structs — filter params now in TOML strategy fields
+
 ## [0.11.4] - 2026-02-21
 
 ### Added
@@ -1069,7 +1094,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/bug-ops/zeph/compare/v0.11.1...v0.11.2

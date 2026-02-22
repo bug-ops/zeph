@@ -22,7 +22,7 @@ ratatui.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 similar.workspace = true
-throbber-widgets-tui = "0.10"
+throbber-widgets-tui = "0.11"
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 unicode-width.workspace = true
 tree-sitter.workspace = true
