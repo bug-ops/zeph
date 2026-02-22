@@ -98,6 +98,7 @@ impl Channel for AppChannel {
         display: &str,
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
     ) -> Result<(), ChannelError> {
         dispatch_app_channel!(
             self,
@@ -105,7 +106,8 @@ impl Channel for AppChannel {
             tool_name,
             display,
             diff,
-            filter_stats
+            filter_stats,
+            kept_lines
         )
     }
 }
@@ -1212,6 +1214,10 @@ async fn forward_tool_events_to_tui(
                     (fs.filtered_chars < fs.raw_chars)
                         .then(|| format!("{:.1}% filtered", fs.savings_pct()))
                 });
+                let kept = filter_stats
+                    .as_ref()
+                    .filter(|fs| !fs.kept_lines.is_empty())
+                    .map(|fs| fs.kept_lines.clone());
                 zeph_tui::AgentEvent::ToolOutput {
                     tool_name,
                     command,
@@ -1219,6 +1225,7 @@ async fn forward_tool_events_to_tui(
                     success,
                     diff,
                     filter_stats: stats_line,
+                    kept_lines: kept,
                 }
             }
         };
