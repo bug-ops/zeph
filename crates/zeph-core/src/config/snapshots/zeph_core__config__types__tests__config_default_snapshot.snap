@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
+assertion_line: 1113
 expression: toml_str
 ---
 [agent]
@@ -44,6 +45,9 @@ compaction_preserve_tail = 6
 auto_budget = true
 prune_protect_tokens = 40000
 cross_session_score_threshold = 0.35
+vector_backend = "qdrant"
+token_safety_margin = 1.0
+redact_credentials = true
 
 [memory.semantic]
 enabled = true

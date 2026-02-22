@@ -40,10 +40,13 @@ pub struct SessionSummaryResult {
     pub conversation_id: ConversationId,
 }
 
-/// Estimate token count using bytes/3 heuristic.
+/// Estimate token count using chars/4 heuristic.
+///
+/// Aligns better with `cl100k_base` tokenizer behavior for both ASCII and multi-byte
+/// UTF-8 text (CJK, Cyrillic) compared to the previous byte-length approach.
 #[must_use]
 pub fn estimate_tokens(text: &str) -> usize {
-    text.len() / 3
+    text.chars().count() / 4
 }
 
 fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> String {
@@ -907,19 +910,28 @@ mod tests {
 
     #[test]
     fn estimate_tokens_ascii() {
+        // "Hello, world!" = 13 chars / 4 = 3
         let text = "Hello, world!";
-        assert_eq!(estimate_tokens(text), 4);
+        assert_eq!(estimate_tokens(text), 3);
     }
 
     #[test]
     fn estimate_tokens_unicode() {
+        // "Привет мир" = 10 chars / 4 = 2
         let text = "Привет мир";
-        assert_eq!(estimate_tokens(text), 6);
+        assert_eq!(estimate_tokens(text), 2);
     }
 
     #[test]
     fn estimate_tokens_empty() {
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn estimate_tokens_cjk() {
+        // 8 CJK chars / 4 = 2
+        let text = "你好世界テスト日";
+        assert_eq!(estimate_tokens(text), 2);
     }
 
     #[tokio::test]
@@ -1211,13 +1223,15 @@ mod tests {
 
     #[test]
     fn estimate_tokens_short_text() {
+        // "ab" = 2 chars / 4 = 0
         assert_eq!(estimate_tokens("ab"), 0);
     }
 
     #[test]
     fn estimate_tokens_longer_text() {
+        // 100 chars / 4 = 25
         let text = "a".repeat(100);
-        assert_eq!(estimate_tokens(&text), 33);
+        assert_eq!(estimate_tokens(&text), 25);
     }
 
     #[tokio::test]

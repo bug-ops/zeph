@@ -9263,6 +9263,7 @@ name = "zeph-memory"
 version = "0.11.5"
 dependencies = [
  "blake3",
+ "bytemuck",
  "criterion",
  "pdf-extract",
  "proptest",

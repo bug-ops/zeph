@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Write;
 
 use zeph_llm::provider::MessagePart;
@@ -5,6 +6,8 @@ use zeph_memory::semantic::estimate_tokens;
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::format_skills_catalog;
+
+use crate::redact::scrub_content;
 
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget, EnvironmentContext,
@@ -644,6 +647,15 @@ impl<C: Channel> Agent<C> {
         }
 
         self.trim_messages_to_budget(alloc.recent_history);
+
+        if self.runtime.redact_credentials {
+            for msg in &mut self.messages {
+                if let Cow::Owned(s) = scrub_content(&msg.content) {
+                    msg.content = s;
+                }
+            }
+        }
+
         self.recompute_prompt_tokens();
         let _ = self.channel.send_status("").await;
 

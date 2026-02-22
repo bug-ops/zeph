@@ -409,6 +409,15 @@ fn default_cooldown_minutes() -> u64 {
     60
 }
 
+/// Vector backend selector for embedding storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VectorBackend {
+    #[default]
+    Qdrant,
+    Sqlite,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
     pub sqlite_path: String,
@@ -431,6 +440,20 @@ pub struct MemoryConfig {
     pub prune_protect_tokens: usize,
     #[serde(default = "default_cross_session_score_threshold")]
     pub cross_session_score_threshold: f32,
+    #[serde(default)]
+    pub vector_backend: VectorBackend,
+    #[serde(default = "default_token_safety_margin")]
+    pub token_safety_margin: f32,
+    #[serde(default = "default_redact_credentials")]
+    pub redact_credentials: bool,
+}
+
+fn default_token_safety_margin() -> f32 {
+    1.0
+}
+
+fn default_redact_credentials() -> bool {
+    true
 }
 
 fn default_qdrant_url() -> String {
@@ -1040,6 +1063,9 @@ impl Default for Config {
                 auto_budget: default_auto_budget(),
                 prune_protect_tokens: default_prune_protect_tokens(),
                 cross_session_score_threshold: default_cross_session_score_threshold(),
+                vector_backend: VectorBackend::default(),
+                token_safety_margin: default_token_safety_margin(),
+                redact_credentials: default_redact_credentials(),
             },
             telegram: None,
             discord: None,

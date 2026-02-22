@@ -122,6 +122,7 @@ pub(super) struct RuntimeConfig {
     pub(super) max_tool_iterations: usize,
     pub(super) summarize_tool_output_enabled: bool,
     pub(super) permission_policy: zeph_tools::PermissionPolicy,
+    pub(super) redact_credentials: bool,
 }
 
 pub struct Agent<C: Channel> {
@@ -227,6 +228,7 @@ impl<C: Channel> Agent<C> {
                 max_tool_iterations: 10,
                 summarize_tool_output_enabled: false,
                 permission_policy: zeph_tools::PermissionPolicy::default(),
+                redact_credentials: true,
             },
             learning_config: None,
             reflection_used: false,
@@ -931,6 +933,7 @@ impl<C: Channel> Agent<C> {
 
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
+        self.runtime.redact_credentials = config.memory.redact_credentials;
         self.memory_state.history_limit = config.memory.history_limit;
         self.memory_state.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;

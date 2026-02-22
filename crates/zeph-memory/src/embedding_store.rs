@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 
 use crate::error::MemoryError;
 use crate::qdrant_ops::QdrantOps;
+use crate::sqlite_vector_store::SqliteVectorStore;
 use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter, VectorPoint, VectorStore};
 
@@ -81,6 +82,19 @@ impl EmbeddingStore {
             collection: COLLECTION_NAME.into(),
             pool,
         })
+    }
+
+    /// Create a new `EmbeddingStore` backed by `SQLite` for vector storage.
+    ///
+    /// Uses the same pool for both vector data and metadata. No external Qdrant required.
+    #[must_use]
+    pub fn new_sqlite(pool: SqlitePool) -> Self {
+        let ops = SqliteVectorStore::new(pool.clone());
+        Self {
+            ops: Box::new(ops),
+            collection: COLLECTION_NAME.into(),
+            pool,
+        }
     }
 
     #[must_use]

@@ -139,6 +139,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_redact_credentials(mut self, enabled: bool) -> Self {
+        self.runtime.redact_credentials = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
         self.runtime.summarize_tool_output_enabled = enabled;
         self

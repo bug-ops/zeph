@@ -9,6 +9,7 @@ pub mod in_memory_store;
 pub mod qdrant_ops;
 pub mod semantic;
 pub mod sqlite;
+pub mod sqlite_vector_store;
 pub mod types;
 pub mod vector_store;
 

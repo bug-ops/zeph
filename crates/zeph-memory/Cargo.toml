@@ -13,6 +13,7 @@ description = "Semantic memory with SQLite and Qdrant for Zeph agent"
 readme = "README.md"
 
 [dependencies]
+bytemuck = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
 qdrant-client = { workspace = true, features = ["serde"] }
 schemars.workspace = true

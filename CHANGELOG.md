@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- SQLite-backed `SqliteVectorStore` as embedded alternative to Qdrant for zero-dependency vector search (#741)
+- `vector_backend` config option to select between `qdrant` and `sqlite` vector backends
+- Credential scrubbing in LLM context pipeline via `scrub_content()` — redacts secrets and paths before LLM calls (#743)
+- `redact_credentials` config option (default: true) to toggle context scrubbing
+
+### Changed
+- Token estimation uses `chars/4` heuristic instead of `bytes/3` for better accuracy on multi-byte text (#742)
+
 ## [0.11.5] - 2026-02-22
 
 ### Added

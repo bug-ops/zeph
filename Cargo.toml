@@ -20,6 +20,7 @@ anyhow = "1.0"
 axum = "0.8"
 base64 = "0.22"
 blake3 = "1.8"
+bytemuck = "1.25"
 candle-core = { version = "0.9", default-features = false }
 candle-nn = { version = "0.9", default-features = false }
 candle-transformers = { version = "0.9", default-features = false }
