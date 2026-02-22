@@ -70,6 +70,17 @@ impl Config {
         {
             self.memory.prune_protect_tokens = tokens;
         }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_VECTOR_BACKEND") {
+            match v.to_lowercase().as_str() {
+                "sqlite" => {
+                    self.memory.vector_backend = super::VectorBackend::Sqlite;
+                }
+                "qdrant" => {
+                    self.memory.vector_backend = super::VectorBackend::Qdrant;
+                }
+                _ => {}
+            }
+        }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
         {

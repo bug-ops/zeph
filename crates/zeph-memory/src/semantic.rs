@@ -127,6 +127,32 @@ impl SemanticMemory {
         })
     }
 
+    /// Create a `SemanticMemory` using the `SQLite`-embedded vector backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized.
+    pub async fn with_sqlite_backend(
+        sqlite_path: &str,
+        provider: AnyProvider,
+        embedding_model: &str,
+        vector_weight: f64,
+        keyword_weight: f64,
+    ) -> Result<Self, MemoryError> {
+        let sqlite = SqliteStore::new(sqlite_path).await?;
+        let pool = sqlite.pool().clone();
+        let store = EmbeddingStore::new_sqlite(pool);
+
+        Ok(Self {
+            sqlite,
+            qdrant: Some(store),
+            provider,
+            embedding_model: embedding_model.into(),
+            vector_weight,
+            keyword_weight,
+        })
+    }
+
     /// Save a message to `SQLite` and optionally embed and store in Qdrant.
     ///
     /// Returns the message ID assigned by `SQLite`.
