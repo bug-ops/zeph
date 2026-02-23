@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-02-23
+
 ### Fixed
 - Auto-create parent directories for `sqlite_path` on startup (#756)
 
@@ -1148,7 +1150,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.6...HEAD
+[0.11.6]: https://github.com/bug-ops/zeph/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3

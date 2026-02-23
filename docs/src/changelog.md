@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-02-23
+
+### Fixed
+- Auto-create parent directories for `sqlite_path` on startup (#756)
+
+### Added
+- `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig`
+- `SemanticMemory::save_only()` — persist message to SQLite without vector embedding
+- `ResponseCache` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry
+- `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` for memory portability
+- `zeph memory export <path>` and `zeph memory import <path>` CLI subcommands
+- Temporal decay scoring and MMR re-ranking in `SemanticMemory::recall()`
+- Compact XML skills prompt format with `SkillPromptMode` enum
+- Adaptive chunked context compaction
+- SQLite-backed `SqliteVectorStore` as embedded alternative to Qdrant
+- Credential scrubbing in LLM context pipeline
+- Filter diagnostics mode with `kept_lines` tracking
+- Markdown table rendering in TUI chat panel
+
+### Changed
+- Token estimation uses `chars/4` heuristic instead of `bytes/3`
+
 ## [0.11.5] - 2026-02-22
 
 ### Added
@@ -1094,7 +1116,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.6...HEAD
+[0.11.6]: https://github.com/bug-ops/zeph/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/bug-ops/zeph/compare/v0.11.2...v0.11.3
