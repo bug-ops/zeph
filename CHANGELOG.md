@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Custom mdBook theme with Zeph brand colors (navy+amber palette from TUI)
+- Z-letter favicon SVG for documentation site
+- Sidebar logo via inline data URI
+- Navy as default documentation theme
+
 ## [0.11.6] - 2026-02-23
 
 ### Fixed
