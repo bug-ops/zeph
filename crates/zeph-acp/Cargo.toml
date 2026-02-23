@@ -15,7 +15,6 @@ readme = "README.md"
 [dependencies]
 agent-client-protocol = "0.9"
 async-trait = "0.1"
-serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "sync", "macros"] }
 tokio-util = { workspace = true, features = ["compat"] }

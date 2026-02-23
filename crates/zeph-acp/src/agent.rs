@@ -1,111 +1,121 @@
+use std::cell::Cell;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use agent_client_protocol::{
-    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, CancelNotification, ContentBlock,
-    InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion,
-    StopReason,
-};
-use tokio::sync::RwLock;
+use agent_client_protocol as acp;
+use tokio::sync::{mpsc, oneshot};
+use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 
-use crate::bridge::bridge_loop;
 use crate::error::AcpError;
-use crate::session::SessionManager;
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
+const MAX_SESSIONS: usize = 100;
 
-/// Factory closure type: receives a [`LoopbackChannel`] and runs the agent loop on it.
+/// Factory: receives a [`LoopbackChannel`] and runs the agent loop on it.
 pub type AgentSpawner = Arc<
     dyn Fn(LoopbackChannel) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>> + 'static,
 >;
 
+/// Sender half for delivering session notifications to the background writer.
+pub(crate) type NotifySender =
+    mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>;
+
+struct SessionEntry {
+    input_tx: mpsc::Sender<ChannelMessage>,
+    output_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<LoopbackEvent>>>,
+}
+
 pub struct ZephAcpAgent {
-    pub(crate) session_mgr: Arc<SessionManager>,
+    notify_tx: NotifySender,
     spawner: AgentSpawner,
-    conn: Arc<RwLock<Option<agent_client_protocol::AgentSideConnection>>>,
+    sessions: std::cell::RefCell<std::collections::HashMap<String, SessionEntry>>,
+    next_id: Cell<u64>,
 }
 
 impl ZephAcpAgent {
-    #[must_use]
-    pub fn new(spawner: AgentSpawner) -> Self {
+    pub fn new(spawner: AgentSpawner, notify_tx: NotifySender) -> Self {
         Self {
-            session_mgr: Arc::new(SessionManager::new()),
+            notify_tx,
             spawner,
-            conn: Arc::new(RwLock::new(None)),
+            sessions: std::cell::RefCell::new(std::collections::HashMap::new()),
+            next_id: Cell::new(0),
         }
     }
 
-    /// Attach the live [`agent_client_protocol::AgentSideConnection`] after construction.
-    pub async fn set_connection(&self, conn: agent_client_protocol::AgentSideConnection) {
-        *self.conn.write().await = Some(conn);
+    async fn send_notification(
+        &self,
+        notification: acp::SessionNotification,
+    ) -> Result<(), AcpError> {
+        let (tx, rx) = oneshot::channel();
+        self.notify_tx
+            .send((notification, tx))
+            .map_err(|_| AcpError::Transport("notification channel closed".to_owned()))?;
+        rx.await
+            .map_err(|_| AcpError::Transport("notification ack lost".to_owned()))
     }
 }
 
 #[async_trait::async_trait(?Send)]
-impl agent_client_protocol::Agent for ZephAcpAgent {
+impl acp::Agent for ZephAcpAgent {
     async fn initialize(
         &self,
-        _args: InitializeRequest,
-    ) -> Result<InitializeResponse, agent_client_protocol::Error> {
-        let caps = AgentCapabilities::new().load_session(false);
-        Ok(InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(caps))
+        _args: acp::InitializeRequest,
+    ) -> Result<acp::InitializeResponse, acp::Error> {
+        tracing::debug!("ACP initialize");
+        Ok(
+            acp::InitializeResponse::new(acp::ProtocolVersion::LATEST).agent_info(
+                acp::Implementation::new("zeph", env!("CARGO_PKG_VERSION")).title("Zeph AI Agent"),
+            ),
+        )
     }
 
     async fn authenticate(
         &self,
-        _args: AuthenticateRequest,
-    ) -> Result<AuthenticateResponse, agent_client_protocol::Error> {
-        // Phase 1 MVP: stdio transport only, auth delegated to host process.
-        // TODO: validate credentials for network transport in Phase 2.
-        Ok(AuthenticateResponse::new())
+        _args: acp::AuthenticateRequest,
+    ) -> Result<acp::AuthenticateResponse, acp::Error> {
+        // stdio transport: authentication is a no-op, IDE client is trusted.
+        Ok(acp::AuthenticateResponse::default())
     }
 
     async fn new_session(
         &self,
-        _args: NewSessionRequest,
-    ) -> Result<NewSessionResponse, agent_client_protocol::Error> {
+        _args: acp::NewSessionRequest,
+    ) -> Result<acp::NewSessionResponse, acp::Error> {
+        if self.sessions.borrow().len() >= MAX_SESSIONS {
+            return Err(acp::Error::internal_error().data("session limit reached"));
+        }
+
+        let id = self.next_id.get();
+        self.next_id.set(id + 1);
         let session_id = uuid::Uuid::new_v4().to_string();
         tracing::debug!(session_id, "new ACP session");
 
-        let (channel, handle, cancel_rx) = self
-            .session_mgr
-            .create(session_id.clone())
-            .await
-            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
+        let (channel, handle) = LoopbackChannel::pair(64);
+
+        let entry = SessionEntry {
+            input_tx: handle.input_tx,
+            output_rx: Arc::new(tokio::sync::Mutex::new(handle.output_rx)),
+        };
+        self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
         let spawner = Arc::clone(&self.spawner);
-        let conn_arc = Arc::clone(&self.conn);
-        let sid = session_id.clone();
-
         tokio::task::spawn_local(async move {
-            let agent_fut = (spawner)(channel);
-            let bridge_fut = async {
-                if let Some(conn) = conn_arc.read().await.as_ref()
-                    && let Err(e) = bridge_loop(conn, &sid, handle, cancel_rx).await
-                {
-                    tracing::warn!(session_id = %sid, error = %e, "bridge_loop error");
-                }
-            };
-
-            tokio::join!(agent_fut, bridge_fut);
+            (spawner)(channel).await;
         });
 
-        Ok(NewSessionResponse::new(session_id))
+        Ok(acp::NewSessionResponse::new(session_id))
     }
 
-    async fn prompt(
-        &self,
-        args: PromptRequest,
-    ) -> Result<PromptResponse, agent_client_protocol::Error> {
+    async fn prompt(&self, args: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error> {
         let session_id = args.session_id.to_string();
+        tracing::debug!(session_id, "ACP prompt");
 
         let text = args
             .prompt
             .iter()
             .filter_map(|block| {
-                if let ContentBlock::Text(t) = block {
+                if let acp::ContentBlock::Text(t) = block {
                     Some(t.text.clone())
                 } else {
                     None
@@ -115,120 +125,194 @@ impl agent_client_protocol::Agent for ZephAcpAgent {
             .join("\n");
 
         if text.len() > MAX_PROMPT_BYTES {
-            return Err(agent_client_protocol::Error::invalid_request().data("prompt too large"));
+            return Err(acp::Error::invalid_request().data("prompt too large"));
         }
 
-        let msg = ChannelMessage {
-            text,
-            attachments: vec![],
+        let (input_tx, output_rx) = {
+            let sessions = self.sessions.borrow();
+            let entry = sessions
+                .get(&session_id)
+                .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+            (entry.input_tx.clone(), Arc::clone(&entry.output_rx))
         };
 
-        self.session_mgr
-            .send_message(&session_id, msg)
+        input_tx
+            .send(ChannelMessage {
+                text,
+                attachments: vec![],
+            })
             .await
-            .map_err(|_| {
-                agent_client_protocol::Error::internal_error().data("failed to deliver message")
-            })?;
+            .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
 
-        Ok(PromptResponse::new(StopReason::EndTurn))
+        // Block until the agent finishes this turn (signals via Flush or channel close).
+        let mut rx = output_rx.lock().await;
+        while let Some(event) = rx.recv().await {
+            let is_flush = matches!(event, LoopbackEvent::Flush);
+            if let Some(update) = loopback_event_to_update(event) {
+                let notification = acp::SessionNotification::new(args.session_id.clone(), update);
+                if let Err(e) = self.send_notification(notification).await {
+                    tracing::warn!(error = %e, "failed to send notification");
+                    break;
+                }
+            }
+            if is_flush {
+                break;
+            }
+        }
+
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
-    async fn cancel(&self, args: CancelNotification) -> Result<(), agent_client_protocol::Error> {
+    async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
         let session_id = args.session_id.to_string();
-        if let Err(AcpError::SessionNotFound(_)) = self.session_mgr.cancel(&session_id).await {
-            // Session already gone — no-op per ACP spec.
-        }
+        tracing::debug!(session_id, "ACP cancel");
+        self.sessions.borrow_mut().remove(&session_id);
         Ok(())
     }
 
     async fn load_session(
         &self,
-        args: LoadSessionRequest,
-    ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
+        args: acp::LoadSessionRequest,
+    ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let session_id = args.session_id.to_string();
-        if self.session_mgr.exists(&session_id).await {
-            Ok(LoadSessionResponse::new())
+        if self.sessions.borrow().contains_key(&session_id) {
+            Ok(acp::LoadSessionResponse::new())
         } else {
-            Err(agent_client_protocol::Error::internal_error().data("session not found"))
+            Err(acp::Error::internal_error().data("session not found"))
         }
+    }
+}
+
+fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
+    match event {
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
+            Some(acp::SessionUpdate::AgentMessageChunk(
+                acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+            ))
+        }
+        LoopbackEvent::Status(text) => Some(acp::SessionUpdate::AgentThoughtChunk(
+            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+        )),
+        LoopbackEvent::ToolOutput {
+            tool_name, display, ..
+        } => {
+            let text = format!("[{tool_name}] {display}");
+            Some(acp::SessionUpdate::AgentMessageChunk(
+                acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+            ))
+        }
+        LoopbackEvent::Flush => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    fn make_spawner() -> (AgentSpawner, Arc<AtomicBool>) {
-        let called = Arc::new(AtomicBool::new(false));
-        let called2 = Arc::clone(&called);
-        let spawner: AgentSpawner = Arc::new(move |_channel| {
-            let called3 = Arc::clone(&called2);
-            Box::pin(async move {
-                called3.store(true, Ordering::SeqCst);
-            })
-        });
-        (spawner, called)
+    fn make_spawner() -> AgentSpawner {
+        Arc::new(|_channel| Box::pin(async {}))
+    }
+
+    fn make_agent() -> (
+        ZephAcpAgent,
+        mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (ZephAcpAgent::new(make_spawner(), tx), rx)
     }
 
     #[tokio::test]
-    async fn new_session_creates_session() {
+    async fn initialize_returns_agent_info() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (spawner, called) = make_spawner();
-                let agent = ZephAcpAgent::new(spawner);
-                use agent_client_protocol::Agent as _;
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
                 let resp = agent
-                    .new_session(NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                     .await
                     .unwrap();
-                let session_id = resp.session_id.to_string();
-                assert!(!session_id.is_empty());
-                assert!(agent.session_mgr.exists(&session_id).await);
-
-                tokio::task::yield_now().await;
-                assert!(called.load(Ordering::SeqCst));
+                assert!(resp.agent_info.is_some());
             })
             .await;
     }
 
     #[tokio::test]
-    async fn cancel_nonexistent_session_is_noop() {
-        let (spawner, _) = make_spawner();
-        let agent = ZephAcpAgent::new(spawner);
-        use agent_client_protocol::Agent as _;
-        agent
-            .cancel(CancelNotification::new("nonexistent-session-id"))
-            .await
-            .unwrap();
+    async fn new_session_creates_entry() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.to_string();
+                assert!(!sid.is_empty());
+                assert!(agent.sessions.borrow().contains_key(&sid));
+            })
+            .await;
     }
 
     #[tokio::test]
-    async fn initialize_returns_capabilities() {
-        let (spawner, _) = make_spawner();
-        let agent = ZephAcpAgent::new(spawner);
-        use agent_client_protocol::Agent as _;
-        let resp = agent
-            .initialize(InitializeRequest::new(ProtocolVersion::LATEST))
-            .await
-            .unwrap();
-        assert!(!resp.agent_capabilities.load_session);
+    async fn cancel_removes_session() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.to_string();
+                agent
+                    .cancel(acp::CancelNotification::new(sid.clone()))
+                    .await
+                    .unwrap();
+                assert!(!agent.sessions.borrow().contains_key(&sid));
+            })
+            .await;
     }
 
     #[tokio::test]
-    async fn prompt_rejects_oversized_text() {
-        let (spawner, _) = make_spawner();
-        let agent = ZephAcpAgent::new(spawner);
-        use agent_client_protocol::{Agent as _, ContentBlock, TextContent};
-
-        let big_text = "x".repeat(MAX_PROMPT_BYTES + 1);
-        let block = ContentBlock::Text(TextContent::new(big_text));
-        let req = PromptRequest::new("sess-x", vec![block]);
-        let result = agent.prompt(req).await;
-        assert!(result.is_err());
+    async fn prompt_rejects_oversized() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let big = "x".repeat(MAX_PROMPT_BYTES + 1);
+                let block = acp::ContentBlock::Text(acp::TextContent::new(big));
+                let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![block]);
+                assert!(agent.prompt(req).await.is_err());
+            })
+            .await;
     }
 
-    // TODO: add test for prompt() happy path — Phase 2 item.
-    // TODO: add test for load_session() error branch — Phase 2 item.
+    #[test]
+    fn loopback_flush_returns_none() {
+        assert!(loopback_event_to_update(LoopbackEvent::Flush).is_none());
+    }
+
+    #[test]
+    fn loopback_chunk_maps_to_agent_message() {
+        assert!(matches!(
+            loopback_event_to_update(LoopbackEvent::Chunk("hi".into())),
+            Some(acp::SessionUpdate::AgentMessageChunk(_))
+        ));
+    }
+
+    #[test]
+    fn loopback_status_maps_to_thought() {
+        assert!(matches!(
+            loopback_event_to_update(LoopbackEvent::Status("thinking".into())),
+            Some(acp::SessionUpdate::AgentThoughtChunk(_))
+        ));
+    }
 }

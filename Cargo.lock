@@ -9167,7 +9167,6 @@ version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
- "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

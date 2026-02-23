@@ -2027,6 +2027,52 @@ fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace:
 
 /// Run Zeph as an ACP server over stdio.
 ///
+/// All dependencies needed to construct an Agent inside the ACP spawner.
+/// Consumed once on first `session/new` (Phase 1 MVP: single session).
+#[cfg(feature = "acp")]
+struct AgentDeps {
+    provider: zeph_llm::any::AnyProvider,
+    registry: zeph_skills::registry::SkillRegistry,
+    matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+    max_active_skills: usize,
+    tool_executor: zeph_tools::CompositeExecutor<
+        zeph_tools::CompositeExecutor<
+            zeph_tools::FileExecutor,
+            zeph_tools::CompositeExecutor<zeph_tools::ShellExecutor, zeph_tools::WebScrapeExecutor>,
+        >,
+        zeph_mcp::McpToolExecutor,
+    >,
+    max_tool_iterations: usize,
+    model_name: String,
+    embed_model: String,
+    skill_paths: Vec<PathBuf>,
+    reload_rx: tokio::sync::mpsc::Receiver<zeph_skills::watcher::SkillEvent>,
+    memory: zeph_memory::semantic::SemanticMemory,
+    conversation_id: zeph_memory::ConversationId,
+    history_limit: u32,
+    recall_limit: usize,
+    summarization_threshold: usize,
+    budget_tokens: usize,
+    compaction_threshold: f32,
+    compaction_preserve_tail: usize,
+    prune_protect_tokens: usize,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    security: zeph_core::config::SecurityConfig,
+    timeouts: zeph_core::config::TimeoutConfig,
+    redact_credentials: bool,
+    tool_summarization: bool,
+    permission_policy: zeph_tools::PermissionPolicy,
+    config_path: PathBuf,
+    config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
+    mcp_tools: Vec<zeph_mcp::McpTool>,
+    mcp_registry: Option<zeph_mcp::McpToolRegistry>,
+    mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
+    mcp_config: zeph_core::config::McpConfig,
+    learning: zeph_core::config::LearningConfig,
+    secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
+    summary_provider: Option<zeph_llm::any::AnyProvider>,
+}
+
 /// Builds the full agent stack and bridges it to the ACP protocol via
 /// `ZephAcpAgent`. The IDE drives the conversation via JSON-RPC over stdin/stdout.
 /// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
@@ -2097,100 +2143,115 @@ async fn run_acp_server(
     let config_path_owned = app.config_path().to_owned();
     let (_, shutdown_rx) = AppBuilder::build_shutdown();
 
-    // Build the agent with a LoopbackChannel — the channel is swapped in by the spawner
-    // on the first session/new request. Subsequent sessions reuse the same agent loop.
-    let channel_slot: Arc<Mutex<Option<zeph_core::LoopbackChannel>>> = Arc::new(Mutex::new(None));
-    let channel_slot_spawner = Arc::clone(&channel_slot);
-
-    // Pre-create the loopback pair; the spawner delivers it to the agent.
-    let (pre_channel, pre_handle) = zeph_core::LoopbackChannel::pair(64);
-    *channel_slot.lock().await = Some(pre_channel);
-
-    // Wrap pre_handle in Arc<Mutex> so the spawner can hand it back to bridge_loop.
-    let pre_handle = Arc::new(Mutex::new(Some(pre_handle)));
-    let pre_handle_spawner = Arc::clone(&pre_handle);
+    // Pack all agent dependencies into the spawner closure.
+    // On first session/new, the spawner builds and runs the Agent with the
+    // session's LoopbackChannel — so prompts flow directly to the agent loop.
+    let deps = Arc::new(Mutex::new(Some(AgentDeps {
+        provider,
+        registry,
+        matcher,
+        max_active_skills: config.skills.max_active_skills,
+        tool_executor,
+        max_tool_iterations: config.agent.max_tool_iterations,
+        model_name: config.llm.model.clone(),
+        embed_model,
+        skill_paths,
+        reload_rx,
+        memory,
+        conversation_id,
+        history_limit: config.memory.history_limit,
+        recall_limit: config.memory.semantic.recall_limit,
+        summarization_threshold: config.memory.summarization_threshold,
+        budget_tokens,
+        compaction_threshold: config.memory.compaction_threshold,
+        compaction_preserve_tail: config.memory.compaction_preserve_tail,
+        prune_protect_tokens: config.memory.prune_protect_tokens,
+        shutdown_rx,
+        security: config.security,
+        timeouts: config.timeouts,
+        redact_credentials: config.memory.redact_credentials,
+        tool_summarization: config.tools.summarize_output,
+        permission_policy: config
+            .tools
+            .permission_policy(config.security.autonomy_level),
+        config_path: config_path_owned,
+        config_reload_rx,
+        mcp_tools,
+        mcp_registry,
+        mcp_manager,
+        mcp_config: config.mcp.clone(),
+        learning: config.skills.learning.clone(),
+        secrets: config.secrets.custom.clone(),
+        summary_provider,
+    })));
 
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel| {
-        // Deliver the real channel to the slot (it will be picked up by the agent).
-        let slot = Arc::clone(&channel_slot_spawner);
-        let handle_slot = Arc::clone(&pre_handle_spawner);
+        let deps = Arc::clone(&deps);
         Box::pin(async move {
-            // Swap in the new channel provided by ACP for future sessions.
-            *slot.lock().await = Some(channel);
-            // Keep handle alive; bridge_loop uses pre_handle directly.
-            drop(handle_slot);
+            let Some(d) = deps.lock().await.take() else {
+                tracing::warn!(
+                    "ACP spawner called more than once — Phase 1 supports single session"
+                );
+                return;
+            };
+
+            let mut agent = Agent::new(
+                d.provider,
+                channel,
+                d.registry,
+                d.matcher,
+                d.max_active_skills,
+                d.tool_executor,
+            )
+            .with_max_tool_iterations(d.max_tool_iterations)
+            .with_model_name(d.model_name)
+            .with_embedding_model(d.embed_model)
+            .with_skill_reload(d.skill_paths, d.reload_rx)
+            .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+            .with_memory(
+                d.memory,
+                d.conversation_id,
+                d.history_limit,
+                d.recall_limit,
+                d.summarization_threshold,
+            )
+            .with_context_budget(
+                d.budget_tokens,
+                0.20,
+                d.compaction_threshold,
+                d.compaction_preserve_tail,
+                d.prune_protect_tokens,
+            )
+            .with_shutdown(d.shutdown_rx)
+            .with_security(d.security, d.timeouts)
+            .with_redact_credentials(d.redact_credentials)
+            .with_tool_summarization(d.tool_summarization)
+            .with_permission_policy(d.permission_policy)
+            .with_config_reload(d.config_path, d.config_reload_rx)
+            .with_mcp(
+                d.mcp_tools,
+                d.mcp_registry,
+                Some(d.mcp_manager),
+                &d.mcp_config,
+            )
+            .with_learning(d.learning)
+            .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+            if let Some(sp) = d.summary_provider {
+                agent = agent.with_summary_provider(sp);
+            }
+
+            if let Err(e) = agent.load_history().await {
+                tracing::error!("failed to load agent history: {e:#}");
+            }
+
+            if let Err(e) = agent.run().await {
+                tracing::error!("ACP agent loop error: {e:#}");
+            }
         })
     });
 
-    // The agent uses the pre-created channel; ACP's session/new replaces it in the slot.
-    let pre_channel = channel_slot.lock().await.take().unwrap();
-    let mut agent = Agent::new(
-        provider,
-        pre_channel,
-        registry,
-        matcher,
-        config.skills.max_active_skills,
-        tool_executor,
-    )
-    .with_max_tool_iterations(config.agent.max_tool_iterations)
-    .with_model_name(config.llm.model.clone())
-    .with_embedding_model(embed_model)
-    .with_skill_reload(skill_paths, reload_rx)
-    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
-    .with_memory(
-        memory,
-        conversation_id,
-        config.memory.history_limit,
-        config.memory.semantic.recall_limit,
-        config.memory.summarization_threshold,
-    )
-    .with_context_budget(
-        budget_tokens,
-        0.20,
-        config.memory.compaction_threshold,
-        config.memory.compaction_preserve_tail,
-        config.memory.prune_protect_tokens,
-    )
-    .with_shutdown(shutdown_rx)
-    .with_security(config.security, config.timeouts)
-    .with_redact_credentials(config.memory.redact_credentials)
-    .with_tool_summarization(config.tools.summarize_output)
-    .with_permission_policy(
-        config
-            .tools
-            .permission_policy(config.security.autonomy_level),
-    )
-    .with_config_reload(config_path_owned, config_reload_rx)
-    .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
-    .with_learning(config.skills.learning.clone())
-    .with_available_secrets(
-        config
-            .secrets
-            .custom
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-
-    if let Some(sp) = summary_provider {
-        agent = agent.with_summary_provider(sp);
-    }
-
-    agent.load_history().await?;
-
-    let acp_agent = zeph_acp::ZephAcpAgent::new(spawner);
-
-    tokio::select! {
-        result = agent.run() => {
-            if let Err(e) = result {
-                tracing::error!("ACP agent loop error: {e:#}");
-            }
-        }
-        acp_result = zeph_acp::serve_stdio(acp_agent) => {
-            if let Err(e) = acp_result {
-                tracing::error!("ACP server error: {e}");
-            }
-        }
-    }
+    zeph_acp::serve_stdio(spawner).await?;
 
     Ok(())
 }
