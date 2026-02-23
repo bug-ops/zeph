@@ -27,6 +27,17 @@ pub async fn serve_stdio(spawner: AgentSpawner) -> Result<(), AcpError> {
                 tokio::task::spawn_local(fut);
             });
 
+            let mut stream_rx = conn.subscribe();
+            tokio::task::spawn_local(async move {
+                while let Ok(msg) = stream_rx.recv().await {
+                    tracing::debug!(
+                        direction = ?msg.direction,
+                        message = ?msg.message,
+                        "ACP stream"
+                    );
+                }
+            });
+
             tokio::task::spawn_local(async move {
                 while let Some((notification, ack)) = rx.recv().await {
                     if let Err(e) = conn.session_notification(notification).await {

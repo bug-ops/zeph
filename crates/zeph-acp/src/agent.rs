@@ -172,9 +172,11 @@ impl acp::Agent for ZephAcpAgent {
 
 fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
     match event {
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) if text.is_empty() => None,
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => Some(
             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(text.into())),
         ),
+        LoopbackEvent::Status(text) if text.is_empty() => None,
         LoopbackEvent::Status(text) => Some(acp::SessionUpdate::AgentThoughtChunk(
             acp::ContentChunk::new(text.into()),
         )),
@@ -298,5 +300,12 @@ mod tests {
             loopback_event_to_update(LoopbackEvent::Status("thinking".into())),
             Some(acp::SessionUpdate::AgentThoughtChunk(_))
         ));
+    }
+
+    #[test]
+    fn loopback_empty_chunk_returns_none() {
+        assert!(loopback_event_to_update(LoopbackEvent::Chunk(String::new())).is_none());
+        assert!(loopback_event_to_update(LoopbackEvent::FullMessage(String::new())).is_none());
+        assert!(loopback_event_to_update(LoopbackEvent::Status(String::new())).is_none());
     }
 }
