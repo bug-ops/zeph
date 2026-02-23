@@ -7,7 +7,7 @@ use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
-const MAX_SESSIONS: usize = 100;
+const MAX_SESSIONS: usize = 1;
 
 /// Factory: receives a [`LoopbackChannel`] and runs the agent loop on it.
 pub type AgentSpawner = Arc<

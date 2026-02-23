@@ -28,13 +28,18 @@ pub async fn serve_stdio(spawner: AgentSpawner) -> Result<(), AcpError> {
             });
 
             let mut stream_rx = conn.subscribe();
+            let log_messages = std::env::var_os("ZEPH_ACP_LOG_MESSAGES").is_some();
             tokio::task::spawn_local(async move {
                 while let Ok(msg) = stream_rx.recv().await {
-                    tracing::debug!(
-                        direction = ?msg.direction,
-                        message = ?msg.message,
-                        "ACP stream"
-                    );
+                    if log_messages {
+                        tracing::debug!(
+                            direction = ?msg.direction,
+                            message = ?msg.message,
+                            "ACP stream"
+                        );
+                    } else {
+                        tracing::debug!(direction = ?msg.direction, "ACP stream");
+                    }
                 }
             });
 
