@@ -32,6 +32,11 @@ impl SqliteStore {
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
+            if let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
             format!("sqlite:{path}?mode=rwc")
         };
 
@@ -86,5 +91,14 @@ mod tests {
             .expect("PRAGMA query");
 
         assert_eq!(mode, "wal", "expected WAL journal mode, got: {mode}");
+    }
+
+    #[tokio::test]
+    async fn creates_parent_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deep = dir.path().join("a/b/c/zeph.db");
+        let path = deep.to_str().expect("valid path");
+        let _store = SqliteStore::new(path).await.expect("SqliteStore::new");
+        assert!(deep.exists(), "database file should exist");
     }
 }

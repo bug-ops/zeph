@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Auto-create parent directories for `sqlite_path` on startup (#756)
+
 ### Added
 - `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig` — assistant responses skip embedding when disabled (#748)
 - `SemanticMemory::save_only()` — persist message to SQLite without generating a vector embedding (#748)
