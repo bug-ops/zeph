@@ -130,6 +130,9 @@ fn validate_absolute_path(raw: &str) -> Result<PathBuf, ToolError> {
             path: raw.to_owned(),
         });
     }
+    // Symlink resolution is intentionally delegated to the IDE: the agent sends the path
+    // as-is via the ACP protocol and the IDE enforces its own sandbox (workspace root,
+    // read-only mounts, etc.). The agent trusts the IDE's file-system sandbox boundary.
     Ok(path)
 }
 

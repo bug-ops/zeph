@@ -12,4 +12,4 @@ pub use fs::AcpFileExecutor;
 pub use mcp_bridge::acp_mcp_servers_to_entries;
 pub use permission::AcpPermissionGate;
 pub use terminal::AcpShellExecutor;
-pub use transport::serve_stdio;
+pub use transport::{AcpServerConfig, serve_connection, serve_stdio};

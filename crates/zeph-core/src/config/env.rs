@@ -263,6 +263,17 @@ impl Config {
         {
             self.llm.response_cache_ttl_secs = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_ACP_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.acp.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_ACP_AGENT_NAME") {
+            self.acp.agent_name = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_ACP_AGENT_VERSION") {
+            self.acp.agent_version = v;
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

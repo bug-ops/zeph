@@ -66,9 +66,11 @@ impl AcpPermissionGate {
         session_id: acp::SessionId,
         tool_call: acp::ToolCallUpdate,
     ) -> Result<bool, AcpError> {
-        // Key on session + tool title so AllowAlways/RejectAlways decisions are
-        // shared across invocations of the same tool within the same session.
-        // Using tool_call_id (per-invocation UUID) would yield zero cache hits.
+        // Key on session + tool title (binary name) for AllowAlways/RejectAlways caching.
+        // Granularity is intentionally per-binary, per-session: the user approves "bash" once
+        // per session rather than per-invocation, matching IDE UX expectations.
+        // Trade-off: two distinct tools with the same title share one cache entry.
+        // This is acceptable since title is the user-visible identifier shown in the IDE prompt.
         let tool_name = tool_call.fields.title.as_deref().unwrap_or("");
         let cache_key = format!("{session_id}:{tool_name}");
 

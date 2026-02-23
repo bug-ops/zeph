@@ -2,13 +2,14 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, ProviderKind, SemanticConfig, SlackConfig, TelegramConfig,
-    VaultConfig,
+    AcpConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SlackConfig,
+    TelegramConfig, VaultConfig,
 };
 
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct WizardState {
     pub(crate) provider: Option<ProviderKind>,
     pub(crate) base_url: Option<String>,
@@ -44,6 +45,9 @@ pub(crate) struct WizardState {
     pub(crate) daemon_host: String,
     pub(crate) daemon_port: u16,
     pub(crate) daemon_auth_token: Option<String>,
+    pub(crate) acp_enabled: bool,
+    pub(crate) acp_agent_name: String,
+    pub(crate) acp_agent_version: String,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -64,6 +68,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         auto_update_check: true,
         daemon_host: "127.0.0.1".into(),
         daemon_port: 8080,
+        acp_agent_name: "zeph".into(),
+        acp_agent_version: env!("CARGO_PKG_VERSION").into(),
         ..WizardState::default()
     };
 
@@ -73,6 +79,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
     step_daemon(&mut state)?;
+    step_acp(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -506,14 +513,29 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         backend: state.vault_backend.clone(),
     };
 
+    apply_daemon_config(&mut config, state);
+    apply_acp_config(&mut config, state);
+
+    config
+}
+
+fn apply_daemon_config(config: &mut Config, state: &WizardState) {
     if state.daemon_enabled {
         config.a2a.enabled = true;
         config.a2a.host.clone_from(&state.daemon_host);
         config.a2a.port = state.daemon_port;
         config.a2a.auth_token.clone_from(&state.daemon_auth_token);
     }
+}
 
-    config
+fn apply_acp_config(config: &mut Config, state: &WizardState) {
+    if state.acp_enabled {
+        config.acp = AcpConfig {
+            enabled: true,
+            agent_name: state.acp_agent_name.clone(),
+            agent_version: state.acp_agent_version.clone(),
+        };
+    }
 }
 
 fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> {
@@ -612,6 +634,30 @@ fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
             .allow_empty_password(true)
             .interact()?;
         state.daemon_auth_token = if raw.is_empty() { None } else { Some(raw) };
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 6b/6: ACP Server (IDE Embedding) ==\n");
+
+    state.acp_enabled = Confirm::new()
+        .with_prompt("Enable ACP server for IDE embedding?")
+        .default(false)
+        .interact()?;
+
+    if state.acp_enabled {
+        state.acp_agent_name = Input::new()
+            .with_prompt("Agent name")
+            .default(state.acp_agent_name.clone())
+            .interact_text()?;
+
+        state.acp_agent_version = Input::new()
+            .with_prompt("Agent version")
+            .default(state.acp_agent_version.clone())
+            .interact_text()?;
     }
 
     println!();

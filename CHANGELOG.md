@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Z-letter favicon SVG for documentation site
 - Sidebar logo via inline data URI
 - Navy as default documentation theme
+- `AcpConfig` struct in `zeph-core` — `enabled`, `agent_name`, `agent_version` with `ZEPH_ACP_*` env overrides (#771)
+- `[acp]` section in `config.toml` for configuring ACP server identity
+- `--acp-manifest` CLI flag — prints ACP agent manifest JSON to stdout for IDE discovery (#772)
+- `serve_connection<W, R>` generic transport function extracted from `serve_stdio` for testability (#770)
+- `ConnSlot` pattern in transport — `Rc<RefCell<Option<Rc<AgentSideConnection>>>>` populated post-construction so `new_session` can build ACP adapters (#770)
+- `build_acp_context` in `ZephAcpAgent` — wires `AcpFileExecutor`, `AcpShellExecutor`, `AcpPermissionGate` per session (#770)
+- `AcpServerConfig` passed through `serve_stdio`/`serve_connection` to configure agent identity from config values (#770)
+- ACP section in `--init` wizard — prompts for `enabled`, `agent_name`, `agent_version` (#771)
+- Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
 
 ## [0.11.6] - 2026-02-23
 

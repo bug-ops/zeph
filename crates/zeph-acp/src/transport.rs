@@ -1,10 +1,25 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use acp::Client as _;
 use agent_client_protocol as acp;
+use futures::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::agent::{AgentSpawner, ZephAcpAgent};
 use crate::error::AcpError;
+
+/// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
+/// the connection to build ACP tool adapters.
+pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
+
+/// Configuration for the ACP server identity advertised during `initialize`.
+#[derive(Debug, Clone, Default)]
+pub struct AcpServerConfig {
+    pub agent_name: String,
+    pub agent_version: String,
+}
 
 /// Run the ACP server over stdin/stdout until the connection closes.
 ///
@@ -13,26 +28,56 @@ use crate::error::AcpError;
 /// # Errors
 ///
 /// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
-pub async fn serve_stdio(spawner: AgentSpawner) -> Result<(), AcpError> {
+pub async fn serve_stdio(
+    spawner: AgentSpawner,
+    server_config: AcpServerConfig,
+) -> Result<(), AcpError> {
+    let stdin = tokio::io::stdin().compat();
+    let stdout = tokio::io::stdout().compat_write();
+    serve_connection(spawner, server_config, stdout, stdin).await
+}
+
+/// Run the ACP server over arbitrary async I/O streams.
+///
+/// Extracted from `serve_stdio` to allow integration tests to use `tokio::io::duplex`.
+///
+/// # Errors
+///
+/// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
+pub async fn serve_connection<W, R>(
+    spawner: AgentSpawner,
+    server_config: AcpServerConfig,
+    writer: W,
+    reader: R,
+) -> Result<(), AcpError>
+where
+    W: AsyncWrite + Unpin + 'static,
+    R: AsyncRead + Unpin + 'static,
+{
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
-            let stdin = tokio::io::stdin().compat();
-            let stdout = tokio::io::stdout().compat_write();
+            let conn_slot: ConnSlot = Rc::new(RefCell::new(None));
 
             let (tx, mut rx) = mpsc::unbounded_channel();
-            let agent = ZephAcpAgent::new(spawner, tx);
+            let agent = ZephAcpAgent::new(spawner, tx, Rc::clone(&conn_slot))
+                .with_agent_info(server_config.agent_name, server_config.agent_version);
 
-            let (conn, io_fut) = acp::AgentSideConnection::new(agent, stdout, stdin, |fut| {
+            let (conn, io_fut) = acp::AgentSideConnection::new(agent, writer, reader, |fut| {
                 tokio::task::spawn_local(fut);
             });
 
-            let mut stream_rx = conn.subscribe();
+            let conn = Rc::new(conn);
+            *conn_slot.borrow_mut() = Some(Rc::clone(&conn));
+
+            let stream_conn = Rc::clone(&conn);
             let log_messages = std::env::var_os("ZEPH_ACP_LOG_MESSAGES").is_some();
             tokio::task::spawn_local(async move {
+                let mut stream_rx = stream_conn.subscribe();
                 while let Ok(msg) = stream_rx.recv().await {
                     if log_messages {
-                        tracing::debug!(
+                        // Full payload at trace to avoid leaking prompt text and file contents at debug.
+                        tracing::trace!(
                             direction = ?msg.direction,
                             message = ?msg.message,
                             "ACP stream"

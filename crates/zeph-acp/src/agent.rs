@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
@@ -9,9 +11,11 @@ use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 use crate::fs::AcpFileExecutor;
 use crate::permission::AcpPermissionGate;
 use crate::terminal::AcpShellExecutor;
+use crate::transport::ConnSlot;
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
 const MAX_SESSIONS: usize = 1;
+const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
 
 /// IDE-proxied capabilities passed to the agent loop per session.
 ///
@@ -37,22 +41,68 @@ pub(crate) type NotifySender =
 
 struct SessionEntry {
     input_tx: mpsc::Sender<ChannelMessage>,
-    output_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<LoopbackEvent>>>,
+    // Receiver is owned solely by the prompt() handler; RefCell avoids Arc<Mutex> overhead
+    // since MAX_SESSIONS=1 and prompt() is never called concurrently for the same session.
+    output_rx: RefCell<Option<mpsc::Receiver<LoopbackEvent>>>,
 }
 
 pub struct ZephAcpAgent {
     notify_tx: NotifySender,
     spawner: AgentSpawner,
-    sessions: std::cell::RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>,
+    sessions: RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>,
+    conn_slot: ConnSlot,
+    agent_name: String,
+    agent_version: String,
+    // IDE capabilities received during initialize(); used by build_acp_context.
+    client_caps: RefCell<acp::ClientCapabilities>,
 }
 
 impl ZephAcpAgent {
-    pub fn new(spawner: AgentSpawner, notify_tx: NotifySender) -> Self {
+    pub fn new(spawner: AgentSpawner, notify_tx: NotifySender, conn_slot: ConnSlot) -> Self {
         Self {
             notify_tx,
             spawner,
-            sessions: std::cell::RefCell::new(std::collections::HashMap::new()),
+            sessions: RefCell::new(std::collections::HashMap::new()),
+            conn_slot,
+            agent_name: "zeph".to_owned(),
+            agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+            client_caps: RefCell::new(acp::ClientCapabilities::default()),
         }
+    }
+
+    #[must_use]
+    pub fn with_agent_info(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
+        self.agent_name = name.into();
+        self.agent_version = version.into();
+        self
+    }
+
+    fn build_acp_context(&self, session_id: &acp::SessionId) -> Option<AcpContext> {
+        let conn_guard = self.conn_slot.borrow();
+        let conn = conn_guard.as_ref()?;
+
+        let (perm_gate, perm_handler) = AcpPermissionGate::new(Rc::clone(conn));
+        tokio::task::spawn_local(perm_handler);
+
+        // Use actual IDE capabilities from initialize(); default to false (deny by default).
+        let caps = self.client_caps.borrow();
+        let can_read = caps.fs.read_text_file;
+        let can_write = caps.fs.write_text_file;
+        drop(caps);
+
+        let (fs_exec, fs_handler) =
+            AcpFileExecutor::new(Rc::clone(conn), session_id.clone(), can_read, can_write);
+        tokio::task::spawn_local(fs_handler);
+
+        let (shell_exec, shell_handler) =
+            AcpShellExecutor::new(Rc::clone(conn), session_id.clone(), Some(perm_gate.clone()));
+        tokio::task::spawn_local(shell_handler);
+
+        Some(AcpContext {
+            file_executor: Some(fs_exec),
+            shell_executor: Some(shell_exec),
+            permission_gate: Some(perm_gate),
+        })
     }
 
     async fn send_notification(&self, notification: acp::SessionNotification) -> acp::Result<()> {
@@ -69,12 +119,14 @@ impl ZephAcpAgent {
 impl acp::Agent for ZephAcpAgent {
     async fn initialize(
         &self,
-        _args: acp::InitializeRequest,
+        args: acp::InitializeRequest,
     ) -> acp::Result<acp::InitializeResponse> {
         tracing::debug!("ACP initialize");
+        *self.client_caps.borrow_mut() = args.client_capabilities;
+        let title = format!("{} AI Agent", self.agent_name);
         Ok(
             acp::InitializeResponse::new(acp::ProtocolVersion::LATEST).agent_info(
-                acp::Implementation::new("zeph", env!("CARGO_PKG_VERSION")).title("Zeph AI Agent"),
+                acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
             ),
         )
     }
@@ -98,19 +150,18 @@ impl acp::Agent for ZephAcpAgent {
         let session_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
         tracing::debug!(%session_id, "new ACP session");
 
-        let (channel, handle) = LoopbackChannel::pair(64);
+        let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
 
         let entry = SessionEntry {
             input_tx: handle.input_tx,
-            output_rx: Arc::new(tokio::sync::Mutex::new(handle.output_rx)),
+            output_rx: RefCell::new(Some(handle.output_rx)),
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
+        let acp_ctx = self.build_acp_context(&session_id);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            // AcpContext is wired in transport.rs when IDE capabilities are known.
-            // Here we spawn without context (no-IDE or capability-unaware path).
-            (spawner)(channel, None).await;
+            (spawner)(channel, acp_ctx).await;
         });
 
         Ok(acp::NewSessionResponse::new(session_id))
@@ -119,18 +170,15 @@ impl acp::Agent for ZephAcpAgent {
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
-        let text = args
-            .prompt
-            .iter()
-            .filter_map(|block| {
-                if let acp::ContentBlock::Text(t) = block {
-                    Some(t.text.clone())
-                } else {
-                    None
+        let mut text = String::new();
+        for block in &args.prompt {
+            if let acp::ContentBlock::Text(t) = block {
+                if !text.is_empty() {
+                    text.push('\n');
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+                text.push_str(&t.text);
+            }
+        }
 
         if text.len() > MAX_PROMPT_BYTES {
             return Err(acp::Error::invalid_request().data("prompt too large"));
@@ -141,7 +189,11 @@ impl acp::Agent for ZephAcpAgent {
             let entry = sessions
                 .get(&args.session_id)
                 .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-            (entry.input_tx.clone(), Arc::clone(&entry.output_rx))
+            let rx =
+                entry.output_rx.borrow_mut().take().ok_or_else(|| {
+                    acp::Error::internal_error().data("prompt already in progress")
+                })?;
+            (entry.input_tx.clone(), rx)
         };
 
         input_tx
@@ -153,7 +205,7 @@ impl acp::Agent for ZephAcpAgent {
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
 
         // Block until the agent finishes this turn (signals via Flush or channel close).
-        let mut rx = output_rx.lock().await;
+        let mut rx = output_rx;
         while let Some(event) = rx.recv().await {
             let is_flush = matches!(event, LoopbackEvent::Flush);
             if let Some(update) = loopback_event_to_update(event) {
@@ -166,6 +218,11 @@ impl acp::Agent for ZephAcpAgent {
             if is_flush {
                 break;
             }
+        }
+
+        // Return the receiver so future prompt() calls on this session can proceed.
+        if let Some(entry) = self.sessions.borrow().get(&args.session_id) {
+            *entry.output_rx.borrow_mut() = Some(rx);
         }
 
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
@@ -224,7 +281,8 @@ mod tests {
         mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (ZephAcpAgent::new(make_spawner(), tx), rx)
+        let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        (ZephAcpAgent::new(make_spawner(), tx, conn_slot), rx)
     }
 
     #[tokio::test]

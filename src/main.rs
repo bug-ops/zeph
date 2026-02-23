@@ -133,6 +133,11 @@ struct Cli {
     #[arg(long)]
     acp: bool,
 
+    /// Print ACP agent manifest JSON to stdout and exit (requires acp feature)
+    #[cfg(feature = "acp")]
+    #[arg(long)]
+    acp_manifest: bool,
+
     /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]
@@ -297,6 +302,12 @@ async fn main() -> anyhow::Result<()> {
             cli.vault_path.as_deref(),
         )
         .await;
+    }
+
+    #[cfg(feature = "acp")]
+    if cli.acp_manifest {
+        print_acp_manifest();
+        return Ok(());
     }
 
     #[cfg(feature = "acp")]
@@ -2071,6 +2082,8 @@ struct AgentDeps {
     learning: zeph_core::config::LearningConfig,
     secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
     summary_provider: Option<zeph_llm::any::AnyProvider>,
+    acp_agent_name: String,
+    acp_agent_version: String,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -2176,6 +2189,8 @@ async fn build_acp_deps(
         learning: config.skills.learning.clone(),
         secrets: config.secrets.custom.clone(),
         summary_provider,
+        acp_agent_name: config.acp.agent_name.clone(),
+        acp_agent_version: config.acp.agent_version.clone(),
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -2259,6 +2274,12 @@ async fn run_acp_server(
 
     let (deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
+
+    let server_config = zeph_acp::AcpServerConfig {
+        agent_name: deps.acp_agent_name.clone(),
+        agent_version: deps.acp_agent_version.clone(),
+    };
+
     let deps = Arc::new(Mutex::new(Some(deps)));
 
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, _acp_ctx| {
@@ -2274,9 +2295,25 @@ async fn run_acp_server(
         })
     });
 
-    zeph_acp::serve_stdio(spawner).await?;
+    zeph_acp::serve_stdio(spawner, server_config).await?;
 
     Ok(())
+}
+
+#[cfg(feature = "acp")]
+fn print_acp_manifest() {
+    let manifest = serde_json::json!({
+        "name": env!("CARGO_PKG_NAME"),
+        "version": env!("CARGO_PKG_VERSION"),
+        "transport": "stdio",
+        "command": [env!("CARGO_PKG_NAME"), "--acp"],
+        "capabilities": ["prompt", "cancel", "load_session"],
+        "description": "Zeph AI Agent"
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&manifest).unwrap_or_default()
+    );
 }
 
 #[cfg(test)]

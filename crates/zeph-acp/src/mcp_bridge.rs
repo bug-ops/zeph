@@ -16,6 +16,8 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
         .iter()
         .filter_map(|s| match s {
             acp::McpServer::Stdio(stdio) => {
+                // IDE is the trusted client in the stdio transport model; env vars are passed
+                // as-is to the MCP server child process without further sanitization.
                 let env: HashMap<String, String> = stdio
                     .env
                     .iter()

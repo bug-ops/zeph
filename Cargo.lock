@@ -9167,6 +9167,7 @@ version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "futures",
  "schemars 1.2.1",
  "serde",
  "serde_json",

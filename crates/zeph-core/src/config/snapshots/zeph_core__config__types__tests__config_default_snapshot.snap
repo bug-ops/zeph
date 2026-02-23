@@ -163,3 +163,8 @@ tasks = []
 
 [tui]
 show_source_labels = false
+
+[acp]
+enabled = false
+agent_name = "zeph"
+agent_version = "0.11.6"

@@ -44,6 +44,8 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub tui: TuiConfig,
+    #[serde(default)]
+    pub acp: AcpConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -1057,6 +1059,34 @@ pub struct TuiConfig {
     pub show_source_labels: bool,
 }
 
+fn default_acp_agent_name() -> String {
+    "zeph".to_owned()
+}
+
+fn default_acp_agent_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AcpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_acp_agent_name")]
+    pub agent_name: String,
+    #[serde(default = "default_acp_agent_version")]
+    pub agent_version: String,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agent_name: default_acp_agent_name(),
+            agent_version: default_acp_agent_version(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
@@ -1146,6 +1176,7 @@ impl Default for Config {
             daemon: DaemonConfig::default(),
             scheduler: SchedulerConfig::default(),
             tui: TuiConfig::default(),
+            acp: AcpConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
