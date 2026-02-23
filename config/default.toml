@@ -33,6 +33,10 @@ max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
+# LLM response cache (SQLite-backed, blake3 key hashing)
+# response_cache_enabled = false
+# response_cache_ttl_secs = 3600
+
 # Speech-to-text provider (Whisper API)
 # [llm.stt]
 # provider = "whisper"
@@ -140,6 +144,8 @@ max_tokens = 4096
 paths = ["./skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
+# Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
+# prompt_mode = "auto"
 # Minimum score delta for skill disambiguation (0.0-1.0)
 # disambiguation_threshold = 0.05
 
@@ -190,6 +196,16 @@ compaction_preserve_tail = 6
 prune_protect_tokens = 40000
 # Minimum relevance score for cross-session memory results (0.0-1.0)
 cross_session_score_threshold = 0.35
+# Vector backend: "qdrant" (external) or "sqlite" (embedded, zero-dependency)
+# vector_backend = "qdrant"
+# Token safety margin multiplier for compaction budget (must be > 0)
+# token_safety_margin = 1.0
+# Redact credentials from LLM context before sending
+# redact_credentials = true
+# Auto-save assistant responses to semantic memory
+# autosave_assistant = false
+# Minimum character length for autosave (shorter responses skip embedding)
+# autosave_min_length = 20
 
 [memory.semantic]
 # Enable semantic memory with vector search
@@ -199,6 +215,12 @@ recall_limit = 5
 # Hybrid search weights (vector + FTS5 keyword). Must sum to 1.0.
 vector_weight = 0.7
 keyword_weight = 0.3
+# Temporal decay: penalize older memories by age
+# temporal_decay_enabled = false
+# temporal_decay_half_life_days = 30
+# MMR re-ranking: diversify recall results
+# mmr_enabled = false
+# mmr_lambda = 0.7
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant and tree-sitter grammars (feature "index", not enabled by default)
