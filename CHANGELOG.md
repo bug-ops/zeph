@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `zeph-acp` crate — ACP (Agent Client Protocol) server for IDE embedding (Zed, JetBrains, Neovim) (#763-#766)
+- `--acp` CLI flag to launch Zeph as an ACP stdio server (requires `acp` feature)
+- `acp` feature gate in root `Cargo.toml`; included in `full` feature set
+- `SessionManager` for per-session LoopbackChannel lifecycle with cancel signalling
+- `bridge_loop` mapping `LoopbackEvent` variants to ACP `SessionUpdate` notifications
+- `serve_stdio()` transport using `AgentSideConnection` over tokio-compat stdio streams
 - Custom mdBook theme with Zeph brand colors (navy+amber palette from TUI)
 - Z-letter favicon SVG for documentation site
 - Sidebar logo via inline data URI

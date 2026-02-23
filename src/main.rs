@@ -128,6 +128,11 @@ struct Cli {
     #[arg(long)]
     daemon: bool,
 
+    /// Run as ACP server over stdio for IDE embedding (requires acp feature)
+    #[cfg(feature = "acp")]
+    #[arg(long)]
+    acp: bool,
+
     /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]
@@ -286,6 +291,29 @@ async fn main() -> anyhow::Result<()> {
     if cli.daemon {
         tracing_subscriber::fmt::init();
         return run_daemon(
+            cli.config.as_deref(),
+            cli.vault.as_deref(),
+            cli.vault_key.as_deref(),
+            cli.vault_path.as_deref(),
+        )
+        .await;
+    }
+
+    #[cfg(feature = "acp")]
+    if cli.acp {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let file = std::fs::File::create("zeph.log").ok();
+        if let Some(file) = file {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(file)
+                .with_line_number(true)
+                .init();
+        } else {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+        return run_acp_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
@@ -1995,6 +2023,176 @@ fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace:
     opentelemetry::global::set_tracer_provider(provider);
 
     Ok(tracer)
+}
+
+/// Run Zeph as an ACP server over stdio.
+///
+/// Builds the full agent stack and bridges it to the ACP protocol via
+/// `ZephAcpAgent`. The IDE drives the conversation via JSON-RPC over stdin/stdout.
+/// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
+#[cfg(feature = "acp")]
+async fn run_acp_server(
+    config_path: Option<&std::path::Path>,
+    vault_backend: Option<&str>,
+    vault_key: Option<&std::path::Path>,
+    vault_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    let (provider, _status_rx) = app.build_provider().await?;
+    let embed_model = app.embedding_model();
+    let budget_tokens = app.auto_budget_tokens(&provider);
+    let registry = app.build_registry();
+    let memory = app.build_memory(&provider).await?;
+    let all_meta = registry.all_meta();
+    let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
+    let config = app.config();
+
+    let conversation_id = match memory.sqlite().latest_conversation_id().await? {
+        Some(id) => id,
+        None => memory.sqlite().create_conversation().await?,
+    };
+
+    let filter_registry = if config.tools.filters.enabled {
+        zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
+    } else {
+        zeph_tools::OutputFilterRegistry::new(false)
+    };
+    let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
+        .with_permissions(
+            config
+                .tools
+                .permission_policy(config.security.autonomy_level),
+        )
+        .with_output_filters(filter_registry);
+    let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let file_executor = zeph_tools::FileExecutor::new(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
+    let mcp_manager = Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+    let mcp_tools = mcp_manager.connect_all().await;
+    let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+    let base_executor = zeph_tools::CompositeExecutor::new(
+        file_executor,
+        zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+    );
+    let tool_executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+
+    let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
+    let summary_provider = app.build_summary_provider();
+    let skill_paths = app.skill_paths();
+    let watchers = app.build_watchers();
+    let _skill_watcher = watchers.skill_watcher;
+    let reload_rx = watchers.skill_reload_rx;
+    let _config_watcher = watchers.config_watcher;
+    let config_reload_rx = watchers.config_reload_rx;
+    let config_path_owned = app.config_path().to_owned();
+    let (_, shutdown_rx) = AppBuilder::build_shutdown();
+
+    // Build the agent with a LoopbackChannel — the channel is swapped in by the spawner
+    // on the first session/new request. Subsequent sessions reuse the same agent loop.
+    let channel_slot: Arc<Mutex<Option<zeph_core::LoopbackChannel>>> = Arc::new(Mutex::new(None));
+    let channel_slot_spawner = Arc::clone(&channel_slot);
+
+    // Pre-create the loopback pair; the spawner delivers it to the agent.
+    let (pre_channel, pre_handle) = zeph_core::LoopbackChannel::pair(64);
+    *channel_slot.lock().await = Some(pre_channel);
+
+    // Wrap pre_handle in Arc<Mutex> so the spawner can hand it back to bridge_loop.
+    let pre_handle = Arc::new(Mutex::new(Some(pre_handle)));
+    let pre_handle_spawner = Arc::clone(&pre_handle);
+
+    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel| {
+        // Deliver the real channel to the slot (it will be picked up by the agent).
+        let slot = Arc::clone(&channel_slot_spawner);
+        let handle_slot = Arc::clone(&pre_handle_spawner);
+        Box::pin(async move {
+            // Swap in the new channel provided by ACP for future sessions.
+            *slot.lock().await = Some(channel);
+            // Keep handle alive; bridge_loop uses pre_handle directly.
+            drop(handle_slot);
+        })
+    });
+
+    // The agent uses the pre-created channel; ACP's session/new replaces it in the slot.
+    let pre_channel = channel_slot.lock().await.take().unwrap();
+    let mut agent = Agent::new(
+        provider,
+        pre_channel,
+        registry,
+        matcher,
+        config.skills.max_active_skills,
+        tool_executor,
+    )
+    .with_max_tool_iterations(config.agent.max_tool_iterations)
+    .with_model_name(config.llm.model.clone())
+    .with_embedding_model(embed_model)
+    .with_skill_reload(skill_paths, reload_rx)
+    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_memory(
+        memory,
+        conversation_id,
+        config.memory.history_limit,
+        config.memory.semantic.recall_limit,
+        config.memory.summarization_threshold,
+    )
+    .with_context_budget(
+        budget_tokens,
+        0.20,
+        config.memory.compaction_threshold,
+        config.memory.compaction_preserve_tail,
+        config.memory.prune_protect_tokens,
+    )
+    .with_shutdown(shutdown_rx)
+    .with_security(config.security, config.timeouts)
+    .with_redact_credentials(config.memory.redact_credentials)
+    .with_tool_summarization(config.tools.summarize_output)
+    .with_permission_policy(
+        config
+            .tools
+            .permission_policy(config.security.autonomy_level),
+    )
+    .with_config_reload(config_path_owned, config_reload_rx)
+    .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
+    .with_learning(config.skills.learning.clone())
+    .with_available_secrets(
+        config
+            .secrets
+            .custom
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
+
+    if let Some(sp) = summary_provider {
+        agent = agent.with_summary_provider(sp);
+    }
+
+    agent.load_history().await?;
+
+    let acp_agent = zeph_acp::ZephAcpAgent::new(spawner);
+
+    tokio::select! {
+        result = agent.run() => {
+            if let Err(e) = result {
+                tracing::error!("ACP agent loop error: {e:#}");
+            }
+        }
+        acp_result = zeph_acp::serve_stdio(acp_agent) => {
+            if let Err(e) = acp_result {
+                tracing::error!("ACP server error: {e}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
