@@ -353,6 +353,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persist_message_assistant_at_min_length_boundary_uses_embed() {
+        // content.len() == autosave_min_length → should_embed = true (>= boundary).
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let min_length = 10usize;
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_autosave_config(true, min_length);
+
+        // Exact boundary: len == min_length → embed path.
+        let content_at_boundary = "A".repeat(min_length);
+        assert_eq!(content_at_boundary.len(), min_length);
+        agent
+            .persist_message(Role::Assistant, &content_at_boundary)
+            .await;
+
+        // sqlite_message_count must be incremented regardless of embedding success.
+        assert_eq!(rx.borrow().sqlite_message_count, 1);
+    }
+
+    #[tokio::test]
+    async fn persist_message_assistant_one_below_min_length_uses_save_only() {
+        // content.len() == autosave_min_length - 1 → should_embed = false (below boundary).
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let min_length = 10usize;
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(memory, cid, 50, 5, 100)
+            .with_autosave_config(true, min_length);
+
+        // One below boundary: len == min_length - 1 → save_only path, no embedding.
+        let content_below_boundary = "A".repeat(min_length - 1);
+        assert_eq!(content_below_boundary.len(), min_length - 1);
+        agent
+            .persist_message(Role::Assistant, &content_below_boundary)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1, "message must still be saved");
+        // save_only path does not embed.
+        assert_eq!(rx.borrow().embeddings_generated, 0);
+    }
+
+    #[tokio::test]
     async fn persist_message_user_always_embeds_regardless_of_autosave_flag() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);

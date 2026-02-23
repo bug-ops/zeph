@@ -154,6 +154,8 @@ pub async fn import_snapshot(
                 .execute(sqlite.pool())
                 .await?;
             stats.conversations_imported += 1;
+        } else {
+            stats.skipped += 1;
         }
 
         for msg in conv.messages {
@@ -292,6 +294,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_existing_conversation_increments_skipped_not_imported() {
+        let src = SqliteStore::new(":memory:").await.unwrap();
+        let cid = src.create_conversation().await.unwrap();
+        src.save_message(cid, "user", "only message").await.unwrap();
+
+        let snapshot = export_snapshot(&src).await.unwrap();
+
+        // Import once — conversation is new.
+        let dst = SqliteStore::new(":memory:").await.unwrap();
+        let stats1 = import_snapshot(&dst, snapshot).await.unwrap();
+        assert_eq!(stats1.conversations_imported, 1);
+        assert_eq!(stats1.messages_imported, 1);
+
+        // Import again with no new messages — conversation already exists, must be counted as skipped.
+        let snapshot2 = export_snapshot(&src).await.unwrap();
+        let stats2 = import_snapshot(&dst, snapshot2).await.unwrap();
+        assert_eq!(
+            stats2.conversations_imported, 0,
+            "existing conversation must not be counted as imported"
+        );
+        // The conversation itself contributes one skipped, plus the duplicate message.
+        assert!(
+            stats2.skipped >= 1,
+            "re-importing an existing conversation must increment skipped"
+        );
+    }
+
+    #[tokio::test]
     async fn export_includes_summaries() {
         let store = SqliteStore::new(":memory:").await.unwrap();
         let cid = store.create_conversation().await.unwrap();
@@ -354,7 +384,11 @@ mod tests {
             stats2.messages_imported, 1,
             "only the new message should be imported"
         );
-        assert_eq!(stats2.skipped, 1, "the existing message should be skipped");
+        // skipped includes the existing conversation (1) plus the duplicate message (1).
+        assert_eq!(
+            stats2.skipped, 2,
+            "existing conversation and duplicate message should be skipped"
+        );
 
         let history = dst.load_history(cid, 50).await.unwrap();
         assert_eq!(history.len(), 2);

@@ -1661,6 +1661,39 @@ mod tests {
         assert!(calls[1].is_none(), "second call must clear env");
     }
 
+    #[tokio::test]
+    async fn streaming_chunk_with_secret_is_redacted_before_channel_send() {
+        use super::super::agent_tests::*;
+        use zeph_llm::provider::{Message, Role};
+
+        // Streaming provider returns a chunk containing an AWS-style access key.
+        let secret_chunk = "AKIA1234567890ABCDEF".to_string();
+        let provider = mock_provider_streaming(vec![secret_chunk.clone()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.security.redact_secrets = true;
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "tell me a secret".into(),
+            parts: vec![],
+        });
+
+        let _ = agent.process_response_streaming().await.unwrap();
+
+        // The raw secret must not appear in any chunk sent to the channel.
+        let chunks = agent.channel.sent_chunks();
+        assert!(!chunks.is_empty(), "at least one chunk must have been sent");
+        for chunk in &chunks {
+            assert!(
+                !chunk.contains(&secret_chunk),
+                "raw secret must not appear in sent chunk: {chunk:?}"
+            );
+        }
+    }
+
     #[test]
     fn check_response_cache_bypassed_when_streaming() {
         // Verifies that the streaming provider flag correctly identifies the bypass condition.
@@ -1731,6 +1764,55 @@ mod tests {
                 .sent_messages()
                 .iter()
                 .any(|s| s == "cached response")
+        );
+    }
+
+    #[tokio::test]
+    async fn store_response_in_cache_enables_second_call_to_return_cached() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        // Provider has one response; the second call must come from cache.
+        let provider = mock_provider(vec!["provider response".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+        agent.response_cache = Some(cache);
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "what is 3+3?".into(),
+            parts: vec![],
+        });
+
+        // First call — hits provider, stores response in cache.
+        let first = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(first.as_deref(), Some("provider response"));
+
+        // Second call with the same messages — must return cached value.
+        let second = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(
+            second.as_deref(),
+            Some("provider response"),
+            "second call must return cached response"
+        );
+
+        // Channel must have received both responses.
+        let sent = agent.channel.sent_messages();
+        let matching: Vec<_> = sent
+            .iter()
+            .filter(|s| s.as_str() == "provider response")
+            .collect();
+        assert_eq!(
+            matching.len(),
+            2,
+            "both calls must have sent the response to the channel"
         );
     }
 }
