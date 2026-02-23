@@ -118,6 +118,7 @@ impl Channel for AppChannel {
     version,
     about = "Lightweight AI agent with hybrid inference"
 )]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
     /// Run with TUI dashboard
     #[arg(long)]
