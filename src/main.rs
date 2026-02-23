@@ -2080,7 +2080,7 @@ async fn build_acp_deps(
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
-) -> anyhow::Result<(AgentDeps, zeph_core::bootstrap::WatcherBundle)> {
+) -> anyhow::Result<(AgentDeps, Box<dyn std::any::Any>)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     let (provider, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
@@ -2130,7 +2130,12 @@ async fn build_acp_deps(
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
-    let watchers = app.build_watchers();
+    let zeph_core::bootstrap::WatcherBundle {
+        skill_watcher: _skill_watcher,
+        skill_reload_rx: reload_rx,
+        config_watcher: _config_watcher,
+        config_reload_rx,
+    } = app.build_watchers();
     let config_path_owned = app.config_path().to_owned();
     let (_, shutdown_rx) = AppBuilder::build_shutdown();
 
@@ -2144,7 +2149,7 @@ async fn build_acp_deps(
         model_name: config.llm.model.clone(),
         embed_model,
         skill_paths,
-        reload_rx: watchers.skill_reload_rx,
+        reload_rx,
         memory,
         conversation_id,
         history_limit: config.memory.history_limit,
@@ -2163,7 +2168,7 @@ async fn build_acp_deps(
             .tools
             .permission_policy(config.security.autonomy_level),
         config_path: config_path_owned,
-        config_reload_rx: watchers.config_reload_rx,
+        config_reload_rx,
         mcp_tools,
         mcp_registry,
         mcp_manager,
@@ -2173,7 +2178,8 @@ async fn build_acp_deps(
         summary_provider,
     };
 
-    Ok((deps, watchers))
+    let keepalive: Box<dyn std::any::Any> = Box::new((_skill_watcher, _config_watcher));
+    Ok((deps, keepalive))
 }
 
 /// Spawn an `Agent` from pre-built deps and run its loop on the given channel.
@@ -2251,7 +2257,7 @@ async fn run_acp_server(
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    let (deps, _watchers) =
+    let (deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
     let deps = Arc::new(Mutex::new(Some(deps)));
 
