@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -6,8 +5,6 @@ use agent_client_protocol as acp;
 use tokio::sync::{mpsc, oneshot};
 use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
-
-use crate::error::AcpError;
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
 const MAX_SESSIONS: usize = 100;
@@ -29,8 +26,7 @@ struct SessionEntry {
 pub struct ZephAcpAgent {
     notify_tx: NotifySender,
     spawner: AgentSpawner,
-    sessions: std::cell::RefCell<std::collections::HashMap<String, SessionEntry>>,
-    next_id: Cell<u64>,
+    sessions: std::cell::RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>,
 }
 
 impl ZephAcpAgent {
@@ -39,20 +35,16 @@ impl ZephAcpAgent {
             notify_tx,
             spawner,
             sessions: std::cell::RefCell::new(std::collections::HashMap::new()),
-            next_id: Cell::new(0),
         }
     }
 
-    async fn send_notification(
-        &self,
-        notification: acp::SessionNotification,
-    ) -> Result<(), AcpError> {
+    async fn send_notification(&self, notification: acp::SessionNotification) -> acp::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.notify_tx
             .send((notification, tx))
-            .map_err(|_| AcpError::Transport("notification channel closed".to_owned()))?;
+            .map_err(|_| acp::Error::internal_error().data("notification channel closed"))?;
         rx.await
-            .map_err(|_| AcpError::Transport("notification ack lost".to_owned()))
+            .map_err(|_| acp::Error::internal_error().data("notification ack lost"))
     }
 }
 
@@ -61,7 +53,7 @@ impl acp::Agent for ZephAcpAgent {
     async fn initialize(
         &self,
         _args: acp::InitializeRequest,
-    ) -> Result<acp::InitializeResponse, acp::Error> {
+    ) -> acp::Result<acp::InitializeResponse> {
         tracing::debug!("ACP initialize");
         Ok(
             acp::InitializeResponse::new(acp::ProtocolVersion::LATEST).agent_info(
@@ -73,7 +65,7 @@ impl acp::Agent for ZephAcpAgent {
     async fn authenticate(
         &self,
         _args: acp::AuthenticateRequest,
-    ) -> Result<acp::AuthenticateResponse, acp::Error> {
+    ) -> acp::Result<acp::AuthenticateResponse> {
         // stdio transport: authentication is a no-op, IDE client is trusted.
         Ok(acp::AuthenticateResponse::default())
     }
@@ -81,15 +73,13 @@ impl acp::Agent for ZephAcpAgent {
     async fn new_session(
         &self,
         _args: acp::NewSessionRequest,
-    ) -> Result<acp::NewSessionResponse, acp::Error> {
+    ) -> acp::Result<acp::NewSessionResponse> {
         if self.sessions.borrow().len() >= MAX_SESSIONS {
             return Err(acp::Error::internal_error().data("session limit reached"));
         }
 
-        let id = self.next_id.get();
-        self.next_id.set(id + 1);
-        let session_id = uuid::Uuid::new_v4().to_string();
-        tracing::debug!(session_id, "new ACP session");
+        let session_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+        tracing::debug!(%session_id, "new ACP session");
 
         let (channel, handle) = LoopbackChannel::pair(64);
 
@@ -107,9 +97,8 @@ impl acp::Agent for ZephAcpAgent {
         Ok(acp::NewSessionResponse::new(session_id))
     }
 
-    async fn prompt(&self, args: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error> {
-        let session_id = args.session_id.to_string();
-        tracing::debug!(session_id, "ACP prompt");
+    async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
+        tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
         let text = args
             .prompt
@@ -131,7 +120,7 @@ impl acp::Agent for ZephAcpAgent {
         let (input_tx, output_rx) = {
             let sessions = self.sessions.borrow();
             let entry = sessions
-                .get(&session_id)
+                .get(&args.session_id)
                 .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
             (entry.input_tx.clone(), Arc::clone(&entry.output_rx))
         };
@@ -163,19 +152,17 @@ impl acp::Agent for ZephAcpAgent {
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
-    async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
-        let session_id = args.session_id.to_string();
-        tracing::debug!(session_id, "ACP cancel");
-        self.sessions.borrow_mut().remove(&session_id);
+    async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
+        tracing::debug!(session_id = %args.session_id, "ACP cancel");
+        self.sessions.borrow_mut().remove(&args.session_id);
         Ok(())
     }
 
     async fn load_session(
         &self,
         args: acp::LoadSessionRequest,
-    ) -> Result<acp::LoadSessionResponse, acp::Error> {
-        let session_id = args.session_id.to_string();
-        if self.sessions.borrow().contains_key(&session_id) {
+    ) -> acp::Result<acp::LoadSessionResponse> {
+        if self.sessions.borrow().contains_key(&args.session_id) {
             Ok(acp::LoadSessionResponse::new())
         } else {
             Err(acp::Error::internal_error().data("session not found"))
@@ -185,20 +172,18 @@ impl acp::Agent for ZephAcpAgent {
 
 fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
     match event {
-        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
-            Some(acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
-            ))
-        }
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => Some(
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(text.into())),
+        ),
         LoopbackEvent::Status(text) => Some(acp::SessionUpdate::AgentThoughtChunk(
-            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+            acp::ContentChunk::new(text.into()),
         )),
         LoopbackEvent::ToolOutput {
             tool_name, display, ..
         } => {
             let text = format!("[{tool_name}] {display}");
             Some(acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+                acp::ContentChunk::new(text.into()),
             ))
         }
         LoopbackEvent::Flush => None,
@@ -248,9 +233,8 @@ mod tests {
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
                     .unwrap();
-                let sid = resp.session_id.to_string();
-                assert!(!sid.is_empty());
-                assert!(agent.sessions.borrow().contains_key(&sid));
+                assert!(!resp.session_id.to_string().is_empty());
+                assert!(agent.sessions.borrow().contains_key(&resp.session_id));
             })
             .await;
     }
@@ -266,7 +250,7 @@ mod tests {
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
                     .unwrap();
-                let sid = resp.session_id.to_string();
+                let sid = resp.session_id.clone();
                 agent
                     .cancel(acp::CancelNotification::new(sid.clone()))
                     .await
