@@ -2073,19 +2073,14 @@ struct AgentDeps {
     summary_provider: Option<zeph_llm::any::AnyProvider>,
 }
 
-/// Builds the full agent stack and bridges it to the ACP protocol via
-/// `ZephAcpAgent`. The IDE drives the conversation via JSON-RPC over stdin/stdout.
-/// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
+/// Build all agent dependencies from config for the ACP server.
 #[cfg(feature = "acp")]
-async fn run_acp_server(
+async fn build_acp_deps(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
-) -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
+) -> anyhow::Result<(AgentDeps, zeph_core::bootstrap::WatcherBundle)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     let (provider, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
@@ -2123,7 +2118,7 @@ async fn run_acp_server(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
     let base_executor = zeph_tools::CompositeExecutor::new(
@@ -2136,17 +2131,10 @@ async fn run_acp_server(
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
     let watchers = app.build_watchers();
-    let _skill_watcher = watchers.skill_watcher;
-    let reload_rx = watchers.skill_reload_rx;
-    let _config_watcher = watchers.config_watcher;
-    let config_reload_rx = watchers.config_reload_rx;
     let config_path_owned = app.config_path().to_owned();
     let (_, shutdown_rx) = AppBuilder::build_shutdown();
 
-    // Pack all agent dependencies into the spawner closure.
-    // On first session/new, the spawner builds and runs the Agent with the
-    // session's LoopbackChannel — so prompts flow directly to the agent loop.
-    let deps = Arc::new(Mutex::new(Some(AgentDeps {
+    let deps = AgentDeps {
         provider,
         registry,
         matcher,
@@ -2156,7 +2144,7 @@ async fn run_acp_server(
         model_name: config.llm.model.clone(),
         embed_model,
         skill_paths,
-        reload_rx,
+        reload_rx: watchers.skill_reload_rx,
         memory,
         conversation_id,
         history_limit: config.memory.history_limit,
@@ -2175,7 +2163,7 @@ async fn run_acp_server(
             .tools
             .permission_policy(config.security.autonomy_level),
         config_path: config_path_owned,
-        config_reload_rx,
+        config_reload_rx: watchers.config_reload_rx,
         mcp_tools,
         mcp_registry,
         mcp_manager,
@@ -2183,7 +2171,89 @@ async fn run_acp_server(
         learning: config.skills.learning.clone(),
         secrets: config.secrets.custom.clone(),
         summary_provider,
-    })));
+    };
+
+    Ok((deps, watchers))
+}
+
+/// Spawn an `Agent` from pre-built deps and run its loop on the given channel.
+#[cfg(feature = "acp")]
+async fn spawn_acp_agent(d: AgentDeps, channel: zeph_core::channel::LoopbackChannel) {
+    let mut agent = Agent::new(
+        d.provider,
+        channel,
+        d.registry,
+        d.matcher,
+        d.max_active_skills,
+        d.tool_executor,
+    )
+    .with_max_tool_iterations(d.max_tool_iterations)
+    .with_model_name(d.model_name)
+    .with_embedding_model(d.embed_model)
+    .with_skill_reload(d.skill_paths, d.reload_rx)
+    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_memory(
+        d.memory,
+        d.conversation_id,
+        d.history_limit,
+        d.recall_limit,
+        d.summarization_threshold,
+    )
+    .with_context_budget(
+        d.budget_tokens,
+        0.20,
+        d.compaction_threshold,
+        d.compaction_preserve_tail,
+        d.prune_protect_tokens,
+    )
+    .with_shutdown(d.shutdown_rx)
+    .with_security(d.security, d.timeouts)
+    .with_redact_credentials(d.redact_credentials)
+    .with_tool_summarization(d.tool_summarization)
+    .with_permission_policy(d.permission_policy)
+    .with_config_reload(d.config_path, d.config_reload_rx)
+    .with_mcp(
+        d.mcp_tools,
+        d.mcp_registry,
+        Some(d.mcp_manager),
+        &d.mcp_config,
+    )
+    .with_learning(d.learning)
+    .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    if let Some(sp) = d.summary_provider {
+        agent = agent.with_summary_provider(sp);
+    }
+
+    if let Err(e) = agent.load_history().await {
+        tracing::error!("failed to load agent history: {e:#}");
+    }
+
+    if let Err(e) = agent.run().await {
+        tracing::error!("ACP agent loop error: {e:#}");
+    }
+}
+
+/// Run the ACP server over stdin/stdout.
+///
+/// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
+///
+/// # Errors
+///
+/// Returns an error if the agent stack cannot be built or the transport fails.
+#[cfg(feature = "acp")]
+async fn run_acp_server(
+    config_path: Option<&std::path::Path>,
+    vault_backend: Option<&str>,
+    vault_key: Option<&std::path::Path>,
+    vault_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let (deps, _watchers) =
+        build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
+    let deps = Arc::new(Mutex::new(Some(deps)));
 
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel| {
         let deps = Arc::clone(&deps);
@@ -2194,60 +2264,7 @@ async fn run_acp_server(
                 );
                 return;
             };
-
-            let mut agent = Agent::new(
-                d.provider,
-                channel,
-                d.registry,
-                d.matcher,
-                d.max_active_skills,
-                d.tool_executor,
-            )
-            .with_max_tool_iterations(d.max_tool_iterations)
-            .with_model_name(d.model_name)
-            .with_embedding_model(d.embed_model)
-            .with_skill_reload(d.skill_paths, d.reload_rx)
-            .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
-            .with_memory(
-                d.memory,
-                d.conversation_id,
-                d.history_limit,
-                d.recall_limit,
-                d.summarization_threshold,
-            )
-            .with_context_budget(
-                d.budget_tokens,
-                0.20,
-                d.compaction_threshold,
-                d.compaction_preserve_tail,
-                d.prune_protect_tokens,
-            )
-            .with_shutdown(d.shutdown_rx)
-            .with_security(d.security, d.timeouts)
-            .with_redact_credentials(d.redact_credentials)
-            .with_tool_summarization(d.tool_summarization)
-            .with_permission_policy(d.permission_policy)
-            .with_config_reload(d.config_path, d.config_reload_rx)
-            .with_mcp(
-                d.mcp_tools,
-                d.mcp_registry,
-                Some(d.mcp_manager),
-                &d.mcp_config,
-            )
-            .with_learning(d.learning)
-            .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
-
-            if let Some(sp) = d.summary_provider {
-                agent = agent.with_summary_provider(sp);
-            }
-
-            if let Err(e) = agent.load_history().await {
-                tracing::error!("failed to load agent history: {e:#}");
-            }
-
-            if let Err(e) = agent.run().await {
-                tracing::error!("ACP agent loop error: {e:#}");
-            }
+            spawn_acp_agent(d, channel).await;
         })
     });
 
