@@ -9167,12 +9167,17 @@ version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
  "uuid",
  "zeph-core",
+ "zeph-mcp",
+ "zeph-tools",
 ]
 
 [[package]]

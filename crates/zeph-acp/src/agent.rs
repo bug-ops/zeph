@@ -6,12 +6,29 @@ use tokio::sync::{mpsc, oneshot};
 use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 
+use crate::fs::AcpFileExecutor;
+use crate::permission::AcpPermissionGate;
+use crate::terminal::AcpShellExecutor;
+
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
 const MAX_SESSIONS: usize = 1;
 
-/// Factory: receives a [`LoopbackChannel`] and runs the agent loop on it.
+/// IDE-proxied capabilities passed to the agent loop per session.
+///
+/// Each field is `None` when the IDE did not advertise the corresponding capability.
+pub struct AcpContext {
+    pub file_executor: Option<AcpFileExecutor>,
+    pub shell_executor: Option<AcpShellExecutor>,
+    pub permission_gate: Option<AcpPermissionGate>,
+}
+
+/// Factory: receives a [`LoopbackChannel`] and optional [`AcpContext`], runs the agent loop.
 pub type AgentSpawner = Arc<
-    dyn Fn(LoopbackChannel) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>> + 'static,
+    dyn Fn(
+            LoopbackChannel,
+            Option<AcpContext>,
+        ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
+        + 'static,
 >;
 
 /// Sender half for delivering session notifications to the background writer.
@@ -91,7 +108,9 @@ impl acp::Agent for ZephAcpAgent {
 
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            (spawner)(channel).await;
+            // AcpContext is wired in transport.rs when IDE capabilities are known.
+            // Here we spawn without context (no-IDE or capability-unaware path).
+            (spawner)(channel, None).await;
         });
 
         Ok(acp::NewSessionResponse::new(session_id))
@@ -197,7 +216,7 @@ mod tests {
     use super::*;
 
     fn make_spawner() -> AgentSpawner {
-        Arc::new(|_channel| Box::pin(async {}))
+        Arc::new(|_channel, _ctx| Box::pin(async {}))
     }
 
     fn make_agent() -> (
@@ -307,5 +326,94 @@ mod tests {
         assert!(loopback_event_to_update(LoopbackEvent::Chunk(String::new())).is_none());
         assert!(loopback_event_to_update(LoopbackEvent::FullMessage(String::new())).is_none());
         assert!(loopback_event_to_update(LoopbackEvent::Status(String::new())).is_none());
+    }
+
+    #[test]
+    fn loopback_tool_output_maps_to_agent_message() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "done".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+        };
+        assert!(matches!(
+            loopback_event_to_update(event),
+            Some(acp::SessionUpdate::AgentMessageChunk(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn new_session_rejects_over_limit() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                // fill the limit
+                agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // second session should fail
+                let res = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await;
+                assert!(res.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn load_session_returns_ok_for_existing() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let res = agent
+                    .load_session(acp::LoadSessionRequest::new(
+                        resp.session_id,
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(res.is_ok());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn load_session_errors_for_unknown() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let res = agent
+                    .load_session(acp::LoadSessionRequest::new(
+                        acp::SessionId::new("no-such"),
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(res.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_errors_for_unknown_session() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let req = acp::PromptRequest::new("no-such", vec![]);
+                assert!(agent.prompt(req).await.is_err());
+            })
+            .await;
     }
 }

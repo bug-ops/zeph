@@ -15,12 +15,17 @@ readme = "README.md"
 [dependencies]
 agent-client-protocol.workspace = true
 async-trait.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "sync", "macros"] }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-core.workspace = true
+zeph-mcp.workspace = true
+zeph-tools.workspace = true
 
 [lints]
 workspace = true
