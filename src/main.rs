@@ -2131,9 +2131,9 @@ async fn build_acp_deps(
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
     let zeph_core::bootstrap::WatcherBundle {
-        skill_watcher: _skill_watcher,
+        skill_watcher,
         skill_reload_rx: reload_rx,
-        config_watcher: _config_watcher,
+        config_watcher,
         config_reload_rx,
     } = app.build_watchers();
     let config_path_owned = app.config_path().to_owned();
@@ -2178,7 +2178,7 @@ async fn build_acp_deps(
         summary_provider,
     };
 
-    let keepalive: Box<dyn std::any::Any> = Box::new((_skill_watcher, _config_watcher));
+    let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
     Ok((deps, keepalive))
 }
 
@@ -2270,7 +2270,7 @@ async fn run_acp_server(
                 );
                 return;
             };
-            spawn_acp_agent(d, channel).await;
+            Box::pin(spawn_acp_agent(d, channel)).await;
         })
     });
 
