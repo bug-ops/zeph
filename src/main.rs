@@ -2261,7 +2261,7 @@ async fn run_acp_server(
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
     let deps = Arc::new(Mutex::new(Some(deps)));
 
-    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel| {
+    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, _acp_ctx| {
         let deps = Arc::clone(&deps);
         Box::pin(async move {
             let Some(d) = deps.lock().await.take() else {
