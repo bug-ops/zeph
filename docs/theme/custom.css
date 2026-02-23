@@ -1,0 +1,100 @@
+/* Zeph mdBook theme — navy dark override */
+/* Mirrors TUI palette from crates/zeph-tui/src/theme.rs */
+
+.navy {
+    --bg: #0D1826;
+    --fg: #C8C8D2;
+    --sidebar-bg: #0A1420;
+    --sidebar-fg: #C8DCFF;
+    --sidebar-non-existant: #4A5568;
+    --sidebar-active: #D7963C;
+    --sidebar-spacer: #1E3050;
+    --scrollbar: #1E3050;
+    --icons: #C8DCFF;
+    --icons-hover: #D7963C;
+    --links: #64B4FF;
+    --inline-code-color: #64B4FF;
+    --code-bg: #0F1E37;
+    --table-border-color: #2A4060;
+    --table-header-bg: #142850;
+    --table-alternate-bg: #101F30;
+    --quote-bg: #0F1E37;
+    --quote-border: #B95519;
+    --searchbar-border-color: #2A4060;
+    --searchbar-bg: #0A1420;
+    --searchbar-fg: #C8DCFF;
+    --searchresults-header-fg: #D7963C;
+    --searchresults-border-color: #2A4060;
+    --searchresults-li-bg: #0F1E37;
+    --search-mark-bg: #B95519;
+    --warning-border: #D7963C;
+    --theme-popup-bg: #0A1420;
+    --theme-popup-border: #2A4060;
+    --theme-hover: #142850;
+}
+
+/* Typography */
+.navy h1, .navy h2, .navy h3, .navy h4, .navy h5, .navy h6 {
+    color: #C8DCFF;
+}
+.navy h1 { border-bottom: 2px solid #B95519; padding-bottom: 0.3em; }
+.navy hr { border-color: #1E3050; }
+
+/* Sidebar logo */
+.navy .sidebar .sidebar-scrollbox a.active {
+    color: #D7963C;
+    font-weight: bold;
+}
+.navy #sidebar-toggle {
+    background: #142850;
+}
+
+/* Code blocks */
+.navy pre code {
+    color: #BEAF91;
+}
+.navy code {
+    color: #64B4FF;
+    background: #0F1E37;
+    border-radius: 3px;
+    padding: 0 3px;
+}
+
+/* Blockquotes */
+.navy blockquote {
+    border-left: 4px solid #B95519;
+    background: #0F1E37;
+    color: #C8C8D2;
+}
+
+/* Header / menu bar */
+.navy .menu-bar {
+    background: #142850;
+    color: #C8DCFF;
+    border-bottom: 1px solid #1E3050;
+}
+.navy .menu-bar a, .navy .menu-bar button {
+    color: #C8DCFF;
+}
+.navy .menu-bar a:hover, .navy .menu-bar button:hover {
+    color: #D7963C;
+}
+
+/* Search highlights */
+.navy mark {
+    background: #D97B25;
+    color: #0D1826;
+}
+
+/* Sidebar logo via ::before on book title */
+.navy .sidebar .book-title::before {
+    content: "";
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23142850'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='bold' text-anchor='middle' fill='%23C8DCFF'%3EZ%3C/text%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
+    vertical-align: middle;
+    margin-right: 6px;
+}

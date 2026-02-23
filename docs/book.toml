@@ -9,7 +9,7 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-default-theme = "light"
+default-theme = "navy"
 preferred-dark-theme = "navy"
 smart-punctuation = true
 git-repository-url = "https://github.com/bug-ops/zeph"
@@ -17,6 +17,7 @@ git-repository-icon = "fab-github"
 edit-url-template = "https://github.com/bug-ops/zeph/edit/main/docs/src/{path}"
 site-url = "/zeph/"
 no-section-label = true
+additional-css = ["theme/custom.css"]
 
 [output.html.search]
 limit-results = 20
