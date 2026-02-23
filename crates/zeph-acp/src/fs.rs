@@ -249,6 +249,14 @@ mod tests {
 
     use super::*;
 
+    fn test_path(name: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\tmp\\{name}")
+        } else {
+            format!("/tmp/{name}")
+        }
+    }
+
     struct FakeClient {
         content: String,
     }
@@ -294,7 +302,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/test.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("test.txt")));
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
@@ -319,7 +327,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
@@ -327,7 +335,7 @@ mod tests {
                 };
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
-                assert!(result.summary.contains("/tmp/out.txt"));
+                assert!(result.summary.contains(&test_path("out.txt")));
             })
             .await;
     }
@@ -392,7 +400,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/test.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("test.txt")));
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
@@ -417,7 +425,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
@@ -437,13 +445,18 @@ mod tests {
 
     #[test]
     fn validate_absolute_path_rejects_traversal() {
-        let err = validate_absolute_path("/tmp/../etc/passwd").unwrap_err();
+        let traversal = if cfg!(windows) {
+            "C:\\tmp\\..\\etc\\passwd"
+        } else {
+            "/tmp/../etc/passwd"
+        };
+        let err = validate_absolute_path(traversal).unwrap_err();
         assert!(matches!(err, ToolError::SandboxViolation { .. }));
     }
 
     #[test]
     fn validate_absolute_path_accepts_absolute() {
-        let path = validate_absolute_path("/tmp/safe.txt").unwrap();
+        let path = validate_absolute_path(&test_path("safe.txt")).unwrap();
         assert!(path.is_absolute());
     }
 
@@ -484,7 +497,12 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/../etc/passwd"));
+                let traversal = if cfg!(windows) {
+                    "C:\\tmp\\..\\etc\\passwd"
+                } else {
+                    "/tmp/../etc/passwd"
+                };
+                params.insert("path".to_owned(), serde_json::json!(traversal));
                 params.insert("content".to_owned(), serde_json::json!("evil"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
