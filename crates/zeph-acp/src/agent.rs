@@ -80,13 +80,16 @@ impl agent_client_protocol::Agent for ZephAcpAgent {
         let sid = session_id.clone();
 
         tokio::task::spawn_local(async move {
-            (spawner)(channel).await;
+            let agent_fut = (spawner)(channel);
+            let bridge_fut = async {
+                if let Some(conn) = conn_arc.read().await.as_ref()
+                    && let Err(e) = bridge_loop(conn, &sid, handle, cancel_rx).await
+                {
+                    tracing::warn!(session_id = %sid, error = %e, "bridge_loop error");
+                }
+            };
 
-            if let Some(conn) = conn_arc.read().await.as_ref()
-                && let Err(e) = bridge_loop(conn, &sid, handle, cancel_rx).await
-            {
-                tracing::warn!(session_id = %sid, error = %e, "bridge_loop error");
-            }
+            tokio::join!(agent_fut, bridge_fut);
         });
 
         Ok(NewSessionResponse::new(session_id))
