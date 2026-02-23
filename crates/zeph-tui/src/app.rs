@@ -253,7 +253,12 @@ impl App {
 
             let role = match role_str {
                 "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
+                "assistant" => {
+                    if is_tool_use_only(content) {
+                        continue;
+                    }
+                    MessageRole::Assistant
+                }
                 _ => continue,
             };
             if role == MessageRole::User {
@@ -1146,6 +1151,28 @@ fn format_local_time() -> String {
     chrono::Local::now().format("%H:%M").to_string()
 }
 
+fn is_tool_use_only(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut rest = trimmed;
+    loop {
+        let Some(start) = rest.find("[tool_use: ") else {
+            break;
+        };
+        if !rest[..start].trim().is_empty() {
+            return false;
+        }
+        let after = &rest[start + "[tool_use: ".len()..];
+        let Some(end) = after.find(']') else {
+            return false;
+        };
+        rest = after[end + 1..].trim_start();
+    }
+    rest.is_empty()
+}
+
 fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
     // New format: [tool output: name]
     if let Some(rest) = content.strip_prefix("[tool output: ")
@@ -1657,6 +1684,40 @@ mod tests {
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(app.messages()[0].content, "$ echo hello\nhello");
+    }
+
+    #[test]
+    fn load_history_hides_tool_use_only_messages() {
+        let (mut app, _rx, _tx) = make_app();
+        app.load_history(&[
+            ("user", "hello"),
+            (
+                "assistant",
+                "[tool_use: bash(toolu_01AfnYMrx3Ub13LLQ1Py3nfg)]",
+            ),
+            ("assistant", "here is the result"),
+        ]);
+        assert_eq!(app.messages().len(), 2);
+        assert_eq!(app.messages()[0].role, MessageRole::User);
+        assert_eq!(app.messages()[1].role, MessageRole::Assistant);
+        assert_eq!(app.messages()[1].content, "here is the result");
+    }
+
+    #[test]
+    fn load_history_keeps_assistant_with_text_and_tool_use() {
+        let (mut app, _rx, _tx) = make_app();
+        app.load_history(&[("assistant", "Let me check. [tool_use: bash(toolu_abc)]")]);
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages()[0].role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn is_tool_use_only_multiple_tags() {
+        assert!(is_tool_use_only(
+            "[tool_use: bash(id1)] [tool_use: read(id2)]"
+        ));
+        assert!(!is_tool_use_only("text [tool_use: bash(id1)]"));
+        assert!(!is_tool_use_only(""));
     }
 
     #[test]
