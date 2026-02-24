@@ -24,7 +24,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
+| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
 | `cost` | Token cost tracking and budgeting |
 | `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |
