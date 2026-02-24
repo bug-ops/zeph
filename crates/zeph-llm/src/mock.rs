@@ -85,10 +85,10 @@ impl LlmProvider for MockProvider {
             return Err(crate::LlmError::Other("mock LLM error".into()));
         }
         // Return pre-configured errors first
-        if let Ok(mut errors) = self.errors.lock() {
-            if !errors.is_empty() {
-                return Err(errors.remove(0));
-            }
+        if let Ok(mut errors) = self.errors.lock()
+            && !errors.is_empty()
+        {
+            return Err(errors.remove(0));
         }
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
