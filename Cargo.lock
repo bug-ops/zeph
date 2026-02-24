@@ -460,6 +460,7 @@ checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core 0.5.6",
  "axum-macros",
+ "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -478,8 +479,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
@@ -9154,6 +9157,7 @@ name = "zeph"
 version = "0.11.6"
 dependencies = [
  "anyhow",
+ "axum 0.8.8",
  "clap",
  "dialoguer",
  "futures",
@@ -9213,9 +9217,12 @@ name = "zeph-acp"
 version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
+ "async-stream",
  "async-trait",
+ "axum 0.8.8",
  "base64 0.22.1",
  "chrono",
+ "dashmap",
  "dirs",
  "futures",
  "schemars 1.2.1",
@@ -9224,8 +9231,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 1.0.3+spec-1.1.0",
+ "tower 0.5.3",
+ "tower-http",
  "tracing",
  "uuid",
  "zeph-core",

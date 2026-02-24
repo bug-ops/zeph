@@ -18,6 +18,7 @@ categories = ["command-line-utilities", "science"]
 age = { version = "0.11.2", default-features = false }
 agent-client-protocol = "0.9"
 anyhow = "1.0"
+async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
@@ -80,7 +81,7 @@ tokio-tungstenite = { version = "0.28", default-features = false }
 tokio-util = "0.7"
 toml = "1.0"
 tower = "0.5"
-tower-http = "0.6"
+tower-http = { version = "0.6", default-features = false }
 tracing = "0.1"
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -133,9 +134,10 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "daemon", "discord", "gateway", "index", "mock", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "daemon", "discord", "gateway", "index", "mock", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 acp = ["dep:zeph-acp"]
+acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 metal = ["zeph-llm/metal", "zeph-core/metal"]
 cuda = ["zeph-llm/cuda", "zeph-core/cuda"]
@@ -166,6 +168,7 @@ opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-mcp.workspace = true

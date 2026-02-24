@@ -14,3 +14,8 @@ pub use mcp_bridge::acp_mcp_servers_to_entries;
 pub use permission::AcpPermissionGate;
 pub use terminal::AcpShellExecutor;
 pub use transport::{AcpServerConfig, serve_connection, serve_stdio};
+
+#[cfg(feature = "acp-http")]
+pub use agent::SendAgentSpawner;
+#[cfg(feature = "acp-http")]
+pub use transport::{AcpHttpState, acp_router};

@@ -55,6 +55,20 @@ pub type AgentSpawner = Arc<
         + 'static,
 >;
 
+/// Thread-safe variant of `AgentSpawner` required by the HTTP transport.
+///
+/// Used with `AcpHttpState` to satisfy `axum::State` requirements (`Send + Sync`).
+#[cfg(feature = "acp-http")]
+pub type SendAgentSpawner = Arc<
+    dyn Fn(
+            LoopbackChannel,
+            Option<AcpContext>,
+        ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
 /// Sender half for delivering session notifications to the background writer.
 pub(crate) type NotifySender =
     mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>;

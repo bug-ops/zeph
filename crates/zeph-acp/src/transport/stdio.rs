@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
@@ -8,42 +7,9 @@ use futures::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::agent::{AgentSpawner, ProviderFactory, ZephAcpAgent};
+use crate::agent::{AgentSpawner, ZephAcpAgent};
 use crate::error::AcpError;
-
-/// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
-/// the connection to build ACP tool adapters.
-pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
-
-/// Configuration for the ACP server passed through to the agent.
-pub struct AcpServerConfig {
-    pub agent_name: String,
-    pub agent_version: String,
-    pub max_sessions: usize,
-    pub session_idle_timeout_secs: u64,
-    pub permission_file: Option<std::path::PathBuf>,
-    /// Optional factory for runtime model switching.
-    pub provider_factory: Option<ProviderFactory>,
-    /// Available model identifiers to advertise in `new_session`.
-    pub available_models: Vec<String>,
-    /// Optional shared MCP manager for `ext_method` add/remove/list.
-    pub mcp_manager: Option<Arc<zeph_mcp::McpManager>>,
-}
-
-impl Default for AcpServerConfig {
-    fn default() -> Self {
-        Self {
-            agent_name: String::new(),
-            agent_version: String::new(),
-            max_sessions: 4,
-            session_idle_timeout_secs: 1800,
-            permission_file: None,
-            provider_factory: None,
-            available_models: Vec::new(),
-            mcp_manager: None,
-        }
-    }
-}
+use crate::transport::{AcpServerConfig, ConnSlot};
 
 /// Run the ACP server over stdin/stdout until the connection closes.
 ///
@@ -114,7 +80,6 @@ where
                 let mut stream_rx = stream_conn.subscribe();
                 while let Ok(msg) = stream_rx.recv().await {
                     if log_messages {
-                        // Full payload at trace to avoid leaking prompt text and file contents at debug.
                         tracing::trace!(
                             direction = ?msg.direction,
                             message = ?msg.message,

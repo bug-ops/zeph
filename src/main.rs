@@ -139,6 +139,16 @@ struct Cli {
     #[arg(long)]
     acp_manifest: bool,
 
+    /// Run as ACP server over HTTP+SSE and WebSocket (requires acp-http feature)
+    #[cfg(feature = "acp-http")]
+    #[arg(long)]
+    acp_http: bool,
+
+    /// Bind address for the ACP HTTP server (requires acp-http feature)
+    #[cfg(feature = "acp-http")]
+    #[arg(long, value_name = "ADDR")]
+    acp_http_bind: Option<String>,
+
     /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]
@@ -296,12 +306,12 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "daemon", feature = "a2a"))]
     if cli.daemon {
         tracing_subscriber::fmt::init();
-        return run_daemon(
+        return Box::pin(run_daemon(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
-        )
+        ))
         .await;
     }
 
@@ -330,6 +340,30 @@ async fn main() -> anyhow::Result<()> {
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
+        )
+        .await;
+    }
+
+    #[cfg(feature = "acp-http")]
+    if cli.acp_http {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let file = std::fs::File::create("zeph.log").ok();
+        if let Some(file) = file {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(file)
+                .with_line_number(true)
+                .init();
+        } else {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+        return run_acp_http_server(
+            cli.config.as_deref(),
+            cli.vault.as_deref(),
+            cli.vault_key.as_deref(),
+            cli.vault_path.as_deref(),
+            cli.acp_http_bind.as_deref(),
         )
         .await;
     }
@@ -2529,6 +2563,66 @@ async fn run_acp_server(
     });
 
     zeph_acp::serve_stdio(spawner, server_config).await?;
+
+    Ok(())
+}
+
+/// Run the ACP server over HTTP+SSE and WebSocket.
+///
+/// # Errors
+///
+/// Returns an error if the agent stack cannot be built or the server fails to bind.
+#[cfg(feature = "acp-http")]
+async fn run_acp_http_server(
+    config_path: Option<&std::path::Path>,
+    vault_backend: Option<&str>,
+    vault_key: Option<&std::path::Path>,
+    vault_path: Option<&std::path::Path>,
+    bind_override: Option<&str>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let (mut deps, _keepalive) =
+        build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
+
+    let bind_addr = bind_override.map_or_else(|| "127.0.0.1:9800".to_owned(), str::to_owned);
+
+    let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
+    let server_config = zeph_acp::AcpServerConfig {
+        agent_name: deps.acp_agent_name.clone(),
+        agent_version: deps.acp_agent_version.clone(),
+        max_sessions: deps.acp_max_sessions,
+        session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
+        permission_file: deps.acp_permission_file.clone(),
+        provider_factory: deps.acp_provider_factory.take(),
+        available_models: deps.acp_available_models.clone(),
+        mcp_manager: Some(mcp_manager_for_acp),
+    };
+
+    let deps = Arc::new(Mutex::new(Some(deps)));
+
+    let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx| {
+        let deps = Arc::clone(&deps);
+        Box::pin(async move {
+            let Some(d) = deps.lock().await.take() else {
+                tracing::warn!(
+                    "ACP spawner called more than once — Phase 1 supports single session"
+                );
+                return;
+            };
+            Box::pin(spawn_acp_agent(d, channel, acp_ctx)).await;
+        })
+    });
+
+    let state = zeph_acp::AcpHttpState::new(spawner, server_config);
+    state.start_reaper();
+
+    let router = zeph_acp::acp_router(state);
+
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    tracing::info!("ACP HTTP server listening on {bind_addr}");
+    ::axum::serve(listener, router).await?;
 
     Ok(())
 }

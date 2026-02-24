@@ -1081,6 +1081,27 @@ fn default_acp_session_idle_timeout_secs() -> u64 {
     1800
 }
 
+fn default_acp_transport() -> AcpTransport {
+    AcpTransport::Stdio
+}
+
+fn default_acp_http_bind() -> String {
+    "127.0.0.1:9800".to_owned()
+}
+
+/// ACP server transport mode.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpTransport {
+    /// JSON-RPC over stdin/stdout (default, IDE embedding).
+    #[default]
+    Stdio,
+    /// JSON-RPC over HTTP+SSE and WebSocket.
+    Http,
+    /// Both stdio and HTTP transports active simultaneously.
+    Both,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AcpConfig {
     #[serde(default)]
@@ -1099,6 +1120,12 @@ pub struct AcpConfig {
     /// Example: `["claude:claude-sonnet-4-5", "ollama:llama3"]`
     #[serde(default)]
     pub available_models: Vec<String>,
+    /// Transport mode: "stdio" (default), "http", or "both".
+    #[serde(default = "default_acp_transport")]
+    pub transport: AcpTransport,
+    /// Bind address for the HTTP transport.
+    #[serde(default = "default_acp_http_bind")]
+    pub http_bind: String,
 }
 
 impl Default for AcpConfig {
@@ -1111,6 +1138,8 @@ impl Default for AcpConfig {
             session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
             permission_file: None,
             available_models: Vec::new(),
+            transport: default_acp_transport(),
+            http_bind: default_acp_http_bind(),
         }
     }
 }
