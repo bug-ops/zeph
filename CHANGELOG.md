@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- ACP custom methods framework via `ext_method` dispatch — `_session/list`, `_session/get`, `_session/delete`, `_session/export`, `_session/import`, `_agent/tools`, `_agent/working_dir/update` (#787)
+- Session export/import with SQLite transaction-backed atomic event replay (#787)
+- Auth hints in ACP `initialize` response meta (#787)
+- `validate_session_id` guard (len≤128, `[a-zA-Z0-9_-]`) on all session methods (#787)
+- Path traversal protection in `_agent/working_dir/update` (#787)
+- `MAX_IMPORT_EVENTS` cap (10,000) to prevent unbounded import DoS (#787)
+- `list_acp_sessions` and `import_acp_events` methods in `SqliteStore` (#787)
 - Reactive compaction on `ContextLengthExceeded` — auto-compact and retry LLM calls up to 2 times (#792)
 - `ContextLengthExceeded` error variant in `LlmError` with provider-specific pattern detection (Claude, OpenAI, Ollama)
 - Middle-out progressive tool response removal fallback during summarization (10/20/50/100% tiers)

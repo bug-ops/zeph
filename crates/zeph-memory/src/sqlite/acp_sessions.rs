@@ -6,6 +6,11 @@ pub struct AcpSessionEvent {
     pub payload: String,
 }
 
+pub struct AcpSessionInfo {
+    pub id: String,
+    pub created_at: String,
+}
+
 impl SqliteStore {
     /// Create a new ACP session record.
     ///
@@ -77,6 +82,51 @@ impl SqliteStore {
             .bind(session_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// List all ACP sessions ordered by creation time descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn list_acp_sessions(&self) -> Result<Vec<AcpSessionInfo>, MemoryError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, created_at FROM acp_sessions ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, created_at)| AcpSessionInfo { id, created_at })
+            .collect())
+    }
+
+    /// Insert multiple events for a session inside a single transaction.
+    ///
+    /// Atomically writes all events or none. More efficient than individual inserts
+    /// for bulk import use cases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction or any insert fails.
+    pub async fn import_acp_events(
+        &self,
+        session_id: &str,
+        events: &[(&str, &str)],
+    ) -> Result<(), MemoryError> {
+        let mut tx = self.pool.begin().await?;
+        for (event_type, payload) in events {
+            sqlx::query(
+                "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(event_type)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 

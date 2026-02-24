@@ -1,4 +1,5 @@
 pub mod agent;
+pub(crate) mod custom;
 pub mod error;
 pub mod fs;
 pub mod mcp_bridge;
