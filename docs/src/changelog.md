@@ -6,27 +6,93 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-02-24
+
+### Added
+- `MessageMetadata` struct in `zeph-llm` with `agent_visible`, `user_visible`, `compacted_at` fields; default is both-visible for backward compat (#M28)
+- `Message.metadata` field with `#[serde(default)]` — existing serialized messages deserialize without change
+- SQLite migration `013_message_metadata.sql` — adds `agent_visible`, `user_visible`, `compacted_at` columns to `messages` table
+- `save_message_with_metadata()` in `SqliteStore` for saving messages with explicit visibility flags
+- `load_history_filtered()` in `SqliteStore` — SQL-level filtering by `agent_visible` / `user_visible`
+- `replace_conversation()` in `SqliteStore` — atomic compaction: marks originals `user_only`, inserts summary as `agent_only`
+- `oldest_message_ids()` in `SqliteStore` — returns N oldest message IDs for a conversation
+- `Agent.load_history()` now loads only `agent_visible=true` messages, excluding compacted originals
+- `compact_context()` persists compaction atomically via `replace_conversation()`, falling back to legacy summary storage if DB IDs are unavailable
+- Multi-session ACP support with configurable `max_sessions` (default 4) and LRU eviction of idle sessions (#781)
+- `session_idle_timeout_secs` config for automatic session cleanup (default 30 min) with background reaper task (#781)
+- `ZEPH_ACP_MAX_SESSIONS` and `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` env overrides (#781)
+- ACP session persistence to `SQLite` — `acp_sessions` and `acp_session_events` tables with conversation replay on `load_session` per ACP spec (#782)
+- `SqliteStore` methods for ACP session lifecycle: `create_acp_session`, `save_acp_event`, `load_acp_events`, `delete_acp_session`, `acp_session_exists` (#782)
+- `TokenCounter` in `zeph-memory` — accurate token counting with `tiktoken-rs` cl100k_base, replacing `chars/4` heuristic (#789)
+- DashMap-backed token cache (10k cap) for amortized O(1) lookups
+- OpenAI tool schema token formula for precise context budget allocation
+- Input size guard (64KB) on token counting to prevent cache pollution from oversized input
+- Graceful fallback to `chars/4` when tiktoken tokenizer is unavailable
+- Configurable tool response offload — `OverflowConfig` with threshold (default 50k chars), retention (7 days), optional custom dir (#791)
+- `[tools.overflow]` section in `config.toml` for offload configuration
+- Security hardening: path canonicalization, symlink-safe cleanup, 0o600 file permissions on Unix
+- Wire `AcpContext` (IDE-proxied FS, shell, permissions) through `AgentSpawner` into agent tool chain via `CompositeExecutor` — ACP executors take priority with automatic local fallback (#779)
+- `DynExecutor` newtype in `zeph-tools` for object-safe `ToolExecutor` composition in `CompositeExecutor` (#779)
+- `cancel_signal: Arc<Notify>` on `LoopbackHandle` for cooperative cancellation between ACP sessions and agent loop (#780)
+- `with_cancel_signal()` builder method on `Agent` to inject external cancellation signal (#780)
+- `zeph-acp` crate — ACP (Agent Client Protocol) server for IDE embedding (Zed, JetBrains, Neovim) (#763-#766)
+- `--acp` CLI flag to launch Zeph as an ACP stdio server (requires `acp` feature)
+- `acp` feature gate in root `Cargo.toml`; included in `full` feature set
+- `ZephAcpAgent` implementing SDK `Agent` trait with session lifecycle (new, prompt, cancel, load)
+- `loopback_event_to_update` mapping `LoopbackEvent` variants to ACP `SessionUpdate` notifications, with empty chunk filtering
+- `serve_stdio()` transport using `AgentSideConnection` over tokio-compat stdio streams
+- Stream monitor gated behind `ZEPH_ACP_LOG_MESSAGES` env var for JSON-RPC traffic debugging
+- Custom mdBook theme with Zeph brand colors (navy+amber palette from TUI)
+- Z-letter favicon SVG for documentation site
+- Sidebar logo via inline data URI
+- Navy as default documentation theme
+- `AcpConfig` struct in `zeph-core` — `enabled`, `agent_name`, `agent_version` with `ZEPH_ACP_*` env overrides (#771)
+- `[acp]` section in `config.toml` for configuring ACP server identity
+- `--acp-manifest` CLI flag — prints ACP agent manifest JSON to stdout for IDE discovery (#772)
+- `serve_connection<W, R>` generic transport function extracted from `serve_stdio` for testability (#770)
+- `ConnSlot` pattern in transport — `Rc<RefCell<Option<Rc<AgentSideConnection>>>>` populated post-construction so `new_session` can build ACP adapters (#770)
+- `build_acp_context` in `ZephAcpAgent` — wires `AcpFileExecutor`, `AcpShellExecutor`, `AcpPermissionGate` per session (#770)
+- `AcpServerConfig` passed through `serve_stdio`/`serve_connection` to configure agent identity from config values (#770)
+- ACP section in `--init` wizard — prompts for `enabled`, `agent_name`, `agent_version` (#771)
+- Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
+
+### Fixed
+- Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)
+
 ## [0.11.6] - 2026-02-23
 
 ### Fixed
 - Auto-create parent directories for `sqlite_path` on startup (#756)
 
 ### Added
-- `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig`
-- `SemanticMemory::save_only()` — persist message to SQLite without vector embedding
-- `ResponseCache` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry
-- `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` for memory portability
-- `zeph memory export <path>` and `zeph memory import <path>` CLI subcommands
-- Temporal decay scoring and MMR re-ranking in `SemanticMemory::recall()`
-- Compact XML skills prompt format with `SkillPromptMode` enum
-- Adaptive chunked context compaction
-- SQLite-backed `SqliteVectorStore` as embedded alternative to Qdrant
-- Credential scrubbing in LLM context pipeline
-- Filter diagnostics mode with `kept_lines` tracking
-- Markdown table rendering in TUI chat panel
+- `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig` — assistant responses skip embedding when disabled (#748)
+- `SemanticMemory::save_only()` — persist message to SQLite without generating a vector embedding (#748)
+- `ResponseCache` in `zeph-memory` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry (#750)
+- `response_cache_enabled` and `response_cache_ttl_secs` config fields in `LlmConfig` (#750)
+- Background `cleanup_expired()` task for response cache (runs every 10 minutes) (#750)
+- `ZEPH_MEMORY_AUTOSAVE_ASSISTANT`, `ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH` env overrides (#748)
+- `ZEPH_LLM_RESPONSE_CACHE_ENABLED`, `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` env overrides (#750)
+- `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` in `zeph-memory/src/snapshot.rs` (#749)
+- `zeph memory export <path>` and `zeph memory import <path>` CLI subcommands (#749)
+- SQLite migration `012_response_cache.sql` for the response cache table (#750)
+- Temporal decay scoring in `SemanticMemory::recall()` — time-based score attenuation with configurable half-life (#745)
+- MMR (Maximal Marginal Relevance) re-ranking in `SemanticMemory::recall()` — post-processing for result diversity (#744)
+- Compact XML skills prompt format (`format_skills_prompt_compact`) for low-budget contexts (#747)
+- `SkillPromptMode` enum (`full`/`compact`/`auto`) with auto-selection based on context budget (#747)
+- Adaptive chunked context compaction — parallel chunk summarization via `join_all` (#746)
+- `with_ranking_options()` builder for `SemanticMemory` to configure temporal decay and MMR
+- `message_timestamps()` method on `SqliteStore` for Unix epoch retrieval via `strftime`
+- `get_vectors()` method on `EmbeddingStore` for raw vector fetch from SQLite `vector_points`
+- SQLite-backed `SqliteVectorStore` as embedded alternative to Qdrant for zero-dependency vector search (#741)
+- `vector_backend` config option to select between `qdrant` and `sqlite` vector backends
+- Credential scrubbing in LLM context pipeline via `scrub_content()` — redacts secrets and paths before LLM calls (#743)
+- `redact_credentials` config option (default: true) to toggle context scrubbing
+- Filter diagnostics mode: `kept_lines` tracking in `FilterResult` for all 9 filter strategies
+- TUI expand ('e') highlights kept lines vs filtered-out lines with dim styling and legend
+- Markdown table rendering in TUI chat panel — Unicode box-drawing borders, bold headers, column auto-width
 
 ### Changed
-- Token estimation uses `chars/4` heuristic instead of `bytes/3`
+- Token estimation uses `chars/4` heuristic instead of `bytes/3` for better accuracy on multi-byte text (#742)
 
 ## [0.11.5] - 2026-02-22
 
@@ -36,38 +102,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `filters_path` option in `FilterConfig` for user-provided filter rules override
 - ReDoS protection: RegexBuilder with size_limit, 512-char pattern cap, 1 MiB file size limit
 - Dedup strategy with configurable normalization patterns and HashMap pre-allocation
-- Sub-agent orchestration system with A2A protocol integration
-- Sub-agent definition format with TOML frontmatter parser
-- `SubAgentManager` with spawn/cancel/collect lifecycle and background tokio task execution
-- Tool filtering (AllowList/DenyList/InheritAll) and skill filtering with glob patterns
-- Zero-trust permission model with TTL-based grants and automatic revocation
-- `SubAgentMetrics` in `MetricsSnapshot` with state, turns, elapsed time
-- TUI sub-agents panel with color-coded states
-- `/agent` CLI commands: `list`, `spawn`, `bg`, `status`, `cancel`, `approve`, `deny`
-- Typed `AgentCommand` enum with `parse()` for type-safe command dispatch
-- `@agent_name` mention syntax for quick sub-agent invocation
+- NormalizeEntry replacement validation (rejects unescaped `$` capture group refs)
+- Sub-agent orchestration system with A2A protocol integration (#709)
+- Sub-agent definition format with TOML frontmatter parser (#710)
+- `SubAgentManager` with spawn/cancel/collect lifecycle (#711)
+- Tool filtering (AllowList/DenyList/InheritAll) and skill filtering with glob patterns (#712)
+- Zero-trust permission model with TTL-based grants and automatic revocation (#713)
+- In-process A2A channels for orchestrator-to-sub-agent communication
+- `PermissionGrants` with audit trail via tracing
+- Real LLM loop wired into `SubAgentManager::spawn()` with background tokio task execution (#714)
+- `poll_subagents()` on `Agent<C>` for collecting completed sub-agent results (#714)
+- `shutdown_all()` on `SubAgentManager` for graceful teardown (#714)
+- `SubAgentMetrics` in `MetricsSnapshot` with state, turns, elapsed time (#715)
+- TUI sub-agents panel (`zeph-tui` widgets/subagents) with color-coded states (#715)
+- `/agent` CLI commands: `list`, `spawn`, `bg`, `status`, `cancel`, `approve`, `deny` (#716)
+- Typed `AgentCommand` enum with `parse()` for type-safe command dispatch replacing string matching in the agent loop
+- `@agent_name` mention syntax for quick sub-agent invocation with disambiguation from `@`-triggered file references
 
 ### Changed
-- Migrated all 6 hardcoded filters into the declarative TOML engine
+- Migrated all 6 hardcoded filters (cargo_build, test_output, clippy, git, dir_listing, log_dedup) into the declarative TOML engine
 
 ### Removed
-- `FilterConfig` per-filter config structs — filter params now in TOML strategy fields
+- `FilterConfig` per-filter config structs (`TestFilterConfig`, `GitFilterConfig`, `ClippyFilterConfig`, `CargoBuildFilterConfig`, `DirListingFilterConfig`, `LogDedupFilterConfig`) — filter params now in TOML strategy fields
 
 ## [0.11.4] - 2026-02-21
 
 ### Added
+- `validate_skill_references(body, skill_dir)` in zeph-skills loader: parses Markdown links targeting `references/`, `scripts/`, or `assets/` subdirs, warns on missing files and symlink traversal attempts (#689)
+- `sanitize_skill_body(body)` in zeph-skills prompt: escapes XML structural tags (`<skill`, `</skill>`, `<instructions`, `</instructions>`, `<available_skills`, `</available_skills>`) to prevent prompt injection (#689)
+- Body sanitization applied automatically to all non-`Trusted` skills in `format_skills_prompt()` (#689)
+- `load_skill_resource(skill_dir, relative_path)` public function in `zeph-skills::resource` for on-demand loading of skill resource files with path traversal protection (#687)
+- Nested `metadata:` block support in SKILL.md frontmatter: indented key-value pairs under `metadata:` are parsed as structured metadata (#686)
+- Field length validation in SKILL.md loader: `description` capped at 1024 characters, `compatibility` capped at 500 characters (#686)
+- Warning log in `load_skill_body()` when body exceeds 20,000 bytes (~5000 tokens) per spec recommendation (#686)
+- Empty value normalization for `compatibility` and `license` frontmatter fields: bare `compatibility:` now produces `None` instead of `Some("")` (#686)
+- `SkillManager` in zeph-skills — install skills from git URLs or local paths, remove, verify blake3 integrity, list with trust metadata
+- CLI subcommands: `zeph skill {install, remove, list, verify, trust, block, unblock}` — runs without agent loop
+- In-session `/skill install <url|path>` and `/skill remove <name>` with hot reload
+- Managed skills directory at `~/.config/zeph/skills/`, auto-appended to `skills.paths` at bootstrap
+- Hash re-verification on trust promotion — recomputes blake3 before promoting to trusted/verified, rejects on mismatch
+- URL scheme allowlist and path traversal validation in SkillManager as defense-in-depth
+- Blocking I/O wrapped in `spawn_blocking` for async safety in skill management handlers
+- `custom: HashMap<String, Secret>` field in `ResolvedSecrets` for user-defined vault secrets (#682)
+- `list_keys()` method on `VaultProvider` trait with implementations for Age and Env backends (#682)
+- `requires-secrets` field in SKILL.md frontmatter for declaring per-skill secret dependencies (#682)
+- Gate skill activation on required secrets availability in system prompt builder (#682)
+- Inject active skill's secrets as scoped env vars into `ShellExecutor` at execution time (#682)
+- Custom secrets step in interactive config wizard (`--init`) (#682)
 - crates.io publishing metadata (description, readme, homepage, keywords, categories) for all workspace crates (#702)
-- Skill file reference validation and untrusted body sanitization (#691)
-- Lazy resource loading per spec progressive disclosure (#692)
-- `x-requires-secrets` vendor extension rename (#693)
-- agentskills.io spec alignment for SKILL.md parser (#690)
-- `SkillManager` for installing, removing, verifying skills from git URLs or local paths
-- Custom vault secrets support with `list_keys()` on `VaultProvider` trait (#685)
 
 ### Changed
-- `requires-secrets` renamed to `x-requires-secrets` — breaking change (#693)
-- `allowed-tools` now uses space-separated values per spec — breaking change (#690)
-- Skill resource files use lazy loading instead of eager injection — breaking change (#692)
+- `requires-secrets` SKILL.md frontmatter field renamed to `x-requires-secrets` to follow JSON Schema vendor extension convention and avoid future spec collisions — **breaking change**: update skill frontmatter to use `x-requires-secrets`; the old `requires-secrets` form is still parsed with a deprecation warning (#688)
+- `allowed-tools` SKILL.md field now uses space-separated values per agentskills.io spec (was comma-separated) — **breaking change** for skills using comma-delimited allowed-tools (#686)
+- Skill resource files (references, scripts, assets) are no longer eagerly injected into the system prompt on skill activation; only filenames are listed as available resources — **breaking change** for skills relying on auto-injected reference content (#687)
 
 ## [0.11.3] - 2026-02-20
 
@@ -1116,7 +1203,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.11.6...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/bug-ops/zeph/compare/v0.11.6...v0.12.0
 [0.11.6]: https://github.com/bug-ops/zeph/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/bug-ops/zeph/compare/v0.11.3...v0.11.4
