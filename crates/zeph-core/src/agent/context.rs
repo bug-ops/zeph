@@ -721,7 +721,7 @@ impl<C: Channel> Agent<C> {
             parts: vec![MessagePart::Summary { text: summary }],
             metadata: MessageMetadata::agent_only(),
         };
-        self.messages.insert(resp_idx + 1, summary_msg);
+        self.messages.insert(resp_idx + 1, summary_msg); // lgtm[rust/cleartext-logging]
         tracing::debug!(
             pair_count,
             cutoff = self.memory_state.tool_call_cutoff,
