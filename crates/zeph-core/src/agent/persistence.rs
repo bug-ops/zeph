@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use crate::channel::Channel;
 use zeph_llm::provider::Role;
 use zeph_memory::sqlite::role_str;

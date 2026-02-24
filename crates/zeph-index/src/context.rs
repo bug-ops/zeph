@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Contextualized embedding text generation.
 //!
 //! Embedding raw code alone gives poor retrieval quality. Prepending

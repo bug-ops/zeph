@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Slack Web API client for message operations.
 
 use serde::{Deserialize, Serialize};

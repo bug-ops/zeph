@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! AST-based chunking via tree-sitter with greedy sibling merge.
 
 use tree_sitter::{Node, Parser};

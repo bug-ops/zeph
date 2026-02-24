@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use qdrant_client::qdrant::PointStruct;
 use serde_json::json;
 use uuid::Uuid;

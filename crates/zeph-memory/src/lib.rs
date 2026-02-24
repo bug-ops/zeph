@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
 pub mod document;

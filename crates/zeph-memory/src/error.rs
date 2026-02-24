@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("database error: {0}")]

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Cron-based periodic task scheduler with `SQLite` persistence.
 
 mod error;

@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HEADER_LINE1="// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>"
-HEADER_LINE2="// SPDX-License-Identifier: BUSL-1.1"
+HEADER_LINE2="// SPDX-License-Identifier: MIT OR Apache-2.0"
 
 CHECK_ONLY=false
 if [[ "${1:-}" == "--check" ]]; then

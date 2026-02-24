@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 
 use crate::cli::CliChannel;

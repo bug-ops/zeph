@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("connection failed for server '{server_id}': {message}")]

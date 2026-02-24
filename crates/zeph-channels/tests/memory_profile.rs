@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Manual memory profiling test to analyze allocation patterns
 /// Run with: cargo test --test memory_profile -- --nocapture
 use zeph_channels::markdown::markdown_to_telegram;

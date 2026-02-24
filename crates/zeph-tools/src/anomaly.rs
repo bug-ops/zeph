@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Sliding-window anomaly detection for tool execution patterns.
 
 use std::collections::VecDeque;

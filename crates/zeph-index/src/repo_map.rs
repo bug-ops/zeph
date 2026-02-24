@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Lightweight structural map of a project (signatures only).
 //!
 //! Generates a compact `<repo_map>` showing file paths and top-level

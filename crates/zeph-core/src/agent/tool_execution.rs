@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Generic embedding registry backed by Qdrant.
 //!
 //! Provides deduplication through content-hash delta tracking and collection-level

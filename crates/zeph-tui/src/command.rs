@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Commands that can be sent from TUI to Agent loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use super::SqliteStore;

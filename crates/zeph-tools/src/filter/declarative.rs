@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Declarative TOML-based output filter engine.
 //!
 //! Loads filter rules from a TOML file and compiles them into [`OutputFilter`]

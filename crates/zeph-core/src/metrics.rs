@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use tokio::sync::watch;
 
 /// Snapshot of a single sub-agent's runtime status.
