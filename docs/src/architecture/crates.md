@@ -161,7 +161,7 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
   - `permission_gate: Option<AcpPermissionGate>` — confirmation requests forwarded to the IDE UI
   - `cancel_signal: Arc<Notify>` — shared with `LoopbackHandle`; firing it interrupts the running agent turn
 - `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>) -> ...>` factory that the main binary supplies; wires `AcpContext` into `CompositeExecutor` before starting the agent loop
-- `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision
+- `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision. `AllowAlways`/`RejectAlways` decisions are persisted to a TOML file (`~/.config/zeph/acp-permissions.toml` by default, configurable via `acp.permission_file` or `ZEPH_ACP_PERMISSION_FILE`). The file is written atomically with `0o600` permissions on Unix. Persisted rules are loaded on startup and saved on each decision change
 - `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
 
 ### Session Lifecycle

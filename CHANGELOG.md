@@ -44,6 +44,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AcpServerConfig` passed through `serve_stdio`/`serve_connection` to configure agent identity from config values (#770)
 - ACP section in `--init` wizard — prompts for `enabled`, `agent_name`, `agent_version` (#771)
 - Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
+- ACP permission persistence to `~/.config/zeph/acp-permissions.toml` — `AllowAlways`/`RejectAlways` decisions survive restarts (#786)
+- `acp.permission_file` config and `ZEPH_ACP_PERMISSION_FILE` env override for custom permission file path (#786)
 
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)

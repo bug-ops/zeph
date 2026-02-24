@@ -19,7 +19,7 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 | `transport` | `serve_stdio` / `serve_connection` — ACP server transports; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
-| `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval |
+| `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval; persists "always allow/deny" decisions to TOML file |
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum |
 
@@ -56,6 +56,15 @@ The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE c
 |-------------|------|---------|--------------|
 | `acp.max_sessions` | usize | `16` | `ZEPH_ACP_MAX_SESSIONS` |
 | `acp.session_idle_timeout_secs` | u64 | `1800` | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` |
+| `acp.permission_file` | PathBuf | `~/.config/zeph/acp-permissions.toml` | `ZEPH_ACP_PERMISSION_FILE` |
+
+## Permission persistence
+
+When the IDE user selects "always allow" or "always deny" for a tool, `AcpPermissionGate` persists the decision to a TOML file (`~/.config/zeph/acp-permissions.toml` by default). On next session startup the gate pre-populates its cache from this file, skipping redundant IDE prompts.
+
+- Atomic write via temp file + rename to prevent corruption.
+- File permissions set to `0o600` (owner-only).
+- Graceful fallback: if the file is missing or malformed, the gate starts with an empty cache.
 
 ## AgentSpawner
 

@@ -32,6 +32,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `a2a.rate_limit` | > 0 |
 | `acp.max_sessions` | > 0 |
 | `acp.session_idle_timeout_secs` | > 0 |
+| `acp.permission_file` | valid file path (optional) |
 | `gateway.rate_limit` | > 0 |
 
 ## Hot-Reload
@@ -215,6 +216,7 @@ rate_limit = 60
 [acp]
 max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
 session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
+# permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions (default: ~/.config/zeph/acp-permissions.toml)
 
 [mcp]
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
@@ -286,6 +288,7 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_TOOLS_SCRAPE_MAX_BODY` | Max response body size in bytes (default: 1048576) |
 | `ZEPH_ACP_MAX_SESSIONS` | Max concurrent ACP sessions (default: 4) |
 | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` | Idle session reaper timeout in seconds (default: 1800) |
+| `ZEPH_ACP_PERMISSION_FILE` | Path to persisted ACP permission decisions (default: `~/.config/zeph/acp-permissions.toml`) |
 | `ZEPH_A2A_ENABLED` | Enable A2A server (default: false) |
 | `ZEPH_A2A_HOST` | A2A server bind address (default: `0.0.0.0`) |
 | `ZEPH_A2A_PORT` | A2A server port (default: `8080`) |
