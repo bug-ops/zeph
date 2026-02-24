@@ -1960,4 +1960,78 @@ mod tests {
             assert!(result.unwrap_err().is_context_length_error());
         }
     }
+
+    mod retry_integration {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::LlmError;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{Message, MessageMetadata, Role, ToolDefinition};
+
+        fn agent_with_provider(provider: AnyProvider) -> crate::agent::Agent<MockChannel> {
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent =
+                super::super::Agent::new(provider, channel, registry, None, 5, executor);
+            agent.messages.push(Message {
+                role: Role::User,
+                content: "hello".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+            agent
+        }
+
+        fn budget_for_test() -> crate::context::ContextBudget {
+            crate::context::ContextBudget::new(200_000, 0.20)
+        }
+
+        fn no_tools() -> Vec<ToolDefinition> {
+            vec![]
+        }
+
+        #[tokio::test]
+        async fn call_chat_with_tools_retry_succeeds_on_first_attempt() {
+            let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".into()]));
+            let mut agent = agent_with_provider(provider);
+            let result = agent
+                .call_chat_with_tools_retry(&no_tools(), 2)
+                .await
+                .unwrap();
+            assert!(result.is_some());
+        }
+
+        #[tokio::test]
+        async fn call_chat_with_tools_retry_recovers_after_context_error() {
+            // First call returns ContextLengthExceeded, second succeeds.
+            let provider = AnyProvider::Mock(
+                MockProvider::with_responses(vec!["recovered".into()])
+                    .with_errors(vec![LlmError::ContextLengthExceeded]),
+            );
+            let mut agent = agent_with_provider(provider);
+            agent.context_state.budget = Some(budget_for_test());
+            let result = agent
+                .call_chat_with_tools_retry(&no_tools(), 2)
+                .await
+                .unwrap();
+            assert!(result.is_some());
+        }
+
+        #[tokio::test]
+        async fn call_chat_with_tools_retry_exhausts_all_attempts() {
+            // Both attempts return ContextLengthExceeded — final error propagates.
+            let provider =
+                AnyProvider::Mock(MockProvider::with_responses(vec![]).with_errors(vec![
+                    LlmError::ContextLengthExceeded,
+                    LlmError::ContextLengthExceeded,
+                ]));
+            let mut agent = agent_with_provider(provider);
+            agent.context_state.budget = Some(budget_for_test());
+            let result: Result<Option<_>, _> =
+                agent.call_chat_with_tools_retry(&no_tools(), 2).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_context_length_error());
+        }
+    }
 }

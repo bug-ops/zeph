@@ -2976,4 +2976,202 @@ mod tests {
         // Must be valid UTF-8 (no panic means success, but also check char count)
         assert_eq!(truncated.chars().count(), 201); // 200 chars + '…'
     }
+
+    // --- truncate_chars additional edge cases ---
+
+    #[test]
+    fn truncate_chars_ascii_exact() {
+        let s = "abcde";
+        // max_chars == len → no truncation
+        let result = super::truncate_chars(s, 5);
+        assert_eq!(result, "abcde");
+    }
+
+    #[test]
+    fn truncate_chars_emoji() {
+        // 🚀 is a single Unicode scalar even though it is 4 bytes
+        let s = "🚀🚀🚀🚀🚀";
+        let result = super::truncate_chars(s, 3);
+        assert!(result.ends_with('…'), "should append ellipsis");
+        // 3 emoji + ellipsis = 4 Unicode scalars
+        assert_eq!(result.chars().count(), 4);
+    }
+
+    #[test]
+    fn truncate_chars_empty() {
+        let result = super::truncate_chars("", 10);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn truncate_chars_shorter_than_max() {
+        let s = "hello";
+        let result = super::truncate_chars(s, 100);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_chars_zero_max() {
+        let s = "hello";
+        // max_chars = 0 means every char is beyond the limit → truncate at position 0
+        let result = super::truncate_chars(s, 0);
+        assert!(result.ends_with('…'));
+        // The part before '…' must be empty (0 chars kept)
+        assert_eq!(result, "…");
+    }
+
+    // --- build_chunk_prompt ---
+
+    #[test]
+    fn build_chunk_prompt_contains_all_nine_sections() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: "help me refactor this code".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages);
+
+        let sections = [
+            "User Intent",
+            "Technical Concepts",
+            "Files & Code",
+            "Errors & Fixes",
+            "Problem Solving",
+            "User Messages",
+            "Pending Tasks",
+            "Current Work",
+            "Next Step",
+        ];
+        for section in sections {
+            assert!(
+                prompt.contains(section),
+                "prompt missing section: {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_chunk_prompt_empty_messages() {
+        let messages: &[Message] = &[];
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages);
+        // Even with no messages the prompt structure must be valid (not panic, contains sections)
+        assert!(prompt.contains("User Intent"));
+        assert!(prompt.contains("Next Step"));
+    }
+
+    // --- build_metadata_summary robustness ---
+
+    #[test]
+    fn build_metadata_summary_empty_messages() {
+        let messages: &[Message] = &[];
+        let summary = Agent::<MockChannel>::build_metadata_summary(messages);
+        assert!(summary.contains("Messages compacted: 0"));
+        assert!(summary.contains("0 user"));
+        assert!(summary.contains("0 assistant"));
+    }
+
+    #[test]
+    fn build_metadata_summary_utf8_content() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "Привет мир 🌍".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Hello 🌐".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let summary = Agent::<MockChannel>::build_metadata_summary(&messages);
+        // Must not panic on multi-byte content
+        assert!(summary.contains("Messages compacted: 2"));
+        assert!(summary.contains("1 user"));
+        assert!(summary.contains("1 assistant"));
+    }
+
+    #[test]
+    fn build_metadata_summary_truncation_boundary() {
+        let long_content = "a".repeat(300);
+        let messages = vec![Message {
+            role: Role::User,
+            content: long_content,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let summary = Agent::<MockChannel>::build_metadata_summary(&messages);
+        // The last user message preview is capped at 200 chars + '…'
+        assert!(
+            summary.contains('…'),
+            "long content should be truncated with ellipsis"
+        );
+    }
+
+    // --- remove_tool_responses_middle_out edge cases ---
+
+    #[test]
+    fn remove_tool_responses_single_tool_message() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+        );
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&[msg], 1.0);
+        assert_eq!(result.len(), 1);
+        if let MessagePart::ToolResult { content, .. } = &result[0].parts[0] {
+            assert_eq!(content, "[compacted]");
+        } else {
+            panic!("expected ToolResult part");
+        }
+    }
+
+    #[test]
+    fn remove_tool_responses_all_tiers_progressive() {
+        // Build 10 messages, all with ToolResult parts
+        let make_tool_msg = |i: usize| {
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: format!("t{i}"),
+                    content: format!("result_{i}"),
+                    is_error: false,
+                }],
+            )
+        };
+        let msgs: Vec<Message> = (0..10).map(make_tool_msg).collect();
+
+        let count_compacted = |result: &[Message]| {
+            result
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                        matches!(p, MessagePart::ToolResult { content, .. } if content == "[compacted]")
+                    })
+                })
+                .count()
+        };
+
+        // 10% of 10 = ceil(1.0) = 1
+        let r10 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.10);
+        assert_eq!(count_compacted(&r10), 1);
+
+        // 20% of 10 = ceil(2.0) = 2
+        let r20 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.20);
+        assert_eq!(count_compacted(&r20), 2);
+
+        // 50% of 10 = ceil(5.0) = 5
+        let r50 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.50);
+        assert_eq!(count_compacted(&r50), 5);
+
+        // 100% of 10 = 10
+        let r100 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        assert_eq!(count_compacted(&r100), 10);
+    }
 }

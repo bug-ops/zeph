@@ -2483,3 +2483,55 @@ pub(super) mod agent_tests {
         assert!(resp.contains("not yet implemented"));
     }
 }
+
+/// End-to-end tests for M30 resilient compaction: error detection → compact → retry → success.
+#[cfg(test)]
+mod compaction_e2e {
+    use super::agent_tests::*;
+    use zeph_llm::LlmError;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+    /// Verify that the agent recovers from a `ContextLengthExceeded` error during an LLM call,
+    /// compacts its context, and returns a successful response on the next attempt.
+    #[tokio::test]
+    async fn agent_recovers_from_context_length_exceeded_and_produces_response() {
+        // Provider: first call raises ContextLengthExceeded, second call succeeds.
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["final answer".into()])
+                .with_errors(vec![LlmError::ContextLengthExceeded]),
+        );
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = super::Agent::new(provider, channel, registry, None, 5, executor)
+            // Provide a context budget so compact_context has a compaction target
+            .with_context_budget(200_000, 0.20, 0.80, 4, 0);
+
+        // Seed a user message so the agent has something to compact/retry
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "describe the architecture".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // call_llm_with_retry is the direct entry point for the retry/compact flow
+        let result = agent.call_llm_with_retry(2).await.unwrap();
+
+        assert!(
+            result.is_some(),
+            "agent must produce a response after recovering from context length error"
+        );
+        assert_eq!(result.as_deref(), Some("final answer"));
+
+        // Verify the channel received the recovered response
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("final answer")),
+            "recovered response must be forwarded to the channel; got: {sent:?}"
+        );
+    }
+}

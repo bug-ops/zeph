@@ -29,7 +29,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `stt` | `SpeechToText` trait and `WhisperProvider` (OpenAI Whisper, feature-gated behind `stt`) |
 | `candle_whisper` | Local offline STT via Candle (whisper-tiny/base/small, feature-gated behind `candle`) |
 | `http` | `default_client()` — shared HTTP client with standard timeouts and user-agent |
-| `error` | `LlmError` — unified error type |
+| `error` | `LlmError` — unified error type; `ContextLengthExceeded` variant with `is_context_length_error()` heuristic matching across provider error formats (Claude, OpenAI, Ollama) |
 
 **Re-exports:** `LlmProvider`, `LlmError`
 
