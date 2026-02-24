@@ -529,6 +529,67 @@ mod tests {
         assert!(loaded.tools.is_empty());
     }
 
+    #[test]
+    fn load_corrupt_toml_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+        std::fs::write(&file, "this is not valid [[[ toml").unwrap();
+        let loaded = load_persisted(&file);
+        assert!(loaded.tools.is_empty());
+    }
+
+    #[test]
+    fn load_empty_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+        std::fs::write(&file, "").unwrap();
+        let loaded = load_persisted(&file);
+        assert!(loaded.tools.is_empty());
+    }
+
+    #[test]
+    fn load_oversized_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+        let content = "a".repeat(1_048_577);
+        std::fs::write(&file, &content).unwrap();
+        let loaded = load_persisted(&file);
+        assert!(loaded.tools.is_empty());
+    }
+
+    #[test]
+    fn unknown_decision_string_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+        std::fs::write(
+            &file,
+            "[tools]\nshell_execute = \"allow\"\nbad_tool = \"unknown_value\"\n",
+        )
+        .unwrap();
+
+        let local = tokio::runtime::Runtime::new().unwrap();
+        local.block_on(async {
+            let local_set = tokio::task::LocalSet::new();
+            local_set
+                .run_until(async {
+                    let conn = Rc::new(AlwaysRejectClient);
+                    let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
+                    tokio::task::spawn_local(handler);
+
+                    // shell_execute should be allowed from persisted "allow".
+                    let sid = acp::SessionId::new("s1");
+                    let tc = make_tool_call("shell_execute");
+                    assert!(gate.check_permission(sid, tc).await.unwrap());
+
+                    // bad_tool should NOT be in cache — falls through to RejectClient.
+                    let sid2 = acp::SessionId::new("s1");
+                    let tc2 = make_tool_call("bad_tool");
+                    assert!(!gate.check_permission(sid2, tc2).await.unwrap());
+                })
+                .await;
+        });
+    }
+
     #[tokio::test]
     async fn persisted_decision_applied_on_new_gate() {
         let dir = tempfile::tempdir().unwrap();
