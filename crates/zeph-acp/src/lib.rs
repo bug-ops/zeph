@@ -6,7 +6,7 @@ pub mod permission;
 pub mod terminal;
 pub mod transport;
 
-pub use agent::{AcpContext, AgentSpawner};
+pub use agent::{AcpContext, AgentSpawner, ProviderFactory};
 pub use error::AcpError;
 pub use fs::AcpFileExecutor;
 pub use mcp_bridge::acp_mcp_servers_to_entries;

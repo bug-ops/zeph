@@ -154,6 +154,8 @@ pub struct Agent<C: Channel> {
     start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
     summary_provider: Option<AnyProvider>,
+    /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
+    provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
     warmup_ready: Option<watch::Receiver<bool>>,
     doom_loop_history: Vec<u64>,
     cost_tracker: Option<CostTracker>,
@@ -265,6 +267,7 @@ impl<C: Channel> Agent<C> {
             start_time: Instant::now(),
             message_queue: VecDeque::new(),
             summary_provider: None,
+            provider_override: None,
             warmup_ready: None,
             doom_loop_history: Vec::new(),
             cost_tracker: None,
@@ -352,6 +355,7 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Returns an error if channel I/O or LLM communication fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> anyhow::Result<()> {
         if let Some(mut rx) = self.warmup_ready.take()
             && !*rx.borrow()
@@ -363,6 +367,17 @@ impl<C: Channel> Agent<C> {
         }
 
         loop {
+            // Apply any pending provider override (from ACP set_session_config_option).
+            if let Some(ref slot) = self.provider_override
+                && let Some(new_provider) = slot
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            {
+                tracing::debug!(provider = new_provider.name(), "ACP model override applied");
+                self.provider = new_provider;
+            }
+
             // Refresh sub-agent status in metrics before polling.
             if let Some(ref mgr) = self.subagent_manager {
                 let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr

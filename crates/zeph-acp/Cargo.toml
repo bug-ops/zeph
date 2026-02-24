@@ -28,6 +28,7 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-core.workspace = true
+zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-mcp.workspace = true
 zeph-tools.workspace = true

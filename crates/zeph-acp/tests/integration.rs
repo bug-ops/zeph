@@ -38,6 +38,9 @@ fn make_server_config() -> AcpServerConfig {
         max_sessions: 4,
         session_idle_timeout_secs: 1800,
         permission_file: None,
+        provider_factory: None,
+        available_models: Vec::new(),
+        mcp_manager: None,
     }
 }
 

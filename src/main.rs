@@ -2095,6 +2095,10 @@ struct AgentDeps {
     acp_max_sessions: usize,
     acp_session_idle_timeout_secs: u64,
     acp_permission_file: Option<std::path::PathBuf>,
+    acp_available_models: Vec<String>,
+    /// Pre-built provider factory for ACP model switching.
+    #[cfg(feature = "acp")]
+    acp_provider_factory: Option<zeph_acp::ProviderFactory>,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -2207,6 +2211,8 @@ async fn build_acp_deps(
         acp_max_sessions: config.acp.max_sessions,
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
         acp_permission_file: config.acp.permission_file.clone(),
+        acp_available_models: config.acp.available_models.clone(),
+        acp_provider_factory: Some(build_acp_provider_factory(config)),
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -2228,9 +2234,10 @@ async fn spawn_acp_agent(
 
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
-    let (tool_executor, cancel_signal) = match acp_ctx {
+    let (tool_executor, cancel_signal, provider_override) = match acp_ctx {
         Some(ctx) => {
             let cancel_signal = Arc::clone(&ctx.cancel_signal);
+            let provider_override = Arc::clone(&ctx.provider_override);
             let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
             if let Some(fs) = ctx.file_executor {
                 base = Arc::new(zeph_tools::CompositeExecutor::new(
@@ -2244,9 +2251,17 @@ async fn spawn_acp_agent(
                     zeph_tools::DynExecutor(base),
                 ));
             }
-            (zeph_tools::DynExecutor(base), Some(cancel_signal))
+            (
+                zeph_tools::DynExecutor(base),
+                Some(cancel_signal),
+                Some(provider_override),
+            )
         }
-        None => (zeph_tools::DynExecutor(Arc::new(d.tool_executor)), None),
+        None => (
+            zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
+            None,
+            None,
+        ),
     };
 
     let mut agent = Agent::new(
@@ -2296,6 +2311,10 @@ async fn spawn_acp_agent(
         agent = agent.with_cancel_signal(signal);
     }
 
+    if let Some(slot) = provider_override {
+        agent = agent.with_provider_override(slot);
+    }
+
     if let Some(sp) = d.summary_provider {
         agent = agent.with_summary_provider(sp);
     }
@@ -2307,6 +2326,154 @@ async fn spawn_acp_agent(
     if let Err(e) = agent.run().await {
         tracing::error!("ACP agent loop error: {e:#}");
     }
+}
+
+/// Build a `ProviderFactory` from the known named providers in config.
+///
+/// Each available model key is `"{provider_name}:{model}"`.
+/// The factory creates a provider by parsing that key and overriding the model in a clone.
+#[cfg(feature = "acp")]
+#[allow(clippy::too_many_lines)]
+fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::ProviderFactory {
+    // Collect snapshots for providers that have secrets already resolved.
+    #[derive(Clone)]
+    enum ProviderSnapshot {
+        Ollama {
+            base_url: String,
+            embed: String,
+        },
+        Claude {
+            api_key: String,
+            max_tokens: u32,
+        },
+        OpenAi {
+            api_key: String,
+            base_url: String,
+            max_tokens: u32,
+            embed: Option<String>,
+            reasoning_effort: Option<String>,
+        },
+        Compatible {
+            api_key: String,
+            base_url: String,
+            max_tokens: u32,
+            embed: Option<String>,
+            name: String,
+        },
+    }
+
+    let mut snapshots: Vec<ProviderSnapshot> = Vec::new();
+
+    // Ollama
+    snapshots.push(ProviderSnapshot::Ollama {
+        base_url: config.llm.base_url.clone(),
+        embed: config.llm.embedding_model.clone(),
+    });
+
+    // Claude
+    if let Some(ref secret) = config.secrets.claude_api_key {
+        snapshots.push(ProviderSnapshot::Claude {
+            api_key: secret.expose().to_owned(),
+            max_tokens: config.llm.cloud.as_ref().map_or(4096, |c| c.max_tokens),
+        });
+    }
+
+    // OpenAI
+    if let (Some(secret), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai) {
+        snapshots.push(ProviderSnapshot::OpenAi {
+            api_key: secret.expose().to_owned(),
+            base_url: openai_cfg.base_url.clone(),
+            max_tokens: openai_cfg.max_tokens,
+            embed: openai_cfg.embedding_model.clone(),
+            reasoning_effort: openai_cfg.reasoning_effort.clone(),
+        });
+    }
+
+    // Compatible providers
+    if let Some(ref entries) = config.llm.compatible {
+        for entry in entries {
+            if let Some(secret) = config.secrets.compatible_api_keys.get(&entry.name) {
+                snapshots.push(ProviderSnapshot::Compatible {
+                    api_key: secret.expose().to_owned(),
+                    base_url: entry.base_url.clone(),
+                    max_tokens: entry.max_tokens,
+                    embed: entry.embedding_model.clone(),
+                    name: entry.name.clone(),
+                });
+            }
+        }
+    }
+
+    let snapshots = std::sync::Arc::new(snapshots);
+    std::sync::Arc::new(move |key: &str| {
+        let (provider_name, model) = key.split_once(':')?;
+        let model = model.to_owned();
+        for snapshot in snapshots.as_ref() {
+            match snapshot {
+                ProviderSnapshot::Ollama {
+                    base_url, embed, ..
+                } if provider_name == "ollama" => {
+                    let mut p = zeph_llm::ollama::OllamaProvider::new(
+                        base_url,
+                        model.clone(),
+                        embed.clone(),
+                    );
+                    p.set_context_window(0);
+                    return Some(zeph_llm::any::AnyProvider::Ollama(p));
+                }
+                ProviderSnapshot::Claude {
+                    api_key,
+                    max_tokens,
+                } if provider_name == "claude" => {
+                    return Some(zeph_llm::any::AnyProvider::Claude(
+                        zeph_llm::claude::ClaudeProvider::new(
+                            api_key.clone(),
+                            model.clone(),
+                            *max_tokens,
+                        ),
+                    ));
+                }
+                ProviderSnapshot::OpenAi {
+                    api_key,
+                    base_url,
+                    max_tokens,
+                    embed,
+                    reasoning_effort,
+                } if provider_name == "openai" => {
+                    return Some(zeph_llm::any::AnyProvider::OpenAi(
+                        zeph_llm::openai::OpenAiProvider::new(
+                            api_key.clone(),
+                            base_url.clone(),
+                            model.clone(),
+                            *max_tokens,
+                            embed.clone(),
+                            reasoning_effort.clone(),
+                        ),
+                    ));
+                }
+                ProviderSnapshot::Compatible {
+                    api_key,
+                    base_url,
+                    max_tokens,
+                    embed,
+                    name,
+                } if provider_name == name => {
+                    return Some(zeph_llm::any::AnyProvider::Compatible(
+                        zeph_llm::compatible::CompatibleProvider::new(
+                            name.clone(),
+                            api_key.clone(),
+                            base_url.clone(),
+                            model.clone(),
+                            *max_tokens,
+                            embed.clone(),
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        None
+    })
 }
 
 /// Run the ACP server over stdin/stdout.
@@ -2326,15 +2493,19 @@ async fn run_acp_server(
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    let (deps, _keepalive) =
+    let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
 
+    let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: deps.acp_agent_name.clone(),
         agent_version: deps.acp_agent_version.clone(),
         max_sessions: deps.acp_max_sessions,
         session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
         permission_file: deps.acp_permission_file.clone(),
+        provider_factory: deps.acp_provider_factory.take(),
+        available_models: deps.acp_available_models.clone(),
+        mcp_manager: Some(mcp_manager_for_acp),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));

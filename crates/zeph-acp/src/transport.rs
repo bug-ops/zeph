@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
@@ -7,7 +8,7 @@ use futures::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::agent::{AgentSpawner, ZephAcpAgent};
+use crate::agent::{AgentSpawner, ProviderFactory, ZephAcpAgent};
 use crate::error::AcpError;
 
 /// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
@@ -15,13 +16,18 @@ use crate::error::AcpError;
 pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
 
 /// Configuration for the ACP server passed through to the agent.
-#[derive(Debug, Clone)]
 pub struct AcpServerConfig {
     pub agent_name: String,
     pub agent_version: String,
     pub max_sessions: usize,
     pub session_idle_timeout_secs: u64,
     pub permission_file: Option<std::path::PathBuf>,
+    /// Optional factory for runtime model switching.
+    pub provider_factory: Option<ProviderFactory>,
+    /// Available model identifiers to advertise in `new_session`.
+    pub available_models: Vec<String>,
+    /// Optional shared MCP manager for `ext_method` add/remove/list.
+    pub mcp_manager: Option<Arc<zeph_mcp::McpManager>>,
 }
 
 impl Default for AcpServerConfig {
@@ -32,6 +38,9 @@ impl Default for AcpServerConfig {
             max_sessions: 4,
             session_idle_timeout_secs: 1800,
             permission_file: None,
+            provider_factory: None,
+            available_models: Vec::new(),
+            mcp_manager: None,
         }
     }
 }
@@ -75,7 +84,7 @@ where
             let conn_slot: ConnSlot = Rc::new(RefCell::new(None));
 
             let (tx, mut rx) = mpsc::unbounded_channel();
-            let agent = ZephAcpAgent::new(
+            let mut agent = ZephAcpAgent::new(
                 spawner,
                 tx,
                 Rc::clone(&conn_slot),
@@ -84,6 +93,12 @@ where
                 server_config.permission_file,
             )
             .with_agent_info(server_config.agent_name, server_config.agent_version);
+            if let Some(factory) = server_config.provider_factory {
+                agent = agent.with_provider_factory(factory, server_config.available_models);
+            }
+            if let Some(manager) = server_config.mcp_manager {
+                agent = agent.with_mcp_manager(manager);
+            }
             agent.start_idle_reaper();
 
             let (conn, io_fut) = acp::AgentSideConnection::new(agent, writer, reader, |fut| {

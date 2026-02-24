@@ -9228,6 +9228,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-core",
+ "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
  "zeph-tools",
