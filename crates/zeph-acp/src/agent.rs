@@ -241,10 +241,11 @@ impl acp::Agent for ZephAcpAgent {
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
         tracing::debug!(session_id = %args.session_id, "ACP cancel");
+        // Signal the agent loop to stop, but keep the session alive — the IDE may
+        // send another prompt on the same session_id after cancellation.
         if let Some(entry) = self.sessions.borrow().get(&args.session_id) {
             entry.cancel_signal.notify_one();
         }
-        self.sessions.borrow_mut().remove(&args.session_id);
         Ok(())
     }
 
@@ -260,9 +261,20 @@ impl acp::Agent for ZephAcpAgent {
     }
 }
 
+/// Returns `true` if `text` looks like a raw tool-use marker that should not be
+/// forwarded to the IDE (e.g. `[tool_use: bash (toolu_abc123)]`).
+fn is_tool_use_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("[tool_use:") && trimmed.ends_with(']')
+}
+
 fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
     match event {
-        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) if text.is_empty() => None,
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
+            if text.is_empty() || is_tool_use_marker(&text) =>
+        {
+            None
+        }
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => Some(
             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(text.into())),
         ),
@@ -333,7 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_removes_session() {
+    async fn cancel_keeps_session() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -348,7 +360,8 @@ mod tests {
                     .cancel(acp::CancelNotification::new(sid.clone()))
                     .await
                     .unwrap();
-                assert!(!agent.sessions.borrow().contains_key(&sid));
+                // Cancel keeps the session alive for subsequent prompts.
+                assert!(agent.sessions.borrow().contains_key(&sid));
             })
             .await;
     }
@@ -521,5 +534,19 @@ mod tests {
                 assert!(agent.prompt(req).await.is_err());
             })
             .await;
+    }
+
+    #[test]
+    fn tool_use_marker_filtered() {
+        let event =
+            LoopbackEvent::Chunk("[tool_use: bash (toolu_01VzP6Q9b6JQY6ZP5r6qY9Wm)]".into());
+        assert!(loopback_event_to_update(event).is_none());
+
+        let event = LoopbackEvent::FullMessage("[tool_use: read (toolu_abc)]".into());
+        assert!(loopback_event_to_update(event).is_none());
+
+        // Normal text should pass through.
+        let event = LoopbackEvent::Chunk("hello [tool_use: not a marker".into());
+        assert!(loopback_event_to_update(event).is_some());
     }
 }
