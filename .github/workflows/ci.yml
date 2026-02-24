@@ -27,9 +27,9 @@ jobs:
     steps:
       - uses: contributor-assistant/github-action@v2.6.1
         with:
-          path-to-signatures: .github/cla-signatures.json
+          path-to-signatures: cla-signatures.json
           path-to-document: https://github.com/bug-ops/zeph/blob/main/CLA.md
-          branch: main
+          branch: cla-signatures
           allowlist: bug-ops,dependabot[bot],github-actions[bot]
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
