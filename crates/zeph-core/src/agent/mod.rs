@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_llm::stt::SpeechToText;
 
 use crate::metrics::MetricsSnapshot;
@@ -197,6 +197,7 @@ impl<C: Channel> Agent<C> {
                 role: Role::System,
                 content: system_prompt,
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             }],
             memory_state: MemoryState {
                 memory: None,
@@ -638,6 +639,7 @@ impl<C: Channel> Agent<C> {
                 role: Role::User,
                 content: text.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             }
         };
         self.push_message(user_msg);
@@ -1017,7 +1019,7 @@ pub(super) mod agent_tests {
     pub(crate) use tokio::sync::{Notify, mpsc, watch};
     pub(crate) use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
-    pub(crate) use zeph_llm::provider::{Message, Role};
+    pub(crate) use zeph_llm::provider::{Message, MessageMetadata, Role};
     pub(crate) use zeph_memory::semantic::SemanticMemory;
     pub(crate) use zeph_skills::registry::SkillRegistry;
     pub(crate) use zeph_skills::watcher::SkillEvent;
@@ -1824,16 +1826,19 @@ pub(super) mod agent_tests {
             role: Role::User,
             content: "hello".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::Assistant,
             content: "cmd".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::User,
             content: "[tool output: bash]\nsome output".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         assert_eq!(agent.last_user_query(), "hello");

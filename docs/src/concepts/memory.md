@@ -6,11 +6,11 @@ Zeph uses a dual-store memory system: SQLite for structured conversation history
 
 All messages are stored in SQLite. The CLI channel provides persistent input history with arrow-key navigation, prefix search, and Emacs keybindings. History persists across restarts.
 
-When conversations grow long, Zeph generates summaries automatically (triggered after `summarization_threshold` messages, default: 100). Summaries are stored in SQLite and injected into the context window to preserve long-term continuity.
+When conversations grow long, Zeph compacts history automatically (triggered when token usage exceeds `compaction_threshold`). Compaction uses dual-visibility flags on each message: original messages are marked `agent_visible=false` (hidden from the LLM) while remaining `user_visible=true` (preserved in UI). A summary is inserted as `agent_visible=true, user_visible=false` — visible to the LLM but hidden from the user. This is performed atomically via `replace_conversation()` in SQLite. The result: the user retains full scroll-back history while the LLM operates on a compact context.
 
 ## Semantic Memory
 
-With semantic memory enabled, messages are embedded as vectors for similarity search. Ask "what did we discuss about the API yesterday?" and Zeph retrieves relevant context from past sessions automatically.
+With semantic memory enabled, messages are embedded as vectors for similarity search. Ask "what did we discuss about the API yesterday?" and Zeph retrieves relevant context from past sessions automatically. Both vector similarity and keyword (FTS5) search respect visibility boundaries — only `agent_visible=true` messages are indexed and returned, so compacted originals never appear in recall results.
 
 Two vector backends are available:
 

@@ -97,6 +97,14 @@ The `token_safety_margin` config multiplier (default: 1.0) still applies on top 
 
 Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to adaptive chunked LLM compaction — splitting messages into ~4096-token chunks, summarizing up to 4 in parallel, and merging results. See [Context Engineering](../advanced/context.md) for details.
 
+### Message Dual-Visibility
+
+Every `Message` carries a `MessageMetadata` struct with two boolean flags — `agent_visible` and `user_visible` — that control whether the message is included in the LLM context window, the UI history, or both. By default both flags are `true`.
+
+Compaction leverages these flags via `replace_conversation()`: compacted originals are set to `agent_visible=false, user_visible=true` (preserved for the user to scroll through, hidden from the LLM), while the inserted summary is `agent_visible=true, user_visible=false` (injected into the LLM context, hidden from the user). This replaces the previous destructive compaction that deleted original messages.
+
+Semantic recall and keyword search (FTS5) filter by `agent_visible=1` so compacted messages never pollute retrieval results. History loading supports filtered queries via `load_history_filtered(conversation_id, agent_visible, user_visible)` for visibility-aware access.
+
 ## Configuration
 
 ```toml

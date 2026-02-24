@@ -1,6 +1,7 @@
 use super::{Agent, Channel, LlmProvider};
 
 use super::{LearningConfig, Message, Role, SemanticMemory};
+use zeph_llm::provider::MessageMetadata;
 
 use std::path::PathBuf;
 
@@ -81,6 +82,7 @@ impl<C: Channel> Agent<C> {
             role: Role::User,
             content: prompt,
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         let messages_before = self.messages.len();
@@ -110,7 +112,7 @@ impl<C: Channel> Agent<C> {
         Ok(retry_succeeded)
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     pub(super) async fn generate_improved_skill(
         &self,
         skill_name: &str,
@@ -168,6 +170,7 @@ impl<C: Channel> Agent<C> {
                     role: Role::User,
                     content: eval_prompt,
                     parts: vec![],
+                    metadata: MessageMetadata::default(),
                 }];
                 match self
                     .provider
@@ -294,11 +297,13 @@ impl<C: Channel> Agent<C> {
                     "You are a skill improvement assistant. Output only the improved skill body."
                         .into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
 

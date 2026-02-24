@@ -151,12 +151,14 @@ fn contains_analysis_indicators(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::MessageMetadata;
 
     fn user_msg(content: &str) -> Vec<Message> {
         vec![Message {
             role: Role::User,
             content: content.into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }]
     }
 
@@ -277,16 +279,19 @@ mod tests {
                 role: Role::User,
                 content: "write a function".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::Assistant,
                 content: "here it is".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "translate to spanish".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         assert_eq!(TaskType::classify(&messages), TaskType::Translation);
@@ -299,11 +304,13 @@ mod tests {
                 role: Role::System,
                 content: "you write code".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "hello there".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         assert_eq!(TaskType::classify(&messages), TaskType::General);
@@ -424,6 +431,7 @@ mod tests {
             role: Role::Assistant,
             content: "I will write a function for you".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         // No user message → last_user_msg is empty → General
         assert_eq!(TaskType::classify(&messages), TaskType::General);
@@ -458,6 +466,7 @@ mod tests {
                 role: Role::User,
                 content: input,
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             }];
             let _ = TaskType::classify(&msgs);
         }

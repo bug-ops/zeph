@@ -15,7 +15,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 
 | Module | Description |
 |--------|-------------|
-| `provider` | `LlmProvider` trait — unified inference interface; `name()` returns `&str` (no longer `&'static str`) |
+| `provider` | `LlmProvider` trait — unified inference interface; `name()` returns `&str` (no longer `&'static str`); `Message` carries `MessageMetadata` with `agent_visible`/`user_visible` flags for dual-visibility control |
 | `ollama` | Ollama HTTP backend |
 | `claude` | Anthropic Claude backend with `with_client()` builder for shared `reqwest::Client` |
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |

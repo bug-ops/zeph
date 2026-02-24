@@ -1,5 +1,7 @@
 use tokio_stream::StreamExt;
-use zeph_llm::provider::{ChatResponse, LlmProvider, Message, MessagePart, Role, ToolDefinition};
+use zeph_llm::provider::{
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
+};
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
@@ -139,6 +141,7 @@ impl<C: Channel> Agent<C> {
                 role: Role::Assistant,
                 content: response.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
             self.persist_message(Role::Assistant, &response).await;
 
@@ -310,6 +313,7 @@ impl<C: Channel> Agent<C> {
             role: Role::User,
             content: prompt,
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         match self.summary_or_primary_provider().chat(&messages).await {
@@ -1247,7 +1251,7 @@ mod tests {
         use super::super::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,
         };
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
 
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -1259,16 +1263,19 @@ mod tests {
             role: Role::User,
             content: "first question".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::Assistant,
             content: "some answer".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::User,
             content: "second question".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         assert_eq!(agent.last_user_query(), "second question");
@@ -1279,7 +1286,7 @@ mod tests {
         use super::super::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,
         };
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
 
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -1291,12 +1298,14 @@ mod tests {
             role: Role::User,
             content: "what is the result?".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         // Tool output messages start with "[tool output"
         agent.messages.push(Message {
             role: Role::User,
             content: "[tool output] some output".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         assert_eq!(agent.last_user_query(), "what is the result?");
@@ -1663,7 +1672,7 @@ mod tests {
     #[tokio::test]
     async fn streaming_chunk_with_secret_is_redacted_before_channel_send() {
         use super::super::agent_tests::*;
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
 
         // Streaming provider returns a chunk containing an AWS-style access key.
         let secret_chunk = "AKIA1234567890ABCDEF".to_string();
@@ -1678,6 +1687,7 @@ mod tests {
             role: Role::User,
             content: "tell me a secret".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         let _ = agent.process_response_streaming().await.unwrap();
@@ -1718,7 +1728,7 @@ mod tests {
     async fn call_llm_returns_cached_response_without_provider_call() {
         use super::super::agent_tests::*;
         use std::sync::Arc;
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
         use zeph_memory::{ResponseCache, sqlite::SqliteStore};
 
         let channel = MockChannel::new(vec![]);
@@ -1746,6 +1756,7 @@ mod tests {
             role: Role::User,
             content: "what is 2+2?".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         // Recompute key after adding user message
@@ -1770,7 +1781,7 @@ mod tests {
     async fn store_response_in_cache_enables_second_call_to_return_cached() {
         use super::super::agent_tests::*;
         use std::sync::Arc;
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
         use zeph_memory::{ResponseCache, sqlite::SqliteStore};
 
         // Provider has one response; the second call must come from cache.
@@ -1788,6 +1799,7 @@ mod tests {
             role: Role::User,
             content: "what is 3+3?".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         // First call — hits provider, stores response in cache.

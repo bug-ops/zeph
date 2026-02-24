@@ -323,6 +323,7 @@ mod tests {
     use super::*;
     use crate::claude::ClaudeProvider;
     use crate::ollama::OllamaProvider;
+    use crate::provider::MessageMetadata;
     use crate::provider::Role;
 
     fn user_msg(content: &str) -> Vec<Message> {
@@ -330,6 +331,7 @@ mod tests {
             role: Role::User,
             content: content.into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }]
     }
 

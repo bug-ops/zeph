@@ -153,12 +153,66 @@ mod serde_bytes_base64 {
     }
 }
 
+/// Per-message visibility flags controlling agent context and user display.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageMetadata {
+    pub agent_visible: bool,
+    pub user_visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_at: Option<i64>,
+}
+
+impl Default for MessageMetadata {
+    fn default() -> Self {
+        Self {
+            agent_visible: true,
+            user_visible: true,
+            compacted_at: None,
+        }
+    }
+}
+
+impl MessageMetadata {
+    /// Message visible only to the agent (e.g. compaction summary).
+    #[must_use]
+    pub fn agent_only() -> Self {
+        Self {
+            agent_visible: true,
+            user_visible: false,
+            compacted_at: None,
+        }
+    }
+
+    /// Message visible only to the user (e.g. compacted original).
+    #[must_use]
+    pub fn user_only() -> Self {
+        Self {
+            agent_visible: false,
+            user_visible: true,
+            compacted_at: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
     #[serde(default)]
     pub parts: Vec<MessagePart>,
+    #[serde(default)]
+    pub metadata: MessageMetadata,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }
+    }
 }
 
 impl Message {
@@ -168,6 +222,7 @@ impl Message {
             role,
             content: content.into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -178,6 +233,7 @@ impl Message {
             role,
             content,
             parts,
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -431,6 +487,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -475,6 +532,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let result = provider.chat_stream(&messages).await;
@@ -565,6 +623,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cloned = msg.clone();
         assert_eq!(cloned.role, msg.role);
@@ -577,6 +636,7 @@ mod tests {
             role: Role::Assistant,
             content: "response".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("Assistant"));
@@ -589,6 +649,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
@@ -1060,5 +1121,49 @@ mod tests {
             response: String::new(),
         };
         assert!(!provider.supports_vision());
+    }
+
+    #[test]
+    fn message_metadata_default_both_visible() {
+        let m = MessageMetadata::default();
+        assert!(m.agent_visible);
+        assert!(m.user_visible);
+        assert!(m.compacted_at.is_none());
+    }
+
+    #[test]
+    fn message_metadata_agent_only() {
+        let m = MessageMetadata::agent_only();
+        assert!(m.agent_visible);
+        assert!(!m.user_visible);
+    }
+
+    #[test]
+    fn message_metadata_user_only() {
+        let m = MessageMetadata::user_only();
+        assert!(!m.agent_visible);
+        assert!(m.user_visible);
+    }
+
+    #[test]
+    fn message_metadata_serde_default() {
+        let json = r#"{"role":"user","content":"hello"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert!(msg.metadata.agent_visible);
+        assert!(msg.metadata.user_visible);
+    }
+
+    #[test]
+    fn message_metadata_round_trip() {
+        let msg = Message {
+            role: Role::User,
+            content: "test".into(),
+            parts: vec![],
+            metadata: MessageMetadata::agent_only(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Message = serde_json::from_str(&json).unwrap();
+        assert!(decoded.metadata.agent_visible);
+        assert!(!decoded.metadata.user_visible);
     }
 }

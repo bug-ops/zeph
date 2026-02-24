@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use futures::StreamExt as _;
 
-use zeph_llm::provider::MessagePart;
+use zeph_llm::provider::{MessageMetadata, MessagePart};
 use zeph_memory::TokenCounter;
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
@@ -145,6 +145,7 @@ impl<C: Channel> Agent<C> {
                     role: Role::User,
                     content: prompt,
                     parts: vec![],
+                    metadata: MessageMetadata::default(),
                 }])
                 .await
                 .map_err(Into::into);
@@ -160,6 +161,7 @@ impl<C: Channel> Agent<C> {
                     role: Role::User,
                     content: prompt,
                     parts: vec![],
+                    metadata: MessageMetadata::default(),
                 }])
                 .await
             }
@@ -185,6 +187,7 @@ impl<C: Channel> Agent<C> {
                     role: Role::User,
                     content: prompt,
                     parts: vec![],
+                    metadata: MessageMetadata::default(),
                 }])
                 .await
                 .map_err(Into::into);
@@ -210,6 +213,7 @@ impl<C: Channel> Agent<C> {
                 role: Role::User,
                 content: consolidation_prompt,
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             }])
             .await
             .map_err(Into::into)
@@ -231,15 +235,16 @@ impl<C: Channel> Agent<C> {
         let summary = self.summarize_messages(to_compact).await?;
 
         let compacted_count = to_compact.len();
+        let summary_content =
+            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
         self.messages.drain(1..compact_end);
         self.messages.insert(
             1,
             Message {
                 role: Role::System,
-                content: format!(
-                    "[conversation summary — {compacted_count} messages compacted]\n{summary}"
-                ),
+                content: summary_content.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::agent_only(),
             },
         );
 
@@ -256,9 +261,43 @@ impl<C: Channel> Agent<C> {
 
         if let (Some(memory), Some(cid)) =
             (&self.memory_state.memory, self.memory_state.conversation_id)
-            && let Err(e) = memory.store_session_summary(cid, &summary).await
         {
-            tracing::warn!("failed to store session summary: {e:#}");
+            // Persist compaction: mark originals as user_only, insert summary as agent_only.
+            // Assumption: the system prompt is always the first (oldest) row for this conversation
+            // in SQLite — i.e., ids[0] corresponds to self.messages[0] (the system prompt).
+            // This holds for normal sessions but may not hold after cross-session restore if a
+            // non-system message was persisted first. MVP assumption; document if changed.
+            // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
+            // that were drained from self.messages[1..compact_end].
+            let sqlite = memory.sqlite();
+            let ids = sqlite
+                .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
+                .await;
+            match ids {
+                Ok(ids) if ids.len() >= 2 => {
+                    // ids[0] is the system prompt; compact ids[1..=compacted_count]
+                    let start = ids[1];
+                    let end = ids[compacted_count.min(ids.len() - 1)];
+                    if let Err(e) = sqlite
+                        .replace_conversation(cid, start..=end, "system", &summary_content)
+                        .await
+                    {
+                        tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                    }
+                }
+                Ok(_) => {
+                    // Not enough messages in DB — fall back to legacy summary storage
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to get message ids for compaction: {e:#}");
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -1104,6 +1143,7 @@ mod tests {
             role: Role::User,
             content: oversized_content.clone(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let chunks = chunk_messages(&messages, 4096, 2048, &tc);
         assert_eq!(chunks.len(), 1);
@@ -1121,16 +1161,19 @@ mod tests {
                 role: Role::User,
                 content: half.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: half.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: half.clone(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         // budget = 2000 tokens: first two fit, third overflows → 2 chunks
@@ -1217,6 +1260,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i} with some content to add tokens"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
         assert!(!agent.should_compact());
@@ -1249,6 +1293,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message number {i} with enough content to push over budget"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
         assert!(agent.should_compact());
@@ -1275,6 +1320,7 @@ mod tests {
                 },
                 content: format!("message {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -1306,11 +1352,13 @@ mod tests {
             role: Role::User,
             content: "msg1".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::Assistant,
             content: "msg2".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         let len_before = agent.messages.len();
@@ -1366,6 +1414,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -1402,6 +1451,7 @@ mod tests {
                 role: Role::System,
                 content: format!("{RECALL_PREFIX}old recall data"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         );
         assert_eq!(agent.messages.len(), 2);
@@ -1439,6 +1489,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
         assert_eq!(agent.messages.len(), 11);
@@ -1463,6 +1514,7 @@ mod tests {
                 role: Role::User,
                 content: format!("msg {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -1486,6 +1538,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
         let msg_count = agent.messages.len();
@@ -1594,6 +1647,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         agent.inject_summaries(1000).await.unwrap();
@@ -1628,12 +1682,14 @@ mod tests {
                 role: Role::System,
                 content: format!("{SUMMARY_PREFIX}old summary data"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         );
         agent.messages.push(Message {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         assert_eq!(agent.messages.len(), 3);
 
@@ -1673,6 +1729,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         // Use a very small budget: only the prefix + maybe one short entry
@@ -1706,6 +1763,7 @@ mod tests {
                 role: Role::System,
                 content: format!("{SUMMARY_PREFIX}old summary"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         );
         agent.messages.insert(
@@ -1714,6 +1772,7 @@ mod tests {
                 role: Role::System,
                 content: format!("{RECALL_PREFIX}recall data"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         );
         assert_eq!(agent.messages.len(), 3);
@@ -1807,6 +1866,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i} with enough content to push over budget threshold"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -1924,6 +1984,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i}"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -2086,6 +2147,7 @@ mod tests {
                 role: Role::User,
                 content: "recent".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -2115,6 +2177,7 @@ mod tests {
             role: Role::User,
             content: "my key is sk-abc123xyz and lives at /Users/dev/config.toml".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         agent.prepare_context("test").await.unwrap();
@@ -2158,6 +2221,7 @@ mod tests {
             role: Role::User,
             content: original.clone(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         agent.prepare_context("test").await.unwrap();
@@ -2189,6 +2253,7 @@ mod tests {
                 role: Role::User,
                 content: format!("message {i} with content"),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
 
@@ -2216,6 +2281,7 @@ mod tests {
                     "very long message content {i} repeated many times to fill context"
                 ),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             });
         }
         assert!(

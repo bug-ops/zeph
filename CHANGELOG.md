@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `MessageMetadata` struct in `zeph-llm` with `agent_visible`, `user_visible`, `compacted_at` fields; default is both-visible for backward compat (#M28)
+- `Message.metadata` field with `#[serde(default)]` — existing serialized messages deserialize without change
+- SQLite migration `013_message_metadata.sql` — adds `agent_visible`, `user_visible`, `compacted_at` columns to `messages` table
+- `save_message_with_metadata()` in `SqliteStore` for saving messages with explicit visibility flags
+- `load_history_filtered()` in `SqliteStore` — SQL-level filtering by `agent_visible` / `user_visible`
+- `replace_conversation()` in `SqliteStore` — atomic compaction: marks originals `user_only`, inserts summary as `agent_only`
+- `oldest_message_ids()` in `SqliteStore` — returns N oldest message IDs for a conversation
+- `Agent.load_history()` now loads only `agent_visible=true` messages, excluding compacted originals
+- `compact_context()` persists compaction atomically via `replace_conversation()`, falling back to legacy summary storage if DB IDs are unavailable
 - Multi-session ACP support with configurable `max_sessions` (default 4) and LRU eviction of idle sessions (#781)
 - `session_idle_timeout_secs` config for automatic session cleanup (default 30 min) with background reaper task (#781)
 - `ZEPH_ACP_MAX_SESSIONS` and `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` env overrides (#781)

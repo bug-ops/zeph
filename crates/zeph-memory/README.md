@@ -19,7 +19,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 | Module | Description |
 |--------|-------------|
-| `sqlite` | SQLite storage for conversations and messages |
+| `sqlite` | SQLite storage for conversations and messages; visibility-aware queries (`load_history_filtered`, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()` |
 | `sqlite::history` | Input history persistence for CLI channel |
 | `sqlite::acp_sessions` | ACP session and event persistence for session resume and lifecycle tracking |
 | `qdrant` | Qdrant client for vector upsert and search |

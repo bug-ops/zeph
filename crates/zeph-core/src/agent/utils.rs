@@ -88,7 +88,7 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
-    use zeph_llm::provider::MessagePart;
+    use zeph_llm::provider::{MessageMetadata, MessagePart};
 
     #[test]
     fn push_message_increments_cached_tokens() {
@@ -103,6 +103,7 @@ mod tests {
             role: Role::User,
             content: "hello world!!".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         let expected_delta = agent.token_counter.count_tokens("hello world!!") as u64;
         assert_eq!(agent.cached_prompt_tokens, before + expected_delta);
@@ -120,11 +121,13 @@ mod tests {
             role: Role::User,
             content: "1234".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         agent.messages.push(Message {
             role: Role::Assistant,
             content: "5678".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         agent.recompute_prompt_tokens();
@@ -150,6 +153,7 @@ mod tests {
             role: Role::User,
             content: "question".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         agent.inject_code_context("some code here");
@@ -174,6 +178,7 @@ mod tests {
             role: Role::User,
             content: "question".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
         let count_before = agent.messages.len();
 
@@ -210,6 +215,7 @@ mod tests {
             role: Role::User,
             content: "test".to_string(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         });
 
         assert_eq!(agent.context_messages().len(), agent.messages.len());

@@ -874,6 +874,7 @@ struct JsonSchemaFormat<'a> {
 mod tests {
     use super::*;
     use crate::provider::ImageData;
+    use crate::provider::MessageMetadata;
     use tokio_stream::StreamExt;
 
     fn test_provider() -> OpenAiProvider {
@@ -1077,16 +1078,19 @@ mod tests {
                 role: Role::System,
                 content: "system prompt".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "user msg".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::Assistant,
                 content: "assistant reply".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         let api_msgs = convert_messages(&messages);
@@ -1111,6 +1115,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         assert!(p.chat(&messages).await.is_err());
     }
@@ -1129,6 +1134,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         assert!(p.chat_stream(&messages).await.is_err());
     }
@@ -1221,6 +1227,7 @@ mod tests {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let response = provider.chat(&messages).await.unwrap();
@@ -1245,6 +1252,7 @@ mod tests {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
