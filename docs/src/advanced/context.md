@@ -115,12 +115,26 @@ If Tier 1 does not free enough tokens, adaptive chunked compaction runs:
 1. Middle messages (between system prompt and last N recent) are split into ~4096-token chunks
 2. Chunks are summarized in parallel via `futures::stream::buffer_unordered(4)` — up to 4 concurrent LLM calls
 3. Partial summaries are merged into a final summary via a second LLM pass
-4. All middle messages are replaced with a single summary message
+4. `replace_conversation()` atomically updates the compacted range and inserts the summary in SQLite
 5. Last `compaction_preserve_tail` messages (default: 4) are always preserved
 
 If a single chunk fits all messages, or if chunked summarization fails, the system falls back to a single-pass summarization over the full message range.
 
 Both tiers are idempotent and run automatically during the agent loop.
+
+### Dual-Visibility Compaction
+
+Compaction is non-destructive. Each `Message` carries `MessageMetadata` with `agent_visible` and `user_visible` flags:
+
+| Message state | `agent_visible` | `user_visible` | Appears in |
+|---------------|-----------------|----------------|------------|
+| Normal | `true` | `true` | LLM context + UI |
+| Compacted original | `false` | `true` | UI only |
+| Compaction summary | `true` | `false` | LLM context only |
+
+`replace_conversation()` performs both updates atomically in a single SQLite transaction: it sets `agent_visible=0, compacted_at=<timestamp>` on the compacted range, then inserts the summary with `agent_visible=1, user_visible=0`. This guarantees the user retains full scroll-back history while the LLM sees only the compact summary.
+
+Semantic recall (vector + FTS5) filters by `agent_visible=1`, so compacted originals are excluded from retrieval. Use `load_history_filtered(conversation_id, agent_visible, user_visible)` to query messages by visibility.
 
 ## Tool Output Management
 

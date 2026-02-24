@@ -128,3 +128,5 @@ See [CLI Reference — `zeph memory`](../reference/cli.md#zeph-memory) for detai
 | Qdrant or SQLite vectors | Vector index for semantic similarity search (embeddings only) |
 
 Both stores work together: SQLite holds the data, the vector backend enables similarity search over it. With the Qdrant backend, the `embeddings_metadata` table in SQLite maps message IDs to Qdrant point IDs. With the SQLite backend, vectors are stored directly in `vector_points` and `vector_point_payloads` tables.
+
+The `messages` table includes `agent_visible`, `user_visible`, and `compacted_at` columns (migration `013_message_metadata.sql`) plus an index on `conversation_id`. Semantic recall and FTS5 keyword search filter by `agent_visible=1`, ensuring compacted messages are excluded from retrieval results.
