@@ -78,6 +78,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `provider_override` with `Arc<RwLock>` and poison recovery in agent loop (#785)
 - `available_models` configuration in `AcpConfig` (#785)
 - `with_provider_override()` builder method on `Agent` (#785)
+- HTTP+SSE transport for ACP — POST `/acp` with SSE response stream, GET `/acp` for notification reconnect (#783)
+- WebSocket transport for ACP — GET `/acp/ws` with bidirectional messaging (#783)
+- Duplex bridge pattern for HTTP/WS connections — `tokio::io::duplex` bridging axum handlers to ACP SDK (#783)
+- `AcpTransport` enum (`Stdio`/`Http`/`Both`) and `http_bind` config field in `[acp]` section (#783)
+- `acp-http` feature gate for HTTP+WS transport dependencies (#783)
+- Session routing via `Acp-Session-Id` header with UUID validation (#783)
+- Body size limit (1 MiB), WS message size limit, max_sessions enforcement (503), CORS deny-all (#783)
+- SSE keepalive pings (15s interval) and idle reaper with `last_activity` tracking (#783)
 
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)

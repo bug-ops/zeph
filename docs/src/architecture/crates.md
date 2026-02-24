@@ -166,6 +166,10 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
 - `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
 - **Model switching** — `set_session_config_option` with `config_id = "model"` validates the requested model against `available_models` allowlist, resolves it via `ProviderFactory` (`Arc<dyn Fn(&str) -> Option<AnyProvider>>`), and stores the result in a shared `provider_override: Arc<RwLock<Option<AnyProvider>>>` that the agent loop checks on each turn. RwLock uses `PoisonError::into_inner` for poison recovery
 - **Extension methods** — `ext_method` dispatches custom JSON-RPC methods: `_agent/mcp/add`, `_agent/mcp/remove`, `_agent/mcp/list` delegate to `McpManager` for runtime MCP server management
+- **HTTP+SSE transport** (feature `acp-http`) — axum-based POST `/acp` accepts JSON-RPC requests and returns SSE response streams; GET `/acp` reconnects SSE notifications with `Acp-Session-Id` header routing. Includes 1 MiB body limit, UUID session ID validation, CORS deny-all, and SSE keepalive pings (15s)
+- **WebSocket transport** (feature `acp-http`) — GET `/acp/ws` upgrades to bidirectional WebSocket with 1 MiB message limit and max_sessions enforcement (503)
+- **Duplex bridge** — `tokio::io::duplex` connects axum handlers to the ACP SDK's `AsyncRead+AsyncWrite` interface. Each HTTP/WS connection spawns a dedicated OS thread with `LocalSet` (required because Agent trait is `!Send`)
+- `AcpTransport` enum (`Stdio`/`Http`/`Both`) and `http_bind` config field control which transports are active
 
 ### Session Lifecycle
 
