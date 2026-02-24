@@ -73,6 +73,10 @@ cargo llvm-cov --all-features --workspace
 | `zeph-memory` | SQLite conversation persistence, Qdrant vector search |
 | `zeph-channels` | Telegram adapter |
 
+## Contributor License Agreement (CLA)
+
+All external contributors must sign the [CLA](CLA.md) before their pull request can be merged. The CLA bot will automatically comment on your PR with instructions. Signatures are stored in the protected `cla-signatures` branch.
+
 ## Pull Requests
 
 1. Create a feature branch: `feat/<scope>/<description>` or `fix/<scope>/<description>`
@@ -96,4 +100,4 @@ cargo llvm-cov --all-features --workspace
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [MIT](LICENSE) OR [Apache-2.0](LICENSE-APACHE) license, and you accept the terms of the [CLA](CLA.md).
