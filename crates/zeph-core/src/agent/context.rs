@@ -3483,4 +3483,48 @@ mod tests {
         assert!(agent.messages[1].metadata.agent_visible);
         assert!(agent.messages[2].metadata.agent_visible);
     }
+
+    #[test]
+    fn build_tool_pair_summary_prompt_contains_xml_delimiters() {
+        let req = Message {
+            role: Role::Assistant,
+            content: "call bash".into(),
+            ..Message::default()
+        };
+        let res = Message {
+            role: Role::User,
+            content: "exit code 0".into(),
+            ..Message::default()
+        };
+        let prompt = Agent::<MockChannel>::build_tool_pair_summary_prompt(&req, &res);
+        assert!(prompt.contains("<tool_request>"), "missing <tool_request>");
+        assert!(
+            prompt.contains("</tool_request>"),
+            "missing </tool_request>"
+        );
+        assert!(
+            prompt.contains("<tool_response>"),
+            "missing <tool_response>"
+        );
+        assert!(
+            prompt.contains("</tool_response>"),
+            "missing </tool_response>"
+        );
+        assert!(prompt.contains("call bash"));
+        assert!(prompt.contains("exit code 0"));
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_empty_messages_does_nothing() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        agent.messages.clear();
+        agent.maybe_summarize_tool_pair().await;
+        assert!(agent.messages.is_empty());
+    }
 }

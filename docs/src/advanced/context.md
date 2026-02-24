@@ -13,6 +13,7 @@ compaction_threshold = 0.75       # Compact when usage exceeds this fraction
 compaction_preserve_tail = 4      # Keep last N messages during compaction
 prune_protect_tokens = 40000      # Protect recent N tokens from Tier 1 tool output pruning
 cross_session_score_threshold = 0.35  # Minimum relevance for cross-session results (0.0-1.0)
+tool_call_cutoff = 6              # Summarize oldest tool pair when visible pairs exceed this
 
 [memory.semantic]
 enabled = true                    # Required for semantic recall
@@ -93,6 +94,29 @@ Every system prompt rebuild injects an `<environment>` block with:
 - OS (linux, macos, windows)
 - Current git branch (if in a git repo)
 - Active model name
+
+## Tool-Pair Summarization
+
+After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of visible tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest visible pair is summarized via LLM and the originals are hidden.
+
+### How It Works
+
+1. `count_tool_pairs()` scans for consecutive Assistant(`ToolUse`) + User(`ToolResult`/`ToolOutput`) pairs where both have `agent_visible = true`.
+2. If the count exceeds `tool_call_cutoff`, `find_oldest_tool_pair()` locates the first such pair.
+3. `build_tool_pair_summary_prompt()` constructs a prompt with XML-delimited sections (`<tool_request>` and `<tool_response>`) to prevent content injection.
+4. The summary provider generates a 1-2 sentence summary capturing tool name, key parameters, and outcome.
+5. Both original messages are set to `agent_visible = false` (hidden from LLM context but still visible in UI).
+6. A new Assistant message with a `Summary` part is inserted, marked `agent_only`.
+
+### Visibility After Summarization
+
+| Message | `agent_visible` | `user_visible` | Appears in |
+|---------|-----------------|----------------|------------|
+| Original tool request | `false` | `true` | UI only |
+| Original tool response | `false` | `true` | UI only |
+| `[tool summary]` message | `true` | `false` | LLM context only |
+
+Summarization runs synchronously between tool iterations. If the LLM call fails, the error is logged and the pair is left unsummarized.
 
 ## Two-Tier Context Pruning
 
@@ -257,6 +281,7 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |
 | `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory results | `0.35` |
+| `ZEPH_MEMORY_TOOL_CALL_CUTOFF` | Max visible tool pairs before oldest is summarized | `6` |
 | `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED` | Enable temporal decay scoring | `false` |
 | `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_HALF_LIFE_DAYS` | Half-life for temporal decay | `30` |
 | `ZEPH_MEMORY_SEMANTIC_MMR_ENABLED` | Enable MMR re-ranking | `false` |

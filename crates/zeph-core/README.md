@@ -24,7 +24,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `context` | LLM context assembly from history, skills, memory; resilient compaction with reactive context-overflow retry (max 2 attempts), middle-out progressive tool response removal (10/20/50/100% tiers), 9-section structured compaction prompt, LLM-free metadata fallback via `build_metadata_summary()` with safe UTF-8 truncation; parallel chunked summarization; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
+| `context` | LLM context assembly from history, skills, memory; resilient compaction with reactive context-overflow retry (max 2 attempts), middle-out progressive tool response removal (10/20/50/100% tiers), 9-section structured compaction prompt, LLM-free metadata fallback via `build_metadata_summary()` with safe UTF-8 truncation; parallel chunked summarization; tool-pair summarization via `maybe_summarize_tool_pair()` — when visible pairs exceed `tool_call_cutoff`, oldest pair is LLM-summarized with XML-delimited prompt and originals hidden via `agent_visible=false`; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
 | `cost` | Token cost tracking and budgeting |
 | `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |
@@ -57,6 +57,7 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `redact_credentials` | bool | `true` | Scrub secrets and paths before LLM context injection |
 | `autosave_assistant` | bool | `false` | Persist assistant responses to semantic memory automatically |
 | `autosave_min_length` | usize | `20` | Minimum response length (chars) to trigger autosave |
+| `tool_call_cutoff` | usize | `6` | Max visible tool call/response pairs before oldest is summarized via LLM |
 
 ```toml
 [agent]

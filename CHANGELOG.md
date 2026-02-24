@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Tool-pair summarization — `maybe_summarize_tool_pair()` summarizes oldest tool call/response pairs when visible count exceeds `tool_call_cutoff` (default 6) (#793)
+- XML-delimited prompt in `build_tool_pair_summary_prompt()` to prevent prompt injection from tool output
+- `[memory] tool_call_cutoff` config option with validation (`>= 1`)
 - Reactive compaction on `ContextLengthExceeded` — auto-compact and retry LLM calls up to 2 times (#792)
 - `ContextLengthExceeded` error variant in `LlmError` with provider-specific pattern detection (Claude, OpenAI, Ollama)
 - Middle-out progressive tool response removal fallback during summarization (10/20/50/100% tiers)
