@@ -177,6 +177,8 @@ pub enum LoopbackEvent {
 pub struct LoopbackHandle {
     pub input_tx: tokio::sync::mpsc::Sender<ChannelMessage>,
     pub output_rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
+    /// Shared cancel signal: notify to interrupt the agent's current operation.
+    pub cancel_signal: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// Headless channel bridging an A2A `TaskProcessor` with the agent loop.
@@ -191,6 +193,7 @@ impl LoopbackChannel {
     pub fn pair(buffer: usize) -> (Self, LoopbackHandle) {
         let (input_tx, input_rx) = tokio::sync::mpsc::channel(buffer);
         let (output_tx, output_rx) = tokio::sync::mpsc::channel(buffer);
+        let cancel_signal = std::sync::Arc::new(tokio::sync::Notify::new());
         (
             Self {
                 input_rx,
@@ -199,6 +202,7 @@ impl LoopbackChannel {
             LoopbackHandle {
                 input_tx,
                 output_rx,
+                cancel_signal,
             },
         )
     }
@@ -406,6 +410,26 @@ mod tests {
         // Both sides exist and channels are connected via their sender capacity
         drop(channel);
         drop(handle);
+    }
+
+    #[tokio::test]
+    async fn loopback_cancel_signal_can_be_notified_and_awaited() {
+        let (_channel, handle) = LoopbackChannel::pair(8);
+        let signal = std::sync::Arc::clone(&handle.cancel_signal);
+        // Notify from one side, await on the other.
+        let notified = signal.notified();
+        handle.cancel_signal.notify_one();
+        notified.await; // resolves immediately after notify_one()
+    }
+
+    #[tokio::test]
+    async fn loopback_cancel_signal_shared_across_clones() {
+        let (_channel, handle) = LoopbackChannel::pair(8);
+        let signal_a = std::sync::Arc::clone(&handle.cancel_signal);
+        let signal_b = std::sync::Arc::clone(&handle.cancel_signal);
+        let notified = signal_b.notified();
+        signal_a.notify_one();
+        notified.await;
     }
 
     #[tokio::test]

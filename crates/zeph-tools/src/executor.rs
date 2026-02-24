@@ -263,6 +263,49 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
     }
 }
 
+/// Wraps `Arc<dyn ErasedToolExecutor>` so it can be used as a concrete `ToolExecutor`.
+///
+/// Enables dynamic composition of tool executors at runtime without static type chains.
+pub struct DynExecutor(pub std::sync::Arc<dyn ErasedToolExecutor>);
+
+impl ToolExecutor for DynExecutor {
+    fn execute(
+        &self,
+        response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        // Clone data to satisfy the 'static-ish bound: erased futures must not borrow self.
+        let inner = std::sync::Arc::clone(&self.0);
+        let response = response.to_owned();
+        async move { inner.execute_erased(&response).await }
+    }
+
+    fn execute_confirmed(
+        &self,
+        response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let inner = std::sync::Arc::clone(&self.0);
+        let response = response.to_owned();
+        async move { inner.execute_confirmed_erased(&response).await }
+    }
+
+    fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
+        self.0.tool_definitions_erased()
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let inner = std::sync::Arc::clone(&self.0);
+        let call = call.clone();
+        async move { inner.execute_tool_call_erased(&call).await }
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        ErasedToolExecutor::set_skill_env(self.0.as_ref(), env);
+    }
+}
+
 /// Extract fenced code blocks with the given language marker from text.
 ///
 /// Searches for `` ```{lang} `` … `` ``` `` pairs, returning trimmed content.
@@ -520,5 +563,95 @@ mod tests {
         let fs = FilterStats::default();
         let line = fs.format_inline("bash");
         assert_eq!(line, "[bash] 0 lines \u{2192} 0 lines, 0.0% filtered");
+    }
+
+    // DynExecutor tests
+
+    struct FixedExecutor {
+        tool_id: &'static str,
+        output: &'static str,
+    }
+
+    impl ToolExecutor for FixedExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                tool_name: self.tool_id.to_owned(),
+                summary: self.output.to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+            }))
+        }
+
+        fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
+            vec![]
+        }
+
+        async fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                tool_name: self.tool_id.to_owned(),
+                summary: self.output.to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn dyn_executor_execute_delegates() {
+        let inner = std::sync::Arc::new(FixedExecutor {
+            tool_id: "bash",
+            output: "hello",
+        });
+        let exec = DynExecutor(inner);
+        let result = exec.execute("```bash\necho hello\n```").await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().summary, "hello");
+    }
+
+    #[tokio::test]
+    async fn dyn_executor_execute_confirmed_delegates() {
+        let inner = std::sync::Arc::new(FixedExecutor {
+            tool_id: "bash",
+            output: "confirmed",
+        });
+        let exec = DynExecutor(inner);
+        let result = exec.execute_confirmed("...").await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().summary, "confirmed");
+    }
+
+    #[test]
+    fn dyn_executor_tool_definitions_delegates() {
+        let inner = std::sync::Arc::new(FixedExecutor {
+            tool_id: "my_tool",
+            output: "",
+        });
+        let exec = DynExecutor(inner);
+        // FixedExecutor returns empty definitions; verify delegation occurs without panic.
+        let defs = exec.tool_definitions();
+        assert!(defs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dyn_executor_execute_tool_call_delegates() {
+        let inner = std::sync::Arc::new(FixedExecutor {
+            tool_id: "bash",
+            output: "tool_call_result",
+        });
+        let exec = DynExecutor(inner);
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().summary, "tool_call_result");
     }
 }

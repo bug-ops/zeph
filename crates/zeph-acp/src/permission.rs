@@ -66,12 +66,15 @@ impl AcpPermissionGate {
         session_id: acp::SessionId,
         tool_call: acp::ToolCallUpdate,
     ) -> Result<bool, AcpError> {
-        // Key on session + tool title (binary name) for AllowAlways/RejectAlways caching.
-        // Granularity is intentionally per-binary, per-session: the user approves "bash" once
-        // per session rather than per-invocation, matching IDE UX expectations.
-        // Trade-off: two distinct tools with the same title share one cache entry.
-        // This is acceptable since title is the user-visible identifier shown in the IDE prompt.
-        let tool_name = tool_call.fields.title.as_deref().unwrap_or("");
+        // Key on session + tool title for AllowAlways/RejectAlways caching. When title is absent,
+        // fall back to tool_call_id so distinct untitled tools never share the same cache entry.
+        let fallback = tool_call.tool_call_id.to_string();
+        let tool_name = tool_call
+            .fields
+            .title
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&fallback);
         let cache_key = format!("{session_id}:{tool_name}");
 
         // Fast path: cached decision.
@@ -127,12 +130,14 @@ async fn run_permission_handler<C>(
             ),
         ];
 
+        let fallback = req.tool_call.tool_call_id.to_string();
         let tool_name = req
             .tool_call
             .fields
             .title
             .as_deref()
-            .unwrap_or("")
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&fallback)
             .to_owned();
         let session_id = &req.session_id;
         let cache_key = format!("{session_id}:{tool_name}");
@@ -328,10 +333,10 @@ mod tests {
                 // Second call — served from cache without IDE round-trip.
                 let second = gate.check_permission(sid, tc).await.unwrap();
                 assert!(second);
-                // Verify cache entry uses "session_id:tool_name" key.
+                // Verify cache entry uses "session_id:tool_call_id" key (title is absent).
                 let guard = gate.cache.read().unwrap();
                 assert!(matches!(
-                    guard.get("s1:"),
+                    guard.get("s1:tc-aa"),
                     Some(PermissionDecision::AllowAlways)
                 ));
             })
@@ -358,7 +363,7 @@ mod tests {
                 assert!(!second);
                 let guard = gate.cache.read().unwrap();
                 assert!(matches!(
-                    guard.get("s1:"),
+                    guard.get("s1:tc-ra"),
                     Some(PermissionDecision::RejectAlways)
                 ));
             })

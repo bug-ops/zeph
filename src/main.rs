@@ -2199,15 +2199,48 @@ async fn build_acp_deps(
 }
 
 /// Spawn an `Agent` from pre-built deps and run its loop on the given channel.
+///
+/// When `acp_ctx` is `Some`, ACP executors are composed on top of the local tool executor
+/// (ACP-first, local fallback). When `None`, local tools handle everything.
 #[cfg(feature = "acp")]
-async fn spawn_acp_agent(d: AgentDeps, channel: zeph_core::channel::LoopbackChannel) {
+async fn spawn_acp_agent(
+    d: AgentDeps,
+    channel: zeph_core::channel::LoopbackChannel,
+    acp_ctx: Option<zeph_acp::AcpContext>,
+) {
+    use std::sync::Arc;
+    use zeph_tools::ErasedToolExecutor;
+
+    // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
+    // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
+    let (tool_executor, cancel_signal) = match acp_ctx {
+        Some(ctx) => {
+            let cancel_signal = Arc::clone(&ctx.cancel_signal);
+            let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
+            if let Some(fs) = ctx.file_executor {
+                base = Arc::new(zeph_tools::CompositeExecutor::new(
+                    fs,
+                    zeph_tools::DynExecutor(base),
+                ));
+            }
+            if let Some(shell) = ctx.shell_executor {
+                base = Arc::new(zeph_tools::CompositeExecutor::new(
+                    shell,
+                    zeph_tools::DynExecutor(base),
+                ));
+            }
+            (zeph_tools::DynExecutor(base), Some(cancel_signal))
+        }
+        None => (zeph_tools::DynExecutor(Arc::new(d.tool_executor)), None),
+    };
+
     let mut agent = Agent::new(
         d.provider,
         channel,
         d.registry,
         d.matcher,
         d.max_active_skills,
-        d.tool_executor,
+        tool_executor,
     )
     .with_max_tool_iterations(d.max_tool_iterations)
     .with_model_name(d.model_name)
@@ -2242,6 +2275,10 @@ async fn spawn_acp_agent(d: AgentDeps, channel: zeph_core::channel::LoopbackChan
     )
     .with_learning(d.learning)
     .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    if let Some(signal) = cancel_signal {
+        agent = agent.with_cancel_signal(signal);
+    }
 
     if let Some(sp) = d.summary_provider {
         agent = agent.with_summary_provider(sp);
@@ -2283,7 +2320,7 @@ async fn run_acp_server(
 
     let deps = Arc::new(Mutex::new(Some(deps)));
 
-    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, _acp_ctx| {
+    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx| {
         let deps = Arc::clone(&deps);
         Box::pin(async move {
             let Some(d) = deps.lock().await.take() else {
@@ -2292,7 +2329,7 @@ async fn run_acp_server(
                 );
                 return;
             };
-            Box::pin(spawn_acp_agent(d, channel)).await;
+            Box::pin(spawn_acp_agent(d, channel, acp_ctx)).await;
         })
     });
 

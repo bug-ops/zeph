@@ -285,6 +285,14 @@ impl<C: Channel> Agent<C> {
     pub fn cancel_signal(&self) -> Arc<Notify> {
         Arc::clone(&self.cancel_signal)
     }
+
+    /// Inject a shared cancel signal so an external caller (e.g. ACP session) can
+    /// interrupt the agent loop by calling `notify_one()`.
+    #[must_use]
+    pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
+        self.cancel_signal = signal;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +301,24 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
+
+    #[test]
+    fn with_cancel_signal_replaces_internal_signal() {
+        let agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let shared = Arc::new(Notify::new());
+        let agent = agent.with_cancel_signal(Arc::clone(&shared));
+
+        // The injected signal and the agent's internal signal must be the same Arc.
+        assert!(Arc::ptr_eq(&shared, &agent.cancel_signal()));
+    }
 
     /// Verify that with_managed_skills_dir enables the install/remove commands.
     /// Without a managed dir, `/skill install` sends a "not configured" message.

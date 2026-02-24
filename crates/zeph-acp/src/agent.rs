@@ -24,6 +24,8 @@ pub struct AcpContext {
     pub file_executor: Option<AcpFileExecutor>,
     pub shell_executor: Option<AcpShellExecutor>,
     pub permission_gate: Option<AcpPermissionGate>,
+    /// Shared cancellation signal: notify to interrupt the running agent operation.
+    pub cancel_signal: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// Factory: receives a [`LoopbackChannel`] and optional [`AcpContext`], runs the agent loop.
@@ -44,6 +46,7 @@ struct SessionEntry {
     // Receiver is owned solely by the prompt() handler; RefCell avoids Arc<Mutex> overhead
     // since MAX_SESSIONS=1 and prompt() is never called concurrently for the same session.
     output_rx: RefCell<Option<mpsc::Receiver<LoopbackEvent>>>,
+    cancel_signal: std::sync::Arc<tokio::sync::Notify>,
 }
 
 pub struct ZephAcpAgent {
@@ -77,7 +80,11 @@ impl ZephAcpAgent {
         self
     }
 
-    fn build_acp_context(&self, session_id: &acp::SessionId) -> Option<AcpContext> {
+    fn build_acp_context(
+        &self,
+        session_id: &acp::SessionId,
+        cancel_signal: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Option<AcpContext> {
         let conn_guard = self.conn_slot.borrow();
         let conn = conn_guard.as_ref()?;
 
@@ -102,6 +109,7 @@ impl ZephAcpAgent {
             file_executor: Some(fs_exec),
             shell_executor: Some(shell_exec),
             permission_gate: Some(perm_gate),
+            cancel_signal,
         })
     }
 
@@ -151,14 +159,17 @@ impl acp::Agent for ZephAcpAgent {
         tracing::debug!(%session_id, "new ACP session");
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
+        // Clone once for build_acp_context; ownership of the original moves into SessionEntry.
+        let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
 
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
+            cancel_signal: handle.cancel_signal,
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
-        let acp_ctx = self.build_acp_context(&session_id);
+        let acp_ctx = self.build_acp_context(&session_id, cancel_signal);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
             (spawner)(channel, acp_ctx).await;
@@ -230,6 +241,9 @@ impl acp::Agent for ZephAcpAgent {
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
         tracing::debug!(session_id = %args.session_id, "ACP cancel");
+        if let Some(entry) = self.sessions.borrow().get(&args.session_id) {
+            entry.cancel_signal.notify_one();
+        }
         self.sessions.borrow_mut().remove(&args.session_id);
         Ok(())
     }
@@ -335,6 +349,40 @@ mod tests {
                     .await
                     .unwrap();
                 assert!(!agent.sessions.borrow().contains_key(&sid));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cancel_triggers_notify_one() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+
+                // Capture the cancel_signal before cancel() removes the entry.
+                let signal = std::sync::Arc::clone(
+                    &agent.sessions.borrow().get(&sid).unwrap().cancel_signal,
+                );
+
+                // Set up a notified future before calling cancel().
+                let notified = signal.notified();
+
+                agent
+                    .cancel(acp::CancelNotification::new(sid))
+                    .await
+                    .unwrap();
+
+                // Should resolve immediately since cancel() called notify_one().
+                tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+                    .await
+                    .expect("cancel_signal was not notified within timeout");
             })
             .await;
     }
