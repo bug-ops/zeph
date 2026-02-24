@@ -160,6 +160,7 @@ impl<C: Channel> Agent<C> {
 
             // Prune tool output bodies from older iterations to reduce context growth
             self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
+            self.maybe_summarize_tool_pair().await;
 
             // Doom-loop detection: compare last N outputs by content hash
             if let Some(last_msg) = self.messages.last() {
@@ -702,6 +703,7 @@ impl<C: Channel> Agent<C> {
 
             // Prune tool output bodies from older iterations to reduce context growth
             self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
+            self.maybe_summarize_tool_pair().await;
 
             if self.check_doom_loop(iteration).await? {
                 break;

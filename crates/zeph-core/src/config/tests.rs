@@ -2531,3 +2531,23 @@ token_safety_margin = 1.15
         memory.token_safety_margin
     );
 }
+
+#[test]
+fn tool_call_cutoff_zero_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.tool_call_cutoff = 0;
+    let result = config.validate();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("tool_call_cutoff must be >= 1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn tool_call_cutoff_one_accepted_by_validate() {
+    let mut config = Config::default();
+    config.memory.tool_call_cutoff = 1;
+    assert!(config.validate().is_ok());
+}

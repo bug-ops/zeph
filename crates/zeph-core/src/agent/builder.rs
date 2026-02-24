@@ -24,6 +24,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_tool_call_cutoff(mut self, cutoff: usize) -> Self {
+        self.memory_state.tool_call_cutoff = cutoff;
+        self
+    }
+
+    #[must_use]
     pub fn with_response_cache(
         mut self,
         cache: std::sync::Arc<zeph_memory::ResponseCache>,
@@ -297,6 +303,17 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
         self.cancel_signal = signal;
+        self
+    }
+
+    /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
+    /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
+    #[must_use]
+    pub fn with_provider_override(
+        mut self,
+        slot: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+    ) -> Self {
+        self.provider_override = Some(slot);
         self
     }
 }

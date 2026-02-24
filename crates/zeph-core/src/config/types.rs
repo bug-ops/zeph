@@ -482,10 +482,16 @@ pub struct MemoryConfig {
     pub autosave_assistant: bool,
     #[serde(default = "default_autosave_min_length")]
     pub autosave_min_length: usize,
+    #[serde(default = "default_tool_call_cutoff")]
+    pub tool_call_cutoff: usize,
 }
 
 fn default_autosave_min_length() -> usize {
     20
+}
+
+fn default_tool_call_cutoff() -> usize {
+    6
 }
 
 fn default_token_safety_margin() -> f32 {
@@ -1089,6 +1095,10 @@ pub struct AcpConfig {
     pub session_idle_timeout_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_file: Option<std::path::PathBuf>,
+    /// List of `{provider}:{model}` identifiers advertised to the IDE for model switching.
+    /// Example: `["claude:claude-sonnet-4-5", "ollama:llama3"]`
+    #[serde(default)]
+    pub available_models: Vec<String>,
 }
 
 impl Default for AcpConfig {
@@ -1100,6 +1110,7 @@ impl Default for AcpConfig {
             max_sessions: default_acp_max_sessions(),
             session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
             permission_file: None,
+            available_models: Vec::new(),
         }
     }
 }
@@ -1176,6 +1187,7 @@ impl Default for Config {
                 redact_credentials: default_redact_credentials(),
                 autosave_assistant: false,
                 autosave_min_length: default_autosave_min_length(),
+                tool_call_cutoff: default_tool_call_cutoff(),
             },
             telegram: None,
             discord: None,

@@ -9,13 +9,13 @@ ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environment
 
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio or HTTP transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, and exposes `AgentSpawner` as the integration point for the host application.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio or HTTP transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`.
 
 ## Key modules
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, and SQLite persistence |
+| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
 | `transport` | `serve_stdio` / `serve_connection` — ACP server transports; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
@@ -23,7 +23,7 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum |
 
-**Re-exports:** `AcpContext`, `AgentSpawner`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
+**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
 
 ## AcpContext
 
@@ -41,6 +41,31 @@ pub struct AcpContext {
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
 
+## Rich content
+
+ACP prompts can carry multi-modal content blocks beyond plain text:
+
+- **Images** — base64-encoded image blocks (`image/jpeg`, `image/png`, `image/gif`, `image/webp`) are decoded and forwarded to the LLM provider as inline attachments. Oversized payloads and unsupported MIME types are skipped with a warning.
+- **Embedded resources** — `TextResourceContents` blocks are injected into the prompt text wrapped in `<resource>` markers.
+- **Tool locations** — tool call results can include file path locations (`ToolCallLocation`) that the IDE uses for source navigation.
+- **Thinking chunks** — intermediate reasoning status events are streamed back to the IDE as `session/update` events.
+
+## Model switching
+
+The IDE can switch the active LLM model at runtime via `session/configure` with `config_id = "model"`. `ZephAcpAgent` uses a `ProviderFactory` closure that resolves a `"provider:model"` key to an `AnyProvider`, and an `available_models` allowlist that populates the IDE dropdown. The resolved provider is stored in a shared `Arc<RwLock<Option<AnyProvider>>>` (`provider_override`) that the agent loop checks on each turn.
+
+## MCP server management
+
+`ext_method` handles custom JSON-RPC extensions for managing MCP servers at runtime:
+
+| Method | Description |
+|--------|-------------|
+| `_agent/mcp/list` | List active MCP servers |
+| `_agent/mcp/add` | Register a new MCP server |
+| `_agent/mcp/remove` | Remove a running MCP server |
+
+Requires a shared `McpManager` reference set via `AcpServerConfig::mcp_manager`.
+
 ## Session lifecycle
 
 `ZephAcpAgent` manages multiple concurrent sessions with the following capabilities:
@@ -57,6 +82,7 @@ The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE c
 | `acp.max_sessions` | usize | `16` | `ZEPH_ACP_MAX_SESSIONS` |
 | `acp.session_idle_timeout_secs` | u64 | `1800` | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` |
 | `acp.permission_file` | PathBuf | `~/.config/zeph/acp-permissions.toml` | `ZEPH_ACP_PERMISSION_FILE` |
+| `acp.available_models` | `Vec<String>` | `[]` | — |
 
 ## Permission persistence
 

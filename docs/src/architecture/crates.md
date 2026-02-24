@@ -154,6 +154,7 @@ A2A protocol client and server (optional, feature-gated).
 
 Agent Client Protocol server — IDE integration via ACP (optional, feature-gated).
 
+- **Rich content** — ACP prompts may contain multi-modal content blocks. Image blocks are forwarded to LLM providers that support vision (Claude, OpenAI, Ollama). Resource content blocks (embedded text from IDE) are appended to the user prompt. Tool output includes `ToolCallLocation` for IDE navigation (file path, line range).
 - `ZephAcpAgent` — `acp::Agent` implementation; manages concurrent sessions with LRU eviction (`max_sessions`, default 4), forwards prompts to the agent loop, and emits `SessionNotification` updates back to the IDE
 - `AcpContext` — per-session bundle of IDE-proxied capabilities passed to `AgentSpawner`:
   - `file_executor: Option<AcpFileExecutor>` — reads/writes routed to the IDE filesystem proxy
@@ -163,6 +164,8 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
 - `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>) -> ...>` factory that the main binary supplies; wires `AcpContext` into `CompositeExecutor` before starting the agent loop
 - `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision. `AllowAlways`/`RejectAlways` decisions are persisted to a TOML file (`~/.config/zeph/acp-permissions.toml` by default, configurable via `acp.permission_file` or `ZEPH_ACP_PERMISSION_FILE`). The file is written atomically with `0o600` permissions on Unix. Persisted rules are loaded on startup and saved on each decision change
 - `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
+- **Model switching** — `set_session_config_option` with `config_id = "model"` validates the requested model against `available_models` allowlist, resolves it via `ProviderFactory` (`Arc<dyn Fn(&str) -> Option<AnyProvider>>`), and stores the result in a shared `provider_override: Arc<RwLock<Option<AnyProvider>>>` that the agent loop checks on each turn. RwLock uses `PoisonError::into_inner` for poison recovery
+- **Extension methods** — `ext_method` dispatches custom JSON-RPC methods: `_agent/mcp/add`, `_agent/mcp/remove`, `_agent/mcp/list` delegate to `McpManager` for runtime MCP server management
 
 ### Session Lifecycle
 

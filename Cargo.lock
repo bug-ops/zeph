@@ -9214,6 +9214,7 @@ version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "futures",
@@ -9228,6 +9229,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-core",
+ "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
  "zeph-tools",

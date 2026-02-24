@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Path traversal protection in `_agent/working_dir/update` (#787)
 - `MAX_IMPORT_EVENTS` cap (10,000) to prevent unbounded import DoS (#787)
 - `list_acp_sessions` and `import_acp_events` methods in `SqliteStore` (#787)
+- Tool-pair summarization — `maybe_summarize_tool_pair()` summarizes oldest tool call/response pairs when visible count exceeds `tool_call_cutoff` (default 6) (#793)
+- XML-delimited prompt in `build_tool_pair_summary_prompt()` to prevent prompt injection from tool output
+- `[memory] tool_call_cutoff` config option with validation (`>= 1`)
 - Reactive compaction on `ContextLengthExceeded` — auto-compact and retry LLM calls up to 2 times (#792)
 - `ContextLengthExceeded` error variant in `LlmError` with provider-specific pattern detection (Claude, OpenAI, Ollama)
 - Middle-out progressive tool response removal fallback during summarization (10/20/50/100% tiers)
@@ -67,6 +70,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
 - ACP permission persistence to `~/.config/zeph/acp-permissions.toml` — `AllowAlways`/`RejectAlways` decisions survive restarts (#786)
 - `acp.permission_file` config and `ZEPH_ACP_PERMISSION_FILE` env override for custom permission file path (#786)
+- Multi-modal ACP prompts — image and embedded resource content blocks forwarded to LLM providers (#784)
+- Tool output locations for IDE file navigation via `ToolCallLocation` (#784)
+- Runtime model switching via `set_session_config_option` with provider allowlist validation (#785)
+- `ProviderFactory` closure-based provider creation for dynamic model switching (#785)
+- MCP extension management via `ext_method` — `_agent/mcp/add`, `_agent/mcp/remove`, `_agent/mcp/list` (#785)
+- `provider_override` with `Arc<RwLock>` and poison recovery in agent loop (#785)
+- `available_models` configuration in `AcpConfig` (#785)
+- `with_provider_override()` builder method on `Agent` (#785)
 
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)
