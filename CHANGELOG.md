@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Reactive compaction on `ContextLengthExceeded` — auto-compact and retry LLM calls up to 2 times (#792)
+- `ContextLengthExceeded` error variant in `LlmError` with provider-specific pattern detection (Claude, OpenAI, Ollama)
+- Middle-out progressive tool response removal fallback during summarization (10/20/50/100% tiers)
+- Structured 9-section compaction prompt (User Intent, Technical Concepts, Files & Code, Errors & Fixes, Problem Solving, User Messages, Pending Tasks, Current Work, Next Step)
+- `build_metadata_summary()` — LLM-free final fallback with safe UTF-8 truncation
 - `MessageMetadata` struct in `zeph-llm` with `agent_visible`, `user_visible`, `compacted_at` fields; default is both-visible for backward compat (#M28)
 - `Message.metadata` field with `#[serde(default)]` — existing serialized messages deserialize without change
 - SQLite migration `013_message_metadata.sql` — adds `agent_visible`, `user_visible`, `compacted_at` columns to `messages` table

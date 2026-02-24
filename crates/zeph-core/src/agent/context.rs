@@ -59,6 +59,14 @@ fn chunk_messages(
     chunks
 }
 
+/// Truncate `s` to at most `max_chars` Unicode scalar values, appending "…" if truncated.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}…", &s[..byte_idx]),
+        None => s.to_owned(),
+    }
+}
+
 impl<C: Channel> Agent<C> {
     #[allow(
         clippy::cast_precision_loss,
@@ -109,24 +117,73 @@ impl<C: Channel> Agent<C> {
         }
 
         format!(
-            "Summarize this conversation excerpt into a structured continuation note. \
-             Include:\n\
-             1. Task overview\n\
-             2. Current state\n\
-             3. Key discoveries (file paths, errors, decisions)\n\
-             4. Next steps\n\
-             5. Critical context (variable names, config values)\n\
+            "<analysis>\n\
+             Analyze this conversation and produce a structured compaction note for self-consumption.\n\
+             This note replaces the original messages in your context window — be thorough.\n\
+             Longer is better if it preserves actionable detail.\n\
+             </analysis>\n\
              \n\
-             Keep it concise but preserve all actionable details.\n\
+             Produce exactly these 9 sections:\n\
+             1. User Intent — what the user is ultimately trying to accomplish\n\
+             2. Technical Concepts — key technologies, patterns, constraints discussed\n\
+             3. Files & Code — file paths, function names, structs, enums touched or relevant\n\
+             4. Errors & Fixes — every error encountered and whether/how it was resolved\n\
+             5. Problem Solving — approaches tried, decisions made, alternatives rejected\n\
+             6. User Messages — verbatim user requests that are still pending or relevant\n\
+             7. Pending Tasks — items explicitly promised or left TODO\n\
+             8. Current Work — the exact task in progress at the moment of compaction\n\
+             9. Next Step — the single most important action to take immediately after compaction\n\
              \n\
              Conversation:\n{history_text}"
         )
     }
 
-    async fn summarize_messages(
+    /// Build a metadata-only summary without calling the LLM.
+    /// Used as last-resort fallback when LLM summarization repeatedly fails.
+    fn build_metadata_summary(messages: &[Message]) -> String {
+        let mut user_count = 0usize;
+        let mut assistant_count = 0usize;
+        let mut system_count = 0usize;
+        let mut last_user = String::new();
+        let mut last_assistant = String::new();
+
+        for m in messages {
+            match m.role {
+                Role::User => {
+                    user_count += 1;
+                    if !m.content.is_empty() {
+                        last_user.clone_from(&m.content);
+                    }
+                }
+                Role::Assistant => {
+                    assistant_count += 1;
+                    if !m.content.is_empty() {
+                        last_assistant.clone_from(&m.content);
+                    }
+                }
+                Role::System => system_count += 1,
+            }
+        }
+
+        let last_user_preview = truncate_chars(&last_user, 200);
+        let last_assistant_preview = truncate_chars(&last_assistant, 200);
+
+        format!(
+            "[metadata summary — LLM compaction unavailable]\n\
+             Messages compacted: {} ({} user, {} assistant, {} system)\n\
+             Last user message: {last_user_preview}\n\
+             Last assistant message: {last_assistant_preview}",
+            messages.len(),
+            user_count,
+            assistant_count,
+            system_count,
+        )
+    }
+
+    async fn try_summarize_with_llm(
         &self,
         messages: &[Message],
-    ) -> Result<String, super::error::AgentError> {
+    ) -> Result<String, zeph_llm::LlmError> {
         const CHUNK_TOKEN_BUDGET: usize = 4096;
         const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
 
@@ -147,8 +204,7 @@ impl<C: Channel> Agent<C> {
                     parts: vec![],
                     metadata: MessageMetadata::default(),
                 }])
-                .await
-                .map_err(Into::into);
+                .await;
         }
 
         // Summarize chunks with bounded concurrency to prevent runaway API calls
@@ -172,7 +228,7 @@ impl<C: Channel> Agent<C> {
 
         let partial_summaries: Vec<String> = results
             .into_iter()
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, zeph_llm::LlmError>>()
             .unwrap_or_else(|e| {
                 tracing::warn!("chunked compaction: one or more chunks failed: {e:#}, falling back to single-pass");
                 Vec::new()
@@ -189,8 +245,7 @@ impl<C: Channel> Agent<C> {
                     parts: vec![],
                     metadata: MessageMetadata::default(),
                 }])
-                .await
-                .map_err(Into::into);
+                .await;
         }
 
         // Consolidate partial summaries
@@ -202,8 +257,19 @@ impl<C: Channel> Agent<C> {
             .join("\n\n");
 
         let consolidation_prompt = format!(
-            "Merge these partial conversation summaries into a single coherent continuation note.\n\
-             Include: task overview, current state, key discoveries, next steps, critical context.\n\
+            "<analysis>\n\
+             Merge these partial conversation summaries into a single structured compaction note.\n\
+             Produce exactly these 9 sections covering all partial summaries:\n\
+             1. User Intent\n\
+             2. Technical Concepts\n\
+             3. Files & Code\n\
+             4. Errors & Fixes\n\
+             5. Problem Solving\n\
+             6. User Messages\n\
+             7. Pending Tasks\n\
+             8. Current Work\n\
+             9. Next Step\n\
+             </analysis>\n\
              \n\
              Partial summaries:\n{numbered}"
         );
@@ -216,7 +282,136 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }])
             .await
-            .map_err(Into::into)
+    }
+
+    /// Remove tool response parts from messages using middle-out order.
+    /// `fraction` is in range (0.0, 1.0] — fraction of tool responses to remove.
+    /// Returns the modified message list.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
+    fn remove_tool_responses_middle_out(messages: &[Message], fraction: f32) -> Vec<Message> {
+        // Collect indices of messages that have ToolResult or ToolOutput parts
+        let tool_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                m.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
+                    )
+                })
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if tool_indices.is_empty() {
+            return messages.to_vec();
+        }
+
+        let n = tool_indices.len();
+        let to_remove = ((n as f32 * fraction).ceil() as usize).min(n);
+
+        // Middle-out: start from center, alternate outward
+        let center = n / 2;
+        let mut remove_set = std::collections::HashSet::new();
+        let mut left = center as isize - 1;
+        let mut right = center;
+        let mut count = 0;
+
+        while count < to_remove {
+            if right < n {
+                remove_set.insert(tool_indices[right]);
+                count += 1;
+                right += 1;
+            }
+            if count < to_remove && left >= 0 {
+                let idx = left as usize;
+                if !remove_set.contains(&tool_indices[idx]) {
+                    remove_set.insert(tool_indices[idx]);
+                    count += 1;
+                }
+            }
+            left -= 1;
+            if left < 0 && right >= n {
+                break;
+            }
+        }
+
+        let mut result = messages.to_vec();
+        for &msg_idx in &remove_set {
+            let msg = &mut result[msg_idx];
+            for part in &mut msg.parts {
+                match part {
+                    MessagePart::ToolResult { content, .. } => {
+                        "[compacted]".clone_into(content);
+                    }
+                    MessagePart::ToolOutput {
+                        body, compacted_at, ..
+                    } => {
+                        if compacted_at.is_none() {
+                            *body = String::new();
+                            *compacted_at = Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                                    .cast_signed(),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            msg.rebuild_content();
+        }
+        result
+    }
+
+    async fn summarize_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<String, super::error::AgentError> {
+        // Try direct summarization first
+        match self.try_summarize_with_llm(messages).await {
+            Ok(summary) => return Ok(summary),
+            Err(e) if !e.is_context_length_error() => return Err(e.into()),
+            Err(e) => {
+                tracing::warn!(
+                    "summarization hit context length error ({e}), trying progressive tool response removal"
+                );
+            }
+        }
+
+        // Progressive tool response removal tiers: 10%, 20%, 50%, 100%
+        for fraction in [0.10f32, 0.20, 0.50, 1.0] {
+            let reduced = Self::remove_tool_responses_middle_out(messages, fraction);
+            tracing::debug!(
+                fraction,
+                "retrying summarization with reduced tool responses"
+            );
+            match self.try_summarize_with_llm(&reduced).await {
+                Ok(summary) => {
+                    tracing::info!(
+                        fraction,
+                        "summarization succeeded after tool response removal"
+                    );
+                    return Ok(summary);
+                }
+                Err(e) if e.is_context_length_error() => {
+                    tracing::warn!(fraction, "still context length error, trying next tier");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        // Final fallback: metadata-only summary without LLM
+        tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
+        Ok(Self::build_metadata_summary(messages))
     }
 
     pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
@@ -2634,5 +2829,349 @@ mod tests {
             filtered.is_empty(),
             "skill must be excluded when only partial secrets are available"
         );
+    }
+
+    fn make_tool_result_message(content: &str) -> Message {
+        Message::from_parts(
+            Role::User,
+            vec![zeph_llm::provider::MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: content.into(),
+                is_error: false,
+            }],
+        )
+    }
+
+    fn make_text_message(text: &str) -> Message {
+        Message::from_legacy(Role::User, text)
+    }
+
+    #[test]
+    fn remove_tool_responses_empty_messages_unchanged() {
+        let msgs: Vec<Message> = vec![];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_tool_responses_no_tool_messages_unchanged() {
+        let msgs = vec![make_text_message("hello"), make_text_message("world")];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "hello");
+    }
+
+    #[test]
+    fn remove_tool_responses_100_percent_clears_all() {
+        let msgs = vec![
+            make_tool_result_message("result1"),
+            make_tool_result_message("result2"),
+            make_tool_result_message("result3"),
+        ];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        assert_eq!(result.len(), 3);
+        for msg in &result {
+            if let Some(zeph_llm::provider::MessagePart::ToolResult { content, .. }) =
+                msg.parts.first()
+            {
+                assert_eq!(content, "[compacted]");
+            }
+        }
+    }
+
+    #[test]
+    fn remove_tool_responses_50_percent_removes_half() {
+        let msgs = vec![
+            make_tool_result_message("r1"),
+            make_tool_result_message("r2"),
+            make_tool_result_message("r3"),
+            make_tool_result_message("r4"),
+        ];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.5);
+        let compacted = result
+            .iter()
+            .filter(|m| {
+                m.parts.first().is_some_and(|p| {
+                    matches!(p, zeph_llm::provider::MessagePart::ToolResult { content, .. } if content == "[compacted]")
+                })
+            })
+            .count();
+        assert_eq!(compacted, 2);
+    }
+
+    #[test]
+    fn build_metadata_summary_includes_counts() {
+        let msgs = vec![
+            make_text_message("user question"),
+            Message::from_legacy(Role::Assistant, "assistant response"),
+        ];
+        let summary = Agent::<MockChannel>::build_metadata_summary(&msgs);
+        assert!(summary.contains("2"));
+        assert!(summary.contains("1 user"));
+        assert!(summary.contains("1 assistant"));
+    }
+
+    #[test]
+    fn remove_tool_responses_middle_out_order_is_center_first() {
+        // 5 tool messages at positions 0..4 (no non-tool messages).
+        // Middle-out from center(=2): first right=2, then left=1, then right=3, then left=0, then right=4.
+        // So removal order for 5 items: indices 2, 1, 3, 0, 4.
+        // With fraction=1.0 (all 5 removed), all must be compacted.
+        // To verify ordering we test partial removals:
+        // fraction ~0.2 (ceil(5*0.2)=1) → 1 removed → must be center (index 2)
+        // fraction ~0.4 (ceil(5*0.4)=2) → 2 removed → must be indices 2 and 1
+        let msgs: Vec<Message> = (0..5)
+            .map(|i| {
+                Message::from_parts(
+                    Role::User,
+                    vec![zeph_llm::provider::MessagePart::ToolResult {
+                        tool_use_id: format!("t{i}"),
+                        content: format!("result{i}"),
+                        is_error: false,
+                    }],
+                )
+            })
+            .collect();
+
+        let is_compacted = |msgs: &[Message], idx: usize| -> bool {
+            msgs[idx].parts.first().is_some_and(|p| {
+                matches!(p, zeph_llm::provider::MessagePart::ToolResult { content, .. } if content == "[compacted]")
+            })
+        };
+
+        // 1 removal — center (index 2)
+        let one = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.20);
+        assert!(
+            is_compacted(&one, 2),
+            "center (idx 2) must be first removed"
+        );
+        assert!(!is_compacted(&one, 0));
+        assert!(!is_compacted(&one, 1));
+        assert!(!is_compacted(&one, 3));
+        assert!(!is_compacted(&one, 4));
+
+        // 2 removals — center (2) + left-of-center (1)
+        let two = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.40);
+        assert!(is_compacted(&two, 2));
+        assert!(is_compacted(&two, 1));
+        assert!(!is_compacted(&two, 0));
+        assert!(!is_compacted(&two, 3));
+        assert!(!is_compacted(&two, 4));
+
+        // 3 removals — 2 + right-of-center (3)
+        let three = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.60);
+        assert!(is_compacted(&three, 2));
+        assert!(is_compacted(&three, 1));
+        assert!(is_compacted(&three, 3));
+        assert!(!is_compacted(&three, 0));
+        assert!(!is_compacted(&three, 4));
+    }
+
+    #[test]
+    fn truncate_chars_is_safe_for_multibyte() {
+        // Each Cyrillic char is 2 bytes; slicing at byte 200 would panic on odd boundaries.
+        let s: String = "Привет".repeat(50); // 300 chars, 600 bytes
+        let truncated = super::truncate_chars(&s, 200);
+        assert!(truncated.ends_with('…'));
+        // Must be valid UTF-8 (no panic means success, but also check char count)
+        assert_eq!(truncated.chars().count(), 201); // 200 chars + '…'
+    }
+
+    // --- truncate_chars additional edge cases ---
+
+    #[test]
+    fn truncate_chars_ascii_exact() {
+        let s = "abcde";
+        // max_chars == len → no truncation
+        let result = super::truncate_chars(s, 5);
+        assert_eq!(result, "abcde");
+    }
+
+    #[test]
+    fn truncate_chars_emoji() {
+        // 🚀 is a single Unicode scalar even though it is 4 bytes
+        let s = "🚀🚀🚀🚀🚀";
+        let result = super::truncate_chars(s, 3);
+        assert!(result.ends_with('…'), "should append ellipsis");
+        // 3 emoji + ellipsis = 4 Unicode scalars
+        assert_eq!(result.chars().count(), 4);
+    }
+
+    #[test]
+    fn truncate_chars_empty() {
+        let result = super::truncate_chars("", 10);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn truncate_chars_shorter_than_max() {
+        let s = "hello";
+        let result = super::truncate_chars(s, 100);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_chars_zero_max() {
+        let s = "hello";
+        // max_chars = 0 means every char is beyond the limit → truncate at position 0
+        let result = super::truncate_chars(s, 0);
+        assert!(result.ends_with('…'));
+        // The part before '…' must be empty (0 chars kept)
+        assert_eq!(result, "…");
+    }
+
+    // --- build_chunk_prompt ---
+
+    #[test]
+    fn build_chunk_prompt_contains_all_nine_sections() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: "help me refactor this code".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages);
+
+        let sections = [
+            "User Intent",
+            "Technical Concepts",
+            "Files & Code",
+            "Errors & Fixes",
+            "Problem Solving",
+            "User Messages",
+            "Pending Tasks",
+            "Current Work",
+            "Next Step",
+        ];
+        for section in sections {
+            assert!(
+                prompt.contains(section),
+                "prompt missing section: {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_chunk_prompt_empty_messages() {
+        let messages: &[Message] = &[];
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages);
+        // Even with no messages the prompt structure must be valid (not panic, contains sections)
+        assert!(prompt.contains("User Intent"));
+        assert!(prompt.contains("Next Step"));
+    }
+
+    // --- build_metadata_summary robustness ---
+
+    #[test]
+    fn build_metadata_summary_empty_messages() {
+        let messages: &[Message] = &[];
+        let summary = Agent::<MockChannel>::build_metadata_summary(messages);
+        assert!(summary.contains("Messages compacted: 0"));
+        assert!(summary.contains("0 user"));
+        assert!(summary.contains("0 assistant"));
+    }
+
+    #[test]
+    fn build_metadata_summary_utf8_content() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "Привет мир 🌍".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Hello 🌐".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let summary = Agent::<MockChannel>::build_metadata_summary(&messages);
+        // Must not panic on multi-byte content
+        assert!(summary.contains("Messages compacted: 2"));
+        assert!(summary.contains("1 user"));
+        assert!(summary.contains("1 assistant"));
+    }
+
+    #[test]
+    fn build_metadata_summary_truncation_boundary() {
+        let long_content = "a".repeat(300);
+        let messages = vec![Message {
+            role: Role::User,
+            content: long_content,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let summary = Agent::<MockChannel>::build_metadata_summary(&messages);
+        // The last user message preview is capped at 200 chars + '…'
+        assert!(
+            summary.contains('…'),
+            "long content should be truncated with ellipsis"
+        );
+    }
+
+    // --- remove_tool_responses_middle_out edge cases ---
+
+    #[test]
+    fn remove_tool_responses_single_tool_message() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+        );
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&[msg], 1.0);
+        assert_eq!(result.len(), 1);
+        if let MessagePart::ToolResult { content, .. } = &result[0].parts[0] {
+            assert_eq!(content, "[compacted]");
+        } else {
+            panic!("expected ToolResult part");
+        }
+    }
+
+    #[test]
+    fn remove_tool_responses_all_tiers_progressive() {
+        // Build 10 messages, all with ToolResult parts
+        let make_tool_msg = |i: usize| {
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: format!("t{i}"),
+                    content: format!("result_{i}"),
+                    is_error: false,
+                }],
+            )
+        };
+        let msgs: Vec<Message> = (0..10).map(make_tool_msg).collect();
+
+        let count_compacted = |result: &[Message]| {
+            result
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                        matches!(p, MessagePart::ToolResult { content, .. } if content == "[compacted]")
+                    })
+                })
+                .count()
+        };
+
+        // 10% of 10 = ceil(1.0) = 1
+        let r10 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.10);
+        assert_eq!(count_compacted(&r10), 1);
+
+        // 20% of 10 = ceil(2.0) = 2
+        let r20 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.20);
+        assert_eq!(count_compacted(&r20), 2);
+
+        // 50% of 10 = ceil(5.0) = 5
+        let r50 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.50);
+        assert_eq!(count_compacted(&r50), 5);
+
+        // 100% of 10 = 10
+        let r100 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        assert_eq!(count_compacted(&r100), 10);
     }
 }

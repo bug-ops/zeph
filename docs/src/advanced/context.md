@@ -122,6 +122,73 @@ If a single chunk fits all messages, or if chunked summarization fails, the syst
 
 Both tiers are idempotent and run automatically during the agent loop.
 
+### Structured Compaction Prompt
+
+Compaction summaries use a 9-section structured prompt designed for self-consumption. The LLM is instructed to produce exactly these sections:
+
+1. **User Intent** — what the user is ultimately trying to accomplish
+2. **Technical Concepts** — key technologies, patterns, constraints discussed
+3. **Files & Code** — file paths, function names, structs, enums touched or relevant
+4. **Errors & Fixes** — every error encountered and whether/how it was resolved
+5. **Problem Solving** — approaches tried, decisions made, alternatives rejected
+6. **User Messages** — verbatim user requests that are still pending or relevant
+7. **Pending Tasks** — items explicitly promised or left TODO
+8. **Current Work** — the exact task in progress at the moment of compaction
+9. **Next Step** — the single most important action to take immediately after compaction
+
+The prompt favors thoroughness over brevity: longer summaries that preserve actionable detail are preferred over terse ones. When multiple chunks are summarized in parallel, a consolidation pass merges partial summaries into the same 9-section structure.
+
+### Progressive Tool Response Removal
+
+When the LLM compaction itself hits a context length error (the messages being compacted are too large for the summarization model), `summarize_messages()` applies progressive middle-out tool response removal before retrying:
+
+| Tier | Fraction removed | Description |
+|------|-----------------|-------------|
+| 1 | 10% | Remove ~10% of tool responses from the center outward |
+| 2 | 20% | Increase removal to ~20% |
+| 3 | 50% | Remove half of all tool responses |
+| 4 | 100% | Remove all tool responses |
+
+The **middle-out** strategy starts removal from the center of the tool response list and alternates outward toward the edges. This preserves the earliest responses (which establish context) and the most recent ones (which reflect current work), while discarding the middle of the conversation first.
+
+At each tier, `ToolResult` content is replaced with `[compacted]` and `ToolOutput` bodies are cleared (with `compacted_at` timestamp set). The reduced message set is then retried through the LLM summarization pipeline.
+
+### Metadata-Only Fallback
+
+If all LLM summarization attempts fail (including after 100% tool response removal), `build_metadata_summary()` produces a lightweight summary without any LLM call:
+
+```text
+[metadata summary — LLM compaction unavailable]
+Messages compacted: 47 (23 user, 22 assistant, 2 system)
+Last user message: <first 200 chars of last user message>
+Last assistant message: <first 200 chars of last assistant message>
+```
+
+Text previews use safe UTF-8 truncation (`truncate_chars()`) that never splits a Unicode scalar value. This fallback guarantees that compaction always succeeds, even when the LLM is unreachable or the context is too large for any available model.
+
+## Reactive Retry on Context Length Errors
+
+LLM calls in the agent loop (`call_llm_with_retry()` and `call_chat_with_tools_retry()`) intercept context length errors and automatically compact before retrying. The flow:
+
+1. Send messages to the LLM provider
+2. If the provider returns a context length error, trigger `compact_context()`
+3. Retry the LLM call with the compacted context
+4. If the error persists after `max_attempts` (default: 2), propagate the error
+
+Non-context-length errors (rate limits, network failures, etc.) are propagated immediately without retry.
+
+### Context Length Error Detection
+
+`LlmError::is_context_length_error()` detects context overflow across providers via pattern matching on error messages:
+
+| Provider | Matched patterns |
+|----------|-----------------|
+| Claude | `"maximum number of tokens"` |
+| OpenAI | `"maximum context length"`, `"context_length_exceeded"` |
+| Ollama | `"context length exceeded"`, `"prompt is too long"`, `"input too long"` |
+
+The dedicated `LlmError::ContextLengthExceeded` variant is also recognized. This unified detection allows the retry logic to work identically across all supported LLM backends.
+
 ### Dual-Visibility Compaction
 
 Compaction is non-destructive. Each `Message` carries `MessageMetadata` with `agent_visible` and `user_visible` flags:

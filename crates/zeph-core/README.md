@@ -16,7 +16,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | Module | Description |
 |--------|-------------|
 | `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `with_cancel_signal()` |
-| `agent::tool_execution` | Tool call handling, redaction, and result processing |
+| `agent::tool_execution` | Tool call handling, redaction, result processing; `call_llm_with_retry()` / `call_chat_with_tools_retry()` — auto-detect `ContextLengthExceeded`, compact context, and retry (max 2 attempts) |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
 | `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, sub-agent management via `/agent`, etc.) |
@@ -24,7 +24,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
+| `context` | LLM context assembly from history, skills, memory; resilient compaction with reactive context-overflow retry (max 2 attempts), middle-out progressive tool response removal (10/20/50/100% tiers), 9-section structured compaction prompt, LLM-free metadata fallback via `build_metadata_summary()` with safe UTF-8 truncation; parallel chunked summarization; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
 | `cost` | Token cost tracking and budgeting |
 | `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |

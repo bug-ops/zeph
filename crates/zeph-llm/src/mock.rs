@@ -14,6 +14,9 @@ pub struct MockProvider {
     pub fail_chat: bool,
     /// Milliseconds to sleep before returning a response.
     pub delay_ms: u64,
+    /// Sequence of errors to return before switching to normal responses.
+    /// Each call pops from the front; when empty, falls through to `responses`.
+    errors: Arc<Mutex<Vec<crate::LlmError>>>,
 }
 
 impl Default for MockProvider {
@@ -26,6 +29,7 @@ impl Default for MockProvider {
             streaming: false,
             fail_chat: false,
             delay_ms: 0,
+            errors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -45,6 +49,13 @@ impl MockProvider {
             fail_chat: true,
             ..Self::default()
         }
+    }
+
+    /// Prepend a sequence of errors returned before normal responses.
+    #[must_use]
+    pub fn with_errors(mut self, errors: Vec<crate::LlmError>) -> Self {
+        self.errors = Arc::new(Mutex::new(errors));
+        self
     }
 
     #[must_use]
@@ -72,6 +83,12 @@ impl LlmProvider for MockProvider {
         }
         if self.fail_chat {
             return Err(crate::LlmError::Other("mock LLM error".into()));
+        }
+        // Return pre-configured errors first
+        if let Ok(mut errors) = self.errors.lock()
+            && !errors.is_empty()
+        {
+            return Err(errors.remove(0));
         }
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
