@@ -15,14 +15,14 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>` |
+| `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `with_cancel_signal()` |
 | `agent::tool_execution` | Tool call handling, redaction, and result processing |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
 | `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, sub-agent management via `/agent`, etc.) |
 | `agent::utils` | Shared agent utilities |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
-| `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `Attachment` / `AttachmentKind` for multimodal inputs |
+| `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
 | `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization |
 | `cost` | Token cost tracking and budgeting |

@@ -19,6 +19,7 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
 - `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking (feature-gated: `daemon`)
 - `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` — headless channel for daemon mode using paired tokio mpsc channels; auto-approves confirmations
+- `LoopbackHandle::cancel_signal` — `Arc<Notify>` shared between the ACP session and the agent loop; calling `notify_one()` interrupts the running agent turn
 
 ## zeph-llm
 
@@ -87,7 +88,8 @@ Tool execution abstraction and shell backend.
 - `FileExecutor` — sandboxed file operations (read, write, edit, glob, grep) with ancestor-walk path canonicalization
 - `ShellExecutor` — bash block parser, command safety filter, sandbox validation
 - `WebScrapeExecutor` — HTML scraping with CSS selectors, SSRF protection
-- `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch, routes structured tool calls by `tool_id` to the appropriate backend
+- `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch, routes structured tool calls by `tool_id` to the appropriate backend; used to place ACP executors ahead of local tools so IDE-proxied operations take priority
+- `DynExecutor` — newtype wrapping `Arc<dyn ErasedToolExecutor>` so a heap-allocated erased executor can be used anywhere a concrete `ToolExecutor` is required; enables runtime composition without static type chains
 - `AuditLogger` — structured JSON audit trail for all executions
 - `truncate_tool_output()` — head+tail split at 30K chars with UTF-8 safe boundaries
 
@@ -146,6 +148,34 @@ A2A protocol client and server (optional, feature-gated).
 - A2A Server — axum-based HTTP server with bearer auth, rate limiting with TTL-based eviction (60s sweep, 10K max entries), body size limits
 - `TaskManager` — in-memory task lifecycle management
 - `ProcessorEvent` — streaming event enum (`StatusUpdate`, `ArtifactChunk`) for per-token SSE delivery; `TaskProcessor::process` accepts `mpsc::Sender<ProcessorEvent>`
+
+## zeph-acp
+
+Agent Client Protocol server — IDE integration via ACP (optional, feature-gated).
+
+- `ZephAcpAgent` — `acp::Agent` implementation; manages sessions, forwards prompts to the agent loop, and emits `SessionNotification` updates back to the IDE
+- `AcpContext` — per-session bundle of IDE-proxied capabilities passed to `AgentSpawner`:
+  - `file_executor: Option<AcpFileExecutor>` — reads/writes routed to the IDE filesystem proxy
+  - `shell_executor: Option<AcpShellExecutor>` — shell commands routed through the IDE terminal proxy
+  - `permission_gate: Option<AcpPermissionGate>` — confirmation requests forwarded to the IDE UI
+  - `cancel_signal: Arc<Notify>` — shared with `LoopbackHandle`; firing it interrupts the running agent turn
+- `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>) -> ...>` factory that the main binary supplies; wires `AcpContext` into `CompositeExecutor` before starting the agent loop
+- `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision
+- `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
+
+### AcpContext wiring
+
+When a new ACP session starts, `ZephAcpAgent::new_session` calls `build_acp_context`, which constructs the three proxied executors from the IDE capabilities advertised during `initialize`. The context is passed to `AgentSpawner` alongside the `LoopbackChannel`. The spawner builds a `CompositeExecutor` with ACP executors as the primary layer and local `ShellExecutor`/`FileExecutor` as fallback:
+
+```text
+CompositeExecutor
+├── primary:  AcpShellExecutor / AcpFileExecutor  (IDE-proxied, used when AcpContext present)
+└── fallback: ShellExecutor / FileExecutor        (local, used in non-ACP sessions)
+```
+
+### Cancellation
+
+`LoopbackHandle::cancel_signal` (`Arc<Notify>`) is cloned into `AcpContext` at session creation. When the IDE calls `cancel`, `ZephAcpAgent::cancel` fires `notify_one()` on the signal and removes the session. The agent loop polls this notifier and aborts the current turn. `AgentBuilder::with_cancel_signal()` wires the signal into the agent so a new `Notify` is not created internally.
 
 ## zeph-tui
 

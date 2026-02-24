@@ -15,7 +15,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 
 | Module | Description |
 |--------|-------------|
-| `executor` | `ToolExecutor` trait, `ToolOutput`, `ToolCall` |
+| `executor` | `ToolExecutor` trait, `ToolOutput`, `ToolCall`; `DynExecutor` newtype wrapping `Arc<dyn ErasedToolExecutor>` for object-safe executor composition |
 | `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping; receives skill-scoped env vars injected by the agent for active skills that declare `x-requires-secrets` |
 | `file` | File operation executor |
 | `scrape` | Web scraping executor with SSRF protection (post-DNS private IP validation, pinned address client) |

@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Wire `AcpContext` (IDE-proxied FS, shell, permissions) through `AgentSpawner` into agent tool chain via `CompositeExecutor` — ACP executors take priority with automatic local fallback (#779)
+- `DynExecutor` newtype in `zeph-tools` for object-safe `ToolExecutor` composition in `CompositeExecutor` (#779)
+- `cancel_signal: Arc<Notify>` on `LoopbackHandle` for cooperative cancellation between ACP sessions and agent loop (#780)
+- `with_cancel_signal()` builder method on `Agent` to inject external cancellation signal (#780)
 - `zeph-acp` crate — ACP (Agent Client Protocol) server for IDE embedding (Zed, JetBrains, Neovim) (#763-#766)
 - `--acp` CLI flag to launch Zeph as an ACP stdio server (requires `acp` feature)
 - `acp` feature gate in root `Cargo.toml`; included in `full` feature set
@@ -27,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AcpServerConfig` passed through `serve_stdio`/`serve_connection` to configure agent identity from config values (#770)
 - ACP section in `--init` wizard — prompts for `enabled`, `agent_name`, `agent_version` (#771)
 - Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
+
+### Fixed
+- Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)
 
 ## [0.11.6] - 2026-02-23
 

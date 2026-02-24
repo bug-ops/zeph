@@ -53,6 +53,18 @@ Providers without native tool support (Ollama, Candle) use text-based tool invoc
 
 Both modes coexist in the same iteration. The system prompt includes invocation instructions per tool so the LLM knows exactly which format to use.
 
+## DynExecutor
+
+`DynExecutor` is a newtype wrapping `Arc<dyn ErasedToolExecutor>`. It implements `ToolExecutor` by delegating all methods through the erased trait, enabling a heap-allocated executor to be used wherever a concrete `ToolExecutor` is expected.
+
+This is the mechanism that allows ACP sessions to supply IDE-proxied executors at runtime. The main binary wraps an ACP-aware composite in a `DynExecutor` and passes it to `AgentBuilder` — no changes to `Agent<C>` are needed for different tool backends.
+
+```rust
+let acp_composite = CompositeExecutor::new(acp_exec, local_exec);
+let dyn_exec = DynExecutor(Arc::new(acp_composite));
+agent_builder.with_tool_executor(dyn_exec);
+```
+
 ## Iteration Control
 
 The agent loop iterates tool execution until the LLM produces a response with no tool invocations, or one of the safety limits is hit.

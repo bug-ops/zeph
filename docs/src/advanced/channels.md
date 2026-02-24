@@ -79,7 +79,13 @@ zeph --tui
 
 ## Loopback Channel
 
-Internal headless channel used by daemon mode. `LoopbackChannel` bridges the A2A `TaskProcessor` with the agent loop via two linked tokio mpsc pairs. The handle side (`LoopbackHandle`) exposes `input_tx` for sending user messages and `output_rx` for receiving `LoopbackEvent` variants (`Chunk`, `Flush`, `FullMessage`, `Status`, `ToolOutput`). Confirmations are auto-approved.
+Internal headless channel used by daemon mode and ACP sessions. `LoopbackChannel` bridges the caller with the agent loop via two linked tokio mpsc pairs. The handle side (`LoopbackHandle`) exposes:
+
+- `input_tx` — send user messages into the agent loop
+- `output_rx` — receive `LoopbackEvent` variants (`Chunk`, `Flush`, `FullMessage`, `Status`, `ToolOutput`)
+- `cancel_signal: Arc<Notify>` — fire `notify_one()` to interrupt the running agent turn; shared with `AcpContext` so an IDE `cancel` call propagates directly to the agent
+
+Confirmations are auto-approved.
 
 See [Daemon Mode](../guides/daemon-mode.md) for usage.
 
