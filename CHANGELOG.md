@@ -68,6 +68,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)
 
+### Changed
+- CI: add CLA check for external contributors via `contributor-assistant/github-action`
+
 ## [0.11.6] - 2026-02-23
 
 ### Fixed

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
   security-events: write
 
 env:
@@ -18,6 +19,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cla:
+    name: CLA Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: contributor-assistant/github-action@v2.6.1
+        with:
+          path-to-signatures: .github/cla-signatures.json
+          path-to-document: https://github.com/bug-ops/zeph/blob/main/CLA.md
+          branch: main
+          allowlist: bug-ops,dependabot[bot],github-actions[bot]
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   lint-shellcheck:
     name: Lint (shellcheck)
     runs-on: ubuntu-latest
@@ -207,13 +223,14 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [lint-shellcheck, lint-fmt, lint-clippy, snapshots, test, integration, coverage, docker-build-and-scan]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, snapshots, test, integration, coverage, docker-build-and-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - name: Check all jobs
         run: |
           results=(
+            "${{ needs.cla.result }}"
             "${{ needs.lint-shellcheck.result }}"
             "${{ needs.lint-fmt.result }}"
             "${{ needs.lint-clippy.result }}"
@@ -224,7 +241,7 @@ jobs:
             "${{ needs.docker-build-and-scan.result }}"
           )
           for r in "${results[@]}"; do
-            if [[ "$r" != "success" ]]; then
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
               echo "::error::One or more jobs failed or were cancelled"
               exit 1
             fi
