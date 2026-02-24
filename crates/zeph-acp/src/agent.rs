@@ -7,6 +7,7 @@ use agent_client_protocol as acp;
 use tokio::sync::{mpsc, oneshot};
 use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
+use zeph_memory::sqlite::SqliteStore;
 
 use crate::fs::AcpFileExecutor;
 use crate::permission::AcpPermissionGate;
@@ -14,7 +15,6 @@ use crate::terminal::AcpShellExecutor;
 use crate::transport::ConnSlot;
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
-const MAX_SESSIONS: usize = 1;
 const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
 
 /// IDE-proxied capabilities passed to the agent loop per session.
@@ -43,34 +43,55 @@ pub(crate) type NotifySender =
 
 struct SessionEntry {
     input_tx: mpsc::Sender<ChannelMessage>,
-    // Receiver is owned solely by the prompt() handler; RefCell avoids Arc<Mutex> overhead
-    // since MAX_SESSIONS=1 and prompt() is never called concurrently for the same session.
+    // Receiver is owned solely by the prompt() handler; RefCell avoids Arc<Mutex> overhead.
+    // prompt() is not called concurrently for the same session.
     output_rx: RefCell<Option<mpsc::Receiver<LoopbackEvent>>>,
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
+    last_active: std::cell::Cell<std::time::Instant>,
 }
+
+type SessionMap = Rc<RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>>;
 
 pub struct ZephAcpAgent {
     notify_tx: NotifySender,
     spawner: AgentSpawner,
-    sessions: RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>,
+    sessions: SessionMap,
     conn_slot: ConnSlot,
     agent_name: String,
     agent_version: String,
+    max_sessions: usize,
+    idle_timeout: std::time::Duration,
+    store: Option<SqliteStore>,
     // IDE capabilities received during initialize(); used by build_acp_context.
     client_caps: RefCell<acp::ClientCapabilities>,
 }
 
 impl ZephAcpAgent {
-    pub fn new(spawner: AgentSpawner, notify_tx: NotifySender, conn_slot: ConnSlot) -> Self {
+    pub fn new(
+        spawner: AgentSpawner,
+        notify_tx: NotifySender,
+        conn_slot: ConnSlot,
+        max_sessions: usize,
+        session_idle_timeout_secs: u64,
+    ) -> Self {
         Self {
             notify_tx,
             spawner,
-            sessions: RefCell::new(std::collections::HashMap::new()),
+            sessions: Rc::new(RefCell::new(std::collections::HashMap::new())),
             conn_slot,
             agent_name: "zeph".to_owned(),
             agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+            max_sessions,
+            idle_timeout: std::time::Duration::from_secs(session_idle_timeout_secs),
+            store: None,
             client_caps: RefCell::new(acp::ClientCapabilities::default()),
         }
+    }
+
+    #[must_use]
+    pub fn with_store(mut self, store: SqliteStore) -> Self {
+        self.store = Some(store);
+        self
     }
 
     #[must_use]
@@ -78,6 +99,38 @@ impl ZephAcpAgent {
         self.agent_name = name.into();
         self.agent_version = version.into();
         self
+    }
+
+    /// Spawn a background task that periodically evicts idle sessions.
+    ///
+    /// Must be called from within a `LocalSet` context.
+    pub fn start_idle_reaper(&self) {
+        let sessions = Rc::clone(&self.sessions);
+        let idle_timeout = self.idle_timeout;
+        tokio::task::spawn_local(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip first tick
+            loop {
+                interval.tick().await;
+                let now = std::time::Instant::now();
+                let expired: Vec<acp::SessionId> = sessions
+                    .borrow()
+                    .iter()
+                    .filter(|(_, e)| {
+                        // Only evict idle sessions (output_rx is Some = not busy).
+                        e.output_rx.borrow().is_some()
+                            && now.duration_since(e.last_active.get()) > idle_timeout
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in expired {
+                    if let Some(entry) = sessions.borrow_mut().remove(&id) {
+                        entry.cancel_signal.notify_one();
+                        tracing::debug!(session_id = %id, "evicted idle ACP session (timeout)");
+                    }
+                }
+            }
+        });
     }
 
     fn build_acp_context(
@@ -151,8 +204,27 @@ impl acp::Agent for ZephAcpAgent {
         &self,
         _args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
-        if self.sessions.borrow().len() >= MAX_SESSIONS {
-            return Err(acp::Error::internal_error().data("session limit reached"));
+        // LRU eviction: find and remove the oldest idle (non-busy) session when at limit.
+        if self.sessions.borrow().len() >= self.max_sessions {
+            let evict_id = {
+                let sessions = self.sessions.borrow();
+                sessions
+                    .iter()
+                    .filter(|(_, e)| e.output_rx.borrow().is_some())
+                    .min_by_key(|(_, e)| e.last_active.get())
+                    .map(|(id, _)| id.clone())
+            };
+            match evict_id {
+                Some(id) => {
+                    if let Some(entry) = self.sessions.borrow_mut().remove(&id) {
+                        entry.cancel_signal.notify_one();
+                        tracing::debug!(session_id = %id, "evicted idle ACP session (LRU)");
+                    }
+                }
+                None => {
+                    return Err(acp::Error::internal_error().data("session limit reached"));
+                }
+            }
         }
 
         let session_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -166,8 +238,19 @@ impl acp::Agent for ZephAcpAgent {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
             cancel_signal: handle.cancel_signal,
+            last_active: std::cell::Cell::new(std::time::Instant::now()),
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
+
+        if let Some(ref store) = self.store {
+            let sid = session_id.to_string();
+            let store = store.clone();
+            tokio::task::spawn_local(async move {
+                if let Err(e) = store.create_acp_session(&sid).await {
+                    tracing::warn!(error = %e, "failed to persist ACP session");
+                }
+            });
+        }
 
         let acp_ctx = self.build_acp_context(&session_id, cancel_signal);
         let spawner = Arc::clone(&self.spawner);
@@ -204,8 +287,21 @@ impl acp::Agent for ZephAcpAgent {
                 entry.output_rx.borrow_mut().take().ok_or_else(|| {
                     acp::Error::internal_error().data("prompt already in progress")
                 })?;
+            entry.last_active.set(std::time::Instant::now());
             (entry.input_tx.clone(), rx)
         };
+
+        // Persist user message before sending to agent.
+        if let Some(ref store) = self.store {
+            let sid = args.session_id.to_string();
+            let payload = text.clone();
+            let store = store.clone();
+            tokio::task::spawn_local(async move {
+                if let Err(e) = store.save_acp_event(&sid, "user_message", &payload).await {
+                    tracing::warn!(error = %e, "failed to persist user message");
+                }
+            });
+        }
 
         input_tx
             .send(ChannelMessage {
@@ -238,6 +334,17 @@ impl acp::Agent for ZephAcpAgent {
             let Some(event) = event else { break };
             let is_flush = matches!(event, LoopbackEvent::Flush);
             if let Some(update) = loopback_event_to_update(event) {
+                // Persist event before sending notification (best-effort).
+                if let Some(ref store) = self.store {
+                    let sid = args.session_id.to_string();
+                    let (event_type, payload) = session_update_to_event(&update);
+                    let store = store.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store.save_acp_event(&sid, event_type, &payload).await {
+                            tracing::warn!(error = %e, "failed to persist session event");
+                        }
+                    });
+                }
                 let notification = acp::SessionNotification::new(args.session_id.clone(), update);
                 if let Err(e) = self.send_notification(notification).await {
                     tracing::warn!(error = %e, "failed to send notification");
@@ -276,11 +383,112 @@ impl acp::Agent for ZephAcpAgent {
         &self,
         args: acp::LoadSessionRequest,
     ) -> acp::Result<acp::LoadSessionResponse> {
+        // Session already in memory — nothing to restore.
         if self.sessions.borrow().contains_key(&args.session_id) {
-            Ok(acp::LoadSessionResponse::new())
-        } else {
-            Err(acp::Error::internal_error().data("session not found"))
+            return Ok(acp::LoadSessionResponse::new());
         }
+
+        // Try to restore from SQLite persistence.
+        let Some(ref store) = self.store else {
+            return Err(acp::Error::internal_error().data("session not found"));
+        };
+
+        let exists = store
+            .acp_session_exists(&args.session_id.to_string())
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, session_id = %args.session_id, "failed to check ACP session existence");
+                acp::Error::internal_error().data("internal error")
+            })?;
+
+        if !exists {
+            return Err(acp::Error::internal_error().data("session not found"));
+        }
+
+        // Load events BEFORE spawning the agent loop to avoid orphaned sessions on error.
+        let events = store
+            .load_acp_events(&args.session_id.to_string())
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, session_id = %args.session_id, "failed to load ACP session events");
+                acp::Error::internal_error().data("internal error")
+            })?;
+
+        // Rebuild agent loop for the restored session.
+        let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
+        let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
+        let entry = SessionEntry {
+            input_tx: handle.input_tx,
+            output_rx: RefCell::new(Some(handle.output_rx)),
+            cancel_signal: handle.cancel_signal,
+            last_active: std::cell::Cell::new(std::time::Instant::now()),
+        };
+        self.sessions
+            .borrow_mut()
+            .insert(args.session_id.clone(), entry);
+
+        let acp_ctx = self.build_acp_context(&args.session_id, cancel_signal);
+        let spawner = Arc::clone(&self.spawner);
+        tokio::task::spawn_local(async move {
+            (spawner)(channel, acp_ctx).await;
+        });
+
+        // Replay stored events as session/update notifications per ACP spec.
+
+        for ev in events {
+            let update = match ev.event_type.as_str() {
+                "user_message" => {
+                    acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(ev.payload.into()))
+                }
+                "agent_message" => {
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(ev.payload.into()))
+                }
+                "agent_thought" => {
+                    acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(ev.payload.into()))
+                }
+                "tool_call" => match serde_json::from_str::<acp::ToolCall>(&ev.payload) {
+                    Ok(tc) => acp::SessionUpdate::ToolCall(tc),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to deserialize tool call event during replay");
+                        continue;
+                    }
+                },
+                other => {
+                    tracing::debug!(
+                        event_type = other,
+                        "skipping unknown event type during replay"
+                    );
+                    continue;
+                }
+            };
+            let notification = acp::SessionNotification::new(args.session_id.clone(), update);
+            if let Err(e) = self.send_notification(notification).await {
+                tracing::warn!(error = %e, "failed to replay notification");
+                break;
+            }
+        }
+
+        Ok(acp::LoadSessionResponse::new())
+    }
+}
+
+/// Map a `SessionUpdate` to a `(event_type, payload)` pair for `SQLite` persistence.
+fn content_chunk_text(chunk: &acp::ContentChunk) -> String {
+    match &chunk.content {
+        acp::ContentBlock::Text(t) => t.text.clone(),
+        _ => String::new(),
+    }
+}
+
+fn session_update_to_event(update: &acp::SessionUpdate) -> (&'static str, String) {
+    match update {
+        acp::SessionUpdate::UserMessageChunk(c) => ("user_message", content_chunk_text(c)),
+        acp::SessionUpdate::AgentMessageChunk(c) => ("agent_message", content_chunk_text(c)),
+        acp::SessionUpdate::AgentThoughtChunk(c) => ("agent_thought", content_chunk_text(c)),
+        acp::SessionUpdate::ToolCall(tc) => {
+            ("tool_call", serde_json::to_string(tc).unwrap_or_default())
+        }
+        _ => ("unknown", String::new()),
     }
 }
 
@@ -344,9 +552,21 @@ mod tests {
         ZephAcpAgent,
         mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) {
+        make_agent_with_max(4)
+    }
+
+    fn make_agent_with_max(
+        max_sessions: usize,
+    ) -> (
+        ZephAcpAgent,
+        mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-        (ZephAcpAgent::new(make_spawner(), tx, conn_slot), rx)
+        (
+            ZephAcpAgent::new(make_spawner(), tx, conn_slot, max_sessions, 1800),
+            rx,
+        )
     }
 
     #[tokio::test]
@@ -520,18 +740,76 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (agent, _rx) = make_agent();
+                let (agent, _rx) = make_agent_with_max(1);
                 use acp::Agent as _;
                 // fill the limit
                 agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
                     .unwrap();
-                // second session should fail
+                // LRU evicts the only idle session, so second succeeds
+                let res = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await;
+                assert!(res.is_ok());
+                // Now there's 1 session again (evicted + new)
+                assert_eq!(agent.sessions.borrow().len(), 1);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn new_session_rejects_when_all_busy() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent_with_max(1);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // Mark the session as busy by taking output_rx
+                agent
+                    .sessions
+                    .borrow()
+                    .get(&resp.session_id)
+                    .unwrap()
+                    .output_rx
+                    .borrow_mut()
+                    .take();
+                // No idle sessions to evict — should fail
                 let res = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await;
                 assert!(res.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn new_session_respects_configurable_limit() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent_with_max(2);
+                use acp::Agent as _;
+                let r1 = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let _r2 = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // Third session triggers LRU eviction (evicts r1 as oldest idle)
+                let r3 = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                assert_eq!(agent.sessions.borrow().len(), 2);
+                assert!(!agent.sessions.borrow().contains_key(&r1.session_id));
+                assert!(agent.sessions.borrow().contains_key(&r3.session_id));
             })
             .await;
     }

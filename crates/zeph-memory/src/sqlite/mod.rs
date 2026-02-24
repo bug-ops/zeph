@@ -1,3 +1,4 @@
+mod acp_sessions;
 mod history;
 mod messages;
 mod skills;
@@ -10,6 +11,7 @@ use std::str::FromStr;
 
 use crate::error::MemoryError;
 
+pub use acp_sessions::AcpSessionEvent;
 pub use messages::role_str;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
 pub use trust::SkillTrustRow;

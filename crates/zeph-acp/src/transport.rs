@@ -14,11 +14,24 @@ use crate::error::AcpError;
 /// the connection to build ACP tool adapters.
 pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
 
-/// Configuration for the ACP server identity advertised during `initialize`.
-#[derive(Debug, Clone, Default)]
+/// Configuration for the ACP server passed through to the agent.
+#[derive(Debug, Clone)]
 pub struct AcpServerConfig {
     pub agent_name: String,
     pub agent_version: String,
+    pub max_sessions: usize,
+    pub session_idle_timeout_secs: u64,
+}
+
+impl Default for AcpServerConfig {
+    fn default() -> Self {
+        Self {
+            agent_name: String::new(),
+            agent_version: String::new(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+        }
+    }
 }
 
 /// Run the ACP server over stdin/stdout until the connection closes.
@@ -60,8 +73,15 @@ where
             let conn_slot: ConnSlot = Rc::new(RefCell::new(None));
 
             let (tx, mut rx) = mpsc::unbounded_channel();
-            let agent = ZephAcpAgent::new(spawner, tx, Rc::clone(&conn_slot))
-                .with_agent_info(server_config.agent_name, server_config.agent_version);
+            let agent = ZephAcpAgent::new(
+                spawner,
+                tx,
+                Rc::clone(&conn_slot),
+                server_config.max_sessions,
+                server_config.session_idle_timeout_secs,
+            )
+            .with_agent_info(server_config.agent_name, server_config.agent_version);
+            agent.start_idle_reaper();
 
             let (conn, io_fut) = acp::AgentSideConnection::new(agent, writer, reader, |fut| {
                 tokio::task::spawn_local(fut);

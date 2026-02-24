@@ -2085,6 +2085,8 @@ struct AgentDeps {
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     acp_agent_name: String,
     acp_agent_version: String,
+    acp_max_sessions: usize,
+    acp_session_idle_timeout_secs: u64,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -2192,6 +2194,8 @@ async fn build_acp_deps(
         summary_provider,
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
+        acp_max_sessions: config.acp.max_sessions,
+        acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -2316,6 +2320,8 @@ async fn run_acp_server(
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: deps.acp_agent_name.clone(),
         agent_version: deps.acp_agent_version.clone(),
+        max_sessions: deps.acp_max_sessions,
+        session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));

@@ -1067,6 +1067,14 @@ fn default_acp_agent_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
+fn default_acp_max_sessions() -> usize {
+    4
+}
+
+fn default_acp_session_idle_timeout_secs() -> u64 {
+    1800
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AcpConfig {
     #[serde(default)]
@@ -1075,6 +1083,10 @@ pub struct AcpConfig {
     pub agent_name: String,
     #[serde(default = "default_acp_agent_version")]
     pub agent_version: String,
+    #[serde(default = "default_acp_max_sessions")]
+    pub max_sessions: usize,
+    #[serde(default = "default_acp_session_idle_timeout_secs")]
+    pub session_idle_timeout_secs: u64,
 }
 
 impl Default for AcpConfig {
@@ -1083,6 +1095,8 @@ impl Default for AcpConfig {
             enabled: false,
             agent_name: default_acp_agent_name(),
             agent_version: default_acp_agent_version(),
+            max_sessions: default_acp_max_sessions(),
+            session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
         }
     }
 }

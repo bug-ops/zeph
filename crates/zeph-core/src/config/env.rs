@@ -274,6 +274,16 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_ACP_AGENT_VERSION") {
             self.acp.agent_version = v;
         }
+        if let Ok(v) = std::env::var("ZEPH_ACP_MAX_SESSIONS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.acp.max_sessions = n;
+        }
+        if let Ok(v) = std::env::var("ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.acp.session_idle_timeout_secs = secs;
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

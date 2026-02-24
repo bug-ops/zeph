@@ -534,6 +534,7 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
             enabled: true,
             agent_name: state.acp_agent_name.clone(),
             agent_version: state.acp_agent_version.clone(),
+            ..AcpConfig::default()
         };
     }
 }
