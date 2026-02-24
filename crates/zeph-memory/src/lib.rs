@@ -12,6 +12,7 @@ pub mod semantic;
 pub mod snapshot;
 pub mod sqlite;
 pub mod sqlite_vector_store;
+pub mod token_counter;
 pub mod types;
 pub mod vector_store;
 
@@ -28,8 +29,8 @@ pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
-pub use semantic::estimate_tokens;
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
+pub use token_counter::TokenCounter;
 pub use types::{ConversationId, MessageId};
 pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,

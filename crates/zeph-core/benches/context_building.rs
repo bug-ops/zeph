@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
-use zeph_memory::estimate_tokens;
+use zeph_memory::TokenCounter;
 
 fn generate_messages(count: usize, avg_len: usize) -> Vec<String> {
     let base = "This is a simulated message with typical content for an AI conversation. ";
@@ -13,13 +13,14 @@ fn generate_messages(count: usize, avg_len: usize) -> Vec<String> {
 }
 
 fn should_compact_check(c: &mut Criterion) {
+    let counter = TokenCounter::new();
     let mut group = c.benchmark_group("should_compact");
 
     for count in [20, 50, 100] {
         let messages = generate_messages(count, 200);
         group.bench_with_input(BenchmarkId::new("messages", count), &messages, |b, msgs| {
             b.iter(|| {
-                let total: usize = msgs.iter().map(|m| estimate_tokens(m)).sum();
+                let total: usize = msgs.iter().map(|m| counter.count_tokens(m)).sum();
                 black_box(total > 4000)
             });
         });
@@ -29,6 +30,7 @@ fn should_compact_check(c: &mut Criterion) {
 }
 
 fn trim_budget_scan(c: &mut Criterion) {
+    let counter = TokenCounter::new();
     let mut group = c.benchmark_group("trim_budget_scan");
 
     for count in [20, 50, 100] {
@@ -40,7 +42,7 @@ fn trim_budget_scan(c: &mut Criterion) {
                 let mut total = 0usize;
                 let mut keep_from = msgs.len();
                 for i in (0..msgs.len()).rev() {
-                    let tokens = estimate_tokens(&msgs[i]);
+                    let tokens = counter.count_tokens(&msgs[i]);
                     if total + tokens > budget {
                         break;
                     }

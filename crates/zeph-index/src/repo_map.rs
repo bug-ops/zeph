@@ -10,7 +10,7 @@ use tree_sitter::Parser;
 
 use crate::error::Result;
 use crate::languages::{Lang, detect_language};
-use zeph_memory::estimate_tokens;
+use zeph_memory::TokenCounter;
 
 /// Generate a compact structural map of the project.
 ///
@@ -20,7 +20,7 @@ use zeph_memory::estimate_tokens;
 /// # Errors
 ///
 /// Returns an error if the file walk fails.
-pub fn generate_repo_map(root: &Path, token_budget: usize) -> Result<String> {
+pub fn generate_repo_map(root: &Path, token_budget: usize, tc: &TokenCounter) -> Result<String> {
     let walker = ignore::WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
@@ -68,11 +68,11 @@ pub fn generate_repo_map(root: &Path, token_budget: usize) -> Result<String> {
     let header = "<repo_map>\n";
     let footer = "</repo_map>";
     let mut map = String::from(header);
-    let mut used = estimate_tokens(header) + estimate_tokens(footer);
+    let mut used = tc.count_tokens(header) + tc.count_tokens(footer);
 
     for (idx, (path, symbols)) in entries.iter().enumerate() {
         let line = format!("  {path} :: {}\n", symbols.join(", "));
-        let cost = estimate_tokens(&line);
+        let cost = tc.count_tokens(&line);
         if used + cost > token_budget {
             let remaining = entries.len() - idx;
             let _ = writeln!(map, "  ... and {remaining} more files");
@@ -225,7 +225,8 @@ impl Foo {
         let file_path = dir.path().join("main.rs");
         std::fs::write(&file_path, "fn main() {}\nstruct App;\n").unwrap();
 
-        let map = generate_repo_map(dir.path(), 1000).unwrap();
+        let tc = zeph_memory::TokenCounter::new();
+        let map = generate_repo_map(dir.path(), 1000, &tc).unwrap();
         assert!(map.contains("<repo_map>"));
         assert!(map.contains("</repo_map>"));
         assert!(map.contains("fn:main"));
@@ -240,7 +241,8 @@ impl Foo {
             std::fs::write(&path, format!("fn func_{i}() {{}}\n")).unwrap();
         }
 
-        let map = generate_repo_map(dir.path(), 30).unwrap();
+        let tc = zeph_memory::TokenCounter::new();
+        let map = generate_repo_map(dir.path(), 30, &tc).unwrap();
         assert!(map.contains("... and"));
     }
 }

@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
-use zeph_memory::estimate_tokens;
+use zeph_memory::TokenCounter;
 
 /// Strategy chosen for a particular query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,7 @@ pub struct CodeRetriever {
     store: CodeStore,
     provider: Arc<AnyProvider>,
     config: RetrievalConfig,
+    token_counter: Arc<TokenCounter>,
 }
 
 impl CodeRetriever {
@@ -65,6 +66,7 @@ impl CodeRetriever {
             store,
             provider,
             config,
+            token_counter: Arc::new(TokenCounter::new()),
         }
     }
 
@@ -86,8 +88,10 @@ impl CodeRetriever {
             }),
             RetrievalStrategy::Semantic | RetrievalStrategy::Hybrid => {
                 let chunks = self.semantic_search(query, token_budget, None).await?;
-                let total_tokens: usize =
-                    chunks.iter().map(|c| estimate_tokens(&c.code) + 20).sum();
+                let total_tokens: usize = chunks
+                    .iter()
+                    .map(|c| self.token_counter.count_tokens(&c.code) + 20)
+                    .sum();
                 Ok(RetrievedCode {
                     chunks,
                     total_tokens,
@@ -117,7 +121,10 @@ impl CodeRetriever {
         let chunks = self
             .semantic_search(query, token_budget, Some(filter))
             .await?;
-        let total_tokens: usize = chunks.iter().map(|c| estimate_tokens(&c.code) + 20).sum();
+        let total_tokens: usize = chunks
+            .iter()
+            .map(|c| self.token_counter.count_tokens(&c.code) + 20)
+            .sum();
 
         Ok(RetrievedCode {
             chunks,
@@ -145,7 +152,7 @@ impl CodeRetriever {
         let mut used_tokens = 0;
 
         for hit in hits {
-            let cost = estimate_tokens(&hit.code) + 20;
+            let cost = self.token_counter.count_tokens(&hit.code) + 20;
             if used_tokens + cost > token_budget {
                 break;
             }

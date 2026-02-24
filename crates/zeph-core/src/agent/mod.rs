@@ -26,6 +26,7 @@ use zeph_llm::stt::SpeechToText;
 
 use crate::metrics::MetricsSnapshot;
 use std::collections::HashMap;
+use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
@@ -157,6 +158,7 @@ pub struct Agent<C: Channel> {
     doom_loop_history: Vec<u64>,
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
+    pub(crate) token_counter: Arc<TokenCounter>,
     stt: Option<Box<dyn SpeechToText>>,
     update_notify_rx: Option<mpsc::Receiver<String>>,
     #[allow(dead_code)]
@@ -266,6 +268,7 @@ impl<C: Channel> Agent<C> {
             doom_loop_history: Vec::new(),
             cost_tracker: None,
             cached_prompt_tokens: initial_prompt_tokens,
+            token_counter: Arc::new(TokenCounter::new()),
             stt: None,
             update_notify_rx: None,
             subagent_manager: None,
