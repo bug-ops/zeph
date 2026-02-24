@@ -215,9 +215,27 @@ impl acp::Agent for ZephAcpAgent {
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
 
+        // Grab the cancel_signal so we can detect cancellation during the drain loop.
+        let cancel_signal = self
+            .sessions
+            .borrow()
+            .get(&args.session_id)
+            .map(|e| std::sync::Arc::clone(&e.cancel_signal));
+
         // Block until the agent finishes this turn (signals via Flush or channel close).
         let mut rx = output_rx;
-        while let Some(event) = rx.recv().await {
+        let mut cancelled = false;
+        loop {
+            let event = if let Some(ref signal) = cancel_signal {
+                tokio::select! {
+                    biased;
+                    () = signal.notified() => { cancelled = true; break; }
+                    ev = rx.recv() => ev,
+                }
+            } else {
+                rx.recv().await
+            };
+            let Some(event) = event else { break };
             let is_flush = matches!(event, LoopbackEvent::Flush);
             if let Some(update) = loopback_event_to_update(event) {
                 let notification = acp::SessionNotification::new(args.session_id.clone(), update);
@@ -236,7 +254,12 @@ impl acp::Agent for ZephAcpAgent {
             *entry.output_rx.borrow_mut() = Some(rx);
         }
 
-        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+        let stop_reason = if cancelled {
+            acp::StopReason::Cancelled
+        } else {
+            acp::StopReason::EndTurn
+        };
+        Ok(acp::PromptResponse::new(stop_reason))
     }
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
@@ -268,6 +291,17 @@ fn is_tool_use_marker(text: &str) -> bool {
     trimmed.starts_with("[tool_use:") && trimmed.ends_with(']')
 }
 
+fn tool_kind_from_name(name: &str) -> acp::ToolKind {
+    match name {
+        "bash" | "shell" => acp::ToolKind::Execute,
+        "read_file" => acp::ToolKind::Read,
+        "write_file" => acp::ToolKind::Edit,
+        "search" | "grep" | "find" => acp::ToolKind::Search,
+        "web_scrape" | "fetch" => acp::ToolKind::Fetch,
+        _ => acp::ToolKind::Other,
+    }
+}
+
 fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
     match event {
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
@@ -285,10 +319,14 @@ fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> 
         LoopbackEvent::ToolOutput {
             tool_name, display, ..
         } => {
-            let text = format!("[{tool_name}] {display}");
-            Some(acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(text.into()),
-            ))
+            let tool_call_id = uuid::Uuid::new_v4().to_string();
+            let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
+                .kind(tool_kind_from_name(&tool_name))
+                .status(acp::ToolCallStatus::Completed)
+                .content(vec![acp::ToolCallContent::from(
+                    acp::ContentBlock::Text(acp::TextContent::new(display)),
+                )]);
+            Some(acp::SessionUpdate::ToolCall(tool_call))
         }
         LoopbackEvent::Flush => None,
     }
@@ -448,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback_tool_output_maps_to_agent_message() {
+    fn loopback_tool_output_maps_to_tool_call() {
         let event = LoopbackEvent::ToolOutput {
             tool_name: "bash".to_owned(),
             display: "done".to_owned(),
@@ -456,10 +494,25 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
         };
-        assert!(matches!(
-            loopback_event_to_update(event),
-            Some(acp::SessionUpdate::AgentMessageChunk(_))
-        ));
+        let update = loopback_event_to_update(event);
+        match update {
+            Some(acp::SessionUpdate::ToolCall(tc)) => {
+                assert_eq!(tc.title, "bash");
+                assert_eq!(tc.status, acp::ToolCallStatus::Completed);
+                assert_eq!(tc.kind, acp::ToolKind::Execute);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_kind_from_name_maps_correctly() {
+        assert_eq!(tool_kind_from_name("bash"), acp::ToolKind::Execute);
+        assert_eq!(tool_kind_from_name("read_file"), acp::ToolKind::Read);
+        assert_eq!(tool_kind_from_name("write_file"), acp::ToolKind::Edit);
+        assert_eq!(tool_kind_from_name("search"), acp::ToolKind::Search);
+        assert_eq!(tool_kind_from_name("web_scrape"), acp::ToolKind::Fetch);
+        assert_eq!(tool_kind_from_name("unknown"), acp::ToolKind::Other);
     }
 
     #[tokio::test]
