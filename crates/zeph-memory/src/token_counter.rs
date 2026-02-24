@@ -217,12 +217,12 @@ mod tests {
             cache: DashMap::new(),
             cache_cap: 3,
         };
-        counter.count_tokens("aaaa");
-        counter.count_tokens("bbbb");
-        counter.count_tokens("cccc");
+        let _ = counter.count_tokens("aaaa");
+        let _ = counter.count_tokens("bbbb");
+        let _ = counter.count_tokens("cccc");
         assert_eq!(counter.cache.len(), 3);
         // This should evict one entry
-        counter.count_tokens("dddd");
+        let _ = counter.count_tokens("dddd");
         assert_eq!(counter.cache.len(), 3);
     }
 }
