@@ -449,7 +449,7 @@ mod tests {
             .run_until(async {
                 let perm_conn = Rc::new(RejectPermissionClient);
                 let sid = acp::SessionId::new("s1");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn);
+                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, None);
                 tokio::task::spawn_local(perm_handler);
 
                 let term_conn = Rc::new(FakeTerminalClient);

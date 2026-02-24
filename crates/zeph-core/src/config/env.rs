@@ -284,6 +284,9 @@ impl Config {
         {
             self.acp.session_idle_timeout_secs = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_ACP_PERMISSION_FILE") {
+            self.acp.permission_file = Some(std::path::PathBuf::from(v));
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

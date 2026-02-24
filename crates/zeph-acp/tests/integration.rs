@@ -37,6 +37,7 @@ fn make_server_config() -> AcpServerConfig {
         agent_version: "0.0.1".to_owned(),
         max_sessions: 4,
         session_idle_timeout_secs: 1800,
+        permission_file: None,
     }
 }
 

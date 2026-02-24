@@ -21,6 +21,7 @@ pub struct AcpServerConfig {
     pub agent_version: String,
     pub max_sessions: usize,
     pub session_idle_timeout_secs: u64,
+    pub permission_file: Option<std::path::PathBuf>,
 }
 
 impl Default for AcpServerConfig {
@@ -30,6 +31,7 @@ impl Default for AcpServerConfig {
             agent_version: String::new(),
             max_sessions: 4,
             session_idle_timeout_secs: 1800,
+            permission_file: None,
         }
     }
 }
@@ -79,6 +81,7 @@ where
                 Rc::clone(&conn_slot),
                 server_config.max_sessions,
                 server_config.session_idle_timeout_secs,
+                server_config.permission_file,
             )
             .with_agent_info(server_config.agent_name, server_config.agent_version);
             agent.start_idle_reaper();

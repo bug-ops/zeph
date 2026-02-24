@@ -62,6 +62,7 @@ pub struct ZephAcpAgent {
     max_sessions: usize,
     idle_timeout: std::time::Duration,
     store: Option<SqliteStore>,
+    permission_file: Option<std::path::PathBuf>,
     // IDE capabilities received during initialize(); used by build_acp_context.
     client_caps: RefCell<acp::ClientCapabilities>,
 }
@@ -73,6 +74,7 @@ impl ZephAcpAgent {
         conn_slot: ConnSlot,
         max_sessions: usize,
         session_idle_timeout_secs: u64,
+        permission_file: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             notify_tx,
@@ -84,6 +86,7 @@ impl ZephAcpAgent {
             max_sessions,
             idle_timeout: std::time::Duration::from_secs(session_idle_timeout_secs),
             store: None,
+            permission_file,
             client_caps: RefCell::new(acp::ClientCapabilities::default()),
         }
     }
@@ -141,7 +144,8 @@ impl ZephAcpAgent {
         let conn_guard = self.conn_slot.borrow();
         let conn = conn_guard.as_ref()?;
 
-        let (perm_gate, perm_handler) = AcpPermissionGate::new(Rc::clone(conn));
+        let (perm_gate, perm_handler) =
+            AcpPermissionGate::new(Rc::clone(conn), self.permission_file.clone());
         tokio::task::spawn_local(perm_handler);
 
         // Use actual IDE capabilities from initialize(); default to false (deny by default).
@@ -564,7 +568,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
         (
-            ZephAcpAgent::new(make_spawner(), tx, conn_slot, max_sessions, 1800),
+            ZephAcpAgent::new(make_spawner(), tx, conn_slot, max_sessions, 1800, None),
             rx,
         )
     }

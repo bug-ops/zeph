@@ -1087,6 +1087,8 @@ pub struct AcpConfig {
     pub max_sessions: usize,
     #[serde(default = "default_acp_session_idle_timeout_secs")]
     pub session_idle_timeout_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_file: Option<std::path::PathBuf>,
 }
 
 impl Default for AcpConfig {
@@ -1097,6 +1099,7 @@ impl Default for AcpConfig {
             agent_version: default_acp_agent_version(),
             max_sessions: default_acp_max_sessions(),
             session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
+            permission_file: None,
         }
     }
 }

@@ -2094,6 +2094,7 @@ struct AgentDeps {
     acp_agent_version: String,
     acp_max_sessions: usize,
     acp_session_idle_timeout_secs: u64,
+    acp_permission_file: Option<std::path::PathBuf>,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -2205,6 +2206,7 @@ async fn build_acp_deps(
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
+        acp_permission_file: config.acp.permission_file.clone(),
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -2332,6 +2334,7 @@ async fn run_acp_server(
         agent_version: deps.acp_agent_version.clone(),
         max_sessions: deps.acp_max_sessions,
         session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
+        permission_file: deps.acp_permission_file.clone(),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));

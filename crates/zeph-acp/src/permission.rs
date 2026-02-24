@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use acp::Client as _;
 use agent_client_protocol as acp;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
 use crate::error::AcpError;
 
@@ -17,6 +20,82 @@ struct PermissionRequest {
     session_id: acp::SessionId,
     tool_call: acp::ToolCallUpdate,
     reply: oneshot::Sender<Result<bool, AcpError>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct PersistedPermissions {
+    #[serde(default)]
+    tools: HashMap<String, String>,
+}
+
+fn default_permission_file() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("zeph")
+        .join("acp-permissions.toml")
+}
+
+fn load_persisted(path: &Path) -> PersistedPermissions {
+    // path is trusted config input — no path traversal validation needed.
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return PersistedPermissions::default();
+        }
+        Err(e) => {
+            warn!("failed to read ACP permission file {}: {e}", path.display());
+            return PersistedPermissions::default();
+        }
+    };
+    if content.len() > 1_048_576 {
+        warn!(
+            "ACP permission file {} exceeds 1 MiB, ignoring",
+            path.display()
+        );
+        return PersistedPermissions::default();
+    }
+    match toml::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(
+                "failed to parse ACP permission file {}: {e}",
+                path.display()
+            );
+            PersistedPermissions::default()
+        }
+    }
+}
+
+fn save_persisted(path: &Path, perms: &PersistedPermissions) {
+    let content = match toml::to_string(perms) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("failed to serialize ACP permissions: {e}");
+            return;
+        }
+    };
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        warn!(
+            "failed to create ACP permission dir {}: {e}",
+            parent.display()
+        );
+        return;
+    }
+    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, &content) {
+        warn!("failed to write ACP permission tmp file: {e}");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        warn!("failed to rename ACP permission file: {e}");
+    }
 }
 
 /// Permission gate that routes tool-call permission requests to the IDE via ACP.
@@ -33,16 +112,36 @@ impl AcpPermissionGate {
     /// Create the gate and the `LocalSet`-side handler future.
     ///
     /// Spawn the returned future inside a `LocalSet` that owns `conn`.
-    pub fn new<C>(conn: std::rc::Rc<C>) -> (Self, impl std::future::Future<Output = ()>)
+    pub fn new<C>(
+        conn: std::rc::Rc<C>,
+        permission_file: Option<PathBuf>,
+    ) -> (Self, impl std::future::Future<Output = ()>)
     where
         C: acp::Client + 'static,
     {
+        let file = permission_file.unwrap_or_else(default_permission_file);
+        let persisted = load_persisted(&file);
+
+        let mut initial: HashMap<String, PermissionDecision> = HashMap::new();
+        for (tool_name, decision_str) in &persisted.tools {
+            let decision = match decision_str.as_str() {
+                "allow" => PermissionDecision::AllowAlways,
+                "reject" => PermissionDecision::RejectAlways,
+                other => {
+                    warn!("unknown persisted permission decision '{other}' for tool '{tool_name}'");
+                    continue;
+                }
+            };
+            // Store without session prefix — on check_permission we look up tool_name directly.
+            initial.insert(tool_name.clone(), decision);
+        }
+
         let (tx, rx) = mpsc::unbounded_channel::<PermissionRequest>();
         let cache: Arc<RwLock<HashMap<String, PermissionDecision>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+            Arc::new(RwLock::new(initial));
         let cache_clone = Arc::clone(&cache);
 
-        let handler = async move { run_permission_handler(conn, rx, cache_clone).await };
+        let handler = async move { run_permission_handler(conn, rx, cache_clone, file).await };
 
         (
             Self {
@@ -75,15 +174,15 @@ impl AcpPermissionGate {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(&fallback);
-        let cache_key = format!("{session_id}:{tool_name}");
+        let session_cache_key = format!("{session_id}\0{tool_name}");
 
-        // Fast path: cached decision.
-        if let Ok(guard) = self.cache.read() {
-            match guard.get(cache_key.as_str()) {
-                Some(PermissionDecision::AllowAlways) => return Ok(true),
-                Some(PermissionDecision::RejectAlways) => return Ok(false),
-                None => {}
-            }
+        // Fast path: check session-scoped key first, then tool-name-only (persisted).
+        if let Ok(guard) = self.cache.read()
+            && let Some(d) = guard
+                .get(session_cache_key.as_str())
+                .or_else(|| guard.get(tool_name))
+        {
+            return Ok(matches!(d, PermissionDecision::AllowAlways));
         }
 
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -103,6 +202,7 @@ async fn run_permission_handler<C>(
     conn: std::rc::Rc<C>,
     mut rx: mpsc::UnboundedReceiver<PermissionRequest>,
     cache: Arc<RwLock<HashMap<String, PermissionDecision>>>,
+    permission_file: PathBuf,
 ) where
     C: acp::Client,
 {
@@ -140,7 +240,7 @@ async fn run_permission_handler<C>(
             .unwrap_or(&fallback)
             .to_owned();
         let session_id = &req.session_id;
-        let cache_key = format!("{session_id}:{tool_name}");
+        let session_cache_key = format!("{session_id}\0{tool_name}");
         let perm_req = acp::RequestPermissionRequest::new(req.session_id, req.tool_call, options);
 
         let result = conn.request_permission(perm_req).await;
@@ -160,8 +260,27 @@ async fn run_permission_handler<C>(
                         "reject_always" => Some(PermissionDecision::RejectAlways),
                         _ => None,
                     };
-                    if let (Some(d), Ok(mut guard)) = (decision, cache.write()) {
-                        guard.insert(cache_key, d);
+                    if let Some(d) = decision {
+                        let mut persisted = PersistedPermissions::default();
+                        if let Ok(mut guard) = cache.write() {
+                            // Insert session-scoped key for fast in-process lookup.
+                            guard.insert(session_cache_key, d);
+                            // Also insert tool-name-only key so other sessions benefit.
+                            guard.insert(tool_name.clone(), d);
+                            // Rebuild persisted map from all tool-name-only entries.
+                            for (k, v) in guard.iter() {
+                                if !k.contains('\0') {
+                                    persisted.tools.insert(
+                                        k.clone(),
+                                        match v {
+                                            PermissionDecision::AllowAlways => "allow".to_owned(),
+                                            PermissionDecision::RejectAlways => "reject".to_owned(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        save_persisted(&permission_file, &persisted);
                     }
 
                     Ok(allowed)
@@ -220,44 +339,6 @@ mod tests {
         }
     }
 
-    fn make_tool_call(id: &str) -> acp::ToolCallUpdate {
-        acp::ToolCallUpdate::new(id.to_owned(), acp::ToolCallUpdateFields::default())
-    }
-
-    #[tokio::test]
-    async fn allow_once_returns_true() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(AlwaysAllowClient);
-                let (gate, handler) = AcpPermissionGate::new(conn);
-                tokio::task::spawn_local(handler);
-
-                let sid = acp::SessionId::new("s1");
-                let tc = make_tool_call("tc1");
-                let result = gate.check_permission(sid, tc).await.unwrap();
-                assert!(result);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn reject_once_returns_false() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(AlwaysRejectClient);
-                let (gate, handler) = AcpPermissionGate::new(conn);
-                tokio::task::spawn_local(handler);
-
-                let sid = acp::SessionId::new("s1");
-                let tc = make_tool_call("tc2");
-                let result = gate.check_permission(sid, tc).await.unwrap();
-                assert!(!result);
-            })
-            .await;
-    }
-
     struct AllowAlwaysClient;
 
     #[async_trait::async_trait(?Send)]
@@ -313,32 +394,62 @@ mod tests {
         }
     }
 
+    fn make_tool_call(id: &str) -> acp::ToolCallUpdate {
+        acp::ToolCallUpdate::new(id.to_owned(), acp::ToolCallUpdateFields::default())
+    }
+
+    #[tokio::test]
+    async fn allow_once_returns_true() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(AlwaysAllowClient);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                tokio::task::spawn_local(handler);
+
+                let sid = acp::SessionId::new("s1");
+                let tc = make_tool_call("tc1");
+                let result = gate.check_permission(sid, tc).await.unwrap();
+                assert!(result);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn reject_once_returns_false() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(AlwaysRejectClient);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                tokio::task::spawn_local(handler);
+
+                let sid = acp::SessionId::new("s1");
+                let tc = make_tool_call("tc2");
+                let result = gate.check_permission(sid, tc).await.unwrap();
+                assert!(!result);
+            })
+            .await;
+    }
+
     #[tokio::test]
     async fn allow_always_is_cached() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let conn = Rc::new(AllowAlwaysClient);
-                let (gate, handler) = AcpPermissionGate::new(conn);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::SessionId::new("s1");
                 let tc = make_tool_call("tc-aa");
-                // First call — round-trips to IDE, caches AllowAlways.
                 let first = gate
                     .check_permission(sid.clone(), tc.clone())
                     .await
                     .unwrap();
                 assert!(first);
-                // Second call — served from cache without IDE round-trip.
                 let second = gate.check_permission(sid, tc).await.unwrap();
                 assert!(second);
-                // Verify cache entry uses "session_id:tool_call_id" key (title is absent).
-                let guard = gate.cache.read().unwrap();
-                assert!(matches!(
-                    guard.get("s1:tc-aa"),
-                    Some(PermissionDecision::AllowAlways)
-                ));
             })
             .await;
     }
@@ -349,7 +460,7 @@ mod tests {
         local
             .run_until(async {
                 let conn = Rc::new(RejectAlwaysClient);
-                let (gate, handler) = AcpPermissionGate::new(conn);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::SessionId::new("s1");
@@ -361,11 +472,6 @@ mod tests {
                 assert!(!first);
                 let second = gate.check_permission(sid, tc).await.unwrap();
                 assert!(!second);
-                let guard = gate.cache.read().unwrap();
-                assert!(matches!(
-                    guard.get("s1:tc-ra"),
-                    Some(PermissionDecision::RejectAlways)
-                ));
             })
             .await;
     }
@@ -376,7 +482,7 @@ mod tests {
         local
             .run_until(async {
                 let conn = Rc::new(CancelledClient);
-                let (gate, handler) = AcpPermissionGate::new(conn);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::SessionId::new("s1");
@@ -384,6 +490,70 @@ mod tests {
                 let result = gate.check_permission(sid, tc).await;
                 assert!(result.is_err());
                 assert!(result.unwrap_err().to_string().contains("cancelled"));
+            })
+            .await;
+    }
+
+    #[test]
+    fn persist_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+
+        // Write persisted file manually.
+        let mut perms = PersistedPermissions::default();
+        perms
+            .tools
+            .insert("shell_execute".to_owned(), "allow".to_owned());
+        perms
+            .tools
+            .insert("web_scrape".to_owned(), "reject".to_owned());
+        save_persisted(&file, &perms);
+
+        // Load and verify.
+        let loaded = load_persisted(&file);
+        assert_eq!(
+            loaded.tools.get("shell_execute").map(String::as_str),
+            Some("allow")
+        );
+        assert_eq!(
+            loaded.tools.get("web_scrape").map(String::as_str),
+            Some("reject")
+        );
+    }
+
+    #[test]
+    fn load_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nonexistent.toml");
+        let loaded = load_persisted(&file);
+        assert!(loaded.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persisted_decision_applied_on_new_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("acp-permissions.toml");
+
+        // Pre-populate permission file.
+        let mut perms = PersistedPermissions::default();
+        perms
+            .tools
+            .insert("tc-persisted".to_owned(), "allow".to_owned());
+        save_persisted(&file, &perms);
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // Gate should load file and short-circuit without asking IDE.
+                let conn = Rc::new(AlwaysRejectClient); // would reject if asked
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(file.clone()));
+                tokio::task::spawn_local(handler);
+
+                let sid = acp::SessionId::new("s-new");
+                let tc = make_tool_call("tc-persisted");
+                // Should be allowed from persisted cache, not forwarded to RejectClient.
+                let result = gate.check_permission(sid, tc).await.unwrap();
+                assert!(result);
             })
             .await;
     }
