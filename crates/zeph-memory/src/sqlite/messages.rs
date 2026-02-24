@@ -1,4 +1,4 @@
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
@@ -62,16 +62,36 @@ impl SqliteStore {
         content: &str,
         parts_json: &str,
     ) -> Result<MessageId, MemoryError> {
+        self.save_message_with_metadata(conversation_id, role, content, parts_json, true, true)
+            .await
+    }
+
+    /// Save a message with visibility metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub async fn save_message_with_metadata(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+        agent_visible: bool,
+        user_visible: bool,
+    ) -> Result<MessageId, MemoryError> {
         let row: (MessageId,) = sqlx::query_as(
-            "INSERT INTO messages (conversation_id, role, content, parts) VALUES (?, ?, ?, ?) RETURNING id",
+            "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(conversation_id)
         .bind(role)
         .bind(content)
         .bind(parts_json)
+        .bind(i64::from(agent_visible))
+        .bind(i64::from(user_visible))
         .fetch_one(&self.pool)
-        .await
-        ?;
+        .await?;
         Ok(row.0)
     }
 
@@ -85,9 +105,9 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT role, content, parts FROM (\
-                SELECT role, content, parts, id FROM messages \
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT role, content, parts, agent_visible, user_visible FROM (\
+                SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? \
                 ORDER BY id DESC \
                 LIMIT ?\
@@ -100,16 +120,159 @@ impl SqliteStore {
 
         let messages = rows
             .into_iter()
-            .map(|(role_str, content, parts_json)| {
-                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
-                Message {
-                    role: parse_role(&role_str),
-                    content,
-                    parts,
-                }
-            })
+            .map(
+                |(role_str, content, parts_json, agent_visible, user_visible)| {
+                    let parts: Vec<MessagePart> =
+                        serde_json::from_str(&parts_json).unwrap_or_default();
+                    Message {
+                        role: parse_role(&role_str),
+                        content,
+                        parts,
+                        metadata: MessageMetadata {
+                            agent_visible: agent_visible != 0,
+                            user_visible: user_visible != 0,
+                            compacted_at: None,
+                        },
+                    }
+                },
+            )
             .collect();
         Ok(messages)
+    }
+
+    /// Load messages filtered by visibility flags.
+    ///
+    /// Pass `Some(true)` to filter by a flag, `None` to skip filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn load_history_filtered(
+        &self,
+        conversation_id: ConversationId,
+        limit: u32,
+        agent_visible: Option<bool>,
+        user_visible: Option<bool>,
+    ) -> Result<Vec<Message>, MemoryError> {
+        let av = agent_visible.map(i64::from);
+        let uv = user_visible.map(i64::from);
+
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT role, content, parts, agent_visible, user_visible FROM (\
+                SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
+                WHERE conversation_id = ? \
+                  AND (? IS NULL OR agent_visible = ?) \
+                  AND (? IS NULL OR user_visible = ?) \
+                ORDER BY id DESC \
+                LIMIT ?\
+             ) ORDER BY id ASC",
+        )
+        .bind(conversation_id)
+        .bind(av)
+        .bind(av)
+        .bind(uv)
+        .bind(uv)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let messages = rows
+            .into_iter()
+            .map(
+                |(role_str, content, parts_json, agent_visible, user_visible)| {
+                    let parts: Vec<MessagePart> =
+                        serde_json::from_str(&parts_json).unwrap_or_default();
+                    Message {
+                        role: parse_role(&role_str),
+                        content,
+                        parts,
+                        metadata: MessageMetadata {
+                            agent_visible: agent_visible != 0,
+                            user_visible: user_visible != 0,
+                            compacted_at: None,
+                        },
+                    }
+                },
+            )
+            .collect();
+        Ok(messages)
+    }
+
+    /// Atomically mark a range of messages as user-only and insert a summary as agent-only.
+    ///
+    /// Within a single transaction:
+    /// 1. Updates `agent_visible=0, compacted_at=now` for messages in `compacted_range`.
+    /// 2. Inserts `summary_content` with `agent_visible=1, user_visible=0`.
+    ///
+    /// Returns the `MessageId` of the inserted summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction fails.
+    pub async fn replace_conversation(
+        &self,
+        conversation_id: ConversationId,
+        compacted_range: std::ops::RangeInclusive<MessageId>,
+        summary_role: &str,
+        summary_content: &str,
+    ) -> Result<MessageId, MemoryError> {
+        let now = {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("{secs}")
+        };
+        let start_id = compacted_range.start().0;
+        let end_id = compacted_range.end().0;
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "UPDATE messages SET agent_visible = 0, compacted_at = ? \
+             WHERE conversation_id = ? AND id >= ? AND id <= ?",
+        )
+        .bind(&now)
+        .bind(conversation_id)
+        .bind(start_id)
+        .bind(end_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let row: (MessageId,) = sqlx::query_as(
+            "INSERT INTO messages \
+             (conversation_id, role, content, parts, agent_visible, user_visible) \
+             VALUES (?, ?, ?, '[]', 1, 0) RETURNING id",
+        )
+        .bind(conversation_id)
+        .bind(summary_role)
+        .bind(summary_content)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(row.0)
+    }
+
+    /// Return the IDs of the N oldest messages in a conversation (ascending order).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn oldest_message_ids(
+        &self,
+        conversation_id: ConversationId,
+        n: u32,
+    ) -> Result<Vec<MessageId>, MemoryError> {
+        let rows: Vec<(MessageId,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE conversation_id = ? ORDER BY id ASC LIMIT ?",
+        )
+        .bind(conversation_id)
+        .bind(n)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     /// Return the ID of the most recent conversation, if any.
@@ -134,20 +297,28 @@ impl SqliteStore {
         &self,
         message_id: MessageId,
     ) -> Result<Option<Message>, MemoryError> {
-        let row: Option<(String, String, String)> =
-            sqlx::query_as("SELECT role, content, parts FROM messages WHERE id = ?")
-                .bind(message_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT role, content, parts, agent_visible, user_visible FROM messages WHERE id = ?",
+        )
+        .bind(message_id)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        Ok(row.map(|(role_str, content, parts_json)| {
-            let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
-            Message {
-                role: parse_role(&role_str),
-                content,
-                parts,
-            }
-        }))
+        Ok(row.map(
+            |(role_str, content, parts_json, agent_visible, user_visible)| {
+                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
+                Message {
+                    role: parse_role(&role_str),
+                    content,
+                    parts,
+                    metadata: MessageMetadata {
+                        agent_visible: agent_visible != 0,
+                        user_visible: user_visible != 0,
+                        compacted_at: None,
+                    },
+                }
+            },
+        ))
     }
 
     /// Fetch messages by a list of IDs in a single query.
@@ -165,8 +336,10 @@ impl SqliteStore {
 
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
-        let query =
-            format!("SELECT id, role, content, parts FROM messages WHERE id IN ({placeholders})");
+        let query = format!(
+            "SELECT id, role, content, parts FROM messages \
+             WHERE id IN ({placeholders}) AND agent_visible = 1"
+        );
         let mut q = sqlx::query_as::<_, (MessageId, String, String, String)>(&query);
         for &id in ids {
             q = q.bind(id);
@@ -184,6 +357,7 @@ impl SqliteStore {
                         role: parse_role(&role_str),
                         content,
                         parts,
+                        metadata: MessageMetadata::default(),
                     },
                 )
             })
@@ -272,7 +446,7 @@ impl SqliteStore {
                 "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
-                 WHERE messages_fts MATCH ? AND m.conversation_id = ? \
+                 WHERE messages_fts MATCH ? AND m.conversation_id = ? AND m.agent_visible = 1 \
                  ORDER BY rank \
                  LIMIT ?",
             )
@@ -283,9 +457,10 @@ impl SqliteStore {
             .await?
         } else {
             sqlx::query_as(
-                "SELECT f.rowid, -rank AS score \
+                "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
-                 WHERE messages_fts MATCH ? \
+                 JOIN messages m ON m.id = f.rowid \
+                 WHERE messages_fts MATCH ? AND m.agent_visible = 1 \
                  ORDER BY rank \
                  LIMIT ?",
             )
@@ -750,5 +925,154 @@ mod tests {
 
         let results = store.keyword_search("test", 3, None).await.unwrap();
         assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn save_message_with_metadata_stores_visibility() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id = store
+            .save_message_with_metadata(cid, "user", "hello", "[]", false, true)
+            .await
+            .unwrap();
+
+        let history = store.load_history(cid, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].metadata.agent_visible);
+        assert!(history[0].metadata.user_visible);
+        assert_eq!(id, MessageId(1));
+    }
+
+    #[tokio::test]
+    async fn load_history_filtered_by_agent_visible() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message_with_metadata(cid, "user", "visible to agent", "[]", true, true)
+            .await
+            .unwrap();
+        store
+            .save_message_with_metadata(cid, "user", "user only", "[]", false, true)
+            .await
+            .unwrap();
+
+        let agent_msgs = store
+            .load_history_filtered(cid, 50, Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(agent_msgs.len(), 1);
+        assert_eq!(agent_msgs[0].content, "visible to agent");
+    }
+
+    #[tokio::test]
+    async fn load_history_filtered_by_user_visible() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message_with_metadata(cid, "system", "agent only summary", "[]", true, false)
+            .await
+            .unwrap();
+        store
+            .save_message_with_metadata(cid, "user", "user sees this", "[]", true, true)
+            .await
+            .unwrap();
+
+        let user_msgs = store
+            .load_history_filtered(cid, 50, None, Some(true))
+            .await
+            .unwrap();
+        assert_eq!(user_msgs.len(), 1);
+        assert_eq!(user_msgs[0].content, "user sees this");
+    }
+
+    #[tokio::test]
+    async fn load_history_filtered_no_filter_returns_all() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message_with_metadata(cid, "user", "msg1", "[]", true, false)
+            .await
+            .unwrap();
+        store
+            .save_message_with_metadata(cid, "user", "msg2", "[]", false, true)
+            .await
+            .unwrap();
+
+        let all_msgs = store
+            .load_history_filtered(cid, 50, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all_msgs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn replace_conversation_marks_originals_and_inserts_summary() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id1 = store.save_message(cid, "user", "first").await.unwrap();
+        let id2 = store
+            .save_message(cid, "assistant", "second")
+            .await
+            .unwrap();
+        let id3 = store.save_message(cid, "user", "third").await.unwrap();
+
+        let summary_id = store
+            .replace_conversation(cid, id1..=id2, "system", "summary text")
+            .await
+            .unwrap();
+
+        // Original messages should be user_only
+        let all = store.load_history(cid, 50).await.unwrap();
+        // id1 and id2 marked agent_visible=false, id3 untouched, summary inserted
+        let by_id1 = all.iter().find(|m| m.content == "first").unwrap();
+        assert!(!by_id1.metadata.agent_visible);
+        assert!(by_id1.metadata.user_visible);
+
+        let by_id2 = all.iter().find(|m| m.content == "second").unwrap();
+        assert!(!by_id2.metadata.agent_visible);
+
+        let by_id3 = all.iter().find(|m| m.content == "third").unwrap();
+        assert!(by_id3.metadata.agent_visible);
+
+        // Summary is agent_only (agent_visible=1, user_visible=0)
+        let summary = all.iter().find(|m| m.content == "summary text").unwrap();
+        assert!(summary.metadata.agent_visible);
+        assert!(!summary.metadata.user_visible);
+        assert!(summary_id > id3);
+    }
+
+    #[tokio::test]
+    async fn oldest_message_ids_returns_in_order() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id1 = store.save_message(cid, "user", "a").await.unwrap();
+        let id2 = store.save_message(cid, "assistant", "b").await.unwrap();
+        let id3 = store.save_message(cid, "user", "c").await.unwrap();
+
+        let ids = store.oldest_message_ids(cid, 2).await.unwrap();
+        assert_eq!(ids, vec![id1, id2]);
+        assert!(ids[0] < ids[1]);
+
+        let all_ids = store.oldest_message_ids(cid, 10).await.unwrap();
+        assert_eq!(all_ids, vec![id1, id2, id3]);
+    }
+
+    #[tokio::test]
+    async fn message_metadata_default_both_visible() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store.save_message(cid, "user", "normal").await.unwrap();
+
+        let history = store.load_history(cid, 10).await.unwrap();
+        assert!(history[0].metadata.agent_visible);
+        assert!(history[0].metadata.user_visible);
+        assert!(history[0].metadata.compacted_at.is_none());
     }
 }

@@ -1,5 +1,5 @@
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
 use std::sync::Arc;
 
@@ -815,6 +815,7 @@ impl SemanticMemory {
             role: Role::User,
             content: prompt,
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let structured = match self
@@ -1395,6 +1396,7 @@ mod tests {
                 role: Role::User,
                 content: "test".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             score: 0.95,
         };

@@ -786,6 +786,7 @@ struct ContentBlock {
 mod tests {
     use super::*;
     use crate::provider::ImageData;
+    use crate::provider::MessageMetadata;
     use tokio_stream::StreamExt;
 
     #[test]
@@ -813,11 +814,13 @@ mod tests {
                 role: Role::System,
                 content: "You are helpful.".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
 
@@ -833,6 +836,7 @@ mod tests {
             role: Role::User,
             content: "Hi".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let (system, chat) = split_messages(&messages);
@@ -847,16 +851,19 @@ mod tests {
                 role: Role::System,
                 content: "Part 1".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::System,
                 content: "Part 2".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
 
@@ -1000,21 +1007,25 @@ mod tests {
                 role: Role::System,
                 content: "system prompt".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "user msg".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::Assistant,
                 content: "assistant reply".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "followup".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         let (system, chat) = split_messages(&messages);
@@ -1069,6 +1080,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -1081,6 +1093,7 @@ mod tests {
             role: Role::User,
             content: "test".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -1092,6 +1105,7 @@ mod tests {
             role: Role::System,
             content: "instruction".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let (system, chat) = split_messages(&messages);
         assert_eq!(system.unwrap(), "instruction");
@@ -1104,6 +1118,7 @@ mod tests {
             role: Role::Assistant,
             content: "reply".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let (system, chat) = split_messages(&messages);
         assert!(system.is_none());
@@ -1118,16 +1133,19 @@ mod tests {
                 role: Role::System,
                 content: "first".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "question".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::System,
                 content: "second".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         let (system, chat) = split_messages(&messages);
@@ -1228,6 +1246,7 @@ mod tests {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let response = provider.chat(&messages).await.unwrap();
@@ -1245,6 +1264,7 @@ mod tests {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -1274,6 +1294,7 @@ mod tests {
             role: Role::User,
             content: "What is 2+2? Reply with just the number.".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let chat_response = provider.chat(&messages).await.unwrap();

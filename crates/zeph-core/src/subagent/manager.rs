@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_a2a::types::TaskState;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_tools::executor::ErasedToolExecutor;
 
 use super::def::SubAgentDef;
@@ -33,6 +33,7 @@ fn make_message(role: Role, content: String) -> Message {
         role,
         content,
         parts: vec![],
+        metadata: MessageMetadata::default(),
     }
 }
 

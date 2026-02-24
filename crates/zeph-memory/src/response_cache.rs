@@ -107,6 +107,7 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
     use crate::sqlite::SqliteStore;
+    use zeph_llm::provider::MessageMetadata;
 
     async fn test_cache() -> ResponseCache {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -164,6 +165,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let k1 = ResponseCache::compute_key(&msgs, "gpt-4");
         let k2 = ResponseCache::compute_key(&msgs, "gpt-4");
@@ -176,11 +178,13 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let msgs2 = vec![Message {
             role: Role::User,
             content: "world".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         assert_ne!(
             ResponseCache::compute_key(&msgs1, "gpt-4"),
@@ -194,6 +198,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         assert_ne!(
             ResponseCache::compute_key(&msgs, "gpt-4"),
@@ -216,11 +221,13 @@ mod tests {
                 role: Role::User,
                 content: "ab".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "c".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         let msgs2 = vec![
@@ -228,11 +235,13 @@ mod tests {
                 role: Role::User,
                 content: "a".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "bc".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         assert_ne!(

@@ -19,7 +19,7 @@ impl<C: Channel> Agent<C> {
 
         let history = memory
             .sqlite()
-            .load_history(cid, self.memory_state.history_limit)
+            .load_history_filtered(cid, self.memory_state.history_limit, Some(true), None)
             .await?;
         if !history.is_empty() {
             let mut loaded = 0;

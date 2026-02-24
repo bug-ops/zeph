@@ -132,11 +132,13 @@ mod tests {
                 role: Role::System,
                 content: "You are helpful.".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "Hi".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ]
     }
@@ -211,21 +213,25 @@ mod tests {
                 role: Role::System,
                 content: "System prompt.".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "Hello".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::Assistant,
                 content: "Hi there".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
             Message {
                 role: Role::User,
                 content: "How are you?".into(),
                 parts: vec![],
+                metadata: MessageMetadata::default(),
             },
         ];
         let out = ChatTemplate::Mistral.format(&messages);

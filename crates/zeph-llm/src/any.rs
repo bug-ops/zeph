@@ -153,6 +153,7 @@ mod tests {
     use super::*;
     use crate::claude::ClaudeProvider;
     use crate::ollama::OllamaProvider;
+    use crate::provider::MessageMetadata;
     use crate::provider::Role;
 
     #[test]
@@ -276,6 +277,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -288,6 +290,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -304,6 +307,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -316,6 +320,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());

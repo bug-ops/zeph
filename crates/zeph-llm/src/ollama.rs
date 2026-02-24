@@ -251,6 +251,7 @@ fn parse_host_port(url: &str) -> (String, u16) {
 mod tests {
     use super::*;
     use crate::provider::ImageData;
+    use crate::provider::MessageMetadata;
 
     #[test]
     fn context_window_none_by_default() {
@@ -298,6 +299,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "hello");
@@ -390,6 +392,7 @@ mod tests {
             role: Role::System,
             content: "system instruction".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "system instruction");
@@ -401,6 +404,7 @@ mod tests {
             role: Role::Assistant,
             content: "reply text".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "reply text");
@@ -461,6 +465,7 @@ mod tests {
             role: Role::User,
             content: "multi\nline\ncontent".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
         assert_eq!(cm.content, "multi\nline\ncontent");
@@ -472,6 +477,7 @@ mod tests {
             role: Role::User,
             content: String::new(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
         assert!(cm.content.is_empty());
@@ -485,6 +491,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat(&messages).await;
         assert!(result.is_err());
@@ -506,6 +513,7 @@ mod tests {
             role: Role::User,
             content: "hello".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
         let result = provider.chat_stream(&messages).await;
         assert!(result.is_err());
@@ -552,6 +560,7 @@ mod tests {
             role: Role::User,
             content: "Reply with exactly: pong".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
@@ -583,6 +592,7 @@ mod tests {
             role: Role::User,
             content: "What is 2+2? Reply with just the number.".into(),
             parts: vec![],
+            metadata: MessageMetadata::default(),
         }];
 
         let chat_response = provider.chat(&messages).await.unwrap();
