@@ -9214,6 +9214,7 @@ version = "0.11.6"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "base64 0.22.1",
  "dirs",
  "futures",
  "schemars 1.2.1",

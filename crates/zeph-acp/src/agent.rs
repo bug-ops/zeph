@@ -15,6 +15,15 @@ use crate::terminal::AcpShellExecutor;
 use crate::transport::ConnSlot;
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
+const MAX_IMAGE_BASE64_BYTES: usize = 20 * 1_048_576; // 20 MiB base64-encoded
+
+const SUPPORTED_IMAGE_MIMES: &[&str] = &[
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+];
 const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
 
 /// IDE-proxied capabilities passed to the agent loop per session.
@@ -265,16 +274,71 @@ impl acp::Agent for ZephAcpAgent {
         Ok(acp::NewSessionResponse::new(session_id))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
         let mut text = String::new();
+        let mut attachments = Vec::new();
         for block in &args.prompt {
-            if let acp::ContentBlock::Text(t) = block {
-                if !text.is_empty() {
-                    text.push('\n');
+            match block {
+                acp::ContentBlock::Text(t) => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&t.text);
                 }
-                text.push_str(&t.text);
+                acp::ContentBlock::Image(img) => {
+                    if !SUPPORTED_IMAGE_MIMES.contains(&img.mime_type.as_str()) {
+                        tracing::debug!(
+                            mime_type = %img.mime_type,
+                            "unsupported image MIME type in ACP prompt, skipping"
+                        );
+                    } else if img.data.len() > MAX_IMAGE_BASE64_BYTES {
+                        tracing::warn!(
+                            size = img.data.len(),
+                            max = MAX_IMAGE_BASE64_BYTES,
+                            "image base64 data exceeds size limit, skipping"
+                        );
+                    } else {
+                        use base64::Engine as _;
+                        match base64::engine::general_purpose::STANDARD.decode(&img.data) {
+                            Ok(bytes) => {
+                                attachments.push(zeph_core::channel::Attachment {
+                                    kind: zeph_core::channel::AttachmentKind::Image,
+                                    data: bytes,
+                                    filename: Some(format!(
+                                        "image.{}",
+                                        mime_to_ext(&img.mime_type)
+                                    )),
+                                });
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    error = %e,
+                                    "failed to decode image base64, skipping"
+                                );
+                            }
+                        }
+                    }
+                }
+                acp::ContentBlock::Resource(embedded) => {
+                    if let acp::EmbeddedResourceResource::TextResourceContents(res) =
+                        &embedded.resource
+                    {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str("<resource name=\"");
+                        text.push_str(&res.uri);
+                        text.push_str("\">");
+                        text.push_str(&res.text);
+                        text.push_str("</resource>");
+                    }
+                }
+                acp::ContentBlock::Audio(_) | acp::ContentBlock::ResourceLink(_) | &_ => {
+                    tracing::debug!("unsupported content block type in ACP prompt, skipping");
+                }
             }
         }
 
@@ -308,10 +372,7 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         input_tx
-            .send(ChannelMessage {
-                text,
-                attachments: vec![],
-            })
+            .send(ChannelMessage { text, attachments })
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
 
@@ -503,6 +564,16 @@ fn is_tool_use_marker(text: &str) -> bool {
     trimmed.starts_with("[tool_use:") && trimmed.ends_with(']')
 }
 
+fn mime_to_ext(mime: &str) -> &str {
+    match mime {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "bin",
+    }
+}
+
 fn tool_kind_from_name(name: &str) -> acp::ToolKind {
     match name {
         "bash" | "shell" => acp::ToolKind::Execute,
@@ -529,15 +600,24 @@ fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> 
             acp::ContentChunk::new(text.into()),
         )),
         LoopbackEvent::ToolOutput {
-            tool_name, display, ..
+            tool_name,
+            display,
+            locations,
+            ..
         } => {
             let tool_call_id = uuid::Uuid::new_v4().to_string();
+            let acp_locations: Vec<acp::ToolCallLocation> = locations
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| acp::ToolCallLocation::new(std::path::PathBuf::from(p)))
+                .collect();
             let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
                 .kind(tool_kind_from_name(&tool_name))
                 .status(acp::ToolCallStatus::Completed)
                 .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
                     acp::TextContent::new(display),
-                ))]);
+                ))])
+                .locations(acp_locations);
             Some(acp::SessionUpdate::ToolCall(tool_call))
         }
         LoopbackEvent::Flush => None,
@@ -663,6 +743,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prompt_image_block_does_not_error() {
+        use base64::Engine as _;
+        use zeph_core::Channel as _;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                let received_clone = std::rc::Rc::clone(&received);
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                    let received_clone = std::rc::Rc::clone(&received_clone);
+                    Box::pin(async move {
+                        if let Ok(Some(msg)) = channel.recv().await {
+                            *received_clone.borrow_mut() = Some(msg);
+                        }
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                let png_bytes = vec![137u8, 80, 78, 71, 13, 10, 26, 10]; // PNG magic bytes
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+                let img_block = acp::ContentBlock::Image(acp::ImageContent::new(b64, "image/png"));
+                let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
+                let result = agent.prompt(req).await;
+                assert!(result.is_ok());
+
+                // Spawner received the message with one image attachment
+                let msg = received.borrow().clone().unwrap();
+                assert_eq!(msg.attachments.len(), 1);
+                assert_eq!(
+                    msg.attachments[0].kind,
+                    zeph_core::channel::AttachmentKind::Image
+                );
+                assert_eq!(msg.attachments[0].data, png_bytes);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_resource_block_appends_text() {
+        use zeph_core::Channel as _;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                let received_clone = std::rc::Rc::clone(&received);
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                    let received_clone = std::rc::Rc::clone(&received_clone);
+                    Box::pin(async move {
+                        if let Ok(Some(msg)) = channel.recv().await {
+                            *received_clone.borrow_mut() = Some(msg);
+                        }
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                let text_block = acp::ContentBlock::Text(acp::TextContent::new("hello"));
+                let res_block = acp::ContentBlock::Resource(acp::EmbeddedResource::new(
+                    acp::EmbeddedResourceResource::TextResourceContents(
+                        acp::TextResourceContents::new("world", "file:///foo.txt"),
+                    ),
+                ));
+                let req = acp::PromptRequest::new(
+                    resp.session_id.to_string(),
+                    vec![text_block, res_block],
+                );
+                agent.prompt(req).await.unwrap();
+
+                let msg = received.borrow().clone().unwrap();
+                assert!(msg.text.contains("hello"));
+                assert!(
+                    msg.text
+                        .contains("<resource name=\"file:///foo.txt\">world</resource>")
+                );
+                assert!(msg.attachments.is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
     async fn prompt_rejects_oversized() {
         let local = tokio::task::LocalSet::new();
         local
@@ -717,6 +892,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
+            locations: None,
         };
         let update = loopback_event_to_update(event);
         match update {
@@ -869,6 +1045,191 @@ mod tests {
                 assert!(agent.prompt(req).await.is_err());
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_oversized_image_base64_skipped() {
+        use zeph_core::Channel as _;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                let received_clone = std::rc::Rc::clone(&received);
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                    let received_clone = std::rc::Rc::clone(&received_clone);
+                    Box::pin(async move {
+                        if let Ok(Some(msg)) = channel.recv().await {
+                            *received_clone.borrow_mut() = Some(msg);
+                        }
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                // Simulate oversized base64 data (exceeds MAX_IMAGE_BASE64_BYTES)
+                let oversized = "A".repeat(MAX_IMAGE_BASE64_BYTES + 1);
+                let img_block =
+                    acp::ContentBlock::Image(acp::ImageContent::new(oversized, "image/png"));
+                let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
+                agent.prompt(req).await.unwrap();
+
+                let msg = received.borrow().clone().unwrap();
+                assert!(
+                    msg.attachments.is_empty(),
+                    "oversized image must be skipped"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_unsupported_mime_image_skipped() {
+        use base64::Engine as _;
+        use zeph_core::Channel as _;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                let received_clone = std::rc::Rc::clone(&received);
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                    let received_clone = std::rc::Rc::clone(&received_clone);
+                    Box::pin(async move {
+                        if let Ok(Some(msg)) = channel.recv().await {
+                            *received_clone.borrow_mut() = Some(msg);
+                        }
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+                let img_block =
+                    acp::ContentBlock::Image(acp::ImageContent::new(b64, "application/pdf"));
+                let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
+                agent.prompt(req).await.unwrap();
+
+                let msg = received.borrow().clone().unwrap();
+                assert!(
+                    msg.attachments.is_empty(),
+                    "unsupported MIME type must be skipped"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_resource_text_wrapped_in_markers() {
+        use zeph_core::Channel as _;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                let received_clone = std::rc::Rc::clone(&received);
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                    let received_clone = std::rc::Rc::clone(&received_clone);
+                    Box::pin(async move {
+                        if let Ok(Some(msg)) = channel.recv().await {
+                            *received_clone.borrow_mut() = Some(msg);
+                        }
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                let res_block = acp::ContentBlock::Resource(acp::EmbeddedResource::new(
+                    acp::EmbeddedResourceResource::TextResourceContents(
+                        acp::TextResourceContents::new("injected content", "file:///secret.txt"),
+                    ),
+                ));
+                let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![res_block]);
+                agent.prompt(req).await.unwrap();
+
+                let msg = received.borrow().clone().unwrap();
+                assert!(
+                    msg.text.contains(
+                        "<resource name=\"file:///secret.txt\">injected content</resource>"
+                    ),
+                    "resource text must be wrapped in markers with name attribute"
+                );
+            })
+            .await;
+    }
+
+    #[test]
+    fn mime_to_ext_known_types() {
+        assert_eq!(mime_to_ext("image/jpeg"), "jpg");
+        assert_eq!(mime_to_ext("image/jpg"), "jpg");
+        assert_eq!(mime_to_ext("image/png"), "png");
+        assert_eq!(mime_to_ext("image/gif"), "gif");
+        assert_eq!(mime_to_ext("image/webp"), "webp");
+        assert_eq!(mime_to_ext("image/unknown"), "bin");
+    }
+
+    #[test]
+    fn loopback_tool_output_with_locations() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "read_file".to_owned(),
+            display: "content".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: Some(vec!["/src/main.rs".to_owned(), "/src/lib.rs".to_owned()]),
+        };
+        let update = loopback_event_to_update(event);
+        match update {
+            Some(acp::SessionUpdate::ToolCall(tc)) => {
+                assert_eq!(tc.locations.len(), 2);
+                assert_eq!(
+                    tc.locations[0].path,
+                    std::path::PathBuf::from("/src/main.rs")
+                );
+                assert_eq!(
+                    tc.locations[1].path,
+                    std::path::PathBuf::from("/src/lib.rs")
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_output_empty_locations() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "ok".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+        };
+        let update = loopback_event_to_update(event);
+        match update {
+            Some(acp::SessionUpdate::ToolCall(tc)) => {
+                assert!(tc.locations.is_empty());
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
     }
 
     #[test]

@@ -55,6 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Integration tests for ACP transport using `tokio::io::duplex` — `initialize_handshake`, `new_session_and_cancel` (#773)
 - ACP permission persistence to `~/.config/zeph/acp-permissions.toml` — `AllowAlways`/`RejectAlways` decisions survive restarts (#786)
 - `acp.permission_file` config and `ZEPH_ACP_PERMISSION_FILE` env override for custom permission file path (#786)
+- Multi-modal ACP prompts — image and embedded resource content blocks forwarded to LLM providers (#784)
+- Tool output locations for IDE file navigation via `ToolCallLocation` (#784)
 
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)

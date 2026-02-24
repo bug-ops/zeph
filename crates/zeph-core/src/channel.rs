@@ -170,6 +170,7 @@ pub enum LoopbackEvent {
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        locations: Option<Vec<String>>,
     },
 }
 
@@ -256,6 +257,7 @@ impl Channel for LoopbackChannel {
                 diff,
                 filter_stats,
                 kept_lines,
+                locations: None,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -489,12 +491,14 @@ mod tests {
                 diff,
                 filter_stats,
                 kept_lines,
+                locations,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
                 assert!(diff.is_none());
                 assert!(filter_stats.is_none());
                 assert!(kept_lines.is_none());
+                assert!(locations.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }

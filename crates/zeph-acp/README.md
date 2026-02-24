@@ -15,7 +15,7 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, and SQLite persistence |
+| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, and rich content support (images, embedded resources, tool locations) |
 | `transport` | `serve_stdio` / `serve_connection` — ACP server transports; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
@@ -40,6 +40,15 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## Rich content
+
+ACP prompts can carry multi-modal content blocks beyond plain text:
+
+- **Images** — base64-encoded image blocks (`image/jpeg`, `image/png`, `image/gif`, `image/webp`) are decoded and forwarded to the LLM provider as inline attachments. Oversized payloads and unsupported MIME types are skipped with a warning.
+- **Embedded resources** — `TextResourceContents` blocks are injected into the prompt text wrapped in `<resource>` markers.
+- **Tool locations** — tool call results can include file path locations (`ToolCallLocation`) that the IDE uses for source navigation.
+- **Thinking chunks** — intermediate reasoning status events are streamed back to the IDE as `session/update` events.
 
 ## Session lifecycle
 

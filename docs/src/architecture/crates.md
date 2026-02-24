@@ -154,6 +154,7 @@ A2A protocol client and server (optional, feature-gated).
 
 Agent Client Protocol server — IDE integration via ACP (optional, feature-gated).
 
+- **Rich content** — ACP prompts may contain multi-modal content blocks. Image blocks are forwarded to LLM providers that support vision (Claude, OpenAI, Ollama). Resource content blocks (embedded text from IDE) are appended to the user prompt. Tool output includes `ToolCallLocation` for IDE navigation (file path, line range).
 - `ZephAcpAgent` — `acp::Agent` implementation; manages concurrent sessions with LRU eviction (`max_sessions`, default 4), forwards prompts to the agent loop, and emits `SessionNotification` updates back to the IDE
 - `AcpContext` — per-session bundle of IDE-proxied capabilities passed to `AgentSpawner`:
   - `file_executor: Option<AcpFileExecutor>` — reads/writes routed to the IDE filesystem proxy
