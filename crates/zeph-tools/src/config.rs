@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
@@ -27,6 +29,35 @@ fn default_audit_destination() -> String {
     "stdout".into()
 }
 
+fn default_overflow_threshold() -> usize {
+    50_000
+}
+
+fn default_retention_days() -> u64 {
+    7
+}
+
+/// Configuration for large tool response offload to filesystem.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OverflowConfig {
+    #[serde(default = "default_overflow_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u64,
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
+}
+
+impl Default for OverflowConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_overflow_threshold(),
+            retention_days: default_retention_days(),
+            dir: None,
+        }
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -44,6 +75,8 @@ pub struct ToolsConfig {
     pub permissions: Option<PermissionsConfig>,
     #[serde(default)]
     pub filters: crate::filter::FilterConfig,
+    #[serde(default)]
+    pub overflow: OverflowConfig,
 }
 
 impl ToolsConfig {
@@ -98,6 +131,7 @@ impl Default for ToolsConfig {
             audit: AuditConfig::default(),
             permissions: None,
             filters: crate::filter::FilterConfig::default(),
+            overflow: OverflowConfig::default(),
         }
     }
 }
@@ -361,5 +395,42 @@ mod tests {
         // Default ShellConfig has confirm_patterns, so legacy rules are generated
         assert!(!config.shell.confirm_patterns.is_empty());
         assert!(policy.rules().contains_key("bash"));
+    }
+
+    #[test]
+    fn deserialize_overflow_config_full() {
+        let toml_str = r#"
+            [overflow]
+            threshold = 100000
+            retention_days = 14
+            dir = "/tmp/overflow"
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.overflow.threshold, 100_000);
+        assert_eq!(config.overflow.retention_days, 14);
+        assert_eq!(
+            config.overflow.dir.unwrap().to_str().unwrap(),
+            "/tmp/overflow"
+        );
+    }
+
+    #[test]
+    fn deserialize_overflow_config_partial_uses_defaults() {
+        let toml_str = r#"
+            [overflow]
+            threshold = 75000
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.overflow.threshold, 75_000);
+        assert_eq!(config.overflow.retention_days, 7);
+        assert!(config.overflow.dir.is_none());
+    }
+
+    #[test]
+    fn deserialize_overflow_config_omitted_uses_defaults() {
+        let config: ToolsConfig = toml::from_str("").unwrap();
+        assert_eq!(config.overflow.threshold, 50_000);
+        assert_eq!(config.overflow.retention_days, 7);
+        assert!(config.overflow.dir.is_none());
     }
 }

@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
+assertion_line: 1207
 expression: toml_str
 ---
 [agent]
@@ -98,6 +99,10 @@ enabled = true
 [tools.filters.security]
 enabled = true
 extra_patterns = []
+
+[tools.overflow]
+threshold = 50000
+retention_days = 7
 
 [a2a]
 enabled = false

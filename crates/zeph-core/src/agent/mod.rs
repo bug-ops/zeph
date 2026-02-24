@@ -127,6 +127,7 @@ pub(super) struct RuntimeConfig {
     pub(super) permission_policy: zeph_tools::PermissionPolicy,
     pub(super) redact_credentials: bool,
     pub(super) token_safety_margin: f32,
+    pub(super) overflow_config: zeph_tools::OverflowConfig,
 }
 
 pub struct Agent<C: Channel> {
@@ -238,6 +239,7 @@ impl<C: Channel> Agent<C> {
                 permission_policy: zeph_tools::PermissionPolicy::default(),
                 redact_credentials: true,
                 token_safety_margin: 1.0,
+                overflow_config: zeph_tools::OverflowConfig::default(),
             },
             learning_config: None,
             reflection_used: false,
@@ -1861,6 +1863,32 @@ pub(super) mod agent_tests {
     }
 
     #[tokio::test]
+    async fn test_overflow_notice_contains_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(false)
+            .with_overflow_config(zeph_tools::OverflowConfig {
+                threshold: 100,
+                retention_days: 7,
+                dir: Some(dir.path().to_path_buf()),
+            });
+
+        let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
+        let result = agent.maybe_summarize_tool_output(&long).await;
+        assert!(result.contains("full output saved to"));
+        // Notice must contain only filename (UUID.txt), not a full path
+        let notice_start = result.find("full output saved to").unwrap();
+        let notice_part = &result[notice_start..];
+        assert!(notice_part.contains(".txt"));
+        assert!(!notice_part.contains('/'));
+    }
+
+    #[tokio::test]
     async fn test_maybe_summarize_long_output_disabled_truncates() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -1868,8 +1896,15 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(false);
+            .with_tool_summarization(false)
+            .with_overflow_config(zeph_tools::OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                dir: None,
+            });
 
+        // Must exceed both overflow threshold (1000) and MAX_TOOL_OUTPUT_CHARS (30_000)
+        // so that truncate_tool_output produces the "truncated" marker.
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
         assert!(result.contains("truncated"));
@@ -1883,7 +1918,12 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true);
+            .with_tool_summarization(true)
+            .with_overflow_config(zeph_tools::OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                dir: None,
+            });
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
@@ -1900,7 +1940,12 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true);
+            .with_tool_summarization(true)
+            .with_overflow_config(zeph_tools::OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                dir: None,
+            });
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;

@@ -22,7 +22,7 @@
 Most AI agent frameworks dump every tool description, skill, and raw output into the context window — and bill you for it. Zeph takes the opposite approach: **automated context engineering**. Only relevant data enters the context. The result — lower costs, faster responses, and an agent that runs on hardware you already have.
 
 - **Semantic skill selection** — embeds skills as vectors, retrieves only top-K relevant per query instead of injecting all
-- **Smart output filtering** — command-aware filters strip 70-99% of noise before context injection
+- **Smart output filtering** — command-aware filters strip 70-99% of noise before context injection; oversized responses offloaded to filesystem
 - **Two-tier context pruning** — selective eviction + adaptive chunked compaction with parallel summarization keeps the window clean
 - **Proportional budget allocation** — context space distributed by purpose, not arrival order
 

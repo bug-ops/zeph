@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Configurable tool response offload — `OverflowConfig` with threshold (default 50k chars), retention (7 days), optional custom dir (#791)
+- `[tools.overflow]` section in `config.toml` for offload configuration
+- Security hardening: path canonicalization, symlink-safe cleanup, 0o600 file permissions on Unix
 - Wire `AcpContext` (IDE-proxied FS, shell, permissions) through `AgentSpawner` into agent tool chain via `CompositeExecutor` — ACP executors take priority with automatic local fallback (#779)
 - `DynExecutor` newtype in `zeph-tools` for object-safe `ToolExecutor` composition in `CompositeExecutor` (#779)
 - `cancel_signal: Arc<Notify>` on `LoopbackHandle` for cooperative cancellation between ACP sessions and agent loop (#780)

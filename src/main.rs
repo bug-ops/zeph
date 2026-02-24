@@ -439,11 +439,15 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
 
-    tokio::task::spawn_blocking(|| {
-        zeph_tools::cleanup_overflow_files(std::time::Duration::from_secs(86_400));
-    });
-
     let config = app.config();
+
+    {
+        let overflow_cfg = config.tools.overflow.clone();
+        tokio::task::spawn_blocking(move || {
+            zeph_tools::cleanup_overflow_files(&overflow_cfg);
+        });
+    }
+
     let permission_policy = config
         .tools
         .permission_policy(config.security.autonomy_level);
@@ -558,6 +562,7 @@ async fn main() -> anyhow::Result<()> {
     .with_security(config.security, config.timeouts)
     .with_redact_credentials(config.memory.redact_credentials)
     .with_tool_summarization(config.tools.summarize_output)
+    .with_overflow_config(config.tools.overflow.clone())
     .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path, config_reload_rx)
     .with_available_secrets(
@@ -1626,6 +1631,7 @@ async fn run_daemon(
     .with_security(config.security, config.timeouts)
     .with_redact_credentials(config.memory.redact_credentials)
     .with_tool_summarization(config.tools.summarize_output)
+    .with_overflow_config(config.tools.overflow.clone())
     .with_permission_policy(permission_policy)
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
@@ -2073,6 +2079,7 @@ struct AgentDeps {
     timeouts: zeph_core::config::TimeoutConfig,
     redact_credentials: bool,
     tool_summarization: bool,
+    overflow_config: zeph_tools::OverflowConfig,
     permission_policy: zeph_tools::PermissionPolicy,
     config_path: PathBuf,
     config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
@@ -2178,6 +2185,7 @@ async fn build_acp_deps(
         timeouts: config.timeouts,
         redact_credentials: config.memory.redact_credentials,
         tool_summarization: config.tools.summarize_output,
+        overflow_config: config.tools.overflow.clone(),
         permission_policy: config
             .tools
             .permission_policy(config.security.autonomy_level),
@@ -2265,6 +2273,7 @@ async fn spawn_acp_agent(
     .with_security(d.security, d.timeouts)
     .with_redact_credentials(d.redact_credentials)
     .with_tool_summarization(d.tool_summarization)
+    .with_overflow_config(d.overflow_config)
     .with_permission_policy(d.permission_policy)
     .with_config_reload(d.config_path, d.config_reload_rx)
     .with_mcp(

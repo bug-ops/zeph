@@ -324,14 +324,13 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
-        if output.len() <= zeph_tools::MAX_TOOL_OUTPUT_CHARS {
+        if output.len() <= self.runtime.overflow_config.threshold {
             return output.to_string();
         }
-        let overflow_notice = if let Some(path) = zeph_tools::save_overflow(output) {
-            format!(
-                "\n[full output saved to {}, use read tool to access]",
-                path.display()
-            )
+        let overflow_notice = if let Some(filename) =
+            zeph_tools::save_overflow(output, &self.runtime.overflow_config)
+        {
+            format!("\n[full output saved to {filename}, use read tool to access]")
         } else {
             String::new()
         };
