@@ -714,6 +714,7 @@ impl<C: Channel> Agent<C> {
         };
         self.messages[req_idx].metadata.agent_visible = false;
         self.messages[resp_idx].metadata.agent_visible = false;
+        let summary = self.maybe_redact(&summary).into_owned();
         let content = format!("[tool summary] {summary}");
         let summary_msg = Message {
             role: Role::Assistant,
@@ -721,7 +722,7 @@ impl<C: Channel> Agent<C> {
             parts: vec![MessagePart::Summary { text: summary }],
             metadata: MessageMetadata::agent_only(),
         };
-        self.messages.insert(resp_idx + 1, summary_msg); // lgtm[rust/cleartext-logging]
+        self.messages.insert(resp_idx + 1, summary_msg);
         tracing::debug!(
             pair_count,
             cutoff = self.memory_state.tool_call_cutoff,
