@@ -323,9 +323,9 @@ fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> 
             let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
                 .kind(tool_kind_from_name(&tool_name))
                 .status(acp::ToolCallStatus::Completed)
-                .content(vec![acp::ToolCallContent::from(
-                    acp::ContentBlock::Text(acp::TextContent::new(display)),
-                )]);
+                .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                    acp::TextContent::new(display),
+                ))]);
             Some(acp::SessionUpdate::ToolCall(tool_call))
         }
         LoopbackEvent::Flush => None,
