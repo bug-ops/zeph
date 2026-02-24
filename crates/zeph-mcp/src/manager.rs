@@ -14,7 +14,7 @@ use crate::error::McpError;
 use crate::tool::McpTool;
 
 /// Transport type for MCP server connections.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum McpTransport {
     /// Stdio: spawn child process with command + args.
     Stdio {
@@ -27,7 +27,7 @@ pub enum McpTransport {
 }
 
 /// Server connection parameters consumed by `McpManager`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
     pub id: String,
     pub transport: McpTransport,

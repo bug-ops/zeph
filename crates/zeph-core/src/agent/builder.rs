@@ -308,6 +308,17 @@ impl<C: Channel> Agent<C> {
         self.cancel_signal = signal;
         self
     }
+
+    /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
+    /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
+    #[must_use]
+    pub fn with_provider_override(
+        mut self,
+        slot: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+    ) -> Self {
+        self.provider_override = Some(slot);
+        self
+    }
 }
 
 #[cfg(test)]

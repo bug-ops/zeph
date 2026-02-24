@@ -67,6 +67,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `acp.permission_file` config and `ZEPH_ACP_PERMISSION_FILE` env override for custom permission file path (#786)
 - Multi-modal ACP prompts — image and embedded resource content blocks forwarded to LLM providers (#784)
 - Tool output locations for IDE file navigation via `ToolCallLocation` (#784)
+- Runtime model switching via `set_session_config_option` with provider allowlist validation (#785)
+- `ProviderFactory` closure-based provider creation for dynamic model switching (#785)
+- MCP extension management via `ext_method` — `_agent/mcp/add`, `_agent/mcp/remove`, `_agent/mcp/list` (#785)
+- `provider_override` with `Arc<RwLock>` and poison recovery in agent loop (#785)
+- `available_models` configuration in `AcpConfig` (#785)
+- `with_provider_override()` builder method on `Agent` (#785)
 
 ### Fixed
 - Permission cache key collision on anonymous tools — uses `tool_call_id` as fallback when title is absent (#779)

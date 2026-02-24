@@ -1098,6 +1098,10 @@ pub struct AcpConfig {
     pub session_idle_timeout_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_file: Option<std::path::PathBuf>,
+    /// List of `{provider}:{model}` identifiers advertised to the IDE for model switching.
+    /// Example: `["claude:claude-sonnet-4-5", "ollama:llama3"]`
+    #[serde(default)]
+    pub available_models: Vec<String>,
 }
 
 impl Default for AcpConfig {
@@ -1109,6 +1113,7 @@ impl Default for AcpConfig {
             max_sessions: default_acp_max_sessions(),
             session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
             permission_file: None,
+            available_models: Vec::new(),
         }
     }
 }
