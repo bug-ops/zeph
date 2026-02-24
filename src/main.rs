@@ -575,7 +575,8 @@ async fn main() -> anyhow::Result<()> {
     .with_autosave_config(
         config.memory.autosave_assistant,
         config.memory.autosave_min_length,
-    );
+    )
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff);
 
     let agent = if config.llm.response_cache_enabled {
         let pool = cache_pool;
@@ -1636,6 +1637,7 @@ async fn run_daemon(
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
     .with_learning(config.skills.learning.clone())
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_available_secrets(
         config
             .secrets
@@ -2088,6 +2090,7 @@ struct AgentDeps {
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_config: zeph_core::config::McpConfig,
     learning: zeph_core::config::LearningConfig,
+    tool_call_cutoff: usize,
     secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     acp_agent_name: String,
@@ -2200,6 +2203,7 @@ async fn build_acp_deps(
         mcp_manager,
         mcp_config: config.mcp.clone(),
         learning: config.skills.learning.clone(),
+        tool_call_cutoff: config.memory.tool_call_cutoff,
         secrets: config.secrets.custom.clone(),
         summary_provider,
         acp_agent_name: config.acp.agent_name.clone(),
@@ -2290,6 +2294,7 @@ async fn spawn_acp_agent(
         &d.mcp_config,
     )
     .with_learning(d.learning)
+    .with_tool_call_cutoff(d.tool_call_cutoff)
     .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
 
     if let Some(signal) = cancel_signal {

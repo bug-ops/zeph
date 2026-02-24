@@ -78,6 +78,7 @@ pub(super) struct MemoryState {
     pub(super) cross_session_score_threshold: f32,
     pub(super) autosave_assistant: bool,
     pub(super) autosave_min_length: usize,
+    pub(super) tool_call_cutoff: usize,
 }
 
 pub(super) struct SkillState {
@@ -208,6 +209,7 @@ impl<C: Channel> Agent<C> {
                 cross_session_score_threshold: 0.35,
                 autosave_assistant: false,
                 autosave_min_length: 20,
+                tool_call_cutoff: 6,
             },
             skill_state: SkillState {
                 registry,

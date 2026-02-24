@@ -482,10 +482,16 @@ pub struct MemoryConfig {
     pub autosave_assistant: bool,
     #[serde(default = "default_autosave_min_length")]
     pub autosave_min_length: usize,
+    #[serde(default = "default_tool_call_cutoff")]
+    pub tool_call_cutoff: usize,
 }
 
 fn default_autosave_min_length() -> usize {
     20
+}
+
+fn default_tool_call_cutoff() -> usize {
+    6
 }
 
 fn default_token_safety_margin() -> f32 {
@@ -1176,6 +1182,7 @@ impl Default for Config {
                 redact_credentials: default_redact_credentials(),
                 autosave_assistant: false,
                 autosave_min_length: default_autosave_min_length(),
+                tool_call_cutoff: default_tool_call_cutoff(),
             },
             telegram: None,
             discord: None,
