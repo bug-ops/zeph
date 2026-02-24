@@ -43,8 +43,78 @@ pub enum LlmError {
     #[error("transcription failed: {0}")]
     TranscriptionFailed(String),
 
+    #[error("context length exceeded")]
+    ContextLengthExceeded,
+
     #[error("{0}")]
     Other(String),
 }
 
+impl LlmError {
+    /// Returns true if this error indicates the context/prompt is too long for the model.
+    #[must_use]
+    pub fn is_context_length_error(&self) -> bool {
+        match self {
+            Self::ContextLengthExceeded => true,
+            Self::Other(msg) => is_context_length_message(msg),
+            _ => false,
+        }
+    }
+}
+
+fn is_context_length_message(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("maximum number of tokens")
+        || lower.contains("context length exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("prompt is too long")
+        || lower.contains("input too long")
+}
+
 pub type Result<T> = std::result::Result<T, LlmError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_length_exceeded_variant_is_detected() {
+        assert!(LlmError::ContextLengthExceeded.is_context_length_error());
+    }
+
+    #[test]
+    fn other_with_claude_message_is_detected() {
+        let e = LlmError::Other("maximum number of tokens exceeded".into());
+        assert!(e.is_context_length_error());
+    }
+
+    #[test]
+    fn other_with_openai_message_is_detected() {
+        let e = LlmError::Other(
+            "This model's maximum context length is 4096 tokens. context_length_exceeded".into(),
+        );
+        assert!(e.is_context_length_error());
+    }
+
+    #[test]
+    fn other_with_ollama_message_is_detected() {
+        let e = LlmError::Other("context length exceeded for model".into());
+        assert!(e.is_context_length_error());
+    }
+
+    #[test]
+    fn unrelated_error_is_not_detected() {
+        assert!(!LlmError::Unavailable.is_context_length_error());
+        assert!(!LlmError::RateLimited.is_context_length_error());
+        assert!(!LlmError::Other("some unrelated error".into()).is_context_length_error());
+    }
+
+    #[test]
+    fn context_length_exceeded_display() {
+        assert_eq!(
+            LlmError::ContextLengthExceeded.to_string(),
+            "context length exceeded"
+        );
+    }
+}
