@@ -16,6 +16,7 @@ readme = "README.md"
 agent-client-protocol.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+chrono = { workspace = true }
 dirs.workspace = true
 futures.workspace = true
 schemars.workspace = true

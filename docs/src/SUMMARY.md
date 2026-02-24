@@ -32,6 +32,7 @@
 - [Self-Learning Skills](advanced/self-learning.md)
 - [Skill Trust & Security](advanced/skill-trust.md)
 - [Sub-Agent Orchestration](advanced/sub-agents.md)
+- [ACP (Agent Client Protocol)](advanced/acp.md)
 - [A2A Protocol](advanced/a2a.md)
 - [Code Indexing](advanced/code-indexing.md)
 - [Pipeline API](advanced/pipeline.md)

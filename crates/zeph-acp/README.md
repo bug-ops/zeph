@@ -105,6 +105,30 @@ pub type AgentSpawner = Arc<
 
 The host constructs an `AgentSpawner` closure that wires `AcpContext` capabilities into `Agent` via `with_cancel_signal()` on the builder, then passes the closure to `serve_stdio` or `serve_connection`.
 
+## Custom methods
+
+`ZephAcpAgent` exposes vendor-specific extensions via `ExtRequest` dispatch. The `custom` module matches on `req.method` and routes to the appropriate handler. Unrecognized methods return `None`, allowing the ACP runtime to respond with "method not found".
+
+| Method | Description |
+|--------|-------------|
+| `_session/list` | List all sessions (in-memory + persisted via `SqliteStore::list_acp_sessions`) |
+| `_session/get` | Get session details and event history |
+| `_session/delete` | Remove session from memory and SQLite |
+| `_session/export` | Export session events as a portable JSON payload |
+| `_session/import` | Import events into a new session (UUID assigned server-side) |
+| `_agent/tools` | Return the list of tools available to the agent |
+| `_agent/working_dir/update` | Change the working directory for a session |
+
+### Security guards
+
+- **Session ID validation** — IDs must be at most 128 characters, restricted to `[a-zA-Z0-9_-]`. Rejects control characters, slashes, and whitespace.
+- **Path traversal protection** — `_agent/working_dir/update` rejects any path containing `..` (`Component::ParentDir`).
+- **Import size cap** — `_session/import` rejects payloads exceeding 10,000 events.
+
+### Auth hints in `initialize`
+
+The `initialize` response includes an `auth_hint` key in its metadata map. For stdio transport (trusted local client) this is a generic `"authentication required"` string. IDEs can use this hint to prompt the user for credentials before issuing further requests.
+
 ## Installation
 
 ```bash

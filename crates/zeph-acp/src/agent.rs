@@ -62,13 +62,15 @@ pub type AgentSpawner = Arc<
 pub(crate) type NotifySender =
     mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>;
 
-struct SessionEntry {
-    input_tx: mpsc::Sender<ChannelMessage>,
+pub(crate) struct SessionEntry {
+    pub(crate) input_tx: mpsc::Sender<ChannelMessage>,
     // Receiver is owned solely by the prompt() handler; RefCell avoids Arc<Mutex> overhead.
     // prompt() is not called concurrently for the same session.
-    output_rx: RefCell<Option<mpsc::Receiver<LoopbackEvent>>>,
-    cancel_signal: std::sync::Arc<tokio::sync::Notify>,
-    last_active: std::cell::Cell<std::time::Instant>,
+    pub(crate) output_rx: RefCell<Option<mpsc::Receiver<LoopbackEvent>>>,
+    pub(crate) cancel_signal: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) last_active: std::cell::Cell<std::time::Instant>,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) working_dir: RefCell<Option<std::path::PathBuf>>,
     /// Shared provider override slot; written by `set_session_config_option`, read by agent loop.
     provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
     /// Currently selected model identifier (display / tracking only).
@@ -80,13 +82,13 @@ type SessionMap = Rc<RefCell<std::collections::HashMap<acp::SessionId, SessionEn
 pub struct ZephAcpAgent {
     notify_tx: NotifySender,
     spawner: AgentSpawner,
-    sessions: SessionMap,
+    pub(crate) sessions: SessionMap,
     conn_slot: ConnSlot,
     agent_name: String,
     agent_version: String,
     max_sessions: usize,
     idle_timeout: std::time::Duration,
-    store: Option<SqliteStore>,
+    pub(crate) store: Option<SqliteStore>,
     permission_file: Option<std::path::PathBuf>,
     // IDE capabilities received during initialize(); used by build_acp_context.
     client_caps: RefCell<acp::ClientCapabilities>,
@@ -247,11 +249,30 @@ impl acp::Agent for ZephAcpAgent {
         tracing::debug!("ACP initialize");
         *self.client_caps.borrow_mut() = args.client_capabilities;
         let title = format!("{} AI Agent", self.agent_name);
-        Ok(
-            acp::InitializeResponse::new(acp::ProtocolVersion::LATEST).agent_info(
+
+        // stdio transport implies a trusted local client; do not expose internal
+        // configuration details. Provide only a generic authentication hint.
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "auth_hint".to_owned(),
+            serde_json::json!("authentication required"),
+        );
+
+        Ok(acp::InitializeResponse::new(acp::ProtocolVersion::LATEST)
+            .agent_info(
                 acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
-            ),
-        )
+            )
+            .agent_capabilities(acp::AgentCapabilities::new().load_session(true))
+            .meta(meta))
+    }
+
+    async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        if let Some(fut) = crate::custom::dispatch(self, &args) {
+            return fut.await;
+        }
+        // Fall through to inline MCP management methods from main.
+        // Defined below in the second ext_method block merged from origin/main.
+        self.ext_method_mcp(&args).await
     }
 
     async fn authenticate(
@@ -304,6 +325,8 @@ impl acp::Agent for ZephAcpAgent {
             output_rx: RefCell::new(Some(handle.output_rx)),
             cancel_signal: handle.cancel_signal,
             last_active: std::cell::Cell::new(std::time::Instant::now()),
+            created_at: chrono::Utc::now(),
+            working_dir: RefCell::new(None),
             provider_override,
             current_model: RefCell::new(String::new()),
         };
@@ -549,6 +572,8 @@ impl acp::Agent for ZephAcpAgent {
             output_rx: RefCell::new(Some(handle.output_rx)),
             cancel_signal: handle.cancel_signal,
             last_active: std::cell::Cell::new(std::time::Instant::now()),
+            created_at: chrono::Utc::now(),
+            working_dir: RefCell::new(None),
             provider_override,
             current_model: RefCell::new(String::new()),
         };
@@ -645,8 +670,10 @@ impl acp::Agent for ZephAcpAgent {
         let config_options = build_model_config_options(&self.available_models, &current);
         Ok(acp::SetSessionConfigOptionResponse::new(config_options))
     }
+}
 
-    async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+impl ZephAcpAgent {
+    async fn ext_method_mcp(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
         let method = args.method.as_ref();
         match method {
             "_agent/mcp/list" => {
@@ -713,7 +740,14 @@ fn session_update_to_event(update: &acp::SessionUpdate) -> (&'static str, String
         acp::SessionUpdate::AgentMessageChunk(c) => ("agent_message", content_chunk_text(c)),
         acp::SessionUpdate::AgentThoughtChunk(c) => ("agent_thought", content_chunk_text(c)),
         acp::SessionUpdate::ToolCall(tc) => {
-            ("tool_call", serde_json::to_string(tc).unwrap_or_default())
+            let payload = match serde_json::to_string(tc) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to serialize ToolCall for persistence");
+                    String::new()
+                }
+            };
+            ("tool_call", payload)
         }
         _ => ("unknown", String::new()),
     }
@@ -852,6 +886,27 @@ mod tests {
                     .await
                     .unwrap();
                 assert!(resp.agent_info.is_some());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_load_session_capability_and_auth_hint() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                assert!(resp.agent_capabilities.load_session);
+                let meta = resp.meta.expect("meta should be present");
+                assert!(
+                    meta.contains_key("auth_hint"),
+                    "auth_hint key missing from meta"
+                );
             })
             .await;
     }

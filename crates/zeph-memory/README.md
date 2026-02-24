@@ -68,6 +68,16 @@ zeph memory import backup.json
 | Temporal decay | `semantic.temporal_decay_enabled` | `false` | Time-based score attenuation favoring recent memories |
 | Decay half-life | `semantic.temporal_decay_half_life_days` | `30` | Days until a memory's score drops to 50% |
 
+## ACP session storage
+
+`SqliteStore` provides persistence for ACP session lifecycle and event replay. Two methods added for custom method support:
+
+- `list_acp_sessions()` — returns all sessions ordered by `created_at DESC` as `Vec<AcpSessionInfo>` (id + created_at). Used by `_session/list` to merge persisted sessions with in-memory state.
+- `import_acp_events(session_id, &[(&str, &str)])` — bulk-inserts events inside a single SQLite transaction. All events are written atomically (commit or rollback). Used by `_session/import` for portable session transfer.
+
+> [!NOTE]
+> Event cascade delete is handled at the SQL level: deleting a session via `delete_acp_session` removes all associated events.
+
 ## Features
 
 | Feature | Description |

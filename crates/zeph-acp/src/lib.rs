@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub mod agent;
+pub(crate) mod custom;
 pub mod error;
 pub mod fs;
 pub mod mcp_bridge;

@@ -9215,6 +9215,7 @@ dependencies = [
  "agent-client-protocol",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "futures",
  "schemars 1.2.1",
