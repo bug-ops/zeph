@@ -17,7 +17,7 @@ pub mod trust_gate;
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
-pub use config::{AuditConfig, ScrapeConfig, ShellConfig, ToolsConfig};
+pub use config::{AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig};
 pub use executor::{
     DiffData, DynExecutor, ErasedToolExecutor, FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall,
     ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output,

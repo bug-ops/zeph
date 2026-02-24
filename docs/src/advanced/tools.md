@@ -119,9 +119,27 @@ When `[tools.permissions]` is absent, legacy `blocked_commands` and `confirm_pat
 
 ## Output Overflow
 
-Tool output exceeding 30 000 characters is truncated (head + tail split) before being sent to the LLM. The full untruncated output is saved to `~/.zeph/data/tool-output/{uuid}.txt`, and the truncated message includes the file path so the LLM can read the complete output if needed.
+When tool output exceeds a configurable character threshold, the full response is offloaded to a file and the LLM receives a truncated version (head + tail split) with a pointer to the saved file. This prevents large outputs from consuming the entire context window while preserving access to the complete data.
 
-Stale overflow files older than 24 hours are cleaned up automatically on startup.
+Overflow files are written to `~/.zeph/data/tool-output/` by default. The pointer returned to the LLM contains only the filename (`{uuid}.txt`), not the full path, to avoid leaking the home directory.
+
+Stale overflow files are cleaned up automatically on startup based on `retention_days`.
+
+### Configuration
+
+```toml
+[tools.overflow]
+threshold = 50000       # Character count above which output is offloaded (default: 50000)
+retention_days = 7      # Days to retain overflow files before cleanup (default: 7)
+# dir = "/custom/path"  # Custom overflow directory (default: ~/.zeph/data/tool-output)
+```
+
+### Security
+
+- Overflow directory is canonicalized after creation to prevent symlink-based path traversal.
+- Files are created with `0o600` permissions on Unix (owner read/write only).
+- Cleanup uses `symlink_metadata` and skips non-regular files (symlinks, directories) to prevent symlink attacks.
+- The returned pointer is a bare filename, never an absolute path.
 
 ## Output Filter Pipeline
 

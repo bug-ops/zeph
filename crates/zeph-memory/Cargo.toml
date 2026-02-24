@@ -14,6 +14,8 @@ readme = "README.md"
 
 [dependencies]
 bytemuck = { workspace = true }
+dashmap = { workspace = true }
+tiktoken-rs = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
 qdrant-client = { workspace = true, features = ["serde"] }
 schemars.workspace = true

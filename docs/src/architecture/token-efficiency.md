@@ -79,9 +79,19 @@ After each filtered execution, CLI mode prints a one-line stats summary and TUI 
 
 These feed into the [TUI filter metrics display](../advanced/tui.md#filter-metrics) and are emitted as `tracing::debug!` every 50 commands.
 
-### Token Estimation
+### Token Counting
 
-Zeph estimates token counts using a `chars / 4` heuristic instead of the naive `bytes / 3` approach. Character-based estimation handles multi-byte scripts (Cyrillic, CJK, Arabic) more accurately, preventing budget overallocation for non-ASCII content. The `token_safety_margin` config multiplier (default: 1.0) allows tuning the estimate conservatively when precision matters.
+`TokenCounter` (in `zeph-memory`) provides accurate BPE-based token counting using tiktoken-rs with the `cl100k_base` tokenizer — the same encoding used by GPT-4 and Claude-compatible APIs. This replaces the previous `chars / 4` heuristic.
+
+Key design decisions:
+
+- **DashMap cache** (10K entry cap) provides amortized O(1) lookups for repeated text fragments (system prompts, skill bodies, tool schemas). Random eviction on overflow keeps memory bounded.
+- **Input size guard** — inputs exceeding 64 KiB bypass BPE encoding and fall back to `chars / 4` without caching. This prevents CPU amplification and cache pollution from pathologically large tool outputs.
+- **Graceful fallback** — if the tiktoken tokenizer fails to initialize (e.g., missing data files), all counting falls back to `chars / 4` silently.
+- **Tool schema counting** — `count_tool_schema_tokens()` implements the OpenAI function-calling token formula, accounting for per-function overhead, property keys, enum items, and nested object traversal. This enables accurate context budget allocation when tools are registered.
+- **Shared instance** — a single `Arc<TokenCounter>` is constructed during bootstrap and shared across `Agent` and `SemanticMemory`, ensuring cache hits are maximized across subsystems.
+
+The `token_safety_margin` config multiplier (default: 1.0) still applies on top of the counted value for conservative budgeting.
 
 ### Two-Tier Context Pruning
 

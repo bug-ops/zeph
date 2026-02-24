@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ZEPH_ACP_MAX_SESSIONS` and `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` env overrides (#781)
 - ACP session persistence to `SQLite` — `acp_sessions` and `acp_session_events` tables with conversation replay on `load_session` per ACP spec (#782)
 - `SqliteStore` methods for ACP session lifecycle: `create_acp_session`, `save_acp_event`, `load_acp_events`, `delete_acp_session`, `acp_session_exists` (#782)
+- `TokenCounter` in `zeph-memory` — accurate token counting with `tiktoken-rs` cl100k_base, replacing `chars/4` heuristic (#789)
+- DashMap-backed token cache (10k cap) for amortized O(1) lookups
+- OpenAI tool schema token formula for precise context budget allocation
+- Input size guard (64KB) on token counting to prevent cache pollution from oversized input
+- Graceful fallback to `chars/4` when tiktoken tokenizer is unavailable
+- Configurable tool response offload — `OverflowConfig` with threshold (default 50k chars), retention (7 days), optional custom dir (#791)
+- `[tools.overflow]` section in `config.toml` for offload configuration
+- Security hardening: path canonicalization, symlink-safe cleanup, 0o600 file permissions on Unix
 - Wire `AcpContext` (IDE-proxied FS, shell, permissions) through `AgentSpawner` into agent tool chain via `CompositeExecutor` — ACP executors take priority with automatic local fallback (#779)
 - `DynExecutor` newtype in `zeph-tools` for object-safe `ToolExecutor` composition in `CompositeExecutor` (#779)
 - `cancel_signal: Arc<Notify>` on `LoopbackHandle` for cooperative cancellation between ACP sessions and agent loop (#780)

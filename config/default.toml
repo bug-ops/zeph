@@ -365,6 +365,15 @@ enabled = true
 # [tools.permissions]
 # shell = [{ pattern = "/tmp/*", action = "allow" }, { pattern = "/etc/*", action = "deny" }]
 
+[tools.overflow]
+# Offload large tool responses to filesystem instead of truncating in-memory.
+# Characters threshold above which output is saved to a file (default: 50000)
+threshold = 50000
+# Days to retain offloaded files before cleanup on next startup (default: 7)
+retention_days = 7
+# Optional custom directory for overflow files (default: ~/.zeph/data/tool-output)
+# dir = "/custom/path/to/overflow"
+
 [tools.audit]
 # Enable audit logging for tool executions
 enabled = false

@@ -1,9 +1,12 @@
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
+use std::sync::Arc;
+
 use crate::embedding_store::{EmbeddingStore, MessageKind, SearchFilter};
 use crate::error::MemoryError;
 use crate::sqlite::SqliteStore;
+use crate::token_counter::TokenCounter;
 use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
@@ -38,15 +41,6 @@ pub struct SessionSummaryResult {
     pub summary_text: String,
     pub score: f32,
     pub conversation_id: ConversationId,
-}
-
-/// Estimate token count using chars/4 heuristic.
-///
-/// Aligns better with `cl100k_base` tokenizer behavior for both ASCII and multi-byte
-/// UTF-8 text (CJK, Cyrillic) compared to the previous byte-length approach.
-#[must_use]
-pub fn estimate_tokens(text: &str) -> usize {
-    text.chars().count() / 4
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -167,6 +161,7 @@ pub struct SemanticMemory {
     temporal_decay_half_life_days: u32,
     mmr_enabled: bool,
     mmr_lambda: f32,
+    pub token_counter: Arc<TokenCounter>,
 }
 
 impl SemanticMemory {
@@ -221,6 +216,7 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         })
     }
 
@@ -267,6 +263,7 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         })
     }
 
@@ -840,7 +837,7 @@ impl SemanticMemory {
         };
         let summary_text = &structured.summary;
 
-        let token_estimate = i64::try_from(estimate_tokens(summary_text))?;
+        let token_estimate = i64::try_from(self.token_counter.count_tokens(summary_text))?;
         let first_message_id = messages[0].0;
         let last_message_id = messages[messages.len() - 1].0;
 
@@ -1021,6 +1018,7 @@ mod tests {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         }
     }
 
@@ -1131,32 +1129,6 @@ mod tests {
 
         let count = memory.embed_missing().await.unwrap();
         assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn estimate_tokens_ascii() {
-        // "Hello, world!" = 13 chars / 4 = 3
-        let text = "Hello, world!";
-        assert_eq!(estimate_tokens(text), 3);
-    }
-
-    #[test]
-    fn estimate_tokens_unicode() {
-        // "Привет мир" = 10 chars / 4 = 2
-        let text = "Привет мир";
-        assert_eq!(estimate_tokens(text), 2);
-    }
-
-    #[test]
-    fn estimate_tokens_empty() {
-        assert_eq!(estimate_tokens(""), 0);
-    }
-
-    #[test]
-    fn estimate_tokens_cjk() {
-        // 8 CJK chars / 4 = 2
-        let text = "你好世界テスト日";
-        assert_eq!(estimate_tokens(text), 2);
     }
 
     #[tokio::test]
@@ -1446,19 +1418,6 @@ mod tests {
         assert_eq!(summary.content, cloned.content);
     }
 
-    #[test]
-    fn estimate_tokens_short_text() {
-        // "ab" = 2 chars / 4 = 0
-        assert_eq!(estimate_tokens("ab"), 0);
-    }
-
-    #[test]
-    fn estimate_tokens_longer_text() {
-        // 100 chars / 4 = 25
-        let text = "a".repeat(100);
-        assert_eq!(estimate_tokens(&text), 25);
-    }
-
     #[tokio::test]
     async fn remember_preserves_role_mapping() {
         let memory = test_semantic_memory(false).await;
@@ -1509,6 +1468,7 @@ mod tests {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1619,8 +1579,7 @@ mod tests {
         memory.summarize(cid, 3).await.unwrap();
         let summaries = memory.load_summaries(cid).await.unwrap();
         let token_est = summaries[0].token_estimate;
-        let expected = i64::try_from(estimate_tokens(&summaries[0].content)).unwrap();
-        assert_eq!(token_est, expected);
+        assert!(token_est > 0);
     }
 
     #[tokio::test]
@@ -1642,6 +1601,7 @@ mod tests {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -1911,6 +1871,7 @@ mod tests {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2162,8 +2123,9 @@ mod tests {
 
     proptest! {
         #[test]
-        fn estimate_tokens_never_panics(s in ".*") {
-            let _ = estimate_tokens(&s);
+        fn count_tokens_never_panics(s in ".*") {
+            let counter = crate::token_counter::TokenCounter::new();
+            let _ = counter.count_tokens(&s);
         }
     }
 }

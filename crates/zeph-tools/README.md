@@ -26,8 +26,8 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `registry` | Tool registry and discovery |
 | `trust_gate` | Trust-based tool access control |
 | `anomaly` | `AnomalyDetector` — unusual execution pattern detection |
-| `overflow` | Output overflow handling |
-| `config` | Per-tool TOML configuration |
+| `overflow` | Large output offload to filesystem — configurable threshold (default 50K chars), retention-based cleanup with symlink-safe deletion, 0o600 file permissions on Unix, path canonicalization |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, optional custom dir) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`
 

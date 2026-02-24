@@ -178,6 +178,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_overflow_config(mut self, config: zeph_tools::OverflowConfig) -> Self {
+        self.runtime.overflow_config = config;
+        self
+    }
+
+    #[must_use]
     pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
         self.summary_provider = Some(provider);
         self

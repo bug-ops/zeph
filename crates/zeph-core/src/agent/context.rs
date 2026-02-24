@@ -4,7 +4,7 @@ use std::fmt::Write;
 use futures::StreamExt as _;
 
 use zeph_llm::provider::MessagePart;
-use zeph_memory::semantic::estimate_tokens;
+use zeph_memory::TokenCounter;
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
@@ -17,13 +17,18 @@ use super::{
     format_skills_prompt,
 };
 
-fn chunk_messages(messages: &[Message], budget: usize, oversized: usize) -> Vec<Vec<Message>> {
+fn chunk_messages(
+    messages: &[Message],
+    budget: usize,
+    oversized: usize,
+    tc: &TokenCounter,
+) -> Vec<Vec<Message>> {
     let mut chunks: Vec<Vec<Message>> = Vec::new();
     let mut current: Vec<Message> = Vec::new();
     let mut current_tokens = 0usize;
 
     for msg in messages {
-        let msg_tokens = estimate_tokens(&msg.content);
+        let msg_tokens = tc.count_tokens(&msg.content);
 
         if msg_tokens >= oversized {
             // Oversized message gets its own chunk
@@ -68,7 +73,9 @@ impl<C: Channel> Agent<C> {
         let total_tokens: usize = self
             .messages
             .iter()
-            .map(|m| (estimate_tokens(&m.content) as f64 * f64::from(margin)) as usize)
+            .map(|m| {
+                (self.token_counter.count_tokens(&m.content) as f64 * f64::from(margin)) as usize
+            })
             .sum();
         let threshold =
             (budget.max_tokens() as f32 * self.context_state.compaction_threshold) as usize;
@@ -123,7 +130,12 @@ impl<C: Channel> Agent<C> {
         const CHUNK_TOKEN_BUDGET: usize = 4096;
         const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
 
-        let chunks = chunk_messages(messages, CHUNK_TOKEN_BUDGET, OVERSIZED_THRESHOLD);
+        let chunks = chunk_messages(
+            messages,
+            CHUNK_TOKEN_BUDGET,
+            OVERSIZED_THRESHOLD,
+            &self.token_counter,
+        );
 
         if chunks.len() <= 1 {
             let prompt = Self::build_chunk_prompt(messages);
@@ -233,7 +245,7 @@ impl<C: Channel> Agent<C> {
 
         tracing::info!(
             compacted_count,
-            summary_tokens = estimate_tokens(&summary),
+            summary_tokens = self.token_counter.count_tokens(&summary),
             "compacted context"
         );
 
@@ -261,7 +273,7 @@ impl<C: Channel> Agent<C> {
         let mut protection_boundary = self.messages.len();
         if protect > 0 {
             for (i, msg) in self.messages.iter().enumerate().rev() {
-                tail_tokens += estimate_tokens(&msg.content);
+                tail_tokens += self.token_counter.count_tokens(&msg.content);
                 if tail_tokens >= protect {
                     protection_boundary = i;
                     break;
@@ -292,7 +304,7 @@ impl<C: Channel> Agent<C> {
                     && compacted_at.is_none()
                     && !body.is_empty()
                 {
-                    freed += estimate_tokens(body);
+                    freed += self.token_counter.count_tokens(body);
                     *compacted_at = Some(now);
                     *body = String::new();
                     modified = true;
@@ -332,13 +344,15 @@ impl<C: Channel> Agent<C> {
                     MessagePart::ToolOutput {
                         body, compacted_at, ..
                     } if compacted_at.is_none() && !body.is_empty() => {
-                        freed += estimate_tokens(body);
+                        freed += self.token_counter.count_tokens(body);
                         *compacted_at = Some(now);
                         *body = String::new();
                         modified = true;
                     }
-                    MessagePart::ToolResult { content, .. } if estimate_tokens(content) > 20 => {
-                        freed += estimate_tokens(content);
+                    MessagePart::ToolResult { content, .. }
+                        if self.token_counter.count_tokens(content) > 20 =>
+                    {
+                        freed += self.token_counter.count_tokens(content);
                         "[pruned]".clone_into(content);
                         freed -= 1;
                         modified = true;
@@ -381,7 +395,7 @@ impl<C: Channel> Agent<C> {
         let total_tokens: usize = self
             .messages
             .iter()
-            .map(|m| estimate_tokens(&m.content))
+            .map(|m| self.token_counter.count_tokens(&m.content))
             .sum();
         let threshold = (budget as f32 * self.context_state.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
@@ -426,8 +440,13 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::error::AgentError> {
         self.remove_recall_messages();
 
-        if let Some(msg) =
-            Self::fetch_semantic_recall(&self.memory_state, query, token_budget).await?
+        if let Some(msg) = Self::fetch_semantic_recall(
+            &self.memory_state,
+            query,
+            token_budget,
+            &self.token_counter,
+        )
+        .await?
         {
             if self.messages.len() > 1 {
                 self.messages.insert(1, msg);
@@ -441,6 +460,7 @@ impl<C: Channel> Agent<C> {
         memory_state: &super::MemoryState,
         query: &str,
         token_budget: usize,
+        tc: &TokenCounter,
     ) -> Result<Option<Message>, super::error::AgentError> {
         let Some(memory) = &memory_state.memory else {
             return Ok(None);
@@ -458,7 +478,7 @@ impl<C: Channel> Agent<C> {
 
         let mut recall_text = String::with_capacity(token_budget * 3);
         recall_text.push_str(RECALL_PREFIX);
-        let mut tokens_used = estimate_tokens(&recall_text);
+        let mut tokens_used = tc.count_tokens(&recall_text);
 
         for item in &recalled {
             let role_label = match item.message.role {
@@ -467,7 +487,7 @@ impl<C: Channel> Agent<C> {
                 Role::System => "system",
             };
             let entry = format!("- [{}] {}\n", role_label, item.message.content);
-            let entry_tokens = estimate_tokens(&entry);
+            let entry_tokens = tc.count_tokens(&entry);
             if tokens_used + entry_tokens > token_budget {
                 break;
             }
@@ -475,7 +495,7 @@ impl<C: Channel> Agent<C> {
             tokens_used += entry_tokens;
         }
 
-        if tokens_used > estimate_tokens(RECALL_PREFIX) {
+        if tokens_used > tc.count_tokens(RECALL_PREFIX) {
             Ok(Some(Message::from_parts(
                 Role::System,
                 vec![MessagePart::Recall { text: recall_text }],
@@ -539,7 +559,8 @@ impl<C: Channel> Agent<C> {
         self.remove_cross_session_messages();
 
         if let Some(msg) =
-            Self::fetch_cross_session(&self.memory_state, query, token_budget).await?
+            Self::fetch_cross_session(&self.memory_state, query, token_budget, &self.token_counter)
+                .await?
         {
             if self.messages.len() > 1 {
                 self.messages.insert(1, msg);
@@ -554,6 +575,7 @@ impl<C: Channel> Agent<C> {
         memory_state: &super::MemoryState,
         query: &str,
         token_budget: usize,
+        tc: &TokenCounter,
     ) -> Result<Option<Message>, super::error::AgentError> {
         let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
             return Ok(None);
@@ -574,11 +596,11 @@ impl<C: Channel> Agent<C> {
         }
 
         let mut text = String::from(CROSS_SESSION_PREFIX);
-        let mut tokens_used = estimate_tokens(&text);
+        let mut tokens_used = tc.count_tokens(&text);
 
         for item in &results {
             let entry = format!("- {}\n", item.summary_text);
-            let cost = estimate_tokens(&entry);
+            let cost = tc.count_tokens(&entry);
             if tokens_used + cost > token_budget {
                 break;
             }
@@ -586,7 +608,7 @@ impl<C: Channel> Agent<C> {
             tokens_used += cost;
         }
 
-        if tokens_used > estimate_tokens(CROSS_SESSION_PREFIX) {
+        if tokens_used > tc.count_tokens(CROSS_SESSION_PREFIX) {
             Ok(Some(Message::from_parts(
                 Role::System,
                 vec![MessagePart::CrossSession { text }],
@@ -603,7 +625,9 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::error::AgentError> {
         self.remove_summary_messages();
 
-        if let Some(msg) = Self::fetch_summaries(&self.memory_state, token_budget).await? {
+        if let Some(msg) =
+            Self::fetch_summaries(&self.memory_state, token_budget, &self.token_counter).await?
+        {
             if self.messages.len() > 1 {
                 self.messages.insert(1, msg);
                 tracing::debug!("injected summaries into context");
@@ -616,6 +640,7 @@ impl<C: Channel> Agent<C> {
     async fn fetch_summaries(
         memory_state: &super::MemoryState,
         token_budget: usize,
+        tc: &TokenCounter,
     ) -> Result<Option<Message>, super::error::AgentError> {
         let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
             return Ok(None);
@@ -630,14 +655,14 @@ impl<C: Channel> Agent<C> {
         }
 
         let mut summary_text = String::from(SUMMARY_PREFIX);
-        let mut tokens_used = estimate_tokens(&summary_text);
+        let mut tokens_used = tc.count_tokens(&summary_text);
 
         for summary in summaries.iter().rev() {
             let entry = format!(
                 "- Messages {}-{}: {}\n",
                 summary.first_message_id, summary.last_message_id, summary.content
             );
-            let cost = estimate_tokens(&entry);
+            let cost = tc.count_tokens(&entry);
             if tokens_used + cost > token_budget {
                 break;
             }
@@ -645,7 +670,7 @@ impl<C: Channel> Agent<C> {
             tokens_used += cost;
         }
 
-        if tokens_used > estimate_tokens(SUMMARY_PREFIX) {
+        if tokens_used > tc.count_tokens(SUMMARY_PREFIX) {
             Ok(Some(Message::from_parts(
                 Role::System,
                 vec![MessagePart::Summary { text: summary_text }],
@@ -674,7 +699,7 @@ impl<C: Channel> Agent<C> {
         let mut keep_from = self.messages.len();
 
         for i in (history_start..self.messages.len()).rev() {
-            let msg_tokens = estimate_tokens(&self.messages[i].content);
+            let msg_tokens = self.token_counter.count_tokens(&self.messages[i].content);
             if total + msg_tokens > token_budget {
                 break;
             }
@@ -704,7 +729,11 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("building context...").await;
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
-        let alloc = budget.allocate(system_prompt, &self.skill_state.last_skills_prompt);
+        let alloc = budget.allocate(
+            system_prompt,
+            &self.skill_state.last_skills_prompt,
+            &self.token_counter,
+        );
 
         // Remove stale injected messages before concurrent fetch
         self.remove_summary_messages();
@@ -717,12 +746,13 @@ impl<C: Channel> Agent<C> {
         let query = query.to_owned();
 
         // Fetch all context sources concurrently
+        let tc = self.token_counter.clone();
         #[cfg(not(feature = "index"))]
         let (summaries_msg, cross_session_msg, recall_msg) = {
             let result = tokio::try_join!(
-                Self::fetch_summaries(&self.memory_state, alloc.summaries),
-                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
-                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
+                Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
+                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
+                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
             );
             match result {
                 Ok(v) => v,
@@ -736,9 +766,9 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "index")]
         let (summaries_msg, cross_session_msg, recall_msg, code_rag_text) = {
             let result = tokio::try_join!(
-                Self::fetch_summaries(&self.memory_state, alloc.summaries),
-                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session),
-                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall),
+                Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
+                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
+                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
                 Self::fetch_code_rag(&self.index, &query, alloc.code_context),
             );
             match result {
@@ -1021,9 +1051,12 @@ impl<C: Channel> Agent<C> {
             {
                 cached.clone()
             } else {
-                let fresh =
-                    zeph_index::repo_map::generate_repo_map(&cwd, self.index.repo_map_tokens)
-                        .unwrap_or_default();
+                let fresh = zeph_index::repo_map::generate_repo_map(
+                    &cwd,
+                    self.index.repo_map_tokens,
+                    &self.token_counter,
+                )
+                .unwrap_or_default();
                 self.index.cached_repo_map = Some((fresh.clone(), now));
                 fresh
             };
@@ -1055,14 +1088,16 @@ mod tests {
 
     #[test]
     fn chunk_messages_empty_input_returns_single_empty_chunk() {
+        let tc = zeph_memory::TokenCounter::new();
         let messages: &[Message] = &[];
-        let chunks = chunk_messages(messages, 4096, 2048);
+        let chunks = chunk_messages(messages, 4096, 2048, &tc);
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].is_empty());
     }
 
     #[test]
     fn chunk_messages_single_oversized_message_gets_own_chunk() {
+        let tc = zeph_memory::TokenCounter::new();
         // A message >= oversized threshold goes into its own chunk
         let oversized_content = "x".repeat(2048 * 4 + 1); // > 2048 tokens
         let messages = vec![Message {
@@ -1070,13 +1105,14 @@ mod tests {
             content: oversized_content.clone(),
             parts: vec![],
         }];
-        let chunks = chunk_messages(&messages, 4096, 2048);
+        let chunks = chunk_messages(&messages, 4096, 2048, &tc);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0][0].content, oversized_content);
     }
 
     #[test]
     fn chunk_messages_splits_at_budget_boundary() {
+        let tc = zeph_memory::TokenCounter::new();
         // Two messages each consuming exactly half of budget → should fit in one chunk
         // Use messages whose token count is just under half of budget
         let half = "w".repeat(1000 * 4); // 1000 tokens
@@ -1098,7 +1134,7 @@ mod tests {
             },
         ];
         // budget = 2000 tokens: first two fit, third overflows → 2 chunks
-        let chunks = chunk_messages(&messages, 2000, 4096);
+        let chunks = chunk_messages(&messages, 2000, 4096, &tc);
         assert!(chunks.len() >= 2, "expected split into multiple chunks");
     }
 
@@ -1479,7 +1515,13 @@ mod tests {
                 .unwrap();
             memory
                 .sqlite()
-                .save_summary(cid, content, m1, m2, estimate_tokens(content) as i64)
+                .save_summary(
+                    cid,
+                    content,
+                    m1,
+                    m2,
+                    zeph_memory::TokenCounter::new().count_tokens(content) as i64,
+                )
                 .await
                 .unwrap();
         }
@@ -1634,7 +1676,8 @@ mod tests {
         });
 
         // Use a very small budget: only the prefix + maybe one short entry
-        let prefix_cost = estimate_tokens(SUMMARY_PREFIX);
+        let tc = zeph_memory::TokenCounter::new();
+        let prefix_cost = tc.count_tokens(SUMMARY_PREFIX);
         agent.inject_summaries(prefix_cost + 10).await.unwrap();
 
         let summary_msg = agent
@@ -1643,7 +1686,7 @@ mod tests {
             .find(|m| m.content.starts_with(SUMMARY_PREFIX));
 
         if let Some(msg) = summary_msg {
-            let token_count = estimate_tokens(&msg.content);
+            let token_count = tc.count_tokens(&msg.content);
             assert!(token_count <= prefix_cost + 10);
         }
     }
@@ -1892,7 +1935,8 @@ mod tests {
     #[test]
     fn test_budget_allocation_cross_session() {
         let budget = crate::context::ContextBudget::new(1000, 0.20);
-        let alloc = budget.allocate("", "");
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate("", "", &tc);
 
         assert!(alloc.cross_session > 0);
         assert!(alloc.summaries > 0);

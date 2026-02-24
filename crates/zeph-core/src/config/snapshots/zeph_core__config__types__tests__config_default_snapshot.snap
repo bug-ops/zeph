@@ -100,6 +100,10 @@ enabled = true
 enabled = true
 extra_patterns = []
 
+[tools.overflow]
+threshold = 50000
+retention_days = 7
+
 [a2a]
 enabled = false
 host = "0.0.0.0"

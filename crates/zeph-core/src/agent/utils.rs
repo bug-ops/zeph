@@ -28,20 +28,16 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    pub(super) fn estimate_tokens(content: &str) -> u64 {
-        u64::try_from(content.len()).unwrap_or(0) / 4
-    }
-
     pub(super) fn recompute_prompt_tokens(&mut self) {
         self.cached_prompt_tokens = self
             .messages
             .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
+            .map(|m| self.token_counter.count_tokens(&m.content) as u64)
             .sum();
     }
 
     pub(super) fn push_message(&mut self, msg: Message) {
-        self.cached_prompt_tokens += Self::estimate_tokens(&msg.content);
+        self.cached_prompt_tokens += self.token_counter.count_tokens(&msg.content) as u64;
         self.messages.push(msg);
     }
 
@@ -95,23 +91,6 @@ mod tests {
     use zeph_llm::provider::MessagePart;
 
     #[test]
-    fn estimate_tokens_empty_string() {
-        assert_eq!(Agent::<MockChannel>::estimate_tokens(""), 0);
-    }
-
-    #[test]
-    fn estimate_tokens_short_string() {
-        // 8 bytes / 4 = 2 tokens
-        assert_eq!(Agent::<MockChannel>::estimate_tokens("12345678"), 2);
-    }
-
-    #[test]
-    fn estimate_tokens_long_string() {
-        let s = "a".repeat(400);
-        assert_eq!(Agent::<MockChannel>::estimate_tokens(&s), 100);
-    }
-
-    #[test]
     fn push_message_increments_cached_tokens() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -125,8 +104,8 @@ mod tests {
             content: "hello world!!".to_string(),
             parts: vec![],
         });
-        // "hello world!!" is 13 bytes → 13/4 = 3 tokens
-        assert_eq!(agent.cached_prompt_tokens, before + 3);
+        let expected_delta = agent.token_counter.count_tokens("hello world!!") as u64;
+        assert_eq!(agent.cached_prompt_tokens, before + expected_delta);
     }
 
     #[test]
@@ -153,7 +132,7 @@ mod tests {
         let expected: u64 = agent
             .messages
             .iter()
-            .map(|m| Agent::<MockChannel>::estimate_tokens(&m.content))
+            .map(|m| agent.token_counter.count_tokens(&m.content) as u64)
             .sum();
         assert_eq!(agent.cached_prompt_tokens, expected);
     }

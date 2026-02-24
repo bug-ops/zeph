@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use zeph_memory::semantic::estimate_tokens;
+use zeph_memory::TokenCounter;
 
 const BASE_PROMPT_HEADER: &str = "\
 You are Zeph, an AI coding assistant running in the user's terminal.";
@@ -195,7 +195,12 @@ impl ContextBudget {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    pub fn allocate(&self, system_prompt: &str, skills_prompt: &str) -> BudgetAllocation {
+    pub fn allocate(
+        &self,
+        system_prompt: &str,
+        skills_prompt: &str,
+        tc: &TokenCounter,
+    ) -> BudgetAllocation {
         if self.max_tokens == 0 {
             return BudgetAllocation {
                 system_prompt: 0,
@@ -212,8 +217,8 @@ impl ContextBudget {
         let response_reserve = (self.max_tokens as f32 * self.reserve_ratio) as usize;
         let mut available = self.max_tokens.saturating_sub(response_reserve);
 
-        let system_prompt_tokens = estimate_tokens(system_prompt);
-        let skills_tokens = estimate_tokens(skills_prompt);
+        let system_prompt_tokens = tc.count_tokens(system_prompt);
+        let skills_tokens = tc.count_tokens(skills_prompt);
 
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
@@ -260,15 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn estimate_tokens_basic() {
-        // "Hello world" = 11 chars / 4 = 2
-        assert_eq!(estimate_tokens("Hello world"), 2);
-        assert_eq!(estimate_tokens(""), 0);
-        // "test" = 4 chars / 4 = 1
-        assert_eq!(estimate_tokens("test"), 1);
-    }
-
-    #[test]
     fn context_budget_max_tokens_accessor() {
         let budget = ContextBudget::new(1000, 0.2);
         assert_eq!(budget.max_tokens(), 1000);
@@ -280,7 +276,8 @@ mod tests {
         let system = "system prompt";
         let skills = "skills prompt";
 
-        let alloc = budget.allocate(system, skills);
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate(system, skills, &tc);
 
         assert_eq!(alloc.response_reserve, 200);
         assert!(alloc.system_prompt > 0);
@@ -293,16 +290,18 @@ mod tests {
 
     #[test]
     fn budget_allocation_reserve() {
+        let tc = zeph_memory::TokenCounter::new();
         let budget = ContextBudget::new(1000, 0.30);
-        let alloc = budget.allocate("", "");
+        let alloc = budget.allocate("", "", &tc);
 
         assert_eq!(alloc.response_reserve, 300);
     }
 
     #[test]
     fn budget_allocation_zero_disables() {
+        let tc = zeph_memory::TokenCounter::new();
         let budget = ContextBudget::new(0, 0.20);
-        let alloc = budget.allocate("test", "test");
+        let alloc = budget.allocate("test", "test", &tc);
 
         assert_eq!(alloc.system_prompt, 0);
         assert_eq!(alloc.skills, 0);
@@ -316,11 +315,12 @@ mod tests {
 
     #[test]
     fn budget_allocation_small_window() {
+        let tc = zeph_memory::TokenCounter::new();
         let budget = ContextBudget::new(100, 0.20);
         let system = "very long system prompt that uses many tokens";
         let skills = "also a long skills prompt";
 
-        let alloc = budget.allocate(system, skills);
+        let alloc = budget.allocate(system, skills, &tc);
 
         assert!(alloc.response_reserve > 0);
     }
@@ -395,7 +395,8 @@ mod tests {
     #[test]
     fn budget_allocation_cross_session_percentage() {
         let budget = ContextBudget::new(10000, 0.20);
-        let alloc = budget.allocate("", "");
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate("", "", &tc);
 
         // cross_session = 4%, summaries = 8%, recall = 8%
         assert!(alloc.cross_session > 0);
