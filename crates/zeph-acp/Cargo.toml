@@ -12,6 +12,9 @@ categories.workspace = true
 description = "ACP (Agent Client Protocol) server for IDE embedding"
 readme = "README.md"
 
+[features]
+acp-http = ["dep:axum", "dep:dashmap", "dep:async-stream", "dep:tower-http"]
+
 [dependencies]
 agent-client-protocol.workspace = true
 async-trait.workspace = true
@@ -24,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-tokio = { workspace = true, features = ["io-std", "sync", "macros"] }
+tokio = { workspace = true, features = ["io-std", "sync", "macros", "rt", "test-util"] }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
@@ -33,9 +36,16 @@ zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-mcp.workspace = true
 zeph-tools.workspace = true
+axum = { workspace = true, features = ["ws"], optional = true }
+async-stream = { version = "0.3", optional = true }
+dashmap = { workspace = true, optional = true }
+tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
+axum = { workspace = true, features = ["ws"] }
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true
