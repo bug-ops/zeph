@@ -81,6 +81,11 @@ impl Config {
                 self.memory.token_safety_margin
             )));
         }
+        if self.memory.tool_call_cutoff == 0 {
+            return Err(ConfigError::Validation(
+                "tool_call_cutoff must be >= 1".into(),
+            ));
+        }
         Ok(())
     }
 

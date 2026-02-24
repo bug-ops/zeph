@@ -610,6 +610,128 @@ impl<C: Channel> Agent<C> {
         freed
     }
 
+    fn count_tool_pairs(&self) -> usize {
+        let mut count = 0usize;
+        let mut i = 1; // skip system prompt
+        while i < self.messages.len() {
+            let msg = &self.messages[i];
+            if !msg.metadata.agent_visible {
+                i += 1;
+                continue;
+            }
+            let is_tool_request = msg.role == Role::Assistant
+                && msg
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+            if is_tool_request && i + 1 < self.messages.len() {
+                let next = &self.messages[i + 1];
+                if next.metadata.agent_visible
+                    && next.role == Role::User
+                    && next.parts.iter().any(|p| {
+                        matches!(
+                            p,
+                            MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
+                        )
+                    })
+                {
+                    count += 1;
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        count
+    }
+
+    fn find_oldest_tool_pair(&self) -> Option<(usize, usize)> {
+        let mut i = 1; // skip system prompt
+        while i < self.messages.len() {
+            let msg = &self.messages[i];
+            if !msg.metadata.agent_visible {
+                i += 1;
+                continue;
+            }
+            let is_tool_request = msg.role == Role::Assistant
+                && msg
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+            if is_tool_request && i + 1 < self.messages.len() {
+                let next = &self.messages[i + 1];
+                if next.metadata.agent_visible
+                    && next.role == Role::User
+                    && next.parts.iter().any(|p| {
+                        matches!(
+                            p,
+                            MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
+                        )
+                    })
+                {
+                    return Some((i, i + 1));
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
+        format!(
+            "Summarize this tool invocation in 1-2 sentences. Include the tool name, \
+             key input parameters, and the essential outcome/result.\n\n\
+             <tool_request>\n{}\n</tool_request>\n\n<tool_response>\n{}\n</tool_response>",
+            req.content, res.content
+        )
+    }
+
+    pub(super) async fn maybe_summarize_tool_pair(&mut self) {
+        let pair_count = self.count_tool_pairs();
+        if pair_count <= self.memory_state.tool_call_cutoff {
+            return;
+        }
+        let Some((req_idx, resp_idx)) = self.find_oldest_tool_pair() else {
+            return;
+        };
+        let prompt =
+            Self::build_tool_pair_summary_prompt(&self.messages[req_idx], &self.messages[resp_idx]);
+        let summary = match self
+            .summary_or_primary_provider()
+            .chat(&[Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }])
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(%e, "tool pair summarization failed, skipping");
+                return;
+            }
+        };
+        self.messages[req_idx].metadata.agent_visible = false;
+        self.messages[resp_idx].metadata.agent_visible = false;
+        let summary = self.maybe_redact(&summary).into_owned();
+        let content = format!("[tool summary] {summary}");
+        let summary_msg = Message {
+            role: Role::Assistant,
+            content,
+            parts: vec![MessagePart::Summary { text: summary }],
+            metadata: MessageMetadata::agent_only(),
+        };
+        self.messages.insert(resp_idx + 1, summary_msg);
+        tracing::debug!(
+            pair_count,
+            cutoff = self.memory_state.tool_call_cutoff,
+            req_idx,
+            resp_idx,
+            "summarized oldest tool pair"
+        );
+    }
+
     /// Two-tier compaction: Tier 1 prunes tool outputs, Tier 2 falls back to full LLM compaction.
     #[allow(
         clippy::cast_precision_loss,
@@ -3173,5 +3295,237 @@ mod tests {
         // 100% of 10 = 10
         let r100 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
         assert_eq!(count_compacted(&r100), 10);
+    }
+
+    fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {
+        agent.messages.push(Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: format!("id_{tool_name}"),
+                name: tool_name.to_owned(),
+                input: serde_json::json!({"cmd": "echo hello"}),
+            }],
+        ));
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: format!("id_{tool_name}"),
+                content: format!("output of {tool_name}"),
+                is_error: false,
+            }],
+        ));
+    }
+
+    #[test]
+    fn count_tool_pairs_counts_visible_native_pairs() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert_eq!(agent.count_tool_pairs(), 0);
+
+        make_tool_pair(&mut agent, "bash");
+        assert_eq!(agent.count_tool_pairs(), 1);
+
+        make_tool_pair(&mut agent, "read_file");
+        assert_eq!(agent.count_tool_pairs(), 2);
+    }
+
+    #[test]
+    fn count_tool_pairs_ignores_hidden_pairs() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        make_tool_pair(&mut agent, "bash");
+        // hide the first pair
+        agent.messages[1].metadata.agent_visible = false;
+        agent.messages[2].metadata.agent_visible = false;
+
+        assert_eq!(agent.count_tool_pairs(), 0);
+    }
+
+    #[test]
+    fn find_oldest_tool_pair_returns_correct_indices() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert_eq!(agent.find_oldest_tool_pair(), None);
+
+        make_tool_pair(&mut agent, "bash");
+        // system = 0, request = 1, response = 2
+        assert_eq!(agent.find_oldest_tool_pair(), Some((1, 2)));
+
+        make_tool_pair(&mut agent, "read_file");
+        // oldest pair is still (1, 2)
+        assert_eq!(agent.find_oldest_tool_pair(), Some((1, 2)));
+    }
+
+    #[test]
+    fn find_oldest_tool_pair_skips_hidden() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        make_tool_pair(&mut agent, "bash");
+        make_tool_pair(&mut agent, "read_file");
+        // hide first pair
+        agent.messages[1].metadata.agent_visible = false;
+        agent.messages[2].metadata.agent_visible = false;
+
+        // second pair: request = 3, response = 4
+        assert_eq!(agent.find_oldest_tool_pair(), Some((3, 4)));
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_below_cutoff_does_nothing() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(6);
+
+        // 3 pairs < cutoff of 6
+        make_tool_pair(&mut agent, "bash");
+        make_tool_pair(&mut agent, "read_file");
+        make_tool_pair(&mut agent, "write_file");
+
+        let msg_count_before = agent.messages.len();
+        agent.maybe_summarize_tool_pair().await;
+        assert_eq!(agent.messages.len(), msg_count_before);
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_at_exact_cutoff_does_nothing() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(3);
+
+        // exactly 3 pairs == cutoff of 3, should NOT summarize
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+        make_tool_pair(&mut agent, "c");
+
+        let msg_count_before = agent.messages.len();
+        agent.maybe_summarize_tool_pair().await;
+        assert_eq!(agent.messages.len(), msg_count_before);
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_above_cutoff_hides_oldest_and_inserts_summary() {
+        let summary_text = "summarized tool call".to_owned();
+        let provider = mock_provider(vec![summary_text.clone()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(2);
+
+        // 3 pairs > cutoff of 2
+        make_tool_pair(&mut agent, "bash");
+        make_tool_pair(&mut agent, "read_file");
+        make_tool_pair(&mut agent, "write_file");
+
+        let msg_count_before = agent.messages.len();
+        agent.maybe_summarize_tool_pair().await;
+
+        // one summary message inserted
+        assert_eq!(agent.messages.len(), msg_count_before + 1);
+        // oldest pair (indices 1, 2) should be hidden
+        assert!(!agent.messages[1].metadata.agent_visible);
+        assert!(!agent.messages[2].metadata.agent_visible);
+        // summary inserted at index 3
+        let summary_msg = &agent.messages[3];
+        assert!(
+            summary_msg.content.contains(&summary_text),
+            "summary message should contain the LLM response"
+        );
+        assert!(!summary_msg.metadata.user_visible);
+        assert!(summary_msg.metadata.agent_visible);
+        assert!(
+            summary_msg
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_llm_error_skips_gracefully() {
+        let provider = mock_provider_failing();
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        // 2 pairs > cutoff of 1
+        make_tool_pair(&mut agent, "bash");
+        make_tool_pair(&mut agent, "read_file");
+
+        let msg_count_before = agent.messages.len();
+        // Should not panic, just warn and skip
+        agent.maybe_summarize_tool_pair().await;
+        // No messages should be added or hidden
+        assert_eq!(agent.messages.len(), msg_count_before);
+        assert!(agent.messages[1].metadata.agent_visible);
+        assert!(agent.messages[2].metadata.agent_visible);
+    }
+
+    #[test]
+    fn build_tool_pair_summary_prompt_contains_xml_delimiters() {
+        let req = Message {
+            role: Role::Assistant,
+            content: "call bash".into(),
+            ..Message::default()
+        };
+        let res = Message {
+            role: Role::User,
+            content: "exit code 0".into(),
+            ..Message::default()
+        };
+        let prompt = Agent::<MockChannel>::build_tool_pair_summary_prompt(&req, &res);
+        assert!(prompt.contains("<tool_request>"), "missing <tool_request>");
+        assert!(
+            prompt.contains("</tool_request>"),
+            "missing </tool_request>"
+        );
+        assert!(
+            prompt.contains("<tool_response>"),
+            "missing <tool_response>"
+        );
+        assert!(
+            prompt.contains("</tool_response>"),
+            "missing </tool_response>"
+        );
+        assert!(prompt.contains("call bash"));
+        assert!(prompt.contains("exit code 0"));
+    }
+
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_empty_messages_does_nothing() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        agent.messages.clear();
+        agent.maybe_summarize_tool_pair().await;
+        assert!(agent.messages.is_empty());
     }
 }

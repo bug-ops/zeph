@@ -24,6 +24,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_tool_call_cutoff(mut self, cutoff: usize) -> Self {
+        self.memory_state.tool_call_cutoff = cutoff;
+        self
+    }
+
+    #[must_use]
     pub fn with_response_cache(
         mut self,
         cache: std::sync::Arc<zeph_memory::ResponseCache>,
