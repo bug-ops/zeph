@@ -109,6 +109,7 @@ token_safety_margin = 1.0     # Multiplier for token budget safety margin (defau
 redact_credentials = true     # Scrub credential patterns from LLM context (default: true)
 autosave_assistant = false    # Persist assistant responses to SQLite and embed (default: false)
 autosave_min_length = 20      # Min content length for assistant embedding (default: 20)
+tool_call_cutoff = 6          # Summarize oldest tool pair when visible pairs exceed this (default: 6)
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -272,6 +273,7 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_REDACT_CREDENTIALS` | Scrub credentials from LLM context (default: true) |
 | `ZEPH_MEMORY_AUTOSAVE_ASSISTANT` | Persist assistant responses to SQLite (default: false) |
 | `ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH` | Min content length for assistant embedding (default: 20) |
+| `ZEPH_MEMORY_TOOL_CALL_CUTOFF` | Max visible tool pairs before oldest is summarized (default: 6) |
 | `ZEPH_LLM_RESPONSE_CACHE_ENABLED` | Enable SQLite-backed LLM response cache (default: false) |
 | `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` | Response cache TTL in seconds (default: 3600) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |
