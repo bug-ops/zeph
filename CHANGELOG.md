@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `TokenCounter` in `zeph-memory` — accurate token counting with `tiktoken-rs` cl100k_base, replacing `chars/4` heuristic (#789)
+- DashMap-backed token cache (10k cap) for amortized O(1) lookups
+- OpenAI tool schema token formula for precise context budget allocation
+- Input size guard (64KB) on token counting to prevent cache pollution from oversized input
+- Graceful fallback to `chars/4` when tiktoken tokenizer is unavailable
 - Configurable tool response offload — `OverflowConfig` with threshold (default 50k chars), retention (7 days), optional custom dir (#791)
 - `[tools.overflow]` section in `config.toml` for offload configuration
 - Security hardening: path canonicalization, symlink-safe cleanup, 0o600 file permissions on Unix

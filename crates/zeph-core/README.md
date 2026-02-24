@@ -24,7 +24,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `bootstrap` | `AppBuilder` — fluent builder for application startup |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `Attachment` / `AttachmentKind` for multimodal inputs |
 | `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization |
+| `context` | LLM context assembly from history, skills, memory; adaptive chunked compaction with parallel summarization; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking |
 | `cost` | Token cost tracking and budgeting |
 | `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
 | `metrics` | Runtime metrics collection |
@@ -53,7 +53,7 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `vector_backend` | `"qdrant"` / `"sqlite"` | `"qdrant"` | Vector search backend |
-| `token_safety_margin` | f32 | `1.0` | Safety multiplier for token budget estimation (validated: must be >= 1.0) |
+| `token_safety_margin` | f32 | `1.0` | Safety multiplier for tiktoken-based token budget (validated: must be >= 1.0) |
 | `redact_credentials` | bool | `true` | Scrub secrets and paths before LLM context injection |
 | `autosave_assistant` | bool | `false` | Persist assistant responses to semantic memory automatically |
 | `autosave_min_length` | usize | `20` | Minimum response length (chars) to trigger autosave |

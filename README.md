@@ -24,6 +24,7 @@ Most AI agent frameworks dump every tool description, skill, and raw output into
 - **Semantic skill selection** — embeds skills as vectors, retrieves only top-K relevant per query instead of injecting all
 - **Smart output filtering** — command-aware filters strip 70-99% of noise before context injection; oversized responses offloaded to filesystem
 - **Two-tier context pruning** — selective eviction + adaptive chunked compaction with parallel summarization keeps the window clean
+- **Accurate token counting** — tiktoken-based cl100k_base tokenizer with DashMap cache replaces chars/4 heuristic
 - **Proportional budget allocation** — context space distributed by purpose, not arrival order
 
 ## Installation

@@ -68,6 +68,7 @@ SQLite-backed conversation persistence with Qdrant vector search.
 - `PdfLoader` — PDF text extraction via `pdf-extract` with `spawn_blocking` (feature-gated: `pdf`)
 - `TextSplitter` — configurable text chunking with `chunk_size`, `chunk_overlap`, and sentence-aware splitting
 - `IngestionPipeline` — document ingestion orchestrator: load → split → embed → store via `QdrantOps`
+- `TokenCounter` — BPE-based token counting via tiktoken-rs `cl100k_base`, DashMap cache (10K cap), 64 KiB input guard, OpenAI tool schema token formula, `chars/4` fallback
 
 ## zeph-channels
 

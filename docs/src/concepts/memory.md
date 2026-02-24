@@ -68,6 +68,8 @@ See [Set Up Semantic Memory](../guides/semantic-memory.md) for the full setup gu
 
 ## Context Engineering
 
+Token counts throughout the context pipeline are computed by `TokenCounter` — a shared BPE tokenizer (`cl100k_base`) with a DashMap cache. This replaced the previous `chars / 4` heuristic and provides accurate budget allocation, especially for non-ASCII content and tool schemas. See [Token Efficiency — Token Counting](../architecture/token-efficiency.md#token-counting) for implementation details.
+
 When `context_budget_tokens` is set (default: 0 = unlimited), Zeph allocates the context window proportionally:
 
 | Allocation | Share | Purpose |

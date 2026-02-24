@@ -35,9 +35,10 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `embedding_store` | `EmbeddingStore` — high-level embedding CRUD |
 | `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
+| `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`
 
 ## Snapshot export/import
 
