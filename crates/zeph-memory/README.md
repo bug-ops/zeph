@@ -21,6 +21,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 |--------|-------------|
 | `sqlite` | SQLite storage for conversations and messages |
 | `sqlite::history` | Input history persistence for CLI channel |
+| `sqlite::acp_sessions` | ACP session and event persistence for session resume and lifecycle tracking |
 | `qdrant` | Qdrant client for vector upsert and search |
 | `qdrant_ops` | `QdrantOps` — high-level Qdrant operations |
 | `semantic` | `SemanticMemory` — orchestrates SQLite + Qdrant |

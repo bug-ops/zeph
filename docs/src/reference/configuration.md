@@ -30,6 +30,8 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `memory.token_safety_margin` | > 0.0 |
 | `agent.max_tool_iterations` | <= 100 |
 | `a2a.rate_limit` | > 0 |
+| `acp.max_sessions` | > 0 |
+| `acp.session_idle_timeout_secs` | > 0 |
 | `gateway.rate_limit` | > 0 |
 
 ## Hot-Reload
@@ -48,7 +50,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, skill paths.
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, skill paths.
 
 ## Configuration File
 
@@ -205,6 +207,10 @@ port = 8080
 # auth_token = "secret"     # Bearer token for A2A authentication (from vault ZEPH_A2A_AUTH_TOKEN)
 rate_limit = 60
 
+[acp]
+max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
+session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
+
 [mcp]
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 max_dynamic_servers = 10
@@ -273,6 +279,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_TOOLS_TIMEOUT` | Shell command timeout in seconds (default: 30) |
 | `ZEPH_TOOLS_SCRAPE_TIMEOUT` | Web scrape request timeout in seconds (default: 15) |
 | `ZEPH_TOOLS_SCRAPE_MAX_BODY` | Max response body size in bytes (default: 1048576) |
+| `ZEPH_ACP_MAX_SESSIONS` | Max concurrent ACP sessions (default: 4) |
+| `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` | Idle session reaper timeout in seconds (default: 1800) |
 | `ZEPH_A2A_ENABLED` | Enable A2A server (default: false) |
 | `ZEPH_A2A_HOST` | A2A server bind address (default: `0.0.0.0`) |
 | `ZEPH_A2A_PORT` | A2A server port (default: `8080`) |

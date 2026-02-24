@@ -15,7 +15,7 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler |
+| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, and SQLite persistence |
 | `transport` | `serve_stdio` / `serve_connection` — ACP server transports; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
@@ -40,6 +40,22 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## Session lifecycle
+
+`ZephAcpAgent` manages multiple concurrent sessions with the following capabilities:
+
+- **LRU eviction** — when the number of active sessions reaches `max_sessions`, the least-recently-used session is evicted to free resources.
+- **SQLite persistence** — session events are persisted to `acp_sessions` and `acp_session_events` tables (migration 013) via `zeph-memory`. This enables session resume across process restarts.
+- **Session resume** — `load_session` replays persisted history as `session/update` events, restoring the conversation state.
+- **Idle reaper** — a background task periodically removes sessions that have been idle longer than `session_idle_timeout_secs`.
+
+### Configuration
+
+| Config field | Type | Default | Env override |
+|-------------|------|---------|--------------|
+| `acp.max_sessions` | usize | `16` | `ZEPH_ACP_MAX_SESSIONS` |
+| `acp.session_idle_timeout_secs` | u64 | `1800` | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` |
 
 ## AgentSpawner
 

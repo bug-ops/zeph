@@ -56,7 +56,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 
 SQLite-backed conversation persistence with Qdrant vector search.
 
-- `SqliteStore` — conversations, messages, summaries, skill usage, skill versions
+- `SqliteStore` — conversations, messages, summaries, skill usage, skill versions, ACP session persistence (`acp_sessions.rs`)
 - `QdrantOps` — shared helper consolidating common Qdrant operations (ensure_collection, upsert, search, delete, scroll), used by `QdrantStore`, `CodeStore`, `QdrantSkillMatcher`, and `McpToolRegistry`
 - `QdrantStore` — vector storage and cosine similarity search with `MessageKind` enum (`Regular` | `Summary`) for payload classification
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
@@ -153,7 +153,7 @@ A2A protocol client and server (optional, feature-gated).
 
 Agent Client Protocol server — IDE integration via ACP (optional, feature-gated).
 
-- `ZephAcpAgent` — `acp::Agent` implementation; manages sessions, forwards prompts to the agent loop, and emits `SessionNotification` updates back to the IDE
+- `ZephAcpAgent` — `acp::Agent` implementation; manages concurrent sessions with LRU eviction (`max_sessions`, default 4), forwards prompts to the agent loop, and emits `SessionNotification` updates back to the IDE
 - `AcpContext` — per-session bundle of IDE-proxied capabilities passed to `AgentSpawner`:
   - `file_executor: Option<AcpFileExecutor>` — reads/writes routed to the IDE filesystem proxy
   - `shell_executor: Option<AcpShellExecutor>` — shell commands routed through the IDE terminal proxy
@@ -162,6 +162,14 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
 - `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>) -> ...>` factory that the main binary supplies; wires `AcpContext` into `CompositeExecutor` before starting the agent loop
 - `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision
 - `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
+
+### Session Lifecycle
+
+`ZephAcpAgent` supports multi-session concurrency with configurable `max_sessions` (default 4). Sessions are tracked in an LRU map; when the limit is reached, the least-recently-used session is evicted and its agent task cancelled.
+
+- **Persistence** — session state and events are persisted to SQLite via `acp_sessions` and `acp_session_events` tables (migration 013 in `zeph-memory`). On `load_session`, stored history is replayed as `session/update` notifications per ACP spec.
+- **Idle reaper** — a background task periodically scans sessions and removes those idle longer than `session_idle_timeout_secs` (default 1800).
+- **Configuration** — `AcpConfig` exposes `max_sessions` and `session_idle_timeout_secs`, with env overrides `ZEPH_ACP_MAX_SESSIONS` and `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS`.
 
 ### AcpContext wiring
 
