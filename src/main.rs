@@ -2098,6 +2098,7 @@ struct AgentDeps {
 
 /// Build all agent dependencies from config for the ACP server.
 #[cfg(feature = "acp")]
+#[allow(clippy::too_many_lines)]
 async fn build_acp_deps(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
