@@ -195,6 +195,12 @@ zeph-skills.workspace = true
 [lints]
 workspace = true
 
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = "z"
 lto = true
