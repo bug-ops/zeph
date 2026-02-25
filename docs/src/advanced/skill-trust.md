@@ -71,6 +71,18 @@ External skills installed via `zeph skill install` are stored in `~/.config/zeph
 | `/skill install <url\|path>` | Install an external skill (git URL or local path) with hot reload |
 | `/skill remove <name>` | Remove an installed skill with hot reload |
 
+## Skill Source Tracking
+
+Every skill trust record stores a `source_kind` value that describes where the skill originated. This is used when determining default trust levels and in audit output.
+
+| Value | Meaning |
+|-------|---------|
+| `local` | Skill shipped with the binary or found in a configured `skills.paths` directory |
+| `hub` | Installed via `zeph skill install` from a remote URL (git or HTTP) |
+| `file` | Imported directly from a local file path outside the managed skills directory |
+
+Local skills default to the `local_level` trust tier. Hub and file-sourced skills default to the `default_level` tier (typically `quarantined`).
+
 ## Configuration
 
 ```toml

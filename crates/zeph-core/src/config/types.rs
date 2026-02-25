@@ -1147,11 +1147,24 @@ impl Default for AcpConfig {
     }
 }
 
+/// Task kind for scheduled tasks.
+///
+/// Known variants map to built-in handlers; `Custom` accommodates user-defined task types.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledTaskKind {
+    MemoryCleanup,
+    SkillRefresh,
+    HealthCheck,
+    UpdateCheck,
+    Custom(String),
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
     pub cron: String,
-    pub kind: String,
+    pub kind: ScheduledTaskKind,
     #[serde(default)]
     pub config: serde_json::Value,
 }
@@ -1274,5 +1287,83 @@ mod tests {
         assert!((p.temperature - 0.7).abs() < f64::EPSILON);
         assert_eq!(p.max_tokens, 2048);
         assert_eq!(p.seed, 42);
+    }
+
+    #[test]
+    fn scheduled_task_kind_serde_memory_cleanup() {
+        let kind = ScheduledTaskKind::MemoryCleanup;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#""memory_cleanup""#);
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn scheduled_task_kind_serde_skill_refresh() {
+        let kind = ScheduledTaskKind::SkillRefresh;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#""skill_refresh""#);
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn scheduled_task_kind_serde_health_check() {
+        let kind = ScheduledTaskKind::HealthCheck;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#""health_check""#);
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn scheduled_task_kind_serde_update_check() {
+        let kind = ScheduledTaskKind::UpdateCheck;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#""update_check""#);
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn scheduled_task_kind_serde_custom_roundtrip() {
+        let kind = ScheduledTaskKind::Custom("my_task".to_owned());
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn scheduled_task_config_toml_known_kind() {
+        let toml = r#"
+            name = "cleanup"
+            cron = "0 3 * * *"
+            kind = "memory_cleanup"
+        "#;
+        let cfg: ScheduledTaskConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.kind, ScheduledTaskKind::MemoryCleanup);
+        assert_eq!(cfg.name, "cleanup");
+    }
+
+    #[test]
+    fn scheduled_task_config_toml_custom_kind() {
+        let toml = r#"
+            name = "my-job"
+            cron = "*/5 * * * *"
+            kind = { custom = "report_gen" }
+        "#;
+        let cfg: ScheduledTaskConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.kind, ScheduledTaskKind::Custom("report_gen".to_owned()));
+    }
+
+    #[test]
+    fn scheduled_task_config_toml_invalid_kind_errors() {
+        let toml = r#"
+            name = "bad"
+            cron = "* * * * *"
+            kind = "does_not_exist"
+        "#;
+        let result: Result<ScheduledTaskConfig, _> = toml::from_str(toml);
+        assert!(result.is_err());
     }
 }

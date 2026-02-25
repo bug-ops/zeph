@@ -3519,6 +3519,7 @@ mod trust_commands {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::semantic::SemanticMemory;
+    use zeph_memory::sqlite::SourceKind;
     use zeph_memory::types::ConversationId;
     use zeph_skills::registry::SkillRegistry;
 
@@ -3573,7 +3574,14 @@ mod trust_commands {
 
         memory
             .sqlite()
-            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .upsert_skill_trust(
+                "my-skill",
+                "trusted",
+                SourceKind::Local,
+                None,
+                None,
+                "deadbeef",
+            )
             .await
             .unwrap();
 
@@ -3604,7 +3612,14 @@ mod trust_commands {
 
         memory
             .sqlite()
-            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .upsert_skill_trust(
+                "my-skill",
+                "trusted",
+                SourceKind::Local,
+                None,
+                None,
+                "deadbeef",
+            )
             .await
             .unwrap();
 
@@ -3635,7 +3650,14 @@ mod trust_commands {
 
         memory
             .sqlite()
-            .upsert_skill_trust("my-skill", "trusted", "local", None, None, "deadbeef")
+            .upsert_skill_trust(
+                "my-skill",
+                "trusted",
+                SourceKind::Local,
+                None,
+                None,
+                "deadbeef",
+            )
             .await
             .unwrap();
 
