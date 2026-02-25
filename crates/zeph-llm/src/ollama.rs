@@ -333,10 +333,10 @@ mod tests {
     fn new_stores_model_and_embedding_model() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "mistral:7b".into(),
+            "qwen3:8b".into(),
             "nomic-embed".into(),
         );
-        assert_eq!(provider.model, "mistral:7b");
+        assert_eq!(provider.model, "qwen3:8b");
         assert_eq!(provider.embedding_model, "nomic-embed");
     }
 
@@ -555,7 +555,7 @@ mod tests {
     async fn integration_ollama_chat_stream() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "mistral:7b".into(),
+            "qwen3:8b".into(),
             "qwen3-embedding".into(),
         );
 
@@ -587,7 +587,7 @@ mod tests {
     async fn integration_ollama_stream_matches_chat() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "mistral:7b".into(),
+            "qwen3:8b".into(),
             "qwen3-embedding".into(),
         );
 
@@ -616,7 +616,7 @@ mod tests {
     async fn integration_ollama_embed() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "mistral:7b".into(),
+            "qwen3:8b".into(),
             "qwen3-embedding".into(),
         );
 

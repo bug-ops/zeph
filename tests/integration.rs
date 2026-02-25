@@ -305,7 +305,7 @@ fn config_defaults_and_env_overrides() {
     let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
     assert_eq!(config.llm.provider, ProviderKind::Ollama);
     assert_eq!(config.llm.base_url, "http://localhost:11434");
-    assert_eq!(config.llm.model, "mistral:7b");
+    assert_eq!(config.llm.model, "qwen3:8b");
     assert_eq!(config.agent.name, "Zeph");
     assert_eq!(config.memory.history_limit, 50);
 
@@ -3760,7 +3760,7 @@ name = "TestAgent"
 
 [llm]
 provider = "ollama"
-model = "mistral:7b"
+model = "qwen3:8b"
 base_url = "http://localhost:11434"
 
 [skills]

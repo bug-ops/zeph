@@ -17,7 +17,7 @@ impl ChatTemplate {
     pub fn parse_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "llama3" | "llama" => Self::Llama3,
-            "chatml" | "chat-ml" => Self::ChatML,
+            "chatml" | "chat-ml" | "qwen3" | "qwen" => Self::ChatML,
             "mistral" => Self::Mistral,
             "phi3" | "phi" => Self::Phi3,
             _ => Self::Raw,
@@ -193,6 +193,14 @@ mod tests {
         ));
         assert!(matches!(
             ChatTemplate::parse_str("chatml"),
+            ChatTemplate::ChatML
+        ));
+        assert!(matches!(
+            ChatTemplate::parse_str("qwen3"),
+            ChatTemplate::ChatML
+        ));
+        assert!(matches!(
+            ChatTemplate::parse_str("qwen"),
             ChatTemplate::ChatML
         ));
         assert!(matches!(

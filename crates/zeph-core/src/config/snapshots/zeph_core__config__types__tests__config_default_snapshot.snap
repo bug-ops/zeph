@@ -10,7 +10,7 @@ auto_update_check = true
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
 response_cache_enabled = false
 response_cache_ttl_secs = 3600

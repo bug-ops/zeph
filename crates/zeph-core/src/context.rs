@@ -395,14 +395,14 @@ mod tests {
             working_dir: "/tmp/test".into(),
             git_branch: Some("main".into()),
             os: "macos".into(),
-            model_name: "mistral:7b".into(),
+            model_name: "qwen3:8b".into(),
         };
         let formatted = env.format();
         assert!(formatted.starts_with("<environment>"));
         assert!(formatted.ends_with("</environment>"));
         assert!(formatted.contains("working_directory: /tmp/test"));
         assert!(formatted.contains("os: macos"));
-        assert!(formatted.contains("model: mistral:7b"));
+        assert!(formatted.contains("model: qwen3:8b"));
         assert!(formatted.contains("git_branch: main"));
     }
 

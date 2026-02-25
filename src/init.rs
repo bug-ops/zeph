@@ -121,7 +121,7 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
                 .interact_text()?;
             let model = Input::new()
                 .with_prompt("Model name")
-                .default("mistral:7b".into())
+                .default("qwen3:8b".into())
                 .interact_text()?;
             Ok((ProviderKind::Ollama, Some(base_url), model, None, None))
         }
@@ -227,7 +227,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             state.model = Some(
                 Input::new()
                     .with_prompt("Model name")
-                    .default("mistral:7b".into())
+                    .default("qwen3:8b".into())
                     .interact_text()?,
             );
         }
@@ -437,7 +437,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .base_url
             .clone()
             .unwrap_or_else(|| "http://localhost:11434".into()),
-        model: state.model.clone().unwrap_or_else(|| "mistral:7b".into()),
+        model: state.model.clone().unwrap_or_else(|| "qwen3:8b".into()),
         embedding_model: state
             .embedding_model
             .clone()
@@ -840,7 +840,7 @@ mod tests {
             orchestrator_primary_model: Some("claude-sonnet-4-5-20250929".into()),
             orchestrator_primary_api_key: Some("key-abc".into()),
             orchestrator_fallback_provider: Some(ProviderKind::Ollama),
-            orchestrator_fallback_model: Some("mistral:7b".into()),
+            orchestrator_fallback_model: Some("qwen3:8b".into()),
             orchestrator_fallback_base_url: Some("http://localhost:11434".into()),
             vault_backend: "env".into(),
             semantic_enabled: true,
@@ -874,7 +874,7 @@ mod tests {
 
         let ollama = &orch.providers["ollama"];
         assert_eq!(ollama.provider_type, "ollama");
-        assert_eq!(ollama.model.as_deref(), Some("mistral:7b"));
+        assert_eq!(ollama.model.as_deref(), Some("qwen3:8b"));
 
         let chat_route = orch.routes.get("chat").expect("chat route exists");
         assert!(chat_route.contains(&"claude".to_owned()));
@@ -898,10 +898,10 @@ mod tests {
         // When primary and fallback have the same provider kind, fallback gets a suffix
         let state = WizardState {
             provider: Some(ProviderKind::Orchestrator),
-            model: Some("mistral:7b".into()),
+            model: Some("qwen3:8b".into()),
             embedding_model: Some("qwen3-embedding".into()),
             orchestrator_primary_provider: Some(ProviderKind::Ollama),
-            orchestrator_primary_model: Some("mistral:7b".into()),
+            orchestrator_primary_model: Some("qwen3:8b".into()),
             orchestrator_primary_base_url: Some("http://localhost:11434".into()),
             orchestrator_fallback_provider: Some(ProviderKind::Ollama),
             orchestrator_fallback_model: Some("llama3:8b".into()),
@@ -925,7 +925,7 @@ mod tests {
     fn build_config_non_orchestrator_has_no_orch_config() {
         let state = WizardState {
             provider: Some(ProviderKind::Ollama),
-            model: Some("mistral:7b".into()),
+            model: Some("qwen3:8b".into()),
             embedding_model: Some("qwen3-embedding".into()),
             base_url: Some("http://localhost:11434".into()),
             vault_backend: "env".into(),

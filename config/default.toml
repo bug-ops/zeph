@@ -15,7 +15,7 @@ provider = "ollama"
 # Base URL for Ollama server
 base_url = "http://localhost:11434"
 # Primary model for chat completions
-model = "mistral:7b"
+model = "qwen3:8b"
 # Model for generating embeddings (semantic memory)
 embedding_model = "qwen3-embedding"
 
@@ -69,7 +69,7 @@ max_tokens = 4096
 # embed = "ollama"
 # [llm.orchestrator.providers.ollama]
 # type = "ollama"
-# model = "mistral:7b"          # optional: override model
+# model = "qwen3:8b"          # optional: override model
 # base_url = "http://localhost:11434"  # optional: override base URL
 # embedding_model = "qwen3-embedding"  # optional: override embedding model
 # [llm.orchestrator.providers.claude]
@@ -110,7 +110,7 @@ max_tokens = 4096
 # [llm]
 # provider = "orchestrator"
 # base_url = "http://localhost:11434"      # used by ollama sub-provider
-# model = "mistral:7b"                     # fallback model for sub-providers without explicit model
+# model = "qwen3:8b"                     # fallback model for sub-providers without explicit model
 # embedding_model = "qwen3-embedding"      # used by ollama sub-provider for embeddings
 #
 # [llm.cloud]
@@ -122,12 +122,12 @@ max_tokens = 4096
 # model = "whisper-1"
 #
 # [llm.orchestrator]
-# default = "ollama/mistral:7b"            # "provider_name/model" or just "provider_name"
+# default = "ollama/qwen3:8b"            # "provider_name/model" or just "provider_name"
 # embed = "qwen3-embedding"                # embedding model name or "provider_name/model"
 #
 # [llm.orchestrator.providers.ollama]
 # type = "ollama"
-# model = "mistral:7b"                     # optional: overrides [llm].model
+# model = "qwen3:8b"                     # optional: overrides [llm].model
 # base_url = "http://localhost:11434"      # optional: overrides [llm].base_url
 # embedding_model = "qwen3-embedding"      # optional: overrides [llm].embedding_model
 #

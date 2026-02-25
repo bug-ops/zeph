@@ -1194,7 +1194,7 @@ impl Default for Config {
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
                 base_url: "http://localhost:11434".into(),
-                model: "mistral:7b".into(),
+                model: "qwen3:8b".into(),
                 embedding_model: default_embedding_model(),
                 cloud: None,
                 openai: None,

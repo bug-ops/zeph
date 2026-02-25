@@ -84,7 +84,7 @@ fn defaults_when_file_missing() {
     let config = Config::default();
     assert_eq!(config.llm.provider, super::ProviderKind::Ollama);
     assert_eq!(config.llm.base_url, "http://localhost:11434");
-    assert_eq!(config.llm.model, "mistral:7b");
+    assert_eq!(config.llm.model, "qwen3:8b");
     assert_eq!(config.llm.embedding_model, "qwen3-embedding");
     assert_eq!(config.agent.name, "Zeph");
     assert_eq!(config.memory.history_limit, 50);
@@ -148,7 +148,7 @@ name = "Zeph"
 [llm]
 provider = "claude"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [llm.cloud]
 model = "claude-sonnet-4-5-20250929"
@@ -178,7 +178,7 @@ history_limit = 50
 fn env_overrides() {
     clear_env();
     let mut config = Config::default();
-    assert_eq!(config.llm.model, "mistral:7b");
+    assert_eq!(config.llm.model, "qwen3:8b");
 
     unsafe { std::env::set_var("ZEPH_LLM_MODEL", "phi3:mini") };
     config.apply_env_overrides();
@@ -202,7 +202,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -251,7 +251,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -293,7 +293,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -376,7 +376,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 embedding_model = "nomic-embed-text"
 
 [skills]
@@ -423,7 +423,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -462,7 +462,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -515,7 +515,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -567,7 +567,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -627,7 +627,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -678,7 +678,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -859,7 +859,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -907,7 +907,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -965,7 +965,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1023,7 +1023,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1067,7 +1067,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1107,7 +1107,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1432,7 +1432,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1516,7 +1516,7 @@ name = "FullBot"
 [llm]
 provider = "claude"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 embedding_model = "nomic"
 
 [llm.cloud]
@@ -1625,7 +1625,7 @@ name = "Zeph"
 [llm]
 provider = "openai"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [llm.openai]
 base_url = "https://api.openai.com/v1"
@@ -1672,7 +1672,7 @@ name = "Zeph"
 [llm]
 provider = "openai"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [llm.openai]
 base_url = "https://api.openai.com/v1"
@@ -1723,7 +1723,7 @@ name = "Zeph"
 [llm]
 provider = "openai"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [llm.openai]
 base_url = "https://api.openai.com/v1"
@@ -1763,7 +1763,7 @@ name = "Zeph"
 [llm]
 provider = "openai"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [llm.openai]
 base_url = "https://api.openai.com/v1"
@@ -1809,7 +1809,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1915,7 +1915,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -1959,7 +1959,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -2064,7 +2064,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -2100,7 +2100,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -2160,7 +2160,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -2196,7 +2196,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
@@ -2241,7 +2241,7 @@ name = "Zeph"
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 
 [skills]
 paths = ["./skills"]
