@@ -19,7 +19,7 @@ use cli::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    runner::run(Cli::parse()).await
+    Box::pin(runner::run(Cli::parse())).await
 }
 
 #[cfg(test)]

@@ -11,23 +11,23 @@ use zeph_core::bootstrap::warmup_provider;
 #[cfg(feature = "tui")]
 use zeph_core::channel::Channel;
 #[cfg(feature = "tui")]
-use zeph_llm::provider::LlmProvider;
+use zeph_llm::any::AnyProvider;
 
 #[cfg(feature = "tui")]
-pub(crate) struct TuiRunParams<'a, P: LlmProvider + Clone> {
+pub(crate) struct TuiRunParams<'a> {
     pub(crate) tui_handle: TuiHandle,
     pub(crate) config: &'a zeph_core::config::Config,
     pub(crate) status_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     pub(crate) tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
-    pub(crate) warmup_provider: P,
+    pub(crate) warmup_provider: AnyProvider,
 }
 
 #[cfg(feature = "tui")]
-pub(crate) async fn run_tui_agent<C: Channel, P: LlmProvider + Clone + 'static>(
-    mut agent: zeph_core::agent::Agent<C>,
-    params: TuiRunParams<'_, P>,
+pub(crate) async fn run_tui_agent<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    params: TuiRunParams<'_>,
 ) -> anyhow::Result<()> {
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
 

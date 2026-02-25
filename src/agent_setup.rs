@@ -89,7 +89,7 @@ use zeph_index::{
     watcher::IndexWatcher,
 };
 #[cfg(feature = "index")]
-use zeph_llm::provider::LlmProvider;
+use zeph_core::config::IndexConfig;
 
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
@@ -166,7 +166,7 @@ pub(crate) async fn apply_code_index<C: Channel>(
     agent: Agent<C>,
     config: &IndexConfig,
     qdrant_url: &str,
-    provider: impl zeph_llm::provider::LlmProvider + Clone + 'static,
+    provider: zeph_llm::any::AnyProvider,
     pool: sqlx::SqlitePool,
     provider_has_tools: bool,
 ) -> (Agent<C>, Option<IndexWatcher>) {

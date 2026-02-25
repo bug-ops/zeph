@@ -37,6 +37,8 @@ use crate::commands::vault::handle_vault_command;
 use crate::daemon::run_daemon;
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use crate::tui_remote::run_tui_remote;
+#[cfg(feature = "index")]
+use zeph_llm::provider::LlmProvider;
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
@@ -335,7 +337,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "tui")]
     if let Some(tui_handle) = tui_handle {
-        return run_tui_agent(
+        return Box::pin(run_tui_agent(
             agent,
             TuiRunParams {
                 tui_handle,
@@ -345,7 +347,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 metrics_rx: tui_metrics_rx,
                 warmup_provider: warmup_provider_clone,
             },
-        )
+        ))
         .await;
     }
 
