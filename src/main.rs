@@ -2245,7 +2245,12 @@ async fn build_acp_deps(
         mcp_config: config.mcp.clone(),
         learning: config.skills.learning.clone(),
         tool_call_cutoff: config.memory.tool_call_cutoff,
-        secrets: config.secrets.custom.clone(),
+        secrets: config
+            .secrets
+            .custom
+            .iter()
+            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
+            .collect(),
         summary_provider,
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
