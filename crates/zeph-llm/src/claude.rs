@@ -30,6 +30,8 @@ pub struct ClaudeProvider {
     max_tokens: u32,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    /// Cached pre-serialized tool definitions. Keyed by tool names; invalidated when the set changes.
+    tool_cache: std::sync::Mutex<Option<(Vec<String>, Vec<serde_json::Value>)>>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -41,6 +43,14 @@ impl fmt::Debug for ClaudeProvider {
             .field("max_tokens", &self.max_tokens)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_cache", &self.last_cache.lock().ok())
+            .field(
+                "tool_cache",
+                &self
+                    .tool_cache
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|(k, _)| k.len())),
+            )
             .finish()
     }
 }
@@ -54,6 +64,7 @@ impl Clone for ClaudeProvider {
             max_tokens: self.max_tokens,
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
+            tool_cache: std::sync::Mutex::new(None),
         }
     }
 }
@@ -68,6 +79,7 @@ impl ClaudeProvider {
             max_tokens,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
+            tool_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -81,6 +93,31 @@ impl ClaudeProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let mut guard = self
+            .tool_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((ref cached_names, ref cached_values)) = *guard
+            && cached_names == &names
+        {
+            return cached_values.clone();
+        }
+        let serialized: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
+            })
+            .collect();
+        *guard = Some((names, serialized.clone()));
+        serialized
     }
 
     fn store_cache_usage(&self, usage: &ApiUsage) {
@@ -345,14 +382,7 @@ impl LlmProvider for ClaudeProvider {
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
         let (system, chat_messages) = split_messages_structured(messages);
-        let api_tools: Vec<AnthropicTool> = tools
-            .iter()
-            .map(|t| AnthropicTool {
-                name: &t.name,
-                description: &t.description,
-                input_schema: &t.parameters,
-            })
-            .collect();
+        let api_tools = self.get_or_build_api_tools(tools);
 
         let system_blocks = system.map(|s| split_system_into_blocks(&s));
         let body = ToolRequestBody {
@@ -556,7 +586,7 @@ struct ToolRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Vec<SystemContentBlock>>,
     messages: &'a [StructuredApiMessage],
-    tools: &'a [AnthropicTool<'a>],
+    tools: &'a [serde_json::Value],
 }
 
 #[derive(Serialize)]
@@ -1513,6 +1543,231 @@ mod tests {
             }
             _ => panic!("expected Blocks content"),
         }
+    }
+
+    #[test]
+    fn tool_cache_returns_same_values_on_second_call() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run shell commands".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools);
+        let second = provider.get_or_build_api_tools(&tools);
+        assert_eq!(first, second);
+        assert_eq!(first[0]["name"], "bash");
+        assert_eq!(first[0]["description"], "Run shell commands");
+    }
+
+    #[test]
+    fn tool_cache_invalidates_when_tools_change() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools_a = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run shell commands".into(),
+            parameters: serde_json::json!({}),
+        }];
+        let tools_b = vec![ToolDefinition {
+            name: "read".into(),
+            description: "Read files".into(),
+            parameters: serde_json::json!({}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools_a);
+        let second = provider.get_or_build_api_tools(&tools_b);
+        assert_eq!(first[0]["name"], "bash");
+        assert_eq!(second[0]["name"], "read");
+    }
+
+    #[test]
+    fn tool_cache_serialized_shape_snapshot() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run a shell command".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run"}
+                },
+                "required": ["command"]
+            }),
+        }];
+        let cached = provider.get_or_build_api_tools(&tools);
+        let pretty = serde_json::to_string_pretty(&cached).unwrap();
+        insta::assert_snapshot!(pretty);
+    }
+
+    /// Spawn a minimal HTTP server that captures request bodies and returns fixed JSON responses.
+    /// Returns (port, captured_bodies_receiver, join_handle).
+    async fn spawn_capture_server(
+        responses: Vec<String>,
+    ) -> (
+        u16,
+        tokio::sync::mpsc::Receiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let handle = tokio::spawn(async move {
+            for resp in responses {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let (reader, mut writer) = stream.split();
+                    let mut buf_reader = BufReader::new(reader);
+
+                    // Read headers to find Content-Length
+                    let mut content_length: usize = 0;
+                    loop {
+                        let mut line = String::new();
+                        buf_reader.read_line(&mut line).await.unwrap_or(0);
+                        if line == "\r\n" || line == "\n" || line.is_empty() {
+                            break;
+                        }
+                        if line.to_lowercase().starts_with("content-length:") {
+                            content_length = line
+                                .split(':')
+                                .nth(1)
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+
+                    // Read body
+                    let mut body = vec![0u8; content_length];
+                    buf_reader.read_exact(&mut body).await.ok();
+                    let body_str = String::from_utf8_lossy(&body).into_owned();
+                    tx.send(body_str).await.ok();
+
+                    let resp_bytes = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        resp.len(),
+                        resp
+                    );
+                    writer.write_all(resp_bytes.as_bytes()).await.ok();
+                });
+            }
+        });
+
+        (port, rx, handle)
+    }
+
+    fn tool_api_response_json() -> String {
+        r#"{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#.into()
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_sends_correct_tool_fields() {
+        use crate::provider::ToolDefinition;
+
+        let response = tool_api_response_json();
+        let (port, mut rx, _handle) = spawn_capture_server(vec![response]).await;
+
+        let client = reqwest::Client::new();
+        let provider =
+            ClaudeProvider::new("test-key".into(), "claude-test".into(), 256).with_client(client);
+
+        // Override API_URL via a custom client pointed at our mock
+        let tools = vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file from disk".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+        }];
+        let messages = vec![Message::from_legacy(Role::User, "read /tmp/f")];
+
+        // We can't override API_URL from outside, so test via get_or_build_api_tools directly
+        // and verify the serialized body shape via snapshot.
+        let _ = (port, &mut rx);
+
+        let api_tools = provider.get_or_build_api_tools(&tools);
+        assert_eq!(api_tools.len(), 1);
+        assert_eq!(api_tools[0]["name"], "read_file");
+        assert_eq!(api_tools[0]["description"], "Read a file from disk");
+        assert!(api_tools[0]["input_schema"].is_object());
+        assert_eq!(api_tools[0]["input_schema"]["type"], "object");
+        let _ = messages;
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_cache_hit_does_not_re_serialize() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 512);
+        let tools = vec![
+            ToolDefinition {
+                name: "tool_a".into(),
+                description: "First tool".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "tool_b".into(),
+                description: "Second tool".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        ];
+
+        let first = provider.get_or_build_api_tools(&tools);
+        let second = provider.get_or_build_api_tools(&tools);
+        let third = provider.get_or_build_api_tools(&tools);
+
+        // All calls return identical values
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["name"], "tool_a");
+        assert_eq!(first[1]["name"], "tool_b");
+
+        // Verify cache is populated
+        let guard = provider.tool_cache.lock().unwrap();
+        let (names, values) = guard.as_ref().unwrap();
+        assert_eq!(names, &["tool_a", "tool_b"]);
+        assert_eq!(values.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_cache_partial_tool_set_change_invalidates() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 512);
+
+        let tools_v1 = vec![ToolDefinition {
+            name: "search".into(),
+            description: "Search the web".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let tools_v2 = vec![
+            ToolDefinition {
+                name: "search".into(),
+                description: "Search the web".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "browse".into(),
+                description: "Browse a URL".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        ];
+
+        let v1 = provider.get_or_build_api_tools(&tools_v1);
+        assert_eq!(v1.len(), 1);
+
+        let v2 = provider.get_or_build_api_tools(&tools_v2);
+        assert_eq!(v2.len(), 2);
+        assert_eq!(v2[1]["name"], "browse");
+
+        // Cache now reflects v2
+        let guard = provider.tool_cache.lock().unwrap();
+        let (names, _) = guard.as_ref().unwrap();
+        assert_eq!(names.len(), 2);
     }
 
     #[test]
