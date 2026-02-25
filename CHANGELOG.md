@@ -6,9 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- Gateway webhook payload: per-field length limits (sender/channel <= 256 bytes, body <= 65536 bytes) and ASCII control char stripping to prevent prompt injection (#868)
+- ACP permission cache: null bytes stripped from tool names before cache key construction to prevent key collision (#872)
+- Config validation: `gateway.max_body_size` bounded to 10 MiB (10485760 bytes) to prevent memory exhaustion (#875)
+
+### Added
+- `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
+- `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
+- `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
+
 ### Changed
 - Split 3177-line `src/main.rs` into focused modules: `runner.rs` (dispatch), `agent_setup.rs` (tool/MCP/feature setup), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
 - Split 1791-line `crates/zeph-core/src/bootstrap.rs` into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
+- `A2aServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#869)
+- `GatewayServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#873)
+- Moved `TrustLevel` enum to `zeph-tools::trust_level`; `zeph-skills` re-exports it, breaking the `zeph-tools → zeph-skills` reverse dependency (#841)
+- Removed duplicate `ChannelError` from `zeph-channels::error`; all channel adapters use `zeph_core::channel::ChannelError` (#842)
+- Replaced `zeph_a2a::types::TaskState` in `zeph-core` with a local `SubAgentState` enum; removed `zeph-a2a` from `zeph-core` dependencies (#843)
+- Consolidated Qdrant access in `zeph-index` through `zeph-memory::VectorStore` trait; removed direct `qdrant-client` dependency from `zeph-index` (#844)
+- Added `content_hash(data: &[u8]) -> String` utility in `zeph-core::hash` backed by BLAKE3 (#845)
+- Removed `zeph-core::diff` re-export module; `zeph_core::DiffData` is now a direct re-export of `zeph_tools::executor::DiffData` (#846)
+- Extract ContextManager, ToolOrchestrator, LearningEngine from Agent god object into standalone structs with pure delegation (#830, #836, #837, #838)
 - Secret type wraps inner value in `Zeroizing<String>` for memory zeroization on drop; `Clone` removed (#865)
 - AgeVaultProvider secrets HashMap uses `Zeroizing<String>` values (#866)
 - Age private key reads, decrypt plaintext buffer, and encrypt JSON buffer wrapped in `Zeroizing` (#874)

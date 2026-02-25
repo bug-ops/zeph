@@ -211,7 +211,7 @@ enabled = false
 host = "0.0.0.0"
 port = 8080
 # public_url = "https://agent.example.com"
-# auth_token = "secret"     # Bearer token for A2A authentication (from vault ZEPH_A2A_AUTH_TOKEN)
+# auth_token = "secret"     # Bearer token for A2A server auth (from vault ZEPH_A2A_AUTH_TOKEN); warn logged at startup if unset
 rate_limit = 60
 
 [acp]
@@ -229,6 +229,14 @@ max_dynamic_servers = 10
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = {}                  # Environment variables passed to the child process
 # timeout = 30
+
+[gateway]
+enabled = false
+bind = "127.0.0.1"
+port = 8090
+# auth_token = "secret"     # Bearer token for gateway auth (from vault ZEPH_GATEWAY_TOKEN); warn logged at startup if unset
+rate_limit = 120
+max_body_size = 1048576     # 1 MiB
 ```
 
 ### Orchestrator Sub-Providers
@@ -300,6 +308,12 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_A2A_REQUIRE_TLS` | Require HTTPS for outbound A2A connections (default: true) |
 | `ZEPH_A2A_SSRF_PROTECTION` | Block private/loopback IPs in A2A client (default: true) |
 | `ZEPH_A2A_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
+| `ZEPH_GATEWAY_ENABLED` | Enable HTTP gateway (default: false) |
+| `ZEPH_GATEWAY_BIND` | Gateway bind address (default: `127.0.0.1`) |
+| `ZEPH_GATEWAY_PORT` | Gateway HTTP port (default: `8090`) |
+| `ZEPH_GATEWAY_TOKEN` | Bearer token for gateway authentication; warn logged at startup if unset |
+| `ZEPH_GATEWAY_RATE_LIMIT` | Max requests per IP per minute (default: 120) |
+| `ZEPH_GATEWAY_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
 | `ZEPH_TOOLS_FILE_ALLOWED_PATHS` | Comma-separated directories file tools can access (empty = cwd) |
 | `ZEPH_TOOLS_SHELL_ALLOWED_PATHS` | Comma-separated directories shell can access (empty = cwd) |
 | `ZEPH_TOOLS_SHELL_ALLOW_NETWORK` | Allow network commands from shell (default: true) |

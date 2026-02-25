@@ -16,6 +16,9 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | Module | Description |
 |--------|-------------|
 | `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `with_cancel_signal()` |
+| `agent::context_manager` | `ContextManager` — owns token budget, compaction threshold, and safety margin; `should_compact()` evaluates tiktoken-based usage against threshold |
+| `agent::tool_orchestrator` | `ToolOrchestrator` — owns max iteration limit, doom-loop detection (rolling hash window), summarization flag, and overflow config |
+| `agent::learning_engine` | `LearningEngine` — owns `LearningConfig`, tracks per-turn reflection state; delegates self-learning decisions to `is_enabled()` / `mark_reflection_used()` |
 | `agent::tool_execution` | Tool call handling, redaction, result processing; `call_llm_with_retry()` / `call_chat_with_tools_retry()` — auto-detect `ContextLengthExceeded`, compact context, and retry (max 2 attempts) |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
@@ -31,11 +34,11 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `project` | Project-level context detection |
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
-| `diff` | Diff rendering utilities |
+| `hash` | `content_hash` — BLAKE3 hex digest utility |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
-| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, real-time status tracking |
+| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking |
 
-**Re-exports:** `Agent`
+**Re-exports:** `Agent`, `content_hash`, `DiffData`
 
 ## Configuration
 

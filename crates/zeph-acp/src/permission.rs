@@ -171,12 +171,19 @@ impl AcpPermissionGate {
         // Key on session + tool title for AllowAlways/RejectAlways caching. When title is absent,
         // fall back to tool_call_id so distinct untitled tools never share the same cache entry.
         let fallback = tool_call.tool_call_id.to_string();
-        let tool_name = tool_call
+        let tool_name_raw = tool_call
             .fields
             .title
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(&fallback);
+        let tool_name_owned;
+        let tool_name = if tool_name_raw.contains('\0') {
+            tool_name_owned = tool_name_raw.replace('\0', "");
+            &tool_name_owned
+        } else {
+            tool_name_raw
+        };
         let session_cache_key = format!("{session_id}\0{tool_name}");
 
         // Fast path: check session-scoped key first, then tool-name-only (persisted).
@@ -241,7 +248,7 @@ async fn run_permission_handler<C>(
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(&fallback)
-            .to_owned();
+            .replace('\0', "");
         let session_id = &req.session_id;
         let session_cache_key = format!("{session_id}\0{tool_name}");
         let perm_req = acp::RequestPermissionRequest::new(req.session_id, req.tool_call, options);
@@ -591,6 +598,37 @@ mod tests {
                 })
                 .await;
         });
+    }
+
+    #[tokio::test]
+    async fn null_byte_in_tool_name_does_not_collide() {
+        // "a\0b" should not collide with session="a" + tool="b"
+        // because \0 is stripped from tool_name before building the key.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(AllowAlwaysClient);
+                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                tokio::task::spawn_local(handler);
+
+                // First call with tool_name "b" under session "a" — gets AllowAlways cached.
+                let sid = acp::SessionId::new("a");
+                let tc = make_tool_call("b");
+                assert!(gate.check_permission(sid, tc).await.unwrap());
+
+                // Now a call with tool_name "a\0b" — after stripping \0 becomes "ab",
+                // which is a different cache key than "a\0b".
+                let conn2 = Rc::new(AlwaysRejectClient);
+                let (gate2, handler2) = AcpPermissionGate::new(conn2, None);
+                tokio::task::spawn_local(handler2);
+
+                let sid2 = acp::SessionId::new("s2");
+                let mut tc2 = make_tool_call("tc-null");
+                tc2.fields.title = Some("a\0b".to_owned());
+                // AllowAlways was cached for "b", not "ab", so gate2 (RejectClient) should reject.
+                assert!(!gate2.check_permission(sid2, tc2).await.unwrap());
+            })
+            .await;
     }
 
     #[tokio::test]

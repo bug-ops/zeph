@@ -35,6 +35,20 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `mock` | Mock providers and channels for testing |
 
+## Crate-Level Features
+
+Some workspace crates expose their own feature flags for fine-grained control:
+
+| Crate | Feature | Default | Description |
+|-------|---------|---------|-------------|
+| `zeph-llm` | `schema` | on | Enables `schemars` dependency and typed output API (`chat_typed`, `Extractor`, `cached_schema`) |
+
+Disable the `schema` feature to compile `zeph-llm` without `schemars`:
+
+```bash
+cargo build -p zeph-llm --no-default-features
+```
+
 ## Build Examples
 
 ```bash
@@ -51,6 +65,20 @@ cargo build --release --features full                      # all optional featur
 ```
 
 The `full` feature enables every optional feature except `metal`, `cuda`, and `otel`.
+
+## Build Profiles
+
+| Profile | LTO | Codegen Units | Use Case |
+|---------|-----|---------------|----------|
+| `dev` | off | 256 | Local development |
+| `release` | fat | 1 | Production binaries |
+| `ci` | thin | 16 | CI release builds (~2-3x faster link than release) |
+
+Build with the CI profile:
+
+```bash
+cargo build --profile ci
+```
 
 ## zeph-index Language Features
 

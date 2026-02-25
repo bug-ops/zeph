@@ -3,14 +3,15 @@
 
 use super::{Agent, Channel, LlmProvider};
 
-use super::{LearningConfig, Message, Role, SemanticMemory};
+use super::{Message, Role, SemanticMemory};
+use crate::config::LearningConfig;
 use zeph_llm::provider::MessageMetadata;
 
 use std::path::PathBuf;
 
 impl<C: Channel> Agent<C> {
     pub(super) fn is_learning_enabled(&self) -> bool {
-        self.learning_config.as_ref().is_some_and(|c| c.enabled)
+        self.learning_engine.is_enabled()
     }
 
     async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
@@ -55,10 +56,10 @@ impl<C: Channel> Agent<C> {
         error_context: &str,
         tool_output: &str,
     ) -> Result<bool, super::error::AgentError> {
-        if self.reflection_used || !self.is_learning_enabled() {
+        if self.learning_engine.was_reflection_used() || !self.is_learning_enabled() {
             return Ok(false);
         }
-        self.reflection_used = true;
+        self.learning_engine.mark_reflection_used();
 
         let skill_name = self.skill_state.active_skill_names.first().cloned();
 
@@ -133,7 +134,7 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = &self.memory_state.memory else {
             return Ok(());
         };
-        let Some(config) = self.learning_config.as_ref() else {
+        let Some(config) = self.learning_engine.config.as_ref() else {
             return Ok(());
         };
 
@@ -372,7 +373,7 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = &self.memory_state.memory else {
             return;
         };
-        let Some(config) = &self.learning_config else {
+        let Some(config) = &self.learning_engine.config else {
             return;
         };
         let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
@@ -1183,7 +1184,7 @@ mod tests {
             .with_learning(learning_config_enabled());
 
         // Mark reflection as already used
-        agent.reflection_used = true;
+        agent.learning_engine.mark_reflection_used();
 
         let result = agent.attempt_self_reflection("error", "output").await;
         assert!(result.is_ok());

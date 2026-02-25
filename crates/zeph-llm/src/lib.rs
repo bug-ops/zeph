@@ -11,6 +11,7 @@ pub mod candle_whisper;
 pub mod claude;
 pub mod compatible;
 pub mod error;
+#[cfg(feature = "schema")]
 pub mod extractor;
 pub(crate) mod http;
 #[cfg(feature = "mock")]
@@ -27,6 +28,7 @@ pub mod stt;
 pub mod whisper;
 
 pub use error::LlmError;
+#[cfg(feature = "schema")]
 pub use extractor::Extractor;
 pub use provider::LlmProvider;
 pub use stt::{SpeechToText, Transcription};

@@ -28,6 +28,9 @@ cargo add zeph-index
 
 Enabled via the `index` feature flag on the root `zeph` crate.
 
+> [!NOTE]
+> `zeph-index` does not depend on `qdrant-client` directly. Vector storage is delegated to `zeph-memory`, which owns the Qdrant client lifecycle.
+
 ## License
 
 MIT

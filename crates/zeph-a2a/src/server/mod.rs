@@ -78,6 +78,12 @@ impl A2aServer {
     ///
     /// Returns an error if the server fails to bind or encounters a fatal I/O error.
     pub async fn serve(self) -> Result<(), A2aError> {
+        if self.auth_token.is_none() {
+            tracing::warn!(
+                "A2A server running without bearer auth — ensure this is a trusted-network-only deployment"
+            );
+        }
+
         let router = build_router_with_full_config(
             self.state,
             self.auth_token,

@@ -13,7 +13,7 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 ├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
-├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
+├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor, TrustLevel
 ├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (optional)
 ├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
 ├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
@@ -24,19 +24,19 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 
 ```text
 zeph (binary)
-  └── zeph-core (orchestrates everything)
-        ├── zeph-llm (leaf)
-        ├── zeph-skills (leaf)
-        ├── zeph-memory (leaf)
-        ├── zeph-channels (leaf)
-        ├── zeph-tools (leaf)
-        ├── zeph-index (optional, leaf)
-        ├── zeph-mcp (optional, leaf)
-        ├── zeph-a2a (optional, leaf)
-        └── zeph-tui (optional, leaf)
+  ├── zeph-core (orchestrates everything)
+  │     ├── zeph-llm (leaf)
+  │     ├── zeph-skills (leaf)
+  │     ├── zeph-memory (leaf)
+  │     ├── zeph-channels (leaf)
+  │     ├── zeph-tools (leaf)
+  │     ├── zeph-index (optional, leaf)
+  │     ├── zeph-mcp (optional, leaf)
+  │     └── zeph-tui (optional, leaf)
+  └── zeph-a2a (optional, wired by binary, not by zeph-core)
 ```
 
-`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation.
+`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation. `zeph-a2a` is feature-gated and wired directly by the binary — `zeph-core` does not depend on it. Sub-agent lifecycle state (`SubAgentState`) is defined inside `zeph-core` to keep the core agent loop self-contained.
 
 ## Agent Loop
 
@@ -52,7 +52,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 
 ## Key Design Decisions
 
-- **Generic Agent:** `Agent<C: Channel>` — generic over channel only. The provider is resolved at construction time (`AnyProvider` enum dispatch). Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch, eliminating the former `T: ToolExecutor` generic parameter. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs` and `persistence.rs` submodules
+- **Generic Agent:** `Agent<C: Channel>` — generic over channel only. The provider is resolved at construction time (`AnyProvider` enum dispatch). Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch, eliminating the former `T: ToolExecutor` generic parameter. Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`) with logic decomposed into `streaming.rs`, `persistence.rs`, and three dedicated subsystems: `ContextManager` (budget / compaction), `ToolOrchestrator` (doom-loop detection / iteration limit), and `LearningEngine` (self-learning reflection state)
 - **TLS:** rustls everywhere (no openssl-sys)
 - **Bootstrap:** `AppBuilder` in `zeph-core::bootstrap/` (split into `mod.rs`, `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`) handles config/vault resolution, provider creation, memory setup, skill matching, tool executor composition, and graceful shutdown wiring. `main.rs` (26 LOC) is a thin entry point delegating to `runner.rs` for channel/mode dispatch
 - **Binary structure:** `zeph` binary is decomposed into focused modules — `runner.rs` (dispatch), `agent_setup.rs` (tool executor + MCP + feature extensions), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `cli.rs` (clap args), `acp.rs`, `daemon.rs`, `scheduler.rs`, `commands/` (vault/skill/memory subcommands), `tests.rs`

@@ -20,12 +20,12 @@ Parses SKILL.md files (YAML frontmatter + markdown body) from the `skills/` dire
 | `matcher` | Keyword-based skill matching |
 | `qdrant_matcher` | Semantic skill matching via Qdrant |
 | `evolution` | Self-learning skill generation and refinement |
-| `trust` | `SkillTrust`, `TrustLevel` — skill trust scoring |
+| `trust` | `SkillTrust` — skill trust scoring; re-exports `TrustLevel` from `zeph-tools` |
 | `watcher` | Filesystem watcher for skill hot-reload |
 | `prompt` | Skill-to-prompt formatting (`full`, `compact`, `auto` modes via `SkillPromptMode`) |
 | `manager` | `SkillManager` — install, remove, verify, and list external skills (`~/.config/zeph/skills/`) |
 
-**Re-exports:** `SkillError`, `SkillTrust`, `TrustLevel`, `compute_skill_hash`
+**Re-exports:** `SkillError`, `SkillTrust`, `TrustLevel` (from `zeph-tools`), `compute_skill_hash`
 
 ## Prompt modes
 

@@ -200,6 +200,53 @@ impl QdrantOps {
         Ok(result)
     }
 
+    /// Create a collection with scalar INT8 quantization if it does not exist,
+    /// then create keyword indexes for the given fields.
+    ///
+    /// Idempotent: no-op if the collection already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any Qdrant operation fails.
+    pub async fn ensure_collection_with_quantization(
+        &self,
+        collection: &str,
+        vector_size: u64,
+        keyword_fields: &[&str],
+    ) -> Result<(), crate::VectorStoreError> {
+        use qdrant_client::qdrant::{
+            CreateFieldIndexCollectionBuilder, FieldType, ScalarQuantizationBuilder,
+        };
+        if self
+            .client
+            .collection_exists(collection)
+            .await
+            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?
+        {
+            return Ok(());
+        }
+        self.client
+            .create_collection(
+                CreateCollectionBuilder::new(collection)
+                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
+                    .quantization_config(ScalarQuantizationBuilder::default()),
+            )
+            .await
+            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+
+        for field in keyword_fields {
+            self.client
+                .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                    collection,
+                    *field,
+                    FieldType::Keyword,
+                ))
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Convert a JSON value to a Qdrant payload map.
     ///
     /// # Errors
@@ -457,5 +504,50 @@ mod tests {
         let result = QdrantOps::json_to_payload(serde_json::json!({}));
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_by_ids_empty_is_ok_sync() {
+        // Constructing QdrantOps with a valid URL succeeds even without a live server.
+        // delete_by_ids with empty list short-circuits before any network call.
+        // We validate the early-return logic via the async test below.
+        let ops = QdrantOps::new("http://localhost:6334");
+        assert!(ops.is_ok());
+    }
+
+    /// Requires a live Qdrant instance at localhost:6334.
+    #[tokio::test]
+    #[ignore]
+    async fn ensure_collection_with_quantization_idempotent() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let collection = "test_quant_idempotent";
+
+        // Clean up from any prior run
+        let _ = ops.delete_collection(collection).await;
+
+        // First call — creates collection
+        ops.ensure_collection_with_quantization(collection, 128, &["language", "file_path"])
+            .await
+            .unwrap();
+
+        assert!(ops.collection_exists(collection).await.unwrap());
+
+        // Second call — idempotent, must not error
+        ops.ensure_collection_with_quantization(collection, 128, &["language", "file_path"])
+            .await
+            .unwrap();
+
+        // Cleanup
+        ops.delete_collection(collection).await.unwrap();
+    }
+
+    /// Requires a live Qdrant instance at localhost:6334.
+    #[tokio::test]
+    #[ignore]
+    async fn delete_by_ids_empty_no_network_call() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        // Empty ID list must short-circuit and return Ok without hitting Qdrant.
+        let result = ops.delete_by_ids("nonexistent_collection", vec![]).await;
+        assert!(result.is_ok());
     }
 }

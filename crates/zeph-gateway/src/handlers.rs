@@ -15,6 +15,27 @@ pub(crate) struct WebhookPayload {
     pub body: String,
 }
 
+pub(crate) fn sanitize_control_chars(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_ascii_control() || *c == '\n')
+        .collect()
+}
+
+impl WebhookPayload {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.sender.len() > 256 {
+            return Err("sender exceeds 256 bytes");
+        }
+        if self.channel.len() > 256 {
+            return Err("channel exceeds 256 bytes");
+        }
+        if self.body.len() > 65536 {
+            return Err("body exceeds 65536 bytes");
+        }
+        Ok(())
+    }
+}
+
 #[derive(serde::Serialize)]
 struct WebhookResponse {
     status: &'static str,
@@ -30,7 +51,12 @@ pub(crate) async fn webhook_handler(
     State(state): State<AppState>,
     Json(payload): Json<WebhookPayload>,
 ) -> impl IntoResponse {
-    let msg = format!("[{}@{}] {}", payload.sender, payload.channel, payload.body);
+    if let Err(e) = payload.validate() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
+    }
+    let sender = sanitize_control_chars(&payload.sender);
+    let channel = sanitize_control_chars(&payload.channel);
+    let msg = format!("[{}@{}] {}", sender, channel, payload.body);
     match state.webhook_tx.send(msg).await {
         Ok(()) => Json(WebhookResponse { status: "accepted" }).into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -65,5 +91,89 @@ mod tests {
         assert_eq!(payload.channel, "discord");
         assert_eq!(payload.sender, "user1");
         assert_eq!(payload.body, "hello");
+    }
+
+    #[test]
+    fn validate_accepts_valid_payload() {
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "user".into(),
+            body: "hello".into(),
+        };
+        assert!(payload.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_sender() {
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "a".repeat(257),
+            body: "hello".into(),
+        };
+        assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_channel() {
+        let payload = WebhookPayload {
+            channel: "c".repeat(257),
+            sender: "user".into(),
+            body: "hello".into(),
+        };
+        assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_body() {
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "user".into(),
+            body: "b".repeat(65537),
+        };
+        assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn sanitize_strips_control_chars_keeps_newline() {
+        let input = "hel\x01lo\x7f\nworld";
+        let result = sanitize_control_chars(input);
+        assert_eq!(result, "hello\nworld");
+    }
+
+    #[test]
+    fn sanitize_strips_null_byte() {
+        let input = "he\x00llo";
+        let result = sanitize_control_chars(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn validate_accepts_at_limit_sender() {
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "a".repeat(256),
+            body: "hello".into(),
+        };
+        assert!(payload.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_at_limit_channel() {
+        let payload = WebhookPayload {
+            channel: "c".repeat(256),
+            sender: "user".into(),
+            body: "hello".into(),
+        };
+        assert!(payload.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_at_limit_body() {
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "user".into(),
+            body: "b".repeat(65536),
+        };
+        assert!(payload.validate().is_ok());
     }
 }

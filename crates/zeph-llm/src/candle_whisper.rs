@@ -92,6 +92,7 @@ impl CandleWhisperProvider {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("tokenizer: {e}")))?;
 
+        // SAFETY: safetensors file is validated before mmap; file is not modified during VarBuilder lifetime.
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[weights_path], candle_core::DType::F32, &device)
                 .map_err(|e| LlmError::ModelLoad(format!("weights: {e}")))?

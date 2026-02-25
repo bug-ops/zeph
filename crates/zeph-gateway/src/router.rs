@@ -268,6 +268,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_auth_when_token_unset() {
+        let (app, _rx) = make_router(None, 0);
+        let body = serde_json::json!({"channel": "a", "sender": "b", "body": "c"});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
     async fn body_size_limit() {
         let (state, _rx) = test_state();
         let app = build_router(state, None, 0, 64);
