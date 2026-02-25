@@ -391,4 +391,95 @@ mod tests {
         assert_eq!(row.source_kind, SourceKind::File);
         assert_eq!(row.source_path.as_deref(), Some("/tmp/skill.tar.gz"));
     }
+
+    #[test]
+    fn source_kind_display_local() {
+        assert_eq!(SourceKind::Local.to_string(), "local");
+    }
+
+    #[test]
+    fn source_kind_display_hub() {
+        assert_eq!(SourceKind::Hub.to_string(), "hub");
+    }
+
+    #[test]
+    fn source_kind_display_file() {
+        assert_eq!(SourceKind::File.to_string(), "file");
+    }
+
+    #[test]
+    fn source_kind_from_str_local() {
+        let kind: SourceKind = "local".parse().unwrap();
+        assert_eq!(kind, SourceKind::Local);
+    }
+
+    #[test]
+    fn source_kind_from_str_hub() {
+        let kind: SourceKind = "hub".parse().unwrap();
+        assert_eq!(kind, SourceKind::Hub);
+    }
+
+    #[test]
+    fn source_kind_from_str_file() {
+        let kind: SourceKind = "file".parse().unwrap();
+        assert_eq!(kind, SourceKind::File);
+    }
+
+    #[test]
+    fn source_kind_from_str_unknown_returns_error() {
+        let result: Result<SourceKind, _> = "s3".parse();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown source_kind"));
+    }
+
+    #[test]
+    fn source_kind_serde_json_roundtrip_local() {
+        let original = SourceKind::Local;
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#""local""#);
+        let back: SourceKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn source_kind_serde_json_roundtrip_hub() {
+        let original = SourceKind::Hub;
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#""hub""#);
+        let back: SourceKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn source_kind_serde_json_roundtrip_file() {
+        let original = SourceKind::File;
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#""file""#);
+        let back: SourceKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn source_kind_serde_json_invalid_value_errors() {
+        let result: Result<SourceKind, _> = serde_json::from_str(r#""unknown""#);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn upsert_each_source_kind_roundtrip() {
+        let store = test_store().await;
+        let variants = [
+            ("skill-local", SourceKind::Local),
+            ("skill-hub", SourceKind::Hub),
+            ("skill-file", SourceKind::File),
+        ];
+        for (name, kind) in &variants {
+            store
+                .upsert_skill_trust(name, "trusted", kind.clone(), None, None, "hash")
+                .await
+                .unwrap();
+            let row = store.load_skill_trust(name).await.unwrap().unwrap();
+            assert_eq!(&row.source_kind, kind);
+        }
+    }
 }
