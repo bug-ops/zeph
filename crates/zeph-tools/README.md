@@ -16,7 +16,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | Module | Description |
 |--------|-------------|
 | `executor` | `ToolExecutor` trait, `ToolOutput`, `ToolCall`; `DynExecutor` newtype wrapping `Arc<dyn ErasedToolExecutor>` for object-safe executor composition |
-| `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping; receives skill-scoped env vars injected by the agent for active skills that declare `x-requires-secrets` |
+| `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping; receives skill-scoped env vars injected by the agent for active skills that declare `x-requires-secrets`. Default `confirm_patterns` cover process substitution (`<(`, `>(`), here-strings (`<<<`), and `eval` |
 | `file` | File operation executor |
 | `scrape` | Web scraping executor with SSRF protection (post-DNS private IP validation, pinned address client) |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
@@ -31,6 +31,16 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, optional custom dir) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`
+
+## Shell sandbox
+
+The `ShellExecutor` enforces two layers of protection:
+
+1. **Blocklist** (`blocked_commands`) — tokenizer-based detection that normalizes escapes, splits on shell metacharacters, and matches through transparent prefixes (`env`, `command`, `exec`, etc.).
+2. **Confirmation patterns** (`confirm_patterns`) — substring scan that triggers `ConfirmationRequired` before execution. Defaults include `$(`, `` ` ``, `<(`, `>(`, `<<<`, and `eval `.
+
+> [!WARNING]
+> `find_blocked_command` does **not** detect commands hidden inside process substitution (`<(...)` / `>(...)`), here-strings (`<<<`), `eval`/`bash -c` string arguments, or variable expansion (`$cmd`). These constructs are caught by `confirm_patterns` instead, which requests user confirmation but does not block execution outright. For high-security deployments, complement this filter with OS-level sandboxing.
 
 ## Installation
 
