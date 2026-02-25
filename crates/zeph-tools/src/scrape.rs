@@ -70,7 +70,7 @@ impl WebScrapeExecutor {
     fn build_client(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
-            .redirect(reqwest::redirect::Policy::limited(3));
+            .redirect(reqwest::redirect::Policy::none());
         builder = builder.resolve_to_addrs(host, addrs);
         builder.build().unwrap_or_default()
     }
@@ -144,10 +144,7 @@ impl WebScrapeExecutor {
     ) -> Result<String, ToolError> {
         let parsed = validate_url(&instruction.url)?;
         let (host, addrs) = resolve_and_validate(&parsed).await?;
-        // Build a per-request client pinned to the validated addresses, eliminating
-        // TOCTOU between DNS validation and the actual HTTP connection.
-        let client = self.build_client(&host, &addrs);
-        let html = self.fetch_html(&client, &instruction.url).await?;
+        let html = self.fetch_html(&instruction.url, &host, &addrs).await?;
         let selector = instruction.select.clone();
         let extract = ExtractMode::parse(&instruction.extract);
         let limit = instruction.limit.unwrap_or(10);
@@ -156,35 +153,95 @@ impl WebScrapeExecutor {
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
     }
 
-    async fn fetch_html(&self, client: &reqwest::Client, url: &str) -> Result<String, ToolError> {
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+    /// Fetches the HTML at `url`, manually following up to 3 redirects.
+    ///
+    /// Each redirect target is validated with `validate_url` and `resolve_and_validate`
+    /// before following, preventing SSRF via redirect chains.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError::Blocked` if any redirect target resolves to a private IP.
+    /// Returns `ToolError::Execution` on HTTP errors, too-large bodies, or too many redirects.
+    async fn fetch_html(
+        &self,
+        url: &str,
+        host: &str,
+        addrs: &[SocketAddr],
+    ) -> Result<String, ToolError> {
+        const MAX_REDIRECTS: usize = 3;
 
-        if !resp.status().is_success() {
-            return Err(ToolError::Execution(std::io::Error::other(format!(
-                "HTTP {}",
-                resp.status(),
-            ))));
+        let mut current_url = url.to_owned();
+        let mut current_host = host.to_owned();
+        let mut current_addrs = addrs.to_vec();
+
+        for hop in 0..=MAX_REDIRECTS {
+            // Build a per-hop client pinned to the current hop's validated addresses.
+            let client = self.build_client(&current_host, &current_addrs);
+            let resp = client
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            let status = resp.status();
+
+            if status.is_redirection() {
+                if hop == MAX_REDIRECTS {
+                    return Err(ToolError::Execution(std::io::Error::other(
+                        "too many redirects",
+                    )));
+                }
+
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        ToolError::Execution(std::io::Error::other("redirect with no Location"))
+                    })?;
+
+                // Resolve relative redirect URLs against the current URL.
+                let base = Url::parse(&current_url)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+                let next_url = base
+                    .join(location)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+                let validated = validate_url(next_url.as_str())?;
+                let (next_host, next_addrs) = resolve_and_validate(&validated).await?;
+
+                current_url = next_url.to_string();
+                current_host = next_host;
+                current_addrs = next_addrs;
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "HTTP {status}",
+                ))));
+            }
+
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            if bytes.len() > self.max_body_bytes {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "response too large: {} bytes (max: {})",
+                    bytes.len(),
+                    self.max_body_bytes,
+                ))));
+            }
+
+            return String::from_utf8(bytes.to_vec())
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
-
-        if bytes.len() > self.max_body_bytes {
-            return Err(ToolError::Execution(std::io::Error::other(format!(
-                "response too large: {} bytes (max: {})",
-                bytes.len(),
-                self.max_body_bytes,
-            ))));
-        }
-
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))
+        Err(ToolError::Execution(std::io::Error::other(
+            "too many redirects",
+        )))
     }
 }
 
@@ -847,6 +904,49 @@ mod tests {
         let mode = ExtractMode::Text;
         let dbg = format!("{mode:?}");
         assert!(dbg.contains("Text"));
+    }
+
+    // --- SSRF redirect chain defense ---
+
+    /// Verifies that a redirect Location pointing to a private IP is rejected by validate_url
+    /// before any connection attempt — simulating the validation step inside fetch_html.
+    #[test]
+    fn redirect_to_private_ip_rejected_by_validate_url() {
+        // These would appear as Location headers in a redirect response.
+        let private_targets = [
+            "https://127.0.0.1/secret",
+            "https://10.0.0.1/internal",
+            "https://192.168.1.1/admin",
+            "https://172.16.0.1/data",
+            "https://[::1]/path",
+            "https://[fe80::1]/path",
+            "https://localhost/path",
+            "https://service.internal/api",
+        ];
+        for target in private_targets {
+            let result = validate_url(target);
+            assert!(result.is_err(), "expected error for {target}");
+            assert!(
+                matches!(result.unwrap_err(), ToolError::Blocked { .. }),
+                "expected Blocked for {target}"
+            );
+        }
+    }
+
+    /// Verifies that relative redirect URLs are resolved correctly before validation.
+    #[test]
+    fn redirect_relative_url_resolves_correctly() {
+        let base = Url::parse("https://example.com/page").unwrap();
+        let relative = "/other";
+        let resolved = base.join(relative).unwrap();
+        assert_eq!(resolved.as_str(), "https://example.com/other");
+    }
+
+    /// Verifies that a protocol-relative redirect to http:// is rejected (scheme check).
+    #[test]
+    fn redirect_to_http_rejected() {
+        let err = validate_url("http://example.com/page").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
     }
 
     #[test]
