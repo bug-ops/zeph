@@ -157,7 +157,9 @@ pub struct Agent<C: Channel> {
     pub(crate) token_counter: Arc<TokenCounter>,
     stt: Option<Box<dyn SpeechToText>>,
     update_notify_rx: Option<mpsc::Receiver<String>>,
-    #[allow(dead_code)]
+    /// Manages spawned sub-agents. Wired up during construction but not yet
+    /// dispatched to in the current agent loop iteration; retained for
+    /// forward-compatible multi-agent orchestration.
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
 }

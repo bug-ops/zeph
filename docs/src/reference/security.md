@@ -86,6 +86,19 @@ confirm_patterns = ["rm ", "git push -f"]  # Destructive command patterns
 
 Custom blocked patterns are **additive** — you cannot weaken default security. Matching is case-insensitive.
 
+### Known Limitations
+
+`find_blocked_command` operates on tokenized command text and cannot detect blocked commands embedded inside indirect execution constructs:
+
+| Construct | Example | Why it bypasses |
+|-----------|---------|-----------------|
+| Process substitution | `diff <(sudo cat /etc/shadow) file` | `<(...)` content is passed to the shell, not parsed by the tokenizer |
+| Here-strings | `bash <<< 'sudo rm -rf /'` | The payload string is opaque to the filter |
+| `eval` / `bash -c` / `sh -c` | `eval 'sudo rm -rf /'` | String argument is not parsed |
+| Variable expansion | `cmd=sudo; $cmd rm -rf /` | Variables are not resolved during tokenization |
+
+**Mitigation:** The default `confirm_patterns` in `ShellConfig` include `<(`, `>(`, `<<<`, `eval `, `$(`, and `` ` `` — commands containing these constructs trigger a confirmation prompt before execution. For high-security deployments, complement this filter with OS-level sandboxing (Linux namespaces, seccomp, or similar).
+
 ## Shell Sandbox
 
 Commands are validated against a configurable filesystem allowlist before execution:
@@ -101,7 +114,7 @@ Commands matching `confirm_patterns` trigger an interactive confirmation before 
 
 - **CLI:** `y/N` prompt on stdin
 - **Telegram:** inline keyboard with Confirm/Cancel buttons
-- Default patterns: `rm`, `git push -f`, `git push --force`, `drop table`, `drop database`, `truncate`
+- Default patterns: `rm`, `git push -f`, `git push --force`, `drop table`, `drop database`, `truncate`, `$(`, `` ` ``, `<(`, `>(`, `<<<`, `eval`
 - Configurable via `tools.shell.confirm_patterns` in TOML
 
 ## File Executor Sandbox

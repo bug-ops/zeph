@@ -15,7 +15,7 @@ Parses source files with tree-sitter to extract symbols, chunks them for embeddi
 
 - **indexer** — orchestrates file discovery, parsing, and embedding pipeline
 - **retriever** — semantic search over indexed symbols and chunks
-- **store** — persistence layer backed by Qdrant
+- **store** — persistence layer; vector operations go through the `VectorStore` trait from `zeph-memory` (backed by Qdrant)
 - **repo_map** — generates tree-style repository summaries
 - **watcher** — filesystem watcher for incremental re-indexing
 - **error** — `IndexError` error types

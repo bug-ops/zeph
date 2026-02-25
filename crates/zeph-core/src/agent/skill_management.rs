@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use zeph_memory::sqlite::SourceKind;
 use zeph_skills::SkillSource;
 use zeph_skills::manager::SkillManager;
 
@@ -50,11 +51,13 @@ impl<C: Channel> Agent<C> {
             Ok(installed) => {
                 if let Some(memory) = &self.memory_state.memory {
                     let (source_kind, source_url, source_path) = match &installed.source {
-                        SkillSource::Hub { url } => ("hub", Some(url.as_str()), None),
-                        SkillSource::File { path } => {
-                            ("file", None, Some(path.to_string_lossy().into_owned()))
-                        }
-                        SkillSource::Local => ("local", None, None),
+                        SkillSource::Hub { url } => (SourceKind::Hub, Some(url.as_str()), None),
+                        SkillSource::File { path } => (
+                            SourceKind::File,
+                            None,
+                            Some(path.to_string_lossy().into_owned()),
+                        ),
+                        SkillSource::Local => (SourceKind::Local, None, None),
                     };
                     if let Err(e) = memory
                         .sqlite()

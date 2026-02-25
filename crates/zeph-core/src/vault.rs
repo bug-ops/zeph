@@ -815,6 +815,78 @@ mod age_tests {
         assert_eq!(vault.list_keys(), Vec::<&str>::new());
     }
 
+    #[tokio::test]
+    async fn age_vault_keys_sorted_after_roundtrip() {
+        let identity = age::x25519::Identity::generate();
+        // Insert keys intentionally out of lexicographic order.
+        let json = serde_json::json!({"ZEBRA": "z", "APPLE": "a", "MANGO": "m"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        let keys = vault.list_keys();
+        assert_eq!(keys, vec!["APPLE", "MANGO", "ZEBRA"]);
+    }
+
+    #[test]
+    fn age_vault_save_preserves_key_order() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"Z_KEY": "z", "A_KEY": "a", "M_KEY": "m"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("B_KEY".to_owned(), "b".to_owned());
+        vault.save().unwrap();
+
+        let reloaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        let keys = reloaded.list_keys();
+        assert_eq!(keys, vec!["A_KEY", "B_KEY", "M_KEY", "Z_KEY"]);
+    }
+
+    #[test]
+    fn age_vault_decrypt_returns_btreemap_sorted() {
+        let identity = age::x25519::Identity::generate();
+        // Provide keys in reverse order; BTreeMap must sort them on deserialization.
+        let json_str = r#"{"zoo":"z","bar":"b","alpha":"a"}"#;
+        let recipient = identity.to_public();
+        let encryptor =
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .expect("encryptor");
+        let mut encrypted = vec![];
+        let mut writer = encryptor.wrap_output(&mut encrypted).expect("wrap");
+        writer.write_all(json_str.as_bytes()).expect("write");
+        writer.finish().expect("finish");
+
+        let ciphertext = encrypted;
+        let secrets = decrypt_secrets(&identity, &ciphertext).unwrap();
+        let keys: Vec<&str> = secrets.keys().map(String::as_str).collect();
+        // BTreeMap guarantees lexicographic order regardless of insertion order.
+        assert_eq!(keys, vec!["alpha", "bar", "zoo"]);
+    }
+
+    #[test]
+    fn age_vault_into_iter_consumes_all_entries() {
+        // Regression: drain() was replaced with into_iter(). Verify all entries
+        // are consumed and values are accessible without data loss.
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"K1": "v1", "K2": "v2", "K3": "v3"});
+        let encrypted = encrypt_json(&identity, &json);
+        let ciphertext = encrypted;
+        let secrets = decrypt_secrets(&identity, &ciphertext).unwrap();
+
+        let mut pairs: Vec<(String, String)> = secrets
+            .into_iter()
+            .map(|(k, v)| (k, v.as_str().to_owned()))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0], ("K1".to_owned(), "v1".to_owned()));
+        assert_eq!(pairs[1], ("K2".to_owned(), "v2".to_owned()));
+        assert_eq!(pairs[2], ("K3".to_owned(), "v3".to_owned()));
+    }
+
     use proptest::prelude::*;
 
     proptest! {

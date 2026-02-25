@@ -1,0 +1,317 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+#![cfg(all(feature = "daemon", feature = "a2a"))]
+
+use std::path::PathBuf;
+
+use tokio::sync::watch;
+use zeph_core::agent::Agent;
+use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
+use zeph_core::config::Config;
+use zeph_core::vault::Secret;
+
+fn spawn_a2a_server(
+    config: &Config,
+    shutdown_rx: watch::Receiver<bool>,
+    loopback_handle: zeph_core::LoopbackHandle,
+) {
+    let public_url = if config.a2a.public_url.is_empty() {
+        format!("http://{}:{}", config.a2a.host, config.a2a.port)
+    } else {
+        config.a2a.public_url.clone()
+    };
+
+    let card =
+        zeph_a2a::AgentCardBuilder::new(&config.agent.name, &public_url, env!("CARGO_PKG_VERSION"))
+            .description("Zeph AI agent")
+            .streaming(true)
+            .build();
+
+    let processor: std::sync::Arc<dyn zeph_a2a::TaskProcessor> =
+        std::sync::Arc::new(AgentTaskProcessor {
+            loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(loopback_handle)),
+        });
+    let a2a_server = zeph_a2a::A2aServer::new(
+        card,
+        processor,
+        &config.a2a.host,
+        config.a2a.port,
+        shutdown_rx,
+    )
+    .with_auth(config.a2a.auth_token.clone())
+    .with_rate_limit(config.a2a.rate_limit)
+    .with_max_body_size(config.a2a.max_body_size);
+
+    tracing::info!(
+        "A2A server spawned on {}:{}",
+        config.a2a.host,
+        config.a2a.port
+    );
+
+    tokio::spawn(async move {
+        if let Err(e) = a2a_server.serve().await {
+            tracing::error!("A2A server error: {e:#}");
+        }
+    });
+}
+
+pub(crate) struct AgentTaskProcessor {
+    pub(crate) loopback_handle: std::sync::Arc<tokio::sync::Mutex<zeph_core::LoopbackHandle>>,
+}
+
+impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
+    fn process(
+        &self,
+        _task_id: String,
+        message: zeph_a2a::Message,
+        event_tx: tokio::sync::mpsc::Sender<zeph_a2a::ProcessorEvent>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), zeph_a2a::A2aError>> + Send>>
+    {
+        let handle = self.loopback_handle.clone();
+
+        Box::pin(async move {
+            let user_text = message.text_content().unwrap_or("").to_owned();
+            let mut handle = handle.lock().await;
+
+            handle
+                .input_tx
+                .send(zeph_core::ChannelMessage {
+                    text: user_text,
+                    attachments: vec![],
+                })
+                .await
+                .map_err(|_| zeph_a2a::A2aError::Server("agent channel closed".to_owned()))?;
+
+            event_tx
+                .send(zeph_a2a::ProcessorEvent::StatusUpdate {
+                    state: zeph_a2a::TaskState::Working,
+                    is_final: false,
+                })
+                .await
+                .map_err(|_| zeph_a2a::A2aError::Server("event channel closed".to_owned()))?;
+
+            while let Some(event) = handle.output_rx.recv().await {
+                match event {
+                    zeph_core::LoopbackEvent::Chunk(text) => {
+                        let _ = event_tx
+                            .send(zeph_a2a::ProcessorEvent::ArtifactChunk {
+                                text,
+                                is_final: false,
+                            })
+                            .await;
+                    }
+                    zeph_core::LoopbackEvent::Flush => {
+                        let _ = event_tx
+                            .send(zeph_a2a::ProcessorEvent::ArtifactChunk {
+                                text: String::new(),
+                                is_final: true,
+                            })
+                            .await;
+                        break;
+                    }
+                    zeph_core::LoopbackEvent::FullMessage(text) => {
+                        let _ = event_tx
+                            .send(zeph_a2a::ProcessorEvent::ArtifactChunk {
+                                text,
+                                is_final: true,
+                            })
+                            .await;
+                        break;
+                    }
+                    zeph_core::LoopbackEvent::Status(_)
+                    | zeph_core::LoopbackEvent::ToolOutput { .. } => {}
+                }
+            }
+
+            let _ = event_tx
+                .send(zeph_a2a::ProcessorEvent::StatusUpdate {
+                    state: zeph_a2a::TaskState::Completed,
+                    is_final: true,
+                })
+                .await;
+
+            Ok(())
+        })
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn run_daemon(
+    config_path: Option<&std::path::Path>,
+    vault: Option<&str>,
+    vault_key: Option<&std::path::Path>,
+    vault_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use zeph_core::daemon::{ComponentHandle, DaemonSupervisor, remove_pid_file, write_pid_file};
+
+    let app = AppBuilder::new(config_path, vault, vault_key, vault_path).await?;
+    let config = app.config();
+
+    if let Err(e) = write_pid_file(&config.daemon.pid_file) {
+        tracing::warn!("failed to write PID file: {e}");
+    }
+    tracing::info!(pid_file = %config.daemon.pid_file, "daemon started");
+
+    let (provider, _status_rx) = app.build_provider().await?;
+    let embed_model = app.embedding_model();
+    let budget_tokens = app.auto_budget_tokens(&provider);
+
+    let registry = app.build_registry();
+    let memory = app.build_memory(&provider).await?;
+    let all_meta = registry.all_meta();
+    let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
+    let skill_count = all_meta.len();
+    tracing::info!("skills loaded: {skill_count}");
+
+    let conversation_id = match memory.sqlite().latest_conversation_id().await? {
+        Some(id) => id,
+        None => memory.sqlite().create_conversation().await?,
+    };
+
+    let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
+
+    let filter_registry = if config.tools.filters.enabled {
+        zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
+    } else {
+        zeph_tools::OutputFilterRegistry::new(false)
+    };
+    let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
+        .with_permissions(
+            config
+                .tools
+                .permission_policy(config.security.autonomy_level),
+        )
+        .with_output_filters(filter_registry);
+    let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let file_executor = zeph_tools::FileExecutor::new(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
+    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+    let mcp_tools = mcp_manager.connect_all().await;
+    let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+    let base_executor = zeph_tools::CompositeExecutor::new(
+        file_executor,
+        zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+    );
+    let tool_executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+
+    let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
+
+    let watchers = app.build_watchers();
+    let _skill_watcher = watchers.skill_watcher;
+    let reload_rx = watchers.skill_reload_rx;
+    let _config_watcher = watchers.config_watcher;
+    let config_reload_rx = watchers.config_reload_rx;
+    let skill_paths = app.skill_paths();
+    let permission_policy = config
+        .tools
+        .permission_policy(config.security.autonomy_level);
+    let config_path_owned = app.config_path().to_owned();
+
+    let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
+
+    let agent = Agent::new(
+        provider,
+        loopback_channel,
+        registry,
+        matcher,
+        config.skills.max_active_skills,
+        tool_executor,
+    )
+    .with_max_tool_iterations(config.agent.max_tool_iterations)
+    .with_model_name(config.llm.model.clone())
+    .with_embedding_model(embed_model)
+    .with_disambiguation_threshold(config.skills.disambiguation_threshold)
+    .with_skill_reload(skill_paths, reload_rx)
+    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_memory(
+        memory,
+        conversation_id,
+        config.memory.history_limit,
+        config.memory.semantic.recall_limit,
+        config.memory.summarization_threshold,
+    )
+    .with_context_budget(
+        budget_tokens,
+        0.20,
+        config.memory.compaction_threshold,
+        config.memory.compaction_preserve_tail,
+        config.memory.prune_protect_tokens,
+    )
+    .with_shutdown(shutdown_rx.clone())
+    .with_security(config.security, config.timeouts)
+    .with_redact_credentials(config.memory.redact_credentials)
+    .with_tool_summarization(config.tools.summarize_output)
+    .with_overflow_config(config.tools.overflow.clone())
+    .with_permission_policy(permission_policy)
+    .with_config_reload(config_path_owned, config_reload_rx)
+    .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
+    .with_learning(config.skills.learning.clone())
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
+    .with_available_secrets(
+        config
+            .secrets
+            .custom
+            .iter()
+            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
+    );
+
+    let summary_provider = app.build_summary_provider();
+    let agent = if let Some(sp) = summary_provider {
+        agent.with_summary_provider(sp)
+    } else {
+        agent
+    };
+
+    let mut agent = if config.cost.enabled {
+        let tracker =
+            zeph_core::cost::CostTracker::new(true, f64::from(config.cost.max_daily_cents));
+        agent.with_cost_tracker(tracker)
+    } else {
+        agent
+    };
+
+    agent.load_history().await?;
+    agent
+        .check_vector_store_health(config.memory.vector_backend.as_str())
+        .await;
+
+    spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle);
+
+    let pid_file = config.daemon.pid_file.clone();
+    let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());
+
+    let shutdown_tx_ctrlc = shutdown_tx.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("received Ctrl-C, initiating daemon shutdown");
+            let _ = shutdown_tx_ctrlc.send(true);
+        }
+    });
+
+    // Spawn a sentinel task for the supervisor to track; agent runs in current task.
+    let sentinel = tokio::spawn(async { Ok(()) });
+    supervisor.add_component(ComponentHandle::new("agent-sentinel", sentinel));
+
+    tokio::select! {
+        result = agent.run() => {
+            if let Err(e) = result {
+                tracing::error!("agent exited with error: {e:#}");
+            }
+        }
+        () = supervisor.run() => {}
+    }
+
+    if let Err(e) = remove_pid_file(&pid_file) {
+        tracing::warn!("failed to remove PID file: {e}");
+    }
+
+    Ok(())
+}

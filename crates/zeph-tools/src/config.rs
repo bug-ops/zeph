@@ -25,6 +25,10 @@ fn default_confirm_patterns() -> Vec<String> {
         "truncate ".into(),
         "$(".into(),
         "`".into(),
+        "<(".into(),
+        ">(".into(),
+        "<<<".into(),
+        "eval ".into(),
     ]
 }
 
