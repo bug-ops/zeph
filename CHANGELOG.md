@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-02-25
+
 ### Security
 - Enforce `unsafe_code = "deny"` at workspace lint level; existing unavoidable unsafe blocks (mmap via candle, `std::env` in tests) annotated with `#[allow(unsafe_code)]` (#867)
 - Replace `HashMap` with `BTreeMap` in `AgeVaultProvider` to produce deterministic JSON key ordering on `vault.save()` (#876)
@@ -1295,7 +1297,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/bug-ops/zeph/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/bug-ops/zeph/compare/v0.11.6...v0.12.0
 [0.11.6]: https://github.com/bug-ops/zeph/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/bug-ops/zeph/compare/v0.11.4...v0.11.5
