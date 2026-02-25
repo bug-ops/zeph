@@ -9364,6 +9364,7 @@ dependencies = [
  "eventsource-stream",
  "futures-core",
  "hf-hub",
+ "insta",
  "ollama-rs",
  "proptest",
  "reqwest 0.13.2",
