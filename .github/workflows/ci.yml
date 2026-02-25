@@ -117,7 +117,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Build and archive tests
-        run: cargo nextest archive --workspace --features full --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
