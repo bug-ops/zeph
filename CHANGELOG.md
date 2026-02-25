@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
 
 ### Changed
+- Split 3177-line `src/main.rs` into focused modules: `runner.rs` (dispatch), `agent_setup.rs` (tool/MCP/feature setup), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
+- Split 1791-line `crates/zeph-core/src/bootstrap.rs` into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
+- Replace `source_kind: String` in `SkillTrustRow` with `SourceKind` enum (`Local`, `Hub`, `File`) with serde DB serialization; invalid values fail at parse time (#848)
+- Replace `kind: String` in `ScheduledTaskConfig` with `ScheduledTaskKind` enum (`MemoryCleanup`, `SkillRefresh`, `HealthCheck`, `UpdateCheck`, `Custom`); invalid values fail at parse time (#850)
+- Replace unjustified `#[allow(dead_code)]` with `#[expect(dead_code, reason = "...")]` or remove suppression and add doc comments across zeph-a2a, zeph-tools, zeph-core, zeph-acp (#849)
 - `A2aServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#869)
 - `GatewayServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#873)
 - Moved `TrustLevel` enum to `zeph-tools::trust_level`; `zeph-skills` re-exports it, breaking the `zeph-tools → zeph-skills` reverse dependency (#841)

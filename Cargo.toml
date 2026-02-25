@@ -172,6 +172,7 @@ zeph-acp = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-index = { workspace = true, optional = true }
+sqlx.workspace = true
 zeph-mcp.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true

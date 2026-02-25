@@ -86,7 +86,10 @@ pub(crate) struct SessionImportResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct AgentToolsParams {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "required for JSON deserialization of the ACP ext method params"
+    )]
     pub session_id: String,
 }
 

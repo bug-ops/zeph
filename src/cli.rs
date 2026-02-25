@@ -1,0 +1,172 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(
+    name = "zeph",
+    version,
+    about = "Lightweight AI agent with hybrid inference"
+)]
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct Cli {
+    /// Run with TUI dashboard
+    #[arg(long)]
+    pub(crate) tui: bool,
+
+    /// Run in headless daemon mode (requires daemon + a2a features)
+    #[cfg(all(feature = "daemon", feature = "a2a"))]
+    #[arg(long)]
+    pub(crate) daemon: bool,
+
+    /// Run as ACP server over stdio for IDE embedding (requires acp feature)
+    #[cfg(feature = "acp")]
+    #[arg(long)]
+    pub(crate) acp: bool,
+
+    /// Print ACP agent manifest JSON to stdout and exit (requires acp feature)
+    #[cfg(feature = "acp")]
+    #[arg(long)]
+    pub(crate) acp_manifest: bool,
+
+    /// Run as ACP server over HTTP+SSE and WebSocket (requires acp-http feature)
+    #[cfg(feature = "acp-http")]
+    #[arg(long)]
+    pub(crate) acp_http: bool,
+
+    /// Bind address for the ACP HTTP server (requires acp-http feature)
+    #[cfg(feature = "acp-http")]
+    #[arg(long, value_name = "ADDR")]
+    pub(crate) acp_http_bind: Option<String>,
+
+    /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
+    #[cfg(all(feature = "tui", feature = "a2a"))]
+    #[arg(long, value_name = "URL")]
+    pub(crate) connect: Option<String>,
+
+    /// Path to config file
+    #[arg(long, value_name = "PATH")]
+    pub(crate) config: Option<PathBuf>,
+
+    /// Secrets backend: "env" or "age"
+    #[arg(long, value_name = "BACKEND")]
+    pub(crate) vault: Option<String>,
+
+    /// Path to age identity (private key) file
+    #[arg(long, value_name = "PATH")]
+    pub(crate) vault_key: Option<PathBuf>,
+
+    /// Path to age-encrypted secrets file
+    #[arg(long, value_name = "PATH")]
+    pub(crate) vault_path: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum Command {
+    /// Interactive configuration wizard
+    Init {
+        /// Output path for generated config
+        #[arg(long, short, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+    /// Manage the age-encrypted secrets vault
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+    /// Manage external skills
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+    /// Manage memory snapshots
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MemoryCommand {
+    /// Export memory to a JSON snapshot file
+    Export {
+        /// Output file path
+        path: PathBuf,
+    },
+    /// Import memory from a JSON snapshot file
+    Import {
+        /// Input file path
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SkillCommand {
+    /// Install a skill from a git URL or local path
+    Install {
+        /// Git URL or local directory path
+        source: String,
+    },
+    /// Remove an installed skill
+    Remove {
+        /// Skill name
+        name: String,
+    },
+    /// List installed skills
+    List,
+    /// Verify skill integrity (blake3 hash check)
+    Verify {
+        /// Skill name (omit to verify all)
+        name: Option<String>,
+    },
+    /// Set trust level for a skill
+    Trust {
+        /// Skill name
+        name: String,
+        /// Trust level: trusted, verified, quarantined, blocked
+        level: String,
+    },
+    /// Block a skill
+    Block {
+        /// Skill name
+        name: String,
+    },
+    /// Unblock a skill (sets to quarantined)
+    Unblock {
+        /// Skill name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum VaultCommand {
+    /// Generate age keypair and empty encrypted vault
+    Init,
+    /// Encrypt and store a secret.
+    /// Note: VALUE is visible in process listing (ps/history). For sensitive values
+    /// prefer setting the variable in the shell and passing via env instead.
+    Set {
+        #[arg()]
+        key: String,
+        #[arg()]
+        value: String,
+    },
+    /// Decrypt and print a secret value
+    Get {
+        #[arg()]
+        key: String,
+    },
+    /// List stored secret keys (no values)
+    List,
+    /// Remove a secret
+    Rm {
+        #[arg()]
+        key: String,
+    },
+}

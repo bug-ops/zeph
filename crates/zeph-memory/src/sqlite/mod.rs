@@ -17,7 +17,7 @@ use crate::error::MemoryError;
 pub use acp_sessions::{AcpSessionEvent, AcpSessionInfo};
 pub use messages::role_str;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
-pub use trust::SkillTrustRow;
+pub use trust::{SkillTrustRow, SourceKind};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
