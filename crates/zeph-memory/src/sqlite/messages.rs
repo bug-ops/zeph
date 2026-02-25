@@ -125,8 +125,11 @@ impl SqliteStore {
             .into_iter()
             .map(
                 |(role_str, content, parts_json, agent_visible, user_visible)| {
-                    let parts: Vec<MessagePart> =
-                        serde_json::from_str(&parts_json).unwrap_or_default();
+                    let parts: Vec<MessagePart> = if parts_json == "[]" {
+                        vec![]
+                    } else {
+                        serde_json::from_str(&parts_json).unwrap_or_default()
+                    };
                     Message {
                         role: parse_role(&role_str),
                         content,
@@ -183,8 +186,11 @@ impl SqliteStore {
             .into_iter()
             .map(
                 |(role_str, content, parts_json, agent_visible, user_visible)| {
-                    let parts: Vec<MessagePart> =
-                        serde_json::from_str(&parts_json).unwrap_or_default();
+                    let parts: Vec<MessagePart> = if parts_json == "[]" {
+                        vec![]
+                    } else {
+                        serde_json::from_str(&parts_json).unwrap_or_default()
+                    };
                     Message {
                         role: parse_role(&role_str),
                         content,
@@ -309,7 +315,11 @@ impl SqliteStore {
 
         Ok(row.map(
             |(role_str, content, parts_json, agent_visible, user_visible)| {
-                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
+                let parts: Vec<MessagePart> = if parts_json == "[]" {
+                    vec![]
+                } else {
+                    serde_json::from_str(&parts_json).unwrap_or_default()
+                };
                 Message {
                     role: parse_role(&role_str),
                     content,
@@ -353,7 +363,11 @@ impl SqliteStore {
         Ok(rows
             .into_iter()
             .map(|(id, role_str, content, parts_json)| {
-                let parts: Vec<MessagePart> = serde_json::from_str(&parts_json).unwrap_or_default();
+                let parts: Vec<MessagePart> = if parts_json == "[]" {
+                    vec![]
+                } else {
+                    serde_json::from_str(&parts_json).unwrap_or_default()
+                };
                 (
                     id,
                     Message {

@@ -30,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fix double `count_tokens` call in `prune_stale_tool_outputs` for `ToolResult` parts; compute once and reuse (#883)
 - Added composite covering index `(conversation_id, id)` on `messages` table (migration 015); replaces single-column index for filter+order access patterns in `oldest_message_ids` and `load_history_filtered` (#895)
 - Replaced double-sort subquery in `load_history_filtered` with a CTE — eliminates redundant `ORDER BY` on the derived table (#896)
+- Eliminate redundant `Vec<Message>` clone in `remove_tool_responses_middle_out` by taking ownership instead of borrowing; replace `HashSet` with `Vec::with_capacity` for small-N index tracking (#884, #888)
+- Fast-path empty `parts_json == "[]"` deserialization in `load_history`, `load_history_filtered`, `message_by_id`, `messages_by_ids` to skip serde parse on the common empty case (#886)
+- Replace `collect::<Vec<_>>().join()` in `consolidate_summaries` with `String::with_capacity` + `write!` loop to eliminate intermediate allocation (#887)
 
 ### Changed
 - Replace default Ollama model `mistral:7b` with `qwen3:8b` across config defaults, tests, snapshots, and `--init` wizard; add `"qwen3"/"qwen"` as `ChatML` aliases in `ChatTemplate::parse_str` (#897)

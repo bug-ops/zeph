@@ -226,12 +226,18 @@ impl<C: Channel> Agent<C> {
         }
 
         // Consolidate partial summaries
-        let numbered: String = partial_summaries
-            .iter()
-            .enumerate()
-            .map(|(i, s)| format!("{}. {s}", i + 1))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let numbered = {
+            use std::fmt::Write as _;
+            let cap: usize = partial_summaries.iter().map(|s| s.len() + 8).sum();
+            let mut buf = String::with_capacity(cap);
+            for (i, s) in partial_summaries.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str("\n\n");
+                }
+                let _ = write!(buf, "{}. {s}", i + 1);
+            }
+            buf
+        };
 
         let consolidation_prompt = format!(
             "<analysis>\n\
@@ -270,7 +276,7 @@ impl<C: Channel> Agent<C> {
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
-    fn remove_tool_responses_middle_out(messages: &[Message], fraction: f32) -> Vec<Message> {
+    fn remove_tool_responses_middle_out(mut messages: Vec<Message>, fraction: f32) -> Vec<Message> {
         // Collect indices of messages that have ToolResult or ToolOutput parts
         let tool_indices: Vec<usize> = messages
             .iter()
@@ -287,7 +293,7 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         if tool_indices.is_empty() {
-            return messages.to_vec();
+            return messages;
         }
 
         let n = tool_indices.len();
@@ -295,21 +301,21 @@ impl<C: Channel> Agent<C> {
 
         // Middle-out: start from center, alternate outward
         let center = n / 2;
-        let mut remove_set = std::collections::HashSet::new();
+        let mut remove_set: Vec<usize> = Vec::with_capacity(to_remove);
         let mut left = center as isize - 1;
         let mut right = center;
         let mut count = 0;
 
         while count < to_remove {
             if right < n {
-                remove_set.insert(tool_indices[right]);
+                remove_set.push(tool_indices[right]);
                 count += 1;
                 right += 1;
             }
             if count < to_remove && left >= 0 {
                 let idx = left as usize;
                 if !remove_set.contains(&tool_indices[idx]) {
-                    remove_set.insert(tool_indices[idx]);
+                    remove_set.push(tool_indices[idx]);
                     count += 1;
                 }
             }
@@ -319,9 +325,8 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let mut result = messages.to_vec();
         for &msg_idx in &remove_set {
-            let msg = &mut result[msg_idx];
+            let msg = &mut messages[msg_idx];
             for part in &mut msg.parts {
                 match part {
                     MessagePart::ToolResult { content, .. } => {
@@ -346,7 +351,7 @@ impl<C: Channel> Agent<C> {
             }
             msg.rebuild_content();
         }
-        result
+        messages
     }
 
     async fn summarize_messages(
@@ -366,7 +371,7 @@ impl<C: Channel> Agent<C> {
 
         // Progressive tool response removal tiers: 10%, 20%, 50%, 100%
         for fraction in [0.10f32, 0.20, 0.50, 1.0] {
-            let reduced = Self::remove_tool_responses_middle_out(messages, fraction);
+            let reduced = Self::remove_tool_responses_middle_out(messages.to_vec(), fraction);
             tracing::debug!(
                 fraction,
                 "retrying summarization with reduced tool responses"
@@ -2988,14 +2993,14 @@ mod tests {
     #[test]
     fn remove_tool_responses_empty_messages_unchanged() {
         let msgs: Vec<Message> = vec![];
-        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 1.0);
         assert!(result.is_empty());
     }
 
     #[test]
     fn remove_tool_responses_no_tool_messages_unchanged() {
         let msgs = vec![make_text_message("hello"), make_text_message("world")];
-        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 1.0);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "hello");
     }
@@ -3007,7 +3012,7 @@ mod tests {
             make_tool_result_message("result2"),
             make_tool_result_message("result3"),
         ];
-        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 1.0);
         assert_eq!(result.len(), 3);
         for msg in &result {
             if let Some(zeph_llm::provider::MessagePart::ToolResult { content, .. }) =
@@ -3026,7 +3031,7 @@ mod tests {
             make_tool_result_message("r3"),
             make_tool_result_message("r4"),
         ];
-        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.5);
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 0.5);
         let compacted = result
             .iter()
             .filter(|m| {
@@ -3079,7 +3084,7 @@ mod tests {
         };
 
         // 1 removal — center (index 2)
-        let one = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.20);
+        let one = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs.clone(), 0.20);
         assert!(
             is_compacted(&one, 2),
             "center (idx 2) must be first removed"
@@ -3090,7 +3095,7 @@ mod tests {
         assert!(!is_compacted(&one, 4));
 
         // 2 removals — center (2) + left-of-center (1)
-        let two = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.40);
+        let two = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs.clone(), 0.40);
         assert!(is_compacted(&two, 2));
         assert!(is_compacted(&two, 1));
         assert!(!is_compacted(&two, 0));
@@ -3098,7 +3103,7 @@ mod tests {
         assert!(!is_compacted(&two, 4));
 
         // 3 removals — 2 + right-of-center (3)
-        let three = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.60);
+        let three = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 0.60);
         assert!(is_compacted(&three, 2));
         assert!(is_compacted(&three, 1));
         assert!(is_compacted(&three, 3));
@@ -3262,7 +3267,7 @@ mod tests {
                 is_error: false,
             }],
         );
-        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(&[msg], 1.0);
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(vec![msg], 1.0);
         assert_eq!(result.len(), 1);
         if let MessagePart::ToolResult { content, .. } = &result[0].parts[0] {
             assert_eq!(content, "[compacted]");
@@ -3298,19 +3303,19 @@ mod tests {
         };
 
         // 10% of 10 = ceil(1.0) = 1
-        let r10 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.10);
+        let r10 = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs.clone(), 0.10);
         assert_eq!(count_compacted(&r10), 1);
 
         // 20% of 10 = ceil(2.0) = 2
-        let r20 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.20);
+        let r20 = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs.clone(), 0.20);
         assert_eq!(count_compacted(&r20), 2);
 
         // 50% of 10 = ceil(5.0) = 5
-        let r50 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 0.50);
+        let r50 = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs.clone(), 0.50);
         assert_eq!(count_compacted(&r50), 5);
 
         // 100% of 10 = 10
-        let r100 = Agent::<MockChannel>::remove_tool_responses_middle_out(&msgs, 1.0);
+        let r100 = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 1.0);
         assert_eq!(count_compacted(&r100), 10);
     }
 
