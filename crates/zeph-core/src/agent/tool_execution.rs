@@ -12,18 +12,56 @@ use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use tracing::Instrument;
 
-/// Strip volatile IDs from message content so doom-loop comparison is stable.
-/// Normalizes `[tool_result: <id>]` and `[tool_use: <name>(<id>)]` by removing unique IDs.
+/// Hash message content for doom-loop detection, skipping volatile IDs in-place.
+/// Normalizes `[tool_result: <id>]` → `[tool_result]` and `[tool_use: <name>(<id>)]` → `[tool_use: <name>]`
+/// by feeding only stable segments into the hasher without materializing the normalized string.
 // DefaultHasher output is not stable across Rust versions — do not persist or serialize
 // these hashes. They are used only for within-session equality comparison.
 fn doom_loop_hash(content: &str) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let normalized = normalize_for_doom_loop(content);
+    use std::hash::{DefaultHasher, Hasher};
     let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
+    let mut rest = content;
+    while !rest.is_empty() {
+        let r_pos = rest.find("[tool_result: ");
+        let u_pos = rest.find("[tool_use: ");
+        match (r_pos, u_pos) {
+            (Some(r), Some(u)) if u < r => hash_tool_use_in_place(&mut hasher, &mut rest, u),
+            (Some(r), _) => hash_tool_result_in_place(&mut hasher, &mut rest, r),
+            (_, Some(u)) => hash_tool_use_in_place(&mut hasher, &mut rest, u),
+            _ => {
+                hasher.write(rest.as_bytes());
+                break;
+            }
+        }
+    }
     hasher.finish()
 }
 
+fn hash_tool_result_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
+    hasher.write(&rest.as_bytes()[..start]);
+    if let Some(end) = rest[start..].find(']') {
+        hasher.write(b"[tool_result]");
+        *rest = &rest[start + end + 1..];
+    } else {
+        hasher.write(&rest.as_bytes()[start..]);
+        *rest = "";
+    }
+}
+
+fn hash_tool_use_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
+    hasher.write(&rest.as_bytes()[..start]);
+    let tag = &rest[start..];
+    if let (Some(paren), Some(end)) = (tag.find('('), tag.find(']')) {
+        hasher.write(&tag.as_bytes()[..paren]);
+        hasher.write(b"]");
+        *rest = &rest[start + end + 1..];
+    } else {
+        hasher.write(tag.as_bytes());
+        *rest = "";
+    }
+}
+
+#[cfg(test)]
 fn normalize_for_doom_loop(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
@@ -49,6 +87,7 @@ fn normalize_for_doom_loop(content: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn handle_tool_result(out: &mut String, rest: &mut &str, start: usize) {
     out.push_str(&rest[..start]);
     if let Some(end) = rest[start..].find(']') {
@@ -60,6 +99,7 @@ fn handle_tool_result(out: &mut String, rest: &mut &str, start: usize) {
     }
 }
 
+#[cfg(test)]
 fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
     out.push_str(&rest[..start]);
     let tag = &rest[start..];

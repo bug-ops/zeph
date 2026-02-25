@@ -154,6 +154,7 @@ pub struct Agent<C: Channel> {
     warmup_ready: Option<watch::Receiver<bool>>,
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
+    env_context: EnvironmentContext,
     pub(crate) token_counter: Arc<TokenCounter>,
     stt: Option<Box<dyn SpeechToText>>,
     update_notify_rx: Option<mpsc::Receiver<String>>,
@@ -223,7 +224,7 @@ impl<C: Channel> Agent<C> {
                 prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
             },
-            context_manager: context_manager::ContextManager::new(Arc::clone(&token_counter)),
+            context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
             config_path: None,
@@ -260,6 +261,7 @@ impl<C: Channel> Agent<C> {
             warmup_ready: None,
             cost_tracker: None,
             cached_prompt_tokens: initial_prompt_tokens,
+            env_context: EnvironmentContext::gather(""),
             token_counter,
             stt: None,
             update_notify_rx: None,
@@ -955,7 +957,6 @@ impl<C: Channel> Agent<C> {
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
         self.runtime.redact_credentials = config.memory.redact_credentials;
-        self.context_manager.token_safety_margin = config.memory.token_safety_margin;
         self.memory_state.history_limit = config.memory.history_limit;
         self.memory_state.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;

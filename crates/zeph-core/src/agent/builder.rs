@@ -175,12 +175,6 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_token_safety_margin(mut self, margin: f32) -> Self {
-        self.context_manager.token_safety_margin = margin;
-        self
-    }
-
-    #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
         self.tool_orchestrator.summarize_tool_output_enabled = enabled;
         self

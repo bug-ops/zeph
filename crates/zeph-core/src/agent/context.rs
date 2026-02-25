@@ -15,9 +15,8 @@ use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 use crate::redact::scrub_content;
 
 use super::{
-    Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget, EnvironmentContext,
-    LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, build_system_prompt,
-    format_skills_prompt,
+    Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget, LlmProvider, Message,
+    RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, build_system_prompt, format_skills_prompt,
 };
 
 fn chunk_messages(
@@ -72,7 +71,8 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 
 impl<C: Channel> Agent<C> {
     pub(super) fn should_compact(&self) -> bool {
-        self.context_manager.should_compact(&self.messages)
+        self.context_manager
+            .should_compact(self.cached_prompt_tokens)
     }
 
     fn build_chunk_prompt(messages: &[Message]) -> String {
@@ -560,13 +560,14 @@ impl<C: Channel> Agent<C> {
                         *body = String::new();
                         modified = true;
                     }
-                    MessagePart::ToolResult { content, .. }
-                        if self.token_counter.count_tokens(content) > 20 =>
-                    {
-                        freed += self.token_counter.count_tokens(content);
-                        "[pruned]".clone_into(content);
-                        freed -= 1;
-                        modified = true;
+                    MessagePart::ToolResult { content, .. } => {
+                        let tokens = self.token_counter.count_tokens(content);
+                        if tokens > 20 {
+                            freed += tokens;
+                            "[pruned]".clone_into(content);
+                            freed -= 1;
+                            modified = true;
+                        }
                     }
                     _ => {}
                 }
@@ -1337,7 +1338,11 @@ impl<C: Channel> Agent<C> {
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        let env = EnvironmentContext::gather(&self.runtime.model_name);
+        self.env_context.refresh_git_branch();
+        self.env_context
+            .model_name
+            .clone_from(&self.runtime.model_name);
+        let env = &self.env_context;
         let tool_catalog = if self.provider.supports_tool_use() {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
@@ -1353,7 +1358,7 @@ impl<C: Channel> Agent<C> {
         #[allow(unused_mut)]
         let mut system_prompt = build_system_prompt(
             &skills_prompt,
-            Some(&env),
+            Some(env),
             tool_catalog.as_deref(),
             self.provider.supports_tool_use(),
         );
@@ -2532,55 +2537,38 @@ mod tests {
     }
 
     #[test]
-    fn token_safety_margin_above_one_inflates_token_count() {
+    fn should_compact_triggers_when_cached_tokens_exceed_threshold() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        // With a very large margin, token count is inflated and compaction triggers earlier
+        // budget 1000, threshold 0.75 → compact at 750 tokens
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(1000, 0.20, 0.75, 4, 0)
-            .with_token_safety_margin(100.0);
-        for i in 0..5 {
-            agent.messages.push(Message {
-                role: Role::User,
-                content: format!("message {i} with content"),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            });
-        }
+            .with_context_budget(1000, 0.20, 0.75, 4, 0);
+        agent.cached_prompt_tokens = 900;
 
         assert!(
             agent.should_compact(),
-            "large margin must trigger compaction even with few messages"
+            "cached_prompt_tokens above threshold must trigger compaction"
         );
     }
 
     #[test]
-    fn token_safety_margin_zero_never_compacts() {
+    fn should_compact_does_not_trigger_below_threshold() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        // margin=0.0 makes all token counts 0, so compaction never triggers
+        // budget 1000, threshold 0.75 → compact at 750 tokens
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(10, 0.20, 0.75, 4, 0)
-            .with_token_safety_margin(0.0);
-        for i in 0..50 {
-            agent.messages.push(Message {
-                role: Role::User,
-                content: format!(
-                    "very long message content {i} repeated many times to fill context"
-                ),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            });
-        }
+            .with_context_budget(1000, 0.20, 0.75, 4, 0);
+        agent.cached_prompt_tokens = 100;
+
         assert!(
             !agent.should_compact(),
-            "margin=0.0 means zero token counts, must never compact"
+            "cached_prompt_tokens below threshold must not trigger compaction"
         );
     }
 

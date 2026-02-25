@@ -145,6 +145,21 @@ impl EnvironmentContext {
         }
     }
 
+    /// Update only the git branch, leaving all other fields unchanged.
+    pub fn refresh_git_branch(&mut self) {
+        self.git_branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+    }
+
     #[must_use]
     pub fn format(&self) -> String {
         use std::fmt::Write;

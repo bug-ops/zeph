@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
 - `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
 
+### Performance
+- Replace `should_compact()` O(N) message scan with direct comparison against `cached_prompt_tokens` (#880)
+- Cache `EnvironmentContext` on Agent; refresh only `git_branch` on skill reload instead of spawning a full git subprocess each time (#881)
+- Hash doom-loop content in-place by feeding stable segments directly into the hasher, eliminating the intermediate normalized `String` allocation (#882)
+- Fix double `count_tokens` call in `prune_stale_tool_outputs` for `ToolResult` parts; compute once and reuse (#883)
+
 ### Changed
 - Split 3177-line `src/main.rs` into focused modules: `runner.rs` (dispatch), `agent_setup.rs` (tool/MCP/feature setup), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
 - Split 1791-line `crates/zeph-core/src/bootstrap.rs` into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
