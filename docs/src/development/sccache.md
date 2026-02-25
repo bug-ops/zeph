@@ -16,18 +16,14 @@ brew install sccache
 
 ## Configuration
 
-Set the Rust compiler wrapper in `~/.cargo/config.toml`:
+The workspace ships `.cargo/config.toml` with sccache pre-configured:
 
 ```toml
 [build]
 rustc-wrapper = "sccache"
 ```
 
-Alternatively, export the environment variable:
-
-```bash
-export RUSTC_WRAPPER=sccache
-```
+If sccache is not installed, Cargo falls back to direct `rustc` invocation. The `RUSTC_WRAPPER` environment variable takes priority over the config file, so CI workflows can override the wrapper per-step.
 
 ## Verify
 
@@ -63,3 +59,7 @@ By default sccache uses a local disk cache at `~/.cache/sccache`. For shared cac
 | Redis | `SCCACHE_REDIS` | `redis://localhost` |
 
 See the [sccache documentation](https://github.com/mozilla/sccache#storage-options) for full configuration options.
+
+## macOS XProtect
+
+On macOS 15+, XProtect scans every binary produced by the compiler. Add your terminal and sccache to **System Settings → Privacy & Security → Developer Tools** to avoid per-file scan overhead during builds.

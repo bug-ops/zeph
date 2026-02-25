@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
+- `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
+- `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
+
 ### Changed
 - Secret type wraps inner value in `Zeroizing<String>` for memory zeroization on drop; `Clone` removed (#865)
 - AgeVaultProvider secrets HashMap uses `Zeroizing<String>` values (#866)
