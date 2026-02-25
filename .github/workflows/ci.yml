@@ -101,7 +101,6 @@ jobs:
 
   build-tests:
     name: Build Tests (${{ matrix.os }})
-    needs: [lint-fmt, lint-clippy]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -130,7 +129,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
-    needs: build-tests
+    needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
