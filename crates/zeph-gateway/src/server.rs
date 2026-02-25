@@ -80,6 +80,12 @@ impl GatewayServer {
             started_at: Instant::now(),
         };
 
+        if self.auth_token.is_none() {
+            tracing::warn!(
+                "gateway running without bearer auth — ensure firewall or upstream proxy enforces access control"
+            );
+        }
+
         let router = build_router(state, self.auth_token, self.rate_limit, self.max_body_size);
 
         let listener = tokio::net::TcpListener::bind(self.addr)

@@ -18,6 +18,19 @@ Exposes an axum 0.8 HTTP server that accepts incoming webhooks, validates bearer
 - **router** — axum router construction with auth middleware
 - **error** — `GatewayError` error types
 
+## Authentication
+
+`GatewayServer` supports bearer token authentication via the `with_auth()` builder method. When `auth_token` is `None`, the server emits a `tracing::warn!` at startup indicating that the endpoint is unauthenticated.
+
+```rust
+GatewayServer::new(addr, sender)
+    .with_auth(Some("secret-token".to_string()))
+    .serve()
+    .await?;
+```
+
+Token comparison uses `subtle::ConstantTimeEq` to prevent timing attacks.
+
 ## Installation
 
 ```bash

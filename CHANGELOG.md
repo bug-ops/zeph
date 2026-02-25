@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replace `source_kind: String` in `SkillTrustRow` with `SourceKind` enum (`Local`, `Hub`, `File`) with serde DB serialization; invalid values fail at parse time (#848)
 - Replace `kind: String` in `ScheduledTaskConfig` with `ScheduledTaskKind` enum (`MemoryCleanup`, `SkillRefresh`, `HealthCheck`, `UpdateCheck`, `Custom`); invalid values fail at parse time (#850)
 - Replace unjustified `#[allow(dead_code)]` with `#[expect(dead_code, reason = "...")]` or remove suppression and add doc comments across zeph-a2a, zeph-tools, zeph-core, zeph-acp (#849)
+- `A2aServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#869)
+- `GatewayServer::serve()` emits `tracing::warn!` when `auth_token` is `None`, signalling unauthenticated exposure (#873)
 - Moved `TrustLevel` enum to `zeph-tools::trust_level`; `zeph-skills` re-exports it, breaking the `zeph-tools → zeph-skills` reverse dependency (#841)
 - Removed duplicate `ChannelError` from `zeph-channels::error`; all channel adapters use `zeph_core::channel::ChannelError` (#842)
 - Replaced `zeph_a2a::types::TaskState` in `zeph-core` with a local `SubAgentState` enum; removed `zeph-a2a` from `zeph-core` dependencies (#843)

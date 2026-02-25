@@ -21,6 +21,19 @@ Implements the Agent-to-Agent (A2A) protocol over JSON-RPC 2.0, enabling Zeph to
 - **types** — shared protocol types (Task, Message, Artifact, etc.)
 - **error** — `A2aError` error types
 
+## Authentication
+
+`A2aServer` supports bearer token authentication via the `with_auth()` builder method. When `auth_token` is `None`, the server emits a `tracing::warn!` at startup indicating that the endpoint is unauthenticated.
+
+```rust
+A2aServer::new(addr, sender)
+    .with_auth(Some("secret-token".to_string()))
+    .serve()
+    .await?;
+```
+
+Token comparison uses `subtle::ConstantTimeEq` to prevent timing attacks.
+
 ## Installation
 
 ```bash
