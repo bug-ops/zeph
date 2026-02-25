@@ -31,6 +31,7 @@ impl EmbedModel {
     /// # Errors
     ///
     /// Returns an error if model download or loading fails.
+    #[allow(unsafe_code)]
     pub fn load(repo_id: &str, device: &Device) -> Result<Self, LlmError> {
         let api = hf_hub::api::sync::Api::new().map_err(|e| {
             LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))

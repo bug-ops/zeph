@@ -70,6 +70,7 @@ mod tests {
     use serial_test::serial;
 
     // R-02: default_vault_dir() env var code paths
+    #[allow(unsafe_code)]
     #[test]
     #[serial]
     fn default_vault_dir_xdg_config_home() {
@@ -83,6 +84,7 @@ mod tests {
         assert_eq!(dir, PathBuf::from("/tmp/xdg-test/zeph"));
     }
 
+    #[allow(unsafe_code)]
     #[test]
     #[serial]
     fn default_vault_dir_appdata() {
@@ -97,6 +99,7 @@ mod tests {
         assert_eq!(dir, PathBuf::from("/tmp/appdata-test/zeph"));
     }
 
+    #[allow(unsafe_code)]
     #[test]
     #[serial]
     fn default_vault_dir_home_fallback() {

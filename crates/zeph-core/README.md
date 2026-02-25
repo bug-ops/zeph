@@ -33,7 +33,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `metrics` | Runtime metrics collection |
 | `project` | Project-level context detection |
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
-| `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
+| `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); secrets stored as `BTreeMap` for deterministic JSON serialization on every `vault.save()` call; scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking |

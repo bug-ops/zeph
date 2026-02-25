@@ -161,14 +161,14 @@ impl SqliteStore {
         let uv = user_visible.map(i64::from);
 
         let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT role, content, parts, agent_visible, user_visible FROM (\
+            "WITH recent AS (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? \
                   AND (? IS NULL OR agent_visible = ?) \
                   AND (? IS NULL OR user_visible = ?) \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) ORDER BY id ASC",
+             ) SELECT role, content, parts, agent_visible, user_visible FROM recent ORDER BY id ASC",
         )
         .bind(conversation_id)
         .bind(av)

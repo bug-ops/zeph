@@ -1,3 +1,6 @@
+// std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
+#![allow(unsafe_code)]
+
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};

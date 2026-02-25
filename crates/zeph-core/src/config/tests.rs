@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
+#![allow(unsafe_code)]
+
 use std::collections::HashMap;
 use std::io::Write;
 
