@@ -183,13 +183,13 @@ jobs:
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build binary for Docker (debug)
+      - name: Build binary for Docker (ci profile)
         run: |
-          cargo build
+          cargo build --profile ci
           mkdir -p binaries
           # Same binary for both arch variants — scan-only, not for deployment
-          cp target/debug/zeph binaries/zeph-amd64
-          cp target/debug/zeph binaries/zeph-arm64
+          cp target/ci/zeph binaries/zeph-amd64
+          cp target/ci/zeph binaries/zeph-arm64
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
