@@ -694,6 +694,7 @@ impl<C: Channel> Agent<C> {
                 self.messages
                     .push(Message::from_legacy(Role::Assistant, text.as_str()));
                 self.persist_message(Role::Assistant, text).await;
+                self.channel.flush_chunks().await?;
                 return Ok(());
             }
 
@@ -713,6 +714,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        self.channel.flush_chunks().await?;
         Ok(())
     }
 
