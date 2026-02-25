@@ -1076,7 +1076,7 @@ mod tests {
     use futures::future::join_all;
     use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
-    use super::{normalize_for_doom_loop, tool_def_to_definition};
+    use super::{doom_loop_hash, normalize_for_doom_loop, tool_def_to_definition};
 
     #[test]
     fn tool_def_strips_schema_and_title() {
@@ -1152,6 +1152,61 @@ mod tests {
             normalize_for_doom_loop(s),
             "[tool_use: bash] result: [tool_result]"
         );
+    }
+
+    // Helpers to hash a string the same way doom_loop_hash would if it materialized.
+    fn hash_str(s: &str) -> u64 {
+        use std::hash::{DefaultHasher, Hasher};
+        let mut h = DefaultHasher::new();
+        h.write(s.as_bytes());
+        h.finish()
+    }
+
+    // doom_loop_hash must produce the same value as hashing the normalize_for_doom_loop output.
+    fn expected_hash(content: &str) -> u64 {
+        hash_str(&normalize_for_doom_loop(content))
+    }
+
+    #[test]
+    fn doom_loop_hash_matches_normalize_then_hash_plain_text() {
+        let s = "hello world, no tool tags here";
+        assert_eq!(doom_loop_hash(s), expected_hash(s));
+    }
+
+    #[test]
+    fn doom_loop_hash_matches_normalize_then_hash_tool_result() {
+        let s = "[tool_result: toolu_abc123]\nerror: missing field";
+        assert_eq!(doom_loop_hash(s), expected_hash(s));
+    }
+
+    #[test]
+    fn doom_loop_hash_matches_normalize_then_hash_tool_use() {
+        let s = "[tool_use: bash(toolu_abc)]";
+        assert_eq!(doom_loop_hash(s), expected_hash(s));
+    }
+
+    #[test]
+    fn doom_loop_hash_matches_normalize_then_hash_mixed() {
+        let s = "[tool_use: bash(id1)] result: [tool_result: id2]";
+        assert_eq!(doom_loop_hash(s), expected_hash(s));
+    }
+
+    #[test]
+    fn doom_loop_hash_matches_normalize_then_hash_multiple_results() {
+        let s = "[tool_result: id1]\nok\n[tool_result: id2]\nfail\n[tool_result: id3]\nok";
+        assert_eq!(doom_loop_hash(s), expected_hash(s));
+    }
+
+    #[test]
+    fn doom_loop_hash_same_content_different_ids_equal() {
+        let a = "[tool_result: toolu_abc]\nerror";
+        let b = "[tool_result: toolu_xyz]\nerror";
+        assert_eq!(doom_loop_hash(a), doom_loop_hash(b));
+    }
+
+    #[test]
+    fn doom_loop_hash_empty_string() {
+        assert_eq!(doom_loop_hash(""), expected_hash(""));
     }
 
     struct DelayExecutor {

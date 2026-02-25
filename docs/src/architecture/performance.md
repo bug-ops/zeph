@@ -51,13 +51,25 @@ SQLite is opened with WAL (Write-Ahead Logging) mode, enabling concurrent reads 
 
 The system prompt token count is cached after the first computation and reused across agent loop iterations. This avoids re-estimating tokens for the static portion of the prompt on every turn.
 
+Context compaction (`should_compact()`) reads this cached value directly — an O(1) field access — instead of scanning all messages to sum token counts. The `token_counter` and `token_safety_margin` fields were removed from `ContextManager`; the single cached value is sufficient.
+
 ## LazyLock System Prompt
 
 Static system prompt fragments (tool definitions, environment preamble) use `LazyLock` for one-time initialization, eliminating repeated string allocation and formatting.
 
+## Cached Environment Context
+
+`EnvironmentContext` (working directory, OS, git branch, active model) is built once at agent bootstrap and stored on `Agent`. On skill hot-reload, only `git_branch` and `model_name` are refreshed — no git subprocess is spawned per agent loop turn.
+
 ## Content Hash Doom-Loop Detection
 
-The agent loop tracks a BLAKE3 content hash of the last LLM response. If the model produces an identical response twice consecutively, the loop breaks early to prevent infinite tool-call cycles.
+The agent loop tracks a content hash of the last LLM response. If the model produces an identical response twice consecutively, the loop breaks early to prevent infinite tool-call cycles.
+
+The hash is computed in-place using `DefaultHasher` with no intermediate `String` allocation. The previous implementation serialized the response to a temporary string before hashing; the current implementation feeds message parts directly into the hasher.
+
+## Tool Output Pruning Token Count
+
+`prune_stale_tool_outputs` counts tokens for each `ToolResult` part exactly once. A prior version called `count_tokens` twice per part (once for the guard condition, once after deciding to prune), doubling token-estimation work for large tool outputs.
 
 ## Build Profiles
 

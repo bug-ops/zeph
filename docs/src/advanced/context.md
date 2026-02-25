@@ -95,6 +95,8 @@ Every system prompt rebuild injects an `<environment>` block with:
 - Current git branch (if in a git repo)
 - Active model name
 
+`EnvironmentContext` is built once at agent bootstrap and cached. On skill hot-reload, only `git_branch` and `model_name` are refreshed. This avoids spawning a git subprocess on every agent turn.
+
 ## Tool-Pair Summarization
 
 After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of visible tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest visible pair is summarized via LLM and the originals are hidden.

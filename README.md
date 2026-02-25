@@ -27,6 +27,7 @@ Most AI agent frameworks dump every tool description, skill, and raw output into
 - **Tool-pair summarization** — when visible tool call/response pairs exceed a configurable cutoff, the oldest pair is summarized via LLM and originals hidden from context
 - **Accurate token counting** — tiktoken-based cl100k_base tokenizer with DashMap cache replaces chars/4 heuristic
 - **Proportional budget allocation** — context space distributed by purpose, not arrival order
+- **Optimized agent loop hot-path** — compaction check is O(1) via cached token count; `EnvironmentContext` built once at bootstrap and partially refreshed on skill reload; doom-loop hashing done in-place with no intermediate allocations; token counting for tool output pruning reduced to a single call per part
 
 ## Installation
 

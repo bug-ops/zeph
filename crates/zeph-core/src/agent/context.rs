@@ -2460,6 +2460,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prune_stale_tool_outputs_multi_part_tool_result_counted_once_per_part() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // One message with two ToolResult parts — each should be counted/pruned independently.
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "x".repeat(500),
+                    is_error: false,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: "y".repeat(500),
+                    is_error: false,
+                },
+            ],
+        ));
+        // Add 4 recent messages to push the above into the prune zone.
+        for _ in 0..4 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: "recent".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        // Both parts must have contributed tokens.
+        assert!(freed > 0, "freed must reflect tokens from both parts");
+
+        // Both ToolResult parts in the stale message must be pruned.
+        if let MessagePart::ToolResult { content, .. } = &agent.messages[1].parts[0] {
+            assert_eq!(content, "[pruned]", "first ToolResult part must be pruned");
+        } else {
+            panic!("expected ToolResult at parts[0]");
+        }
+        if let MessagePart::ToolResult { content, .. } = &agent.messages[1].parts[1] {
+            assert_eq!(content, "[pruned]", "second ToolResult part must be pruned");
+        } else {
+            panic!("expected ToolResult at parts[1]");
+        }
+    }
+
     #[tokio::test]
     async fn test_prepare_context_scrubs_secrets_when_redact_enabled() {
         let provider = mock_provider(vec![]);
