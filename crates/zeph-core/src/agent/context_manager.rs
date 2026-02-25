@@ -57,3 +57,59 @@ impl ContextManager {
         should
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeph_llm::provider::{Message, Role};
+
+    fn make_counter() -> Arc<TokenCounter> {
+        Arc::new(TokenCounter::new())
+    }
+
+    fn msg(content: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: content.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn new_defaults() {
+        let cm = ContextManager::new(make_counter());
+        assert!(cm.budget.is_none());
+        assert!((cm.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(cm.compaction_preserve_tail, 6);
+        assert_eq!(cm.prune_protect_tokens, 40_000);
+    }
+
+    #[test]
+    fn should_compact_no_budget() {
+        let cm = ContextManager::new(make_counter());
+        assert!(!cm.should_compact(&[msg("hello")]));
+    }
+
+    #[test]
+    fn should_compact_below_threshold() {
+        let mut cm = ContextManager::new(make_counter());
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        assert!(!cm.should_compact(&[msg("short")]));
+    }
+
+    #[test]
+    fn should_compact_above_threshold() {
+        let mut cm = ContextManager::new(make_counter());
+        cm.budget = Some(ContextBudget::new(100, 0.1));
+        cm.compaction_threshold = 0.01;
+        let big = msg(&"x".repeat(500));
+        assert!(cm.should_compact(&[big]));
+    }
+
+    #[test]
+    fn should_compact_empty_messages() {
+        let mut cm = ContextManager::new(make_counter());
+        cm.budget = Some(ContextBudget::new(100, 0.1));
+        assert!(!cm.should_compact(&[]));
+    }
+}
