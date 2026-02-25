@@ -110,7 +110,10 @@ impl AppBuilder {
         &self.config_path
     }
 
-    #[allow(dead_code)]
+    /// Returns the vault provider used for secret resolution.
+    ///
+    /// Retained as part of the public `Bootstrap` API for external callers
+    /// that may inspect or override vault behavior at runtime.
     pub fn vault(&self) -> &dyn VaultProvider {
         self.vault.as_ref()
     }

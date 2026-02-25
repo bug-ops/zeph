@@ -26,7 +26,10 @@ const ERR_INTERNAL: i32 = -32603;
 
 #[derive(serde::Deserialize)]
 pub(super) struct RawRequest {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "required for JSON-RPC 2.0 protocol field deserialization"
+    )]
     jsonrpc: String,
     id: serde_json::Value,
     method: String,
