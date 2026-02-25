@@ -1092,4 +1092,103 @@ mod tests {
         assert!(history[0].metadata.user_visible);
         assert!(history[0].metadata.compacted_at.is_none());
     }
+
+    #[tokio::test]
+    async fn load_history_empty_parts_json_fast_path() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message_with_parts(cid, "user", "hello", "[]")
+            .await
+            .unwrap();
+
+        let history = store.load_history(cid, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(
+            history[0].parts.is_empty(),
+            "\"[]\" fast-path must yield empty parts Vec"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_history_non_empty_parts_json_parsed() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let parts_json = serde_json::to_string(&vec![MessagePart::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "result".into(),
+            is_error: false,
+        }])
+        .unwrap();
+
+        store
+            .save_message_with_parts(cid, "user", "hello", &parts_json)
+            .await
+            .unwrap();
+
+        let history = store.load_history(cid, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].parts.len(), 1);
+        assert!(
+            matches!(&history[0].parts[0], MessagePart::ToolResult { content, .. } if content == "result")
+        );
+    }
+
+    #[tokio::test]
+    async fn message_by_id_empty_parts_json_fast_path() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id = store
+            .save_message_with_parts(cid, "user", "msg", "[]")
+            .await
+            .unwrap();
+
+        let msg = store.message_by_id(id).await.unwrap().unwrap();
+        assert!(
+            msg.parts.is_empty(),
+            "\"[]\" fast-path must yield empty parts Vec in message_by_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn messages_by_ids_empty_parts_json_fast_path() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        let id = store
+            .save_message_with_parts(cid, "user", "msg", "[]")
+            .await
+            .unwrap();
+
+        let results = store.messages_by_ids(&[id]).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].1.parts.is_empty(),
+            "\"[]\" fast-path must yield empty parts Vec in messages_by_ids"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_history_filtered_empty_parts_json_fast_path() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message_with_metadata(cid, "user", "msg", "[]", true, true)
+            .await
+            .unwrap();
+
+        let msgs = store
+            .load_history_filtered(cid, 10, Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].parts.is_empty(),
+            "\"[]\" fast-path must yield empty parts Vec in load_history_filtered"
+        );
+    }
 }

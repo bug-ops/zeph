@@ -3550,4 +3550,63 @@ mod tests {
         agent.maybe_summarize_tool_pair().await;
         assert!(agent.messages.is_empty());
     }
+
+    #[test]
+    fn remove_tool_responses_fraction_zero_changes_nothing() {
+        let msgs = vec![
+            make_tool_result_message("result1"),
+            make_tool_result_message("result2"),
+        ];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 0.0);
+        assert_eq!(result.len(), 2);
+        for msg in &result {
+            if let Some(MessagePart::ToolResult { content, .. }) = msg.parts.first() {
+                assert_ne!(
+                    content, "[compacted]",
+                    "fraction=0.0 should not compact anything"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remove_tool_responses_tool_output_parts_compacted() {
+        let msgs = vec![
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolOutput {
+                    tool_name: "bash".into(),
+                    body: "output text".into(),
+                    compacted_at: None,
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolOutput {
+                    tool_name: "read_file".into(),
+                    body: "file content".into(),
+                    compacted_at: None,
+                }],
+            ),
+        ];
+        let result = Agent::<MockChannel>::remove_tool_responses_middle_out(msgs, 1.0);
+        assert_eq!(result.len(), 2);
+        for msg in &result {
+            if let Some(MessagePart::ToolOutput {
+                body, compacted_at, ..
+            }) = msg.parts.first()
+            {
+                assert!(
+                    body.is_empty(),
+                    "ToolOutput body should be cleared after compaction"
+                );
+                assert!(
+                    compacted_at.is_some(),
+                    "ToolOutput compacted_at should be set"
+                );
+            } else {
+                panic!("expected ToolOutput part");
+            }
+        }
+    }
 }
