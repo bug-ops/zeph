@@ -23,3 +23,5 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - name: Check advisories and licenses
         run: cargo deny check
+        env:
+          RUSTC_WRAPPER: ""

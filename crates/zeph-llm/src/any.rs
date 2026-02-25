@@ -10,7 +10,9 @@ use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 use crate::orchestrator::ModelOrchestrator;
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
+#[cfg(feature = "schema")]
 use serde::de::DeserializeOwned;
 
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
@@ -63,6 +65,7 @@ impl AnyProvider {
     /// # Errors
     ///
     /// Returns an error if the provider fails or the response cannot be parsed.
+    #[cfg(feature = "schema")]
     pub async fn chat_typed_erased<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
@@ -446,7 +449,7 @@ mod tests {
         assert!(debug.contains("OpenAi"));
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(all(feature = "mock", feature = "schema"))]
     #[tokio::test]
     async fn chat_typed_erased_dispatches_to_mock() {
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]

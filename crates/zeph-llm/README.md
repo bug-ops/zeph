@@ -33,6 +33,18 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 
 **Re-exports:** `LlmProvider`, `LlmError`
 
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `schema` | on | Enables `schemars` dependency, `chat_typed`, `Extractor`, and per-`TypeId` schema caching |
+
+To compile without `schemars`:
+
+```bash
+cargo build -p zeph-llm --no-default-features
+```
+
 ## Installation
 
 ```bash

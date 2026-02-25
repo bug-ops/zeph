@@ -16,6 +16,9 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | Module | Description |
 |--------|-------------|
 | `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `with_cancel_signal()` |
+| `agent::context_manager` | `ContextManager` — owns token budget, compaction threshold, and safety margin; `should_compact()` evaluates tiktoken-based usage against threshold |
+| `agent::tool_orchestrator` | `ToolOrchestrator` — owns max iteration limit, doom-loop detection (rolling hash window), summarization flag, and overflow config |
+| `agent::learning_engine` | `LearningEngine` — owns `LearningConfig`, tracks per-turn reflection state; delegates self-learning decisions to `is_enabled()` / `mark_reflection_used()` |
 | `agent::tool_execution` | Tool call handling, redaction, result processing; `call_llm_with_retry()` / `call_chat_with_tools_retry()` — auto-detect `ContextLengthExceeded`, compact context, and retry (max 2 attempts) |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |

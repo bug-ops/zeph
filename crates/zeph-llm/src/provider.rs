@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::any::TypeId;
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{LazyLock, Mutex};
+#[cfg(feature = "schema")]
+use std::{
+    any::TypeId,
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
 
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 
+#[cfg(feature = "schema")]
 static SCHEMA_CACHE: LazyLock<Mutex<HashMap<TypeId, (serde_json::Value, String)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -20,6 +24,7 @@ static SCHEMA_CACHE: LazyLock<Mutex<HashMap<TypeId, (serde_json::Value, String)>
 /// # Errors
 ///
 /// Returns an error if schema serialization fails.
+#[cfg(feature = "schema")]
 pub(crate) fn cached_schema<T: schemars::JsonSchema + 'static>()
 -> Result<(serde_json::Value, String), crate::LlmError> {
     let type_id = TypeId::of::<T>();
@@ -374,6 +379,7 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Default implementation injects JSON schema into the system prompt and retries once
     /// on parse failure. Providers with native structured output should override this.
+    #[cfg(feature = "schema")]
     #[allow(async_fn_in_trait)]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
@@ -420,6 +426,7 @@ pub trait LlmProvider: Send + Sync {
 /// Strip markdown code fences from LLM output. Only handles outer fences;
 /// JSON containing trailing triple backticks in string values may be
 /// incorrectly trimmed (acceptable for MVP — see review R2).
+#[cfg(feature = "schema")]
 fn strip_json_fences(s: &str) -> &str {
     s.trim()
         .trim_start_matches("```json")
@@ -917,31 +924,37 @@ mod tests {
 
     // --- M27: strip_json_fences tests ---
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_plain_json() {
         assert_eq!(strip_json_fences(r#"{"a": 1}"#), r#"{"a": 1}"#);
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_with_json_fence() {
         assert_eq!(strip_json_fences("```json\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_with_plain_fence() {
         assert_eq!(strip_json_fences("```\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_whitespace() {
         assert_eq!(strip_json_fences("  \n  "), "");
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_empty() {
         assert_eq!(strip_json_fences(""), "");
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_outer_whitespace() {
         assert_eq!(
@@ -950,6 +963,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "schema")]
     #[test]
     fn strip_json_fences_only_opening_fence() {
         assert_eq!(strip_json_fences("```json\n{\"a\": 1}"), r#"{"a": 1}"#);
@@ -957,15 +971,18 @@ mod tests {
 
     // --- M27: chat_typed tests ---
 
+    #[cfg(feature = "schema")]
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
     struct TestOutput {
         value: String,
     }
 
+    #[cfg(feature = "schema")]
     struct SequentialStub {
         responses: std::sync::Mutex<Vec<Result<String, LlmError>>>,
     }
 
+    #[cfg(feature = "schema")]
     impl SequentialStub {
         fn new(responses: Vec<Result<String, LlmError>>) -> Self {
             Self {
@@ -974,6 +991,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "schema")]
     impl LlmProvider for SequentialStub {
         async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             let mut responses = self.responses.lock().unwrap();
@@ -1007,6 +1025,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_happy_path() {
         let provider = StubProvider {
@@ -1022,6 +1041,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_retry_succeeds() {
         let provider = SequentialStub::new(vec![
@@ -1033,6 +1053,7 @@ mod tests {
         assert_eq!(result, TestOutput { value: "ok".into() });
     }
 
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_both_fail() {
         let provider = SequentialStub::new(vec![Ok("bad json".into()), Ok("still bad".into())]);
@@ -1042,6 +1063,7 @@ mod tests {
         assert!(err.to_string().contains("parse failed after retry"));
     }
 
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_chat_error_propagates() {
         let provider = SequentialStub::new(vec![Err(LlmError::Unavailable)]);
@@ -1050,6 +1072,7 @@ mod tests {
         assert!(matches!(result, Err(LlmError::Unavailable)));
     }
 
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_strips_fences() {
         let provider = StubProvider {

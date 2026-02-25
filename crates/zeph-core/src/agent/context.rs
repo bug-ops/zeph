@@ -71,34 +71,8 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 impl<C: Channel> Agent<C> {
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
     pub(super) fn should_compact(&self) -> bool {
-        let Some(ref budget) = self.context_state.budget else {
-            return false;
-        };
-        let margin = self.runtime.token_safety_margin;
-        let total_tokens: usize = self
-            .messages
-            .iter()
-            .map(|m| {
-                (self.token_counter.count_tokens(&m.content) as f64 * f64::from(margin)) as usize
-            })
-            .sum();
-        let threshold =
-            (budget.max_tokens() as f32 * self.context_state.compaction_threshold) as usize;
-        let should = total_tokens > threshold;
-        tracing::debug!(
-            total_tokens,
-            threshold,
-            message_count = self.messages.len(),
-            should_compact = should,
-            "context budget check"
-        );
-        should
+        self.context_manager.should_compact(&self.messages)
     }
 
     fn build_chunk_prompt(messages: &[Message]) -> String {
@@ -418,7 +392,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
-        let preserve_tail = self.context_state.compaction_preserve_tail;
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
 
         if self.messages.len() <= preserve_tail + 1 {
             return Ok(());
@@ -505,7 +479,7 @@ impl<C: Channel> Agent<C> {
     /// Returns the number of tokens freed.
     #[allow(clippy::cast_precision_loss)]
     pub(super) fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
-        let protect = self.context_state.prune_protect_tokens;
+        let protect = self.context_manager.prune_protect_tokens;
         let mut tail_tokens = 0usize;
         let mut protection_boundary = self.messages.len();
         if protect > 0 {
@@ -747,7 +721,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let budget = self
-            .context_state
+            .context_manager
             .budget
             .as_ref()
             .map_or(0, ContextBudget::max_tokens);
@@ -756,7 +730,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|m| self.token_counter.count_tokens(&m.content))
             .sum();
-        let threshold = (budget as f32 * self.context_state.compaction_threshold) as usize;
+        let threshold = (budget as f32 * self.context_manager.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
 
         let freed = self.prune_tool_outputs(min_to_free);
@@ -1082,7 +1056,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         query: &str,
     ) -> Result<(), super::error::AgentError> {
-        let Some(ref budget) = self.context_state.budget else {
+        let Some(ref budget) = self.context_manager.budget else {
             return Ok(());
         };
         let _ = self.channel.send_status("building context...").await;
@@ -1343,7 +1317,7 @@ impl<C: Channel> Agent<C> {
 
         let effective_mode = match self.skill_state.prompt_mode {
             crate::config::SkillPromptMode::Auto => {
-                if let Some(ref budget) = self.context_state.budget
+                if let Some(ref budget) = self.context_manager.budget
                     && budget.max_tokens() < 8192
                 {
                     crate::config::SkillPromptMode::Compact
@@ -1515,7 +1489,7 @@ mod tests {
         // Auto mode: budget < 8192 → Compact
         let effective_mode = match crate::config::SkillPromptMode::Auto {
             crate::config::SkillPromptMode::Auto => {
-                if let Some(ref budget) = agent.context_state.budget
+                if let Some(ref budget) = agent.context_manager.budget
                     && budget.max_tokens() < 8192
                 {
                     crate::config::SkillPromptMode::Compact
@@ -1541,7 +1515,7 @@ mod tests {
         // Auto mode: budget >= 8192 → Full
         let effective_mode = match crate::config::SkillPromptMode::Auto {
             crate::config::SkillPromptMode::Auto => {
-                if let Some(ref budget) = agent.context_state.budget
+                if let Some(ref budget) = agent.context_manager.budget
                     && budget.max_tokens() < 8192
                 {
                     crate::config::SkillPromptMode::Compact
@@ -1695,7 +1669,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(0, 0.20, 0.75, 4, 0);
-        assert!(agent.context_state.budget.is_none());
+        assert!(agent.context_manager.budget.is_none());
     }
 
     #[test]
@@ -1708,13 +1682,13 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(4096, 0.20, 0.80, 6, 0);
 
-        assert!(agent.context_state.budget.is_some());
+        assert!(agent.context_manager.budget.is_some());
         assert_eq!(
-            agent.context_state.budget.as_ref().unwrap().max_tokens(),
+            agent.context_manager.budget.as_ref().unwrap().max_tokens(),
             4096
         );
-        assert!((agent.context_state.compaction_threshold - 0.80).abs() < f32::EPSILON);
-        assert_eq!(agent.context_state.compaction_preserve_tail, 6);
+        assert!((agent.context_manager.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert_eq!(agent.context_manager.compaction_preserve_tail, 6);
     }
 
     #[tokio::test]

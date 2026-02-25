@@ -59,6 +59,19 @@ Static system prompt fragments (tool definitions, environment preamble) use `Laz
 
 The agent loop tracks a BLAKE3 content hash of the last LLM response. If the model produces an identical response twice consecutively, the loop breaks early to prevent infinite tool-call cycles.
 
+## Build Profiles
+
+The workspace provides a `ci` build profile for faster CI release builds:
+
+```toml
+[profile.ci]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+```
+
+Thin LTO with 16 codegen units reduces link time by ~2-3x compared to the release profile (fat LTO, 1 codegen unit) while maintaining comparable runtime performance. Production release binaries still use the full `release` profile for maximum optimization.
+
 ## Tokio Runtime
 
 Tokio is imported with explicit features (`macros`, `rt-multi-thread`, `signal`, `sync`) instead of the `full` meta-feature, reducing compile time and binary size.

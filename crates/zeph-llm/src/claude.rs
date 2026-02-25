@@ -254,6 +254,7 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    #[cfg(feature = "schema")]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
@@ -522,6 +523,7 @@ fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
     blocks
 }
 
+#[cfg(feature = "schema")]
 #[derive(Serialize)]
 struct TypedToolRequestBody<'a> {
     model: &'a str,
@@ -533,6 +535,7 @@ struct TypedToolRequestBody<'a> {
     tool_choice: ToolChoice<'a>,
 }
 
+#[cfg(feature = "schema")]
 #[derive(Serialize)]
 struct ToolChoice<'a> {
     r#type: &'a str,

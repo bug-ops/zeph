@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
+- `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
+- `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
+
 ### Changed
 - Moved `TrustLevel` enum to `zeph-tools::trust_level`; `zeph-skills` re-exports it, breaking the `zeph-tools → zeph-skills` reverse dependency (#841)
 - Removed duplicate `ChannelError` from `zeph-channels::error`; all channel adapters use `zeph_core::channel::ChannelError` (#842)
@@ -13,8 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Consolidated Qdrant access in `zeph-index` through `zeph-memory::VectorStore` trait; removed direct `qdrant-client` dependency from `zeph-index` (#844)
 - Added `content_hash(data: &[u8]) -> String` utility in `zeph-core::hash` backed by BLAKE3 (#845)
 - Removed `zeph-core::diff` re-export module; `zeph_core::DiffData` is now a direct re-export of `zeph_tools::executor::DiffData` (#846)
-
-### Changed
+- Extract ContextManager, ToolOrchestrator, LearningEngine from Agent god object into standalone structs with pure delegation (#830, #836, #837, #838)
 - Secret type wraps inner value in `Zeroizing<String>` for memory zeroization on drop; `Clone` removed (#865)
 - AgeVaultProvider secrets HashMap uses `Zeroizing<String>` values (#866)
 - Age private key reads, decrypt plaintext buffer, and encrypt JSON buffer wrapped in `Zeroizing` (#874)

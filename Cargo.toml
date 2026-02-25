@@ -195,6 +195,12 @@ zeph-skills.workspace = true
 [lints]
 workspace = true
 
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = "z"
 lto = true
@@ -204,3 +210,8 @@ panic = "abort"
 
 [profile.bench]
 debug = true
+
+[profile.ci]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

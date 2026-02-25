@@ -3,15 +3,18 @@
 
 mod builder;
 mod context;
+pub(crate) mod context_manager;
 pub mod error;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
+pub(crate) mod learning_engine;
 mod mcp;
 mod message_queue;
 mod persistence;
 mod skill_management;
 mod tool_execution;
+pub(crate) mod tool_orchestrator;
 mod trust_commands;
 mod utils;
 
@@ -40,7 +43,6 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
 use crate::channel::Channel;
 use crate::config::Config;
-use crate::config::LearningConfig;
 use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
@@ -100,13 +102,6 @@ pub(super) struct SkillState {
     pub(super) available_custom_secrets: HashMap<String, Secret>,
 }
 
-pub(super) struct ContextState {
-    pub(super) budget: Option<ContextBudget>,
-    pub(super) compaction_threshold: f32,
-    pub(super) compaction_preserve_tail: usize,
-    pub(super) prune_protect_tokens: usize,
-}
-
 pub(super) struct McpState {
     pub(super) tools: Vec<zeph_mcp::McpTool>,
     pub(super) registry: Option<zeph_mcp::McpToolRegistry>,
@@ -127,12 +122,8 @@ pub(super) struct RuntimeConfig {
     pub(super) security: SecurityConfig,
     pub(super) timeouts: TimeoutConfig,
     pub(super) model_name: String,
-    pub(super) max_tool_iterations: usize,
-    pub(super) summarize_tool_output_enabled: bool,
     pub(super) permission_policy: zeph_tools::PermissionPolicy,
     pub(super) redact_credentials: bool,
-    pub(super) token_safety_margin: f32,
-    pub(super) overflow_config: zeph_tools::OverflowConfig,
 }
 
 pub struct Agent<C: Channel> {
@@ -142,14 +133,14 @@ pub struct Agent<C: Channel> {
     messages: Vec<Message>,
     pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
-    pub(super) context_state: ContextState,
+    pub(super) context_manager: context_manager::ContextManager,
+    pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
+    pub(super) learning_engine: learning_engine::LearningEngine,
     config_path: Option<PathBuf>,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(super) runtime: RuntimeConfig,
-    learning_config: Option<LearningConfig>,
-    reflection_used: bool,
     pub(super) mcp: McpState,
     #[cfg(feature = "index")]
     pub(super) index: IndexState,
@@ -161,7 +152,6 @@ pub struct Agent<C: Channel> {
     /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
     provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
     warmup_ready: Option<watch::Receiver<bool>>,
-    doom_loop_history: Vec<u64>,
     cost_tracker: Option<CostTracker>,
     cached_prompt_tokens: u64,
     pub(crate) token_counter: Arc<TokenCounter>,
@@ -195,6 +185,7 @@ impl<C: Channel> Agent<C> {
 
         let initial_prompt_tokens = u64::try_from(system_prompt.len()).unwrap_or(0) / 4;
         let (_tx, rx) = watch::channel(false);
+        let token_counter = Arc::new(TokenCounter::new());
         Self {
             provider,
             channel,
@@ -230,12 +221,9 @@ impl<C: Channel> Agent<C> {
                 prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
             },
-            context_state: ContextState {
-                budget: None,
-                compaction_threshold: 0.80,
-                compaction_preserve_tail: 6,
-                prune_protect_tokens: 40_000,
-            },
+            context_manager: context_manager::ContextManager::new(Arc::clone(&token_counter)),
+            tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
+            learning_engine: learning_engine::LearningEngine::new(),
             config_path: None,
             config_reload_rx: None,
             shutdown: rx,
@@ -244,15 +232,9 @@ impl<C: Channel> Agent<C> {
                 security: SecurityConfig::default(),
                 timeouts: TimeoutConfig::default(),
                 model_name: String::new(),
-                max_tool_iterations: 10,
-                summarize_tool_output_enabled: false,
                 permission_policy: zeph_tools::PermissionPolicy::default(),
                 redact_credentials: true,
-                token_safety_margin: 1.0,
-                overflow_config: zeph_tools::OverflowConfig::default(),
             },
-            learning_config: None,
-            reflection_used: false,
             mcp: McpState {
                 tools: Vec::new(),
                 registry: None,
@@ -274,10 +256,9 @@ impl<C: Channel> Agent<C> {
             summary_provider: None,
             provider_override: None,
             warmup_ready: None,
-            doom_loop_history: Vec::new(),
             cost_tracker: None,
             cached_prompt_tokens: initial_prompt_tokens,
-            token_counter: Arc::new(TokenCounter::new()),
+            token_counter,
             stt: None,
             update_notify_rx: None,
             subagent_manager: None,
@@ -642,7 +623,7 @@ impl<C: Channel> Agent<C> {
             tracing::warn!("context preparation failed: {e:#}");
         }
 
-        self.reflection_used = false;
+        self.learning_engine.reset_reflection();
 
         let user_msg = if !image_parts.is_empty() && self.provider.supports_vision() {
             let mut parts = vec![zeph_llm::provider::MessagePart::Text { text: text.clone() }];
@@ -972,7 +953,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
         self.runtime.redact_credentials = config.memory.redact_credentials;
-        self.runtime.token_safety_margin = config.memory.token_safety_margin;
+        self.context_manager.token_safety_margin = config.memory.token_safety_margin;
         self.memory_state.history_limit = config.memory.history_limit;
         self.memory_state.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
@@ -980,16 +961,16 @@ impl<C: Channel> Agent<C> {
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
 
         if config.memory.context_budget_tokens > 0 {
-            self.context_state.budget = Some(ContextBudget::new(
+            self.context_manager.budget = Some(ContextBudget::new(
                 config.memory.context_budget_tokens,
                 0.20,
             ));
         } else {
-            self.context_state.budget = None;
+            self.context_manager.budget = None;
         }
-        self.context_state.compaction_threshold = config.memory.compaction_threshold;
-        self.context_state.compaction_preserve_tail = config.memory.compaction_preserve_tail;
-        self.context_state.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.context_manager.compaction_threshold = config.memory.compaction_threshold;
+        self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+        self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.memory_state.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 
@@ -1990,7 +1971,7 @@ pub(super) mod agent_tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_tool_summarization(true);
-        assert!(agent.runtime.summarize_tool_output_enabled);
+        assert!(agent.tool_orchestrator.summarize_tool_output_enabled);
 
         let provider2 = mock_provider(vec![]);
         let channel2 = MockChannel::new(vec![]);
@@ -1999,7 +1980,7 @@ pub(super) mod agent_tests {
 
         let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
             .with_tool_summarization(false);
-        assert!(!agent2.runtime.summarize_tool_output_enabled);
+        assert!(!agent2.tool_orchestrator.summarize_tool_output_enabled);
     }
 
     #[test]

@@ -55,7 +55,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
-        self.runtime.max_tool_iterations = max;
+        self.tool_orchestrator.max_iterations = max;
         self
     }
 
@@ -139,7 +139,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
-        self.learning_config = Some(config);
+        self.learning_engine.config = Some(config);
         self
     }
 
@@ -176,19 +176,19 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_token_safety_margin(mut self, margin: f32) -> Self {
-        self.runtime.token_safety_margin = margin;
+        self.context_manager.token_safety_margin = margin;
         self
     }
 
     #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
-        self.runtime.summarize_tool_output_enabled = enabled;
+        self.tool_orchestrator.summarize_tool_output_enabled = enabled;
         self
     }
 
     #[must_use]
     pub fn with_overflow_config(mut self, config: zeph_tools::OverflowConfig) -> Self {
-        self.runtime.overflow_config = config;
+        self.tool_orchestrator.overflow_config = config;
         self
     }
 
@@ -218,11 +218,11 @@ impl<C: Channel> Agent<C> {
         prune_protect_tokens: usize,
     ) -> Self {
         if budget_tokens > 0 {
-            self.context_state.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
+            self.context_manager.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
         }
-        self.context_state.compaction_threshold = compaction_threshold;
-        self.context_state.compaction_preserve_tail = compaction_preserve_tail;
-        self.context_state.prune_protect_tokens = prune_protect_tokens;
+        self.context_manager.compaction_threshold = compaction_threshold;
+        self.context_manager.compaction_preserve_tail = compaction_preserve_tail;
+        self.context_manager.prune_protect_tokens = prune_protect_tokens;
         self
     }
 
