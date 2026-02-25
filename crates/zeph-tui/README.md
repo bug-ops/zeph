@@ -13,7 +13,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 
 ## Key Modules
 
-- **app** — `App` state machine driving the render/event loop
+- **app** — `App` state machine driving the render/event loop; uses a dirty flag to skip redraws when state is unchanged, reducing idle CPU usage
 - **channel** — `TuiChannel` implementing the `Channel` trait for agent I/O
 - **command_palette** — fuzzy-matching command palette with daemon commands (`daemon:connect`, `daemon:disconnect`, `daemon:status`), action commands (`app:quit`, `app:help`, `session:new`, `app:theme`), and keybinding hints
 - **event** — `AgentEvent`, `AppEvent`, `EventReader` for async event dispatch

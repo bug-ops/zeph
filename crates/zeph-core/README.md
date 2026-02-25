@@ -61,6 +61,8 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `autosave_assistant` | bool | `false` | Persist assistant responses to semantic memory automatically |
 | `autosave_min_length` | usize | `20` | Minimum response length (chars) to trigger autosave |
 | `tool_call_cutoff` | usize | `6` | Max visible tool call/response pairs before oldest is summarized via LLM |
+| `sqlite_pool_size` | u32 | `5` | SQLite connection pool size for memory storage |
+| `response_cache_cleanup_interval_secs` | u64 | `3600` | Interval for expiring stale response cache entries |
 
 ```toml
 [agent]

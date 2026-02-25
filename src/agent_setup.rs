@@ -128,11 +128,14 @@ pub(crate) fn apply_response_cache<C: Channel>(
     let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(pool, ttl_secs));
     let cache_clone = std::sync::Arc::clone(&cache);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
-            if let Err(e) = cache_clone.cleanup_expired().await {
-                tracing::warn!("response cache cleanup failed: {e:#}");
+            match cache_clone.cleanup_expired().await {
+                Ok(n) if n > 0 => tracing::debug!("cleaned up {n} expired cache entries"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("response cache cleanup failed: {e:#}"),
             }
         }
     });

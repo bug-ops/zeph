@@ -84,6 +84,7 @@ pub(super) struct MemoryState {
     pub(super) autosave_assistant: bool,
     pub(super) autosave_min_length: usize,
     pub(super) tool_call_cutoff: usize,
+    pub(super) unsummarized_count: usize,
 }
 
 pub(super) struct SkillState {
@@ -209,6 +210,7 @@ impl<C: Channel> Agent<C> {
                 autosave_assistant: false,
                 autosave_min_length: 20,
                 tool_call_cutoff: 6,
+                unsummarized_count: 0,
             },
             skill_state: SkillState {
                 registry,

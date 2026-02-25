@@ -257,7 +257,7 @@ The TUI adapts to terminal width:
 
 ## Live Metrics
 
-The TUI dashboard displays real-time metrics collected from the agent loop via `tokio::sync::watch` channel. The render loop polls the watch receiver before every frame at 250 ms intervals, so the display updates continuously even without user input.
+The TUI dashboard displays real-time metrics collected from the agent loop via `tokio::sync::watch` channel. The render loop polls the watch receiver before every frame. Frames are only emitted when the dirty flag is set (an event was received since the last draw), so the display does not redraw during idle 250 ms ticks with no activity.
 
 | Panel | Metrics |
 |-------|---------|
@@ -323,6 +323,10 @@ If you send a message before warmup finishes, it is queued and processed automat
 > **Note:** In non-TUI modes (CLI, Telegram), warmup still runs synchronously before the agent loop starts.
 
 ## Performance
+
+### Dirty-Flag Idle Suppression
+
+The render loop tracks a dirty flag that is set whenever a terminal event or agent event is received. Frames are only redrawn when the flag is set — idle 250 ms ticks with no new input or agent activity are skipped entirely. This eliminates redundant redraws during periods of inactivity and reduces idle CPU usage.
 
 ### Event Loop Batching
 

@@ -62,26 +62,32 @@ async fn tui_loop(
 ) -> Result<(), TuiError> {
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dirty = true; // draw on first iteration
 
     loop {
-        app.poll_metrics();
-        terminal.draw(|frame| app.draw(frame))?;
+        if dirty {
+            app.poll_metrics();
+            terminal.draw(|frame| app.draw(frame))?;
 
-        let links = app.take_hyperlinks();
-        if !links.is_empty() {
-            hyperlink::write_osc8(terminal.backend_mut(), &links)?;
+            let links = app.take_hyperlinks();
+            if !links.is_empty() {
+                hyperlink::write_osc8(terminal.backend_mut(), &links)?;
+            }
+            dirty = false;
         }
 
         tokio::select! {
             biased;
             Some(event) = event_rx.recv() => {
                 app.handle_event(event);
+                dirty = true;
             }
             Some(agent_event) = app.poll_agent_event() => {
                 app.handle_agent_event(agent_event);
                 while let Ok(ev) = app.try_recv_agent_event() {
                     app.handle_agent_event(ev);
                 }
+                dirty = true;
             }
             _ = tick.tick() => {}
         }

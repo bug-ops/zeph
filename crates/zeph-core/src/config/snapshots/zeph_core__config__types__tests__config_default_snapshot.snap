@@ -53,6 +53,7 @@ redact_credentials = true
 autosave_assistant = false
 autosave_min_length = 20
 tool_call_cutoff = 6
+sqlite_pool_size = 5
 
 [memory.semantic]
 enabled = true

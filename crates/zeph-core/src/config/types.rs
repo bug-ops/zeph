@@ -487,6 +487,12 @@ pub struct MemoryConfig {
     pub autosave_min_length: usize,
     #[serde(default = "default_tool_call_cutoff")]
     pub tool_call_cutoff: usize,
+    #[serde(default = "default_sqlite_pool_size")]
+    pub sqlite_pool_size: u32,
+}
+
+fn default_sqlite_pool_size() -> u32 {
+    5
 }
 
 fn default_autosave_min_length() -> usize {
@@ -1233,6 +1239,7 @@ impl Default for Config {
                 autosave_assistant: false,
                 autosave_min_length: default_autosave_min_length(),
                 tool_call_cutoff: default_tool_call_cutoff(),
+                sqlite_pool_size: default_sqlite_pool_size(),
             },
             telegram: None,
             discord: None,
@@ -1365,5 +1372,32 @@ mod tests {
         "#;
         let result: Result<ScheduledTaskConfig, _> = toml::from_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn memory_config_sqlite_pool_size_default_is_5() {
+        let config = Config::default();
+        assert_eq!(config.memory.sqlite_pool_size, 5);
+    }
+
+    #[test]
+    fn memory_config_sqlite_pool_size_deserializes_from_toml() {
+        let toml = r#"
+            sqlite_path = "test.db"
+            history_limit = 50
+            sqlite_pool_size = 10
+        "#;
+        let cfg: MemoryConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.sqlite_pool_size, 10);
+    }
+
+    #[test]
+    fn memory_config_sqlite_pool_size_uses_default_when_absent() {
+        let toml = r#"
+            sqlite_path = "test.db"
+            history_limit = 50
+        "#;
+        let cfg: MemoryConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.sqlite_pool_size, 5);
     }
 }

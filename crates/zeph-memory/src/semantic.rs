@@ -197,7 +197,33 @@ impl SemanticMemory {
         vector_weight: f64,
         keyword_weight: f64,
     ) -> Result<Self, MemoryError> {
-        let sqlite = SqliteStore::new(sqlite_path).await?;
+        Self::with_weights_and_pool_size(
+            sqlite_path,
+            qdrant_url,
+            provider,
+            embedding_model,
+            vector_weight,
+            keyword_weight,
+            5,
+        )
+        .await
+    }
+
+    /// Create a new `SemanticMemory` with custom weights and configurable pool size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized.
+    pub async fn with_weights_and_pool_size(
+        sqlite_path: &str,
+        qdrant_url: &str,
+        provider: AnyProvider,
+        embedding_model: &str,
+        vector_weight: f64,
+        keyword_weight: f64,
+        pool_size: u32,
+    ) -> Result<Self, MemoryError> {
+        let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
         let pool = sqlite.pool().clone();
 
         let qdrant = match EmbeddingStore::new(qdrant_url, pool) {
@@ -251,7 +277,31 @@ impl SemanticMemory {
         vector_weight: f64,
         keyword_weight: f64,
     ) -> Result<Self, MemoryError> {
-        let sqlite = SqliteStore::new(sqlite_path).await?;
+        Self::with_sqlite_backend_and_pool_size(
+            sqlite_path,
+            provider,
+            embedding_model,
+            vector_weight,
+            keyword_weight,
+            5,
+        )
+        .await
+    }
+
+    /// Create a `SemanticMemory` using the `SQLite`-embedded vector backend with configurable pool size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized.
+    pub async fn with_sqlite_backend_and_pool_size(
+        sqlite_path: &str,
+        provider: AnyProvider,
+        embedding_model: &str,
+        vector_weight: f64,
+        keyword_weight: f64,
+        pool_size: u32,
+    ) -> Result<Self, MemoryError> {
+        let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
         let pool = sqlite.pool().clone();
         let store = EmbeddingStore::new_sqlite(pool);
 

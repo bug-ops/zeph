@@ -34,6 +34,15 @@ impl SqliteStore {
     ///
     /// Returns an error if the database cannot be opened or migrations fail.
     pub async fn new(path: &str) -> Result<Self, MemoryError> {
+        Self::with_pool_size(path, 5).await
+    }
+
+    /// Open (or create) the `SQLite` database with a configurable connection pool size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database cannot be opened or migrations fail.
+    pub async fn with_pool_size(path: &str, pool_size: u32) -> Result<Self, MemoryError> {
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
@@ -52,7 +61,7 @@ impl SqliteStore {
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(pool_size)
             .connect_with(opts)
             .await?;
 
@@ -105,5 +114,17 @@ mod tests {
         let path = deep.to_str().expect("valid path");
         let _store = SqliteStore::new(path).await.expect("SqliteStore::new");
         assert!(deep.exists(), "database file should exist");
+    }
+
+    #[tokio::test]
+    async fn with_pool_size_accepts_custom_size() {
+        let store = SqliteStore::with_pool_size(":memory:", 2)
+            .await
+            .expect("with_pool_size");
+        // Verify the store is operational with the custom pool size.
+        let _cid = store
+            .create_conversation()
+            .await
+            .expect("create_conversation");
     }
 }

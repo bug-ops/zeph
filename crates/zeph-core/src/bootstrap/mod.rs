@@ -156,23 +156,25 @@ impl AppBuilder {
         let embed_model = self.embedding_model();
         let memory = match self.config.memory.vector_backend {
             crate::config::VectorBackend::Sqlite => {
-                SemanticMemory::with_sqlite_backend(
+                SemanticMemory::with_sqlite_backend_and_pool_size(
                     &self.config.memory.sqlite_path,
                     provider.clone(),
                     &embed_model,
                     self.config.memory.semantic.vector_weight,
                     self.config.memory.semantic.keyword_weight,
+                    self.config.memory.sqlite_pool_size,
                 )
                 .await?
             }
             crate::config::VectorBackend::Qdrant => {
-                SemanticMemory::with_weights(
+                SemanticMemory::with_weights_and_pool_size(
                     &self.config.memory.sqlite_path,
                     &self.config.memory.qdrant_url,
                     provider.clone(),
                     &embed_model,
                     self.config.memory.semantic.vector_weight,
                     self.config.memory.semantic.keyword_weight,
+                    self.config.memory.sqlite_pool_size,
                 )
                 .await?
             }

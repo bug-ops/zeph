@@ -52,12 +52,14 @@ zeph memory import backup.json
 
 ## Response cache
 
-`ResponseCache` deduplicates LLM calls by caching responses in SQLite. Cache keys are computed via blake3 hashing of the prompt content. Entries expire after a configurable TTL (default: 1 hour). A background task runs every 10 minutes to clean up expired entries.
+`ResponseCache` deduplicates LLM calls by caching responses in SQLite. Cache keys are computed via blake3 hashing of the prompt content. Entries expire after a configurable TTL (default: 1 hour). A background task periodically removes expired entries; the interval is controlled by `response_cache_cleanup_interval_secs`.
 
 | Config field | Type | Default | Env override |
 |-------------|------|---------|--------------|
 | `response_cache_enabled` | bool | `false` | `ZEPH_LLM_RESPONSE_CACHE_ENABLED` |
 | `response_cache_ttl_secs` | u64 | `3600` | `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` |
+| `response_cache_cleanup_interval_secs` | u64 | `3600` | — |
+| `sqlite_pool_size` | u32 | `5` | — |
 
 ## Ranking options
 

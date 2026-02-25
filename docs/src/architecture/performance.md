@@ -49,6 +49,14 @@ Migration `015_messages_covering_index.sql` replaces the single-column `conversa
 
 The `load_history_filtered` query uses a CTE to express the base filter before applying ordering and limit, replacing the previous double-sort subquery pattern.
 
+## SQLite Connection Pool
+
+The memory layer opens a pool of SQLite connections (default: 5, configurable via `[memory] sqlite_pool_size`). Pooling eliminates per-operation open/close overhead and allows concurrent readers during write transactions.
+
+## In-Memory Unsummarized Counter
+
+`MemoryState` maintains an in-memory `unsummarized_count` counter that is incremented on each message save. This replaces a `COUNT(*)` SQL query that previously ran on every message persistence call, removing a synchronous DB round-trip from the agent hot path.
+
 ## SQLite WAL Mode
 
 SQLite is opened with WAL (Write-Ahead Logging) mode, enabling concurrent reads during writes and improving throughput for the message persistence hot path.

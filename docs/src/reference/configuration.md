@@ -105,6 +105,8 @@ compaction_preserve_tail = 4   # Keep last N messages during compaction
 prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
 cross_session_score_threshold = 0.35  # Minimum relevance for cross-session results
 vector_backend = "qdrant"     # Vector store: "qdrant" (default) or "sqlite" (embedded)
+sqlite_pool_size = 5          # SQLite connection pool size (default: 5)
+response_cache_cleanup_interval_secs = 3600  # Interval for purging expired LLM response cache entries (default: 3600)
 token_safety_margin = 1.0     # Multiplier for token budget safety margin (default: 1.0)
 redact_credentials = true     # Scrub credential patterns from LLM context (default: true)
 autosave_assistant = false    # Persist assistant responses to SQLite and embed (default: false)
@@ -284,6 +286,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_TOOL_CALL_CUTOFF` | Max visible tool pairs before oldest is summarized (default: 6) |
 | `ZEPH_LLM_RESPONSE_CACHE_ENABLED` | Enable SQLite-backed LLM response cache (default: false) |
 | `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` | Response cache TTL in seconds (default: 3600) |
+| `ZEPH_MEMORY_SQLITE_POOL_SIZE` | SQLite connection pool size (default: 5) |
+| `ZEPH_MEMORY_RESPONSE_CACHE_CLEANUP_INTERVAL_SECS` | Interval for purging expired LLM response cache entries in seconds (default: 3600) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |
 | `ZEPH_MEMORY_RECALL_LIMIT` | Max semantically relevant messages to recall (default: 5) |
 | `ZEPH_MEMORY_SEMANTIC_TEMPORAL_DECAY_ENABLED` | Enable temporal decay scoring (default: false) |

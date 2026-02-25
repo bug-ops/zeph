@@ -131,9 +131,12 @@ Cache identical LLM requests to avoid redundant API calls. The cache is SQLite-b
 [llm]
 response_cache_enabled = true   # Enable response caching (default: false)
 response_cache_ttl_secs = 3600  # Cache entry lifetime in seconds (default: 3600)
+
+[memory]
+response_cache_cleanup_interval_secs = 3600  # Interval for purging expired cache entries (default: 3600)
 ```
 
-A background task runs every 10 minutes to clean up expired entries. Streaming responses bypass the cache entirely — only non-streaming completions are cached.
+A periodic background task purges expired entries. The cleanup interval is configurable via `[memory] response_cache_cleanup_interval_secs` (default: 3600 seconds). Streaming responses bypass the cache entirely — only non-streaming completions are cached.
 
 ## Deep Dives
 

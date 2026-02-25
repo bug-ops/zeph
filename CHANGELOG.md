@@ -19,6 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ClaudeProvider` caches pre-serialized `ToolDefinition` slices as `serde_json::Value`; cache is keyed by tool names and invalidated only when the set changes, eliminating per-call JSON construction overhead (#894)
 
 ### Added
+- `sqlite_pool_size: u32` field in `MemoryConfig` (default 5) — pool size configurable via `[memory] sqlite_pool_size` in config.toml; `SqliteStore::with_pool_size()` wires the value into the connection pool builder (#893)
+- Background `tokio::spawn` cleanup task for `ResponseCache::cleanup_expired()` — interval configurable via `[memory] response_cache_cleanup_interval_secs` (default 3600s), first tick skipped to avoid startup overhead (#891)
+- 6 new unit tests for `unsummarized_count` counter logic and `sqlite_pool_size` config defaults/deserialization
+
+### Changed
+- Removed 4 `channel.send_status()` calls from `persist_message()` in `zeph-core` — each Telegram status update is a blocking API call; SQLite WAL inserts < 1ms don't warrant status reporting (#889)
+- `check_summarization()` no longer issues a `COUNT(*)` SQL query on every message save; replaced with in-memory `unsummarized_count: usize` counter on `MemoryState` — incremented on persist, reset on summarization (#890)
+- `tui_loop()` in `zeph-tui` skips `terminal.draw()` when no events occurred in the 250ms tick — reduces idle CPU usage (#892)
 - `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
 - `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
 - `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
