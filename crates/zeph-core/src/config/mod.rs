@@ -78,6 +78,12 @@ impl Config {
                 "gateway.rate_limit must be > 0".into(),
             ));
         }
+        if self.gateway.max_body_size > 10_485_760 {
+            return Err(ConfigError::Validation(format!(
+                "gateway.max_body_size must be <= 10485760 (10 MiB), got {}",
+                self.gateway.max_body_size
+            )));
+        }
         if self.memory.token_safety_margin <= 0.0 {
             return Err(ConfigError::Validation(format!(
                 "token_safety_margin must be > 0.0, got {}",
