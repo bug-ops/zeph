@@ -115,6 +115,9 @@ zeph-skills = { path = "crates/zeph-skills", version = "0.12.0" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.12.0" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.12.0" }
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"

@@ -928,6 +928,7 @@ mod tests {
         assert_eq!(args.backend, "age");
     }
 
+    #[allow(unsafe_code)]
     #[test]
     fn vault_args_env_overrides_config() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -950,6 +951,7 @@ mod tests {
         assert_eq!(args.vault_path.as_deref(), Some("/tmp/vault"));
     }
 
+    #[allow(unsafe_code)]
     #[test]
     fn vault_args_cli_overrides_env_and_config() {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -967,6 +969,7 @@ mod tests {
         assert_eq!(args.vault_path.as_deref(), Some("/cli/vault"));
     }
 
+    #[allow(unsafe_code)]
     #[test]
     fn vault_args_env_key_and_path_fallback() {
         let config = Config::load(Path::new("/nonexistent")).unwrap();

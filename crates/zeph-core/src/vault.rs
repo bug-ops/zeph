@@ -6,7 +6,7 @@ use std::future::Future;
 use std::io::Write as _;
 use std::pin::Pin;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use std::io::Read as _;
 
@@ -94,7 +94,7 @@ pub enum AgeVaultError {
 }
 
 pub struct AgeVaultProvider {
-    secrets: HashMap<String, Zeroizing<String>>,
+    secrets: BTreeMap<String, Zeroizing<String>>,
     key_path: PathBuf,
     vault_path: PathBuf,
 }
@@ -208,7 +208,7 @@ impl AgeVaultProvider {
         write_private_file(&key_path, key_content.as_bytes())?;
 
         let vault_path = dir.join("secrets.age");
-        let empty: HashMap<String, Zeroizing<String>> = HashMap::new();
+        let empty: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
         let ciphertext = encrypt_secrets(&identity, &empty)?;
         atomic_write(&vault_path, &ciphertext)?;
 
@@ -247,7 +247,7 @@ fn parse_identity(key_str: &str) -> Result<age::x25519::Identity, AgeVaultError>
 fn decrypt_secrets(
     identity: &age::x25519::Identity,
     ciphertext: &[u8],
-) -> Result<HashMap<String, Zeroizing<String>>, AgeVaultError> {
+) -> Result<BTreeMap<String, Zeroizing<String>>, AgeVaultError> {
     let decryptor = age::Decryptor::new(ciphertext).map_err(AgeVaultError::Decrypt)?;
     let mut reader = decryptor
         .decrypt(std::iter::once(identity as &dyn age::Identity))
@@ -256,20 +256,23 @@ fn decrypt_secrets(
     reader
         .read_to_end(&mut plaintext)
         .map_err(AgeVaultError::Io)?;
-    let mut raw: HashMap<String, String> =
+    let raw: BTreeMap<String, String> =
         serde_json::from_slice(&plaintext).map_err(AgeVaultError::Json)?;
-    Ok(raw.drain().map(|(k, v)| (k, Zeroizing::new(v))).collect())
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| (k, Zeroizing::new(v)))
+        .collect())
 }
 
 fn encrypt_secrets(
     identity: &age::x25519::Identity,
-    secrets: &HashMap<String, Zeroizing<String>>,
+    secrets: &BTreeMap<String, Zeroizing<String>>,
 ) -> Result<Vec<u8>, AgeVaultError> {
     let recipient = identity.to_public();
     let encryptor =
         age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
             .map_err(|e| AgeVaultError::Encrypt(e.to_string()))?;
-    let plain: HashMap<&str, &str> = secrets
+    let plain: BTreeMap<&str, &str> = secrets
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
@@ -346,11 +349,11 @@ impl VaultProvider for EnvVaultProvider {
     }
 }
 
-/// Test helper with HashMap-based secret storage.
+/// Test helper with BTreeMap-based secret storage.
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockVaultProvider {
-    secrets: std::collections::HashMap<String, String>,
+    secrets: std::collections::BTreeMap<String, String>,
     /// Keys returned by list_keys() but absent from secrets (simulates get_secret returning None).
     listed_only: Vec<String>,
 }
@@ -421,6 +424,7 @@ mod tests {
         assert_eq!(format!("{secret}"), "[REDACTED]");
     }
 
+    #[allow(unsafe_code)]
     #[tokio::test]
     async fn env_vault_returns_set_var() {
         let key = "ZEPH_TEST_VAULT_SECRET_SET";
@@ -494,6 +498,7 @@ mod tests {
         assert!(vault.list_keys().is_empty());
     }
 
+    #[allow(unsafe_code)]
     #[test]
     fn env_vault_list_keys_filters_zeph_secret_prefix() {
         let key = "ZEPH_SECRET_TEST_LISTKEYS_UNIQUE_9999";

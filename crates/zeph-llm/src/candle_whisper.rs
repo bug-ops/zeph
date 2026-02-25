@@ -62,6 +62,7 @@ impl CandleWhisperProvider {
     /// # Errors
     ///
     /// Returns `LlmError::ModelLoad` if downloading or loading fails.
+    #[allow(unsafe_code)]
     pub fn load(repo_id: &str, device: Option<Device>, language: &str) -> Result<Self, LlmError> {
         let device = device.unwrap_or_else(detect_device);
         tracing::info!(
