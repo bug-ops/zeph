@@ -16,21 +16,14 @@ brew install sccache
 
 ## Configuration
 
-Add the wrapper to your user-level `~/.cargo/config.toml`:
+The workspace ships `.cargo/config.toml` with sccache pre-configured:
 
 ```toml
 [build]
 rustc-wrapper = "sccache"
 ```
 
-Alternatively, export the environment variable:
-
-```bash
-export RUSTC_WRAPPER=sccache
-```
-
-> [!NOTE]
-> The workspace does not ship `.cargo/config.toml` to avoid breaking CI jobs that don't install sccache. Configure it locally or via environment variable.
+If sccache is not installed, Cargo prints a warning and falls back to direct `rustc` invocation. CI jobs that don't need compilation override the wrapper with `RUSTC_WRAPPER=""` (env var takes priority over config file).
 
 ## Verify
 
