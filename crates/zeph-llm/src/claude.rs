@@ -412,16 +412,22 @@ fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>)
     let mut chat = Vec::new();
 
     for msg in messages {
+        if !msg.metadata.agent_visible {
+            continue;
+        }
         match msg.role {
             Role::System => system_parts.push(msg.to_llm_content()),
-            Role::User => chat.push(ApiMessage {
-                role: "user",
-                content: msg.to_llm_content(),
-            }),
-            Role::Assistant => chat.push(ApiMessage {
-                role: "assistant",
-                content: msg.to_llm_content(),
-            }),
+            Role::User | Role::Assistant => {
+                let content = msg.to_llm_content();
+                if !content.trim().is_empty() {
+                    let role = if msg.role == Role::User {
+                        "user"
+                    } else {
+                        "assistant"
+                    };
+                    chat.push(ApiMessage { role, content });
+                }
+            }
         }
     }
 
@@ -627,11 +633,15 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<StructuredApiMessage>) {
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
     for msg in messages {
+        if !msg.metadata.agent_visible {
+            continue;
+        }
         match msg.role {
             Role::System => system_parts.push(msg.to_llm_content()),
             Role::User | Role::Assistant => {
@@ -659,7 +669,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                             | MessagePart::CodeContext { text }
                             | MessagePart::Summary { text }
                             | MessagePart::CrossSession { text } => {
-                                if !text.is_empty() {
+                                if !text.trim().is_empty() {
                                     blocks.push(AnthropicContentBlock::Text { text: text.clone() });
                                 }
                             }
@@ -694,9 +704,11 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                 });
                             }
                             MessagePart::ToolResult { content, .. } => {
-                                blocks.push(AnthropicContentBlock::Text {
-                                    text: content.clone(),
-                                });
+                                if !content.trim().is_empty() {
+                                    blocks.push(AnthropicContentBlock::Text {
+                                        text: content.clone(),
+                                    });
+                                }
                             }
                             MessagePart::Image(img) => {
                                 blocks.push(AnthropicContentBlock::Image {
@@ -714,10 +726,13 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                         content: StructuredContent::Blocks(blocks),
                     });
                 } else {
-                    chat.push(StructuredApiMessage {
-                        role: role.to_owned(),
-                        content: StructuredContent::Text(msg.to_llm_content().to_owned()),
-                    });
+                    let text = msg.to_llm_content();
+                    if !text.trim().is_empty() {
+                        chat.push(StructuredApiMessage {
+                            role: role.to_owned(),
+                            content: StructuredContent::Text(text.to_owned()),
+                        });
+                    }
                 }
             }
         }
