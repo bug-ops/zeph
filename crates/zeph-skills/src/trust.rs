@@ -98,4 +98,48 @@ mod tests {
         let back: SkillSource = serde_json::from_str(&json).unwrap();
         assert_eq!(back, source);
     }
+
+    #[test]
+    fn display_file_source() {
+        let source = SkillSource::File {
+            path: std::path::PathBuf::from("/tmp/my-skill"),
+        };
+        assert_eq!(source.to_string(), "file(/tmp/my-skill)");
+    }
+
+    #[test]
+    fn display_local_source() {
+        assert_eq!(SkillSource::Local.to_string(), "local");
+    }
+
+    #[test]
+    fn compute_hash_missing_skill_md_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // No SKILL.md written — expect IO error
+        let result = compute_skill_hash(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn trust_level_reexport_accessible() {
+        // Ensure TrustLevel re-exported from zeph-tools is usable
+        let level: TrustLevel = TrustLevel::default();
+        assert_eq!(level, TrustLevel::Quarantined);
+        assert!(level.is_active());
+    }
+
+    #[test]
+    fn source_default_is_local() {
+        assert_eq!(SkillSource::default(), SkillSource::Local);
+    }
+
+    #[test]
+    fn source_file_serde_roundtrip() {
+        let source = SkillSource::File {
+            path: std::path::PathBuf::from("/skills/my_skill"),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        let back: SkillSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, source);
+    }
 }

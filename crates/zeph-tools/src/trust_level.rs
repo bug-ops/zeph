@@ -113,4 +113,46 @@ mod tests {
         let back: TrustLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(back, level);
     }
+
+    #[test]
+    fn serde_all_variants() {
+        let cases = [
+            (TrustLevel::Trusted, "\"trusted\""),
+            (TrustLevel::Verified, "\"verified\""),
+            (TrustLevel::Quarantined, "\"quarantined\""),
+            (TrustLevel::Blocked, "\"blocked\""),
+        ];
+        for (level, expected_json) in cases {
+            let json = serde_json::to_string(&level).unwrap();
+            assert_eq!(json, expected_json);
+            let back: TrustLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, level);
+        }
+    }
+
+    #[test]
+    fn min_trust_same_level_returns_self() {
+        assert_eq!(
+            TrustLevel::Verified.min_trust(TrustLevel::Verified),
+            TrustLevel::Verified
+        );
+        assert_eq!(
+            TrustLevel::Blocked.min_trust(TrustLevel::Blocked),
+            TrustLevel::Blocked
+        );
+    }
+
+    #[test]
+    fn hash_consistent() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(TrustLevel::Trusted);
+        set.insert(TrustLevel::Verified);
+        set.insert(TrustLevel::Quarantined);
+        set.insert(TrustLevel::Blocked);
+        assert_eq!(set.len(), 4);
+        // Inserting same value again does not grow the set
+        set.insert(TrustLevel::Trusted);
+        assert_eq!(set.len(), 4);
+    }
 }

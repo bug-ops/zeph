@@ -247,6 +247,78 @@ impl SearchHit {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use zeph_memory::ScoredVectorPoint;
+
+    fn make_scored_point(payload: serde_json::Value, score: f32) -> ScoredVectorPoint {
+        let map = match payload {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => std::collections::HashMap::new(),
+        };
+        ScoredVectorPoint {
+            id: "test-id".to_string(),
+            score,
+            payload: map,
+        }
+    }
+
+    #[test]
+    fn search_hit_from_payload_full() {
+        let point = make_scored_point(
+            serde_json::json!({
+                "code": "fn foo() {}",
+                "file_path": "src/lib.rs",
+                "line_start": 10,
+                "line_end": 12,
+                "node_type": "function_item",
+                "entity_name": "foo",
+                "scope_chain": "mod::foo"
+            }),
+            0.9,
+        );
+        let hit = SearchHit::from_payload(&point).unwrap();
+        assert_eq!(hit.code, "fn foo() {}");
+        assert_eq!(hit.file_path, "src/lib.rs");
+        assert_eq!(hit.line_range, (10, 12));
+        assert!((hit.score - 0.9).abs() < f32::EPSILON);
+        assert_eq!(hit.node_type, "function_item");
+        assert_eq!(hit.entity_name, Some("foo".to_string()));
+        assert_eq!(hit.scope_chain, "mod::foo");
+    }
+
+    #[test]
+    fn search_hit_from_payload_no_entity_name() {
+        let point = make_scored_point(
+            serde_json::json!({
+                "code": "struct Bar {}",
+                "file_path": "src/bar.rs",
+                "line_start": 1,
+                "line_end": 3,
+                "node_type": "struct_item",
+                "scope_chain": ""
+            }),
+            0.7,
+        );
+        let hit = SearchHit::from_payload(&point).unwrap();
+        assert!(hit.entity_name.is_none());
+        assert_eq!(hit.node_type, "struct_item");
+    }
+
+    #[test]
+    fn search_hit_from_payload_missing_required_field_returns_none() {
+        // Missing "code" field — should return None
+        let point = make_scored_point(
+            serde_json::json!({
+                "file_path": "src/lib.rs",
+                "line_start": 1,
+                "line_end": 2,
+                "node_type": "function_item"
+            }),
+            0.5,
+        );
+        assert!(SearchHit::from_payload(&point).is_none());
+    }
+
     async fn setup_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         zeph_memory::sqlite::SqliteStore::run_migrations(&pool)
