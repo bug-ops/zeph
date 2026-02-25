@@ -83,6 +83,10 @@ confirm_patterns = [
     "truncate ",
     "$(",
     "`",
+    "<(",
+    ">(",
+    "<<<",
+    "eval ",
 ]
 
 [tools.scrape]

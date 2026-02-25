@@ -10,6 +10,7 @@ Execute any shell command via the `bash` tool. Commands are sandboxed:
 - **Network control**: block `curl`, `wget`, `nc` with `allow_network = false`
 - **Confirmation**: destructive commands (`rm`, `git push -f`, `drop table`) require a y/N prompt
 - **Output filtering**: test results, git diffs, and clippy output are automatically stripped of noise to reduce token usage
+- **Detection limits**: indirect execution via process substitution, here-strings, `eval`, or variable expansion bypasses blocked-command detection; these patterns trigger a confirmation prompt instead
 
 ## File Operations
 

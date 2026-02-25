@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Gateway webhook payload: per-field length limits (sender/channel <= 256 bytes, body <= 65536 bytes) and ASCII control char stripping to prevent prompt injection (#868)
 - ACP permission cache: null bytes stripped from tool names before cache key construction to prevent key collision (#872)
 - Config validation: `gateway.max_body_size` bounded to 10 MiB (10485760 bytes) to prevent memory exhaustion (#875)
+- Shell sandbox: added `<(`, `>(`, `<<<`, `eval ` to default `confirm_patterns` to mitigate process substitution, here-string, and eval bypass vectors; documented known `find_blocked_command` limitations (#870)
 
 ### Added
 - `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
