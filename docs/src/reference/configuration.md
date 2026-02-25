@@ -129,7 +129,7 @@ blocked_commands = []
 allowed_commands = []
 allowed_paths = []          # Directories shell can access (empty = cwd only)
 allow_network = true        # false blocks curl/wget/nc
-confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate ", "$(", "`", "<(", ">(", "<<<", "eval "]
 
 [tools.file]
 allowed_paths = []          # Directories file tools can access (empty = cwd only)

