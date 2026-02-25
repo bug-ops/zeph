@@ -200,6 +200,53 @@ impl QdrantOps {
         Ok(result)
     }
 
+    /// Create a collection with scalar INT8 quantization if it does not exist,
+    /// then create keyword indexes for the given fields.
+    ///
+    /// Idempotent: no-op if the collection already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any Qdrant operation fails.
+    pub async fn ensure_collection_with_quantization(
+        &self,
+        collection: &str,
+        vector_size: u64,
+        keyword_fields: &[&str],
+    ) -> Result<(), crate::VectorStoreError> {
+        use qdrant_client::qdrant::{
+            CreateFieldIndexCollectionBuilder, FieldType, ScalarQuantizationBuilder,
+        };
+        if self
+            .client
+            .collection_exists(collection)
+            .await
+            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?
+        {
+            return Ok(());
+        }
+        self.client
+            .create_collection(
+                CreateCollectionBuilder::new(collection)
+                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
+                    .quantization_config(ScalarQuantizationBuilder::default()),
+            )
+            .await
+            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+
+        for field in keyword_fields {
+            self.client
+                .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                    collection,
+                    *field,
+                    FieldType::Keyword,
+                ))
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Convert a JSON value to a Qdrant payload map.
     ///
     /// # Errors

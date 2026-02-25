@@ -6,8 +6,6 @@
 use std::fmt::Write;
 use std::sync::Arc;
 
-use qdrant_client::qdrant::{Condition, Filter};
-
 use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
 use zeph_llm::any::AnyProvider;
@@ -90,7 +88,9 @@ impl CodeRetriever {
                 strategy,
             }),
             RetrievalStrategy::Semantic | RetrievalStrategy::Hybrid => {
-                let chunks = self.semantic_search(query, token_budget, None).await?;
+                let chunks = self
+                    .semantic_search(query, token_budget, None::<String>)
+                    .await?;
                 let total_tokens: usize = chunks
                     .iter()
                     .map(|c| self.token_counter.count_tokens(&c.code) + 20)
@@ -119,10 +119,8 @@ impl CodeRetriever {
 
         let token_budget = budget_tokens(available_tokens, self.config.budget_ratio);
 
-        let filter = Filter::must(vec![Condition::matches("language", language.to_string())]);
-
         let chunks = self
-            .semantic_search(query, token_budget, Some(filter))
+            .semantic_search(query, token_budget, Some(language.to_string()))
             .await?;
         let total_tokens: usize = chunks
             .iter()
@@ -140,13 +138,13 @@ impl CodeRetriever {
         &self,
         query: &str,
         token_budget: usize,
-        filter: Option<Filter>,
+        language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
         let query_vector = self.provider.embed(query).await?;
 
         let mut hits = self
             .store
-            .search(query_vector, self.config.max_chunks, filter)
+            .search(query_vector, self.config.max_chunks, language_filter)
             .await?;
 
         hits.retain(|h| h.score >= self.config.score_threshold);

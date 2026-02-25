@@ -16,6 +16,7 @@ pub mod registry;
 pub mod scrape;
 pub mod shell;
 pub mod trust_gate;
+pub mod trust_level;
 
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
@@ -38,3 +39,4 @@ pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
 pub use shell::ShellExecutor;
 pub use trust_gate::TrustGateExecutor;
+pub use trust_level::TrustLevel;
