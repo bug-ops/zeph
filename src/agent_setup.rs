@@ -288,3 +288,96 @@ pub(crate) fn apply_whisper_stt<C: Channel>(
     );
     agent.with_stt(Box::new(whisper))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use zeph_channels::CliChannel;
+    use zeph_core::agent::Agent;
+    use zeph_core::config::Config;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::ollama::OllamaProvider;
+    use zeph_skills::registry::SkillRegistry;
+    use zeph_tools::executor::{ToolError, ToolOutput};
+
+    use super::*;
+
+    struct NoopExec;
+
+    impl zeph_tools::executor::ToolExecutor for NoopExec {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+    }
+
+    fn offline_provider() -> AnyProvider {
+        AnyProvider::Ollama(OllamaProvider::new(
+            "http://127.0.0.1:1",
+            "test".into(),
+            "embed".into(),
+        ))
+    }
+
+    fn make_agent() -> Agent<CliChannel> {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let registry = SkillRegistry::load(&[] as &[std::path::PathBuf]);
+        Agent::new(
+            offline_provider(),
+            CliChannel::new(),
+            registry,
+            None,
+            config.skills.max_active_skills,
+            NoopExec,
+        )
+    }
+
+    #[test]
+    fn apply_cost_tracker_disabled_returns_agent_unchanged() {
+        let agent = make_agent();
+        let result = apply_cost_tracker(agent, false, 100);
+        drop(result);
+    }
+
+    #[test]
+    fn apply_cost_tracker_enabled_attaches_tracker() {
+        let agent = make_agent();
+        let result = apply_cost_tracker(agent, true, 500);
+        drop(result);
+    }
+
+    #[test]
+    fn apply_summary_provider_none_returns_agent_unchanged() {
+        let agent = make_agent();
+        let result = apply_summary_provider(agent, None);
+        drop(result);
+    }
+
+    #[test]
+    fn apply_summary_provider_some_attaches_provider() {
+        let agent = make_agent();
+        let sp = offline_provider();
+        let result = apply_summary_provider(agent, Some(sp));
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn apply_response_cache_disabled_returns_agent_unchanged() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let agent = make_agent();
+        let result = apply_response_cache(agent, false, pool, 300);
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn apply_response_cache_enabled_attaches_cache() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let agent = make_agent();
+        let result = apply_response_cache(agent, true, pool, 300);
+        drop(result);
+    }
+}

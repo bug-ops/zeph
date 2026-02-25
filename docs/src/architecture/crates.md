@@ -2,11 +2,34 @@
 
 Each workspace crate has a focused responsibility. All leaf crates are independent and testable in isolation; only `zeph-core` depends on other workspace members.
 
+## zeph (binary)
+
+Thin entry point (26 LOC `main.rs`) that delegates all work to focused submodules:
+
+- `runner.rs` — top-level dispatch: reads CLI flags, selects mode (ACP, TUI, CLI, daemon), and drives the `AnyChannel` loop
+- `agent_setup.rs` — composes the `ToolExecutor` chain, initialises the MCP manager, and wires feature-gated extensions (code index, candle-stt, whisper-stt, response cache, cost tracker, summary provider)
+- `tracing_init.rs` — configures the `tracing-subscriber` stack (env filter, JSON/pretty format)
+- `tui_bridge.rs` — TUI event forwarding and TUI session runner
+- `channel.rs` — constructs the runtime `AnyChannel` and CLI history builder
+- `cli.rs` — clap argument definitions
+- `acp.rs` — ACP server/client startup logic
+- `daemon.rs` — daemon mode bootstrap
+- `scheduler.rs` — scheduler bootstrap
+- `commands/` — subcommand handlers for `vault`, `skill`, and `memory` management
+- `tests.rs` — unit tests for the binary crate
+
 ## zeph-core
 
 Agent loop, bootstrap orchestration, configuration loading, and context builder.
 
-- `AppBuilder` — bootstrap orchestrator in `zeph-core::bootstrap`: `from_env()` config/vault resolution, `build_provider()` with health check, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
+- `AppBuilder` — bootstrap orchestrator in `zeph-core::bootstrap/`, decomposed into:
+  - `mod.rs` (278 LOC) — `AppBuilder` struct and orchestration entry points: `from_env()`, `build_provider()` with health check, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
+  - `config.rs` — config file resolution and vault argument parsing
+  - `health.rs` — health check and provider warmup logic
+  - `mcp.rs` — MCP manager and Qdrant tool registry creation
+  - `provider.rs` — provider factory functions
+  - `skills.rs` — skill matcher and embedding model helpers
+  - `tests.rs` — unit tests for bootstrap logic
 - `Agent<C>` — main agent loop generic over channel only. Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch (no `T` generic). Provider is resolved at construction time (`AnyProvider` enum dispatch, no `P` generic). Streaming support, message queue drain, configurable `max_tool_iterations` (default 10), doom-loop detection via content hash, and context budget check (stops at 80% threshold). Internal state is grouped into five domain structs (`MemoryState`, `SkillState`, `ContextState`, `McpState`, `IndexState`); logic is decomposed into `streaming.rs` and `persistence.rs` submodules
 - `AgentError` — typed error enum covering LLM, memory, channel, tool, context, and I/O failures (replaces prior `anyhow` usage)
 - `Config` — TOML config loading with env var overrides

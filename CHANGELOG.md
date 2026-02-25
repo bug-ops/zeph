@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- Split 3177-line `src/main.rs` into focused modules: `runner.rs` (dispatch), `agent_setup.rs` (tool/MCP/feature setup), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
+- Split 1791-line `crates/zeph-core/src/bootstrap.rs` into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
 - Secret type wraps inner value in `Zeroizing<String>` for memory zeroization on drop; `Clone` removed (#865)
 - AgeVaultProvider secrets HashMap uses `Zeroizing<String>` values (#866)
 - Age private key reads, decrypt plaintext buffer, and encrypt JSON buffer wrapped in `Zeroizing` (#874)
