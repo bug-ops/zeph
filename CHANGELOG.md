@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACP permission cache: null bytes stripped from tool names before cache key construction to prevent key collision (#872)
 - Config validation: `gateway.max_body_size` bounded to 10 MiB (10485760 bytes) to prevent memory exhaustion (#875)
 
+### Performance
+- `ClaudeProvider` caches pre-serialized `ToolDefinition` slices as `serde_json::Value`; cache is keyed by tool names and invalidated only when the set changes, eliminating per-call JSON construction overhead (#894)
+
 ### Added
 - `.cargo/config.toml` with sccache `rustc-wrapper` for workspace build caching (#877)
 - `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
