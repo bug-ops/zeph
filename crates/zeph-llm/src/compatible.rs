@@ -82,6 +82,7 @@ impl LlmProvider for CompatibleProvider {
         self.inner.supports_structured_output()
     }
 
+    #[cfg(feature = "schema")]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,

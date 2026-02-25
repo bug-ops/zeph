@@ -3,7 +3,8 @@
 
 use crate::provider::{Message, Role};
 
-#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ModelSelection {
     pub model: String,
     pub reason: String,
