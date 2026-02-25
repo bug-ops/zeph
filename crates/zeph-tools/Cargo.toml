@@ -36,6 +36,7 @@ proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

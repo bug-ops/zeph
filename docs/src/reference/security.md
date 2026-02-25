@@ -256,6 +256,48 @@ WARN zeph_gateway: Gateway started without auth_token — endpoint is unauthenti
 
 **Recommendation:** Always set `auth_token` when binding to a non-loopback interface. Use the [Age Vault](security.md#age-vault) to store the token rather than embedding it in plain text in `config.toml`.
 
+## SSRF Protection for Web Scraping
+
+`WebScrapeExecutor` defends against Server-Side Request Forgery (SSRF) at every stage of a request, including multi-hop redirect chains.
+
+### URL Validation
+
+Before any network connection is made, `validate_url` checks:
+
+- **HTTPS only:** HTTP, `file://`, `javascript:`, `data:`, and all other schemes are rejected with `ToolError::Blocked`.
+- **Private hostnames:** The following hostname patterns are blocked regardless of DNS resolution:
+  - `localhost` and `*.localhost` subdomains
+  - `*.internal` TLD (cloud/Kubernetes internal DNS)
+  - `*.local` TLD (mDNS/Bonjour)
+  - IPv4 literals in RFC 1918 ranges (`10.x.x.x`, `172.16–31.x.x`, `192.168.x.x`)
+  - IPv4 link-local (`169.254.x.x`), loopback (`127.x.x.x`), unspecified (`0.0.0.0`), and broadcast (`255.255.255.255`)
+  - IPv6 loopback (`::1`), link-local (`fe80::/10`), unique-local (`fc00::/7`), and unspecified (`::`)
+  - IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) — the inner IPv4 is checked against all private ranges above
+
+### DNS Rebinding Prevention
+
+After URL validation, `resolve_and_validate` performs a DNS lookup and checks every returned IP address against the same private-range rules. The validated socket addresses are then pinned to the `reqwest` client via `resolve_to_addrs`, eliminating the TOCTOU window between DNS validation and the actual TCP connection.
+
+If DNS resolves to a private IP, the request is rejected with:
+
+```
+ToolError::Blocked { command: "SSRF protection: private IP <ip> for host <host>" }
+```
+
+### Redirect Chain Defense
+
+`WebScrapeExecutor` disables `reqwest`'s automatic redirect following (`redirect::Policy::none()`). Redirects are followed manually, up to a limit of **3 hops**. For every redirect:
+
+1. The `Location` header value is extracted.
+2. Relative URLs are resolved against the current request URL.
+3. `validate_url` runs on the resolved target — blocking private hostnames and non-HTTPS schemes.
+4. `resolve_and_validate` runs on the target — blocking DNS-based rebinding.
+5. A new `reqwest` client is built, pinned to the validated addresses for the next hop.
+
+This prevents the classic "open redirect to internal service" SSRF bypass: even if the initial URL passes validation, a redirect to `https://169.254.169.254/` (AWS metadata endpoint) or `https://10.0.0.1/` is blocked before the connection is made.
+
+If more than 3 redirects occur, the request fails with `ToolError::Execution("too many redirects")`.
+
 ## A2A Network Security
 
 - **TLS enforcement:** `a2a.require_tls = true` rejects HTTP endpoints (HTTPS only)

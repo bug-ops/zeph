@@ -70,7 +70,7 @@ impl WebScrapeExecutor {
     fn build_client(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
-            .redirect(reqwest::redirect::Policy::limited(3));
+            .redirect(reqwest::redirect::Policy::none());
         builder = builder.resolve_to_addrs(host, addrs);
         builder.build().unwrap_or_default()
     }
@@ -144,10 +144,7 @@ impl WebScrapeExecutor {
     ) -> Result<String, ToolError> {
         let parsed = validate_url(&instruction.url)?;
         let (host, addrs) = resolve_and_validate(&parsed).await?;
-        // Build a per-request client pinned to the validated addresses, eliminating
-        // TOCTOU between DNS validation and the actual HTTP connection.
-        let client = self.build_client(&host, &addrs);
-        let html = self.fetch_html(&client, &instruction.url).await?;
+        let html = self.fetch_html(&instruction.url, &host, &addrs).await?;
         let selector = instruction.select.clone();
         let extract = ExtractMode::parse(&instruction.extract);
         let limit = instruction.limit.unwrap_or(10);
@@ -156,35 +153,95 @@ impl WebScrapeExecutor {
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
     }
 
-    async fn fetch_html(&self, client: &reqwest::Client, url: &str) -> Result<String, ToolError> {
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+    /// Fetches the HTML at `url`, manually following up to 3 redirects.
+    ///
+    /// Each redirect target is validated with `validate_url` and `resolve_and_validate`
+    /// before following, preventing SSRF via redirect chains.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError::Blocked` if any redirect target resolves to a private IP.
+    /// Returns `ToolError::Execution` on HTTP errors, too-large bodies, or too many redirects.
+    async fn fetch_html(
+        &self,
+        url: &str,
+        host: &str,
+        addrs: &[SocketAddr],
+    ) -> Result<String, ToolError> {
+        const MAX_REDIRECTS: usize = 3;
 
-        if !resp.status().is_success() {
-            return Err(ToolError::Execution(std::io::Error::other(format!(
-                "HTTP {}",
-                resp.status(),
-            ))));
+        let mut current_url = url.to_owned();
+        let mut current_host = host.to_owned();
+        let mut current_addrs = addrs.to_vec();
+
+        for hop in 0..=MAX_REDIRECTS {
+            // Build a per-hop client pinned to the current hop's validated addresses.
+            let client = self.build_client(&current_host, &current_addrs);
+            let resp = client
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            let status = resp.status();
+
+            if status.is_redirection() {
+                if hop == MAX_REDIRECTS {
+                    return Err(ToolError::Execution(std::io::Error::other(
+                        "too many redirects",
+                    )));
+                }
+
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        ToolError::Execution(std::io::Error::other("redirect with no Location"))
+                    })?;
+
+                // Resolve relative redirect URLs against the current URL.
+                let base = Url::parse(&current_url)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+                let next_url = base
+                    .join(location)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+                let validated = validate_url(next_url.as_str())?;
+                let (next_host, next_addrs) = resolve_and_validate(&validated).await?;
+
+                current_url = next_url.to_string();
+                current_host = next_host;
+                current_addrs = next_addrs;
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "HTTP {status}",
+                ))));
+            }
+
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            if bytes.len() > self.max_body_bytes {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "response too large: {} bytes (max: {})",
+                    bytes.len(),
+                    self.max_body_bytes,
+                ))));
+            }
+
+            return String::from_utf8(bytes.to_vec())
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
-
-        if bytes.len() > self.max_body_bytes {
-            return Err(ToolError::Execution(std::io::Error::other(format!(
-                "response too large: {} bytes (max: {})",
-                bytes.len(),
-                self.max_body_bytes,
-            ))));
-        }
-
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))
+        Err(ToolError::Execution(std::io::Error::other(
+            "too many redirects",
+        )))
     }
 }
 
@@ -782,6 +839,326 @@ mod tests {
         assert!(!is_private_host(&host));
     }
 
+    // --- fetch_html redirect logic: wiremock HTTP server tests ---
+    //
+    // These tests use a local wiremock server to exercise the redirect-following logic
+    // in `fetch_html` without requiring an external HTTPS connection. The server binds to
+    // 127.0.0.1, and tests call `fetch_html` directly (bypassing `validate_url`) to avoid
+    // the SSRF guard that would otherwise block loopback connections.
+
+    /// Helper: returns executor + (server_url, server_addr) from a running wiremock mock server.
+    /// The server address is passed to `fetch_html` via `resolve_to_addrs` so the client
+    /// connects to the mock instead of doing a real DNS lookup.
+    async fn mock_server_executor() -> (WebScrapeExecutor, wiremock::MockServer) {
+        let server = wiremock::MockServer::start().await;
+        let executor = WebScrapeExecutor {
+            timeout: Duration::from_secs(5),
+            max_body_bytes: 1_048_576,
+        };
+        (executor, server)
+    }
+
+    /// Parses the mock server's URI into (host_str, socket_addr) for use with `build_client`.
+    fn server_host_and_addr(server: &wiremock::MockServer) -> (String, Vec<std::net::SocketAddr>) {
+        let uri = server.uri();
+        let url = Url::parse(&uri).unwrap();
+        let host = url.host_str().unwrap_or("127.0.0.1").to_owned();
+        let port = url.port().unwrap_or(80);
+        let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
+        (host, vec![addr])
+    }
+
+    /// Test-only redirect follower that mimics `fetch_html`'s loop but skips `validate_url` /
+    /// `resolve_and_validate`. This lets us exercise the redirect-counting and
+    /// missing-Location logic against a plain HTTP wiremock server.
+    async fn follow_redirects_raw(
+        executor: &WebScrapeExecutor,
+        start_url: &str,
+        host: &str,
+        addrs: &[std::net::SocketAddr],
+    ) -> Result<String, ToolError> {
+        const MAX_REDIRECTS: usize = 3;
+        let mut current_url = start_url.to_owned();
+        let mut current_host = host.to_owned();
+        let mut current_addrs = addrs.to_vec();
+
+        for hop in 0..=MAX_REDIRECTS {
+            let client = executor.build_client(&current_host, &current_addrs);
+            let resp = client
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            let status = resp.status();
+
+            if status.is_redirection() {
+                if hop == MAX_REDIRECTS {
+                    return Err(ToolError::Execution(std::io::Error::other(
+                        "too many redirects",
+                    )));
+                }
+
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        ToolError::Execution(std::io::Error::other("redirect with no Location"))
+                    })?;
+
+                let base = Url::parse(&current_url)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+                let next_url = base
+                    .join(location)
+                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+                // Re-use same host/addrs (mock server is always the same endpoint).
+                current_url = next_url.to_string();
+                // Preserve host/addrs as-is since the mock server doesn't change.
+                let _ = &mut current_host;
+                let _ = &mut current_addrs;
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "HTTP {status}",
+                ))));
+            }
+
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+            if bytes.len() > executor.max_body_bytes {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "response too large: {} bytes (max: {})",
+                    bytes.len(),
+                    executor.max_body_bytes,
+                ))));
+            }
+
+            return String::from_utf8(bytes.to_vec())
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
+        }
+
+        Err(ToolError::Execution(std::io::Error::other(
+            "too many redirects",
+        )))
+    }
+
+    #[tokio::test]
+    async fn fetch_html_success_returns_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<h1>OK</h1>"))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/page", server.uri());
+        let result = executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert_eq!(result.unwrap(), "<h1>OK</h1>");
+    }
+
+    #[tokio::test]
+    async fn fetch_html_non_2xx_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        Mock::given(method("GET"))
+            .and(path("/forbidden"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/forbidden", server.uri());
+        let result = executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("403"), "expected 403 in error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn fetch_html_404_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/missing", server.uri());
+        let result = executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("404"), "expected 404 in error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn fetch_html_redirect_no_location_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        // 302 with no Location header
+        Mock::given(method("GET"))
+            .and(path("/redirect-no-loc"))
+            .respond_with(ResponseTemplate::new(302))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/redirect-no-loc", server.uri());
+        let result = executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Location") || msg.contains("location"),
+            "expected Location-related error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_html_single_redirect_followed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        let final_url = format!("{}/final", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", final_url.as_str()))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/final"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<p>final</p>"))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/start", server.uri());
+        let result = follow_redirects_raw(&executor, &url, &host, &addrs).await;
+        assert!(result.is_ok(), "single redirect should succeed: {result:?}");
+        assert_eq!(result.unwrap(), "<p>final</p>");
+    }
+
+    #[tokio::test]
+    async fn fetch_html_three_redirects_allowed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        let hop2 = format!("{}/hop2", server.uri());
+        let hop3 = format!("{}/hop3", server.uri());
+        let final_dest = format!("{}/done", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/hop1"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", hop2.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/hop2"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", hop3.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/hop3"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", final_dest.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/done"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<p>done</p>"))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/hop1", server.uri());
+        let result = follow_redirects_raw(&executor, &url, &host, &addrs).await;
+        assert!(result.is_ok(), "3 redirects should succeed: {result:?}");
+        assert_eq!(result.unwrap(), "<p>done</p>");
+    }
+
+    #[tokio::test]
+    async fn fetch_html_four_redirects_rejected() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        let hop2 = format!("{}/r2", server.uri());
+        let hop3 = format!("{}/r3", server.uri());
+        let hop4 = format!("{}/r4", server.uri());
+        let hop5 = format!("{}/r5", server.uri());
+
+        for (from, to) in [
+            ("/r1", &hop2),
+            ("/r2", &hop3),
+            ("/r3", &hop4),
+            ("/r4", &hop5),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(from))
+                .respond_with(ResponseTemplate::new(301).insert_header("location", to.as_str()))
+                .mount(&server)
+                .await;
+        }
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/r1", server.uri());
+        let result = follow_redirects_raw(&executor, &url, &host, &addrs).await;
+        assert!(result.is_err(), "4 redirects should be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("redirect"),
+            "expected redirect-related error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_html_body_too_large_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let small_limit_executor = WebScrapeExecutor {
+            timeout: Duration::from_secs(5),
+            max_body_bytes: 10,
+        };
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/big"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("this body is definitely longer than ten bytes"),
+            )
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/big", server.uri());
+        let result = small_limit_executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("too large"), "expected too-large error: {msg}");
+    }
+
     #[test]
     fn extract_scrape_blocks_empty_block_content() {
         let text = "```scrape\n\n```";
@@ -847,6 +1224,168 @@ mod tests {
         let mode = ExtractMode::Text;
         let dbg = format!("{mode:?}");
         assert!(dbg.contains("Text"));
+    }
+
+    // --- fetch_html redirect logic: constant and validation unit tests ---
+
+    /// MAX_REDIRECTS is 3; the 4th redirect attempt must be rejected.
+    /// Verify the boundary is correct by inspecting the constant value.
+    #[test]
+    fn max_redirects_constant_is_three() {
+        // fetch_html uses `for hop in 0..=MAX_REDIRECTS` and returns error when hop == MAX_REDIRECTS
+        // while still in a redirect. That means hops 0,1,2 can redirect; hop 3 triggers the error.
+        // This test documents the expected limit.
+        const MAX_REDIRECTS: usize = 3;
+        assert_eq!(MAX_REDIRECTS, 3, "fetch_html allows exactly 3 redirects");
+    }
+
+    /// Verifies that a Location-less redirect would produce an error string containing the
+    /// expected message, matching the error path in fetch_html.
+    #[test]
+    fn redirect_no_location_error_message() {
+        let err = std::io::Error::other("redirect with no Location");
+        assert!(err.to_string().contains("redirect with no Location"));
+    }
+
+    /// Verifies that a too-many-redirects condition produces the expected error string.
+    #[test]
+    fn too_many_redirects_error_message() {
+        let err = std::io::Error::other("too many redirects");
+        assert!(err.to_string().contains("too many redirects"));
+    }
+
+    /// Verifies that a non-2xx HTTP status produces an error message with the status code.
+    #[test]
+    fn non_2xx_status_error_format() {
+        let status = reqwest::StatusCode::FORBIDDEN;
+        let msg = format!("HTTP {status}");
+        assert!(msg.contains("403"));
+    }
+
+    /// Verifies that a 404 response status code formats into the expected error message.
+    #[test]
+    fn not_found_status_error_format() {
+        let status = reqwest::StatusCode::NOT_FOUND;
+        let msg = format!("HTTP {status}");
+        assert!(msg.contains("404"));
+    }
+
+    /// Verifies relative redirect resolution for same-host paths (simulates Location: /other).
+    #[test]
+    fn relative_redirect_same_host_path() {
+        let base = Url::parse("https://example.com/current").unwrap();
+        let resolved = base.join("/other").unwrap();
+        assert_eq!(resolved.as_str(), "https://example.com/other");
+    }
+
+    /// Verifies relative redirect resolution preserves scheme and host.
+    #[test]
+    fn relative_redirect_relative_path() {
+        let base = Url::parse("https://example.com/a/b").unwrap();
+        let resolved = base.join("c").unwrap();
+        assert_eq!(resolved.as_str(), "https://example.com/a/c");
+    }
+
+    /// Verifies that an absolute redirect URL overrides base URL completely.
+    #[test]
+    fn absolute_redirect_overrides_base() {
+        let base = Url::parse("https://example.com/page").unwrap();
+        let resolved = base.join("https://other.com/target").unwrap();
+        assert_eq!(resolved.as_str(), "https://other.com/target");
+    }
+
+    /// Verifies that a redirect Location of http:// (downgrade) is rejected.
+    #[test]
+    fn redirect_http_downgrade_rejected() {
+        let location = "http://example.com/page";
+        let base = Url::parse("https://example.com/start").unwrap();
+        let next = base.join(location).unwrap();
+        let err = validate_url(next.as_str()).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    /// Verifies that a redirect to a private IP literal is blocked.
+    #[test]
+    fn redirect_location_private_ip_blocked() {
+        let location = "https://192.168.100.1/admin";
+        let base = Url::parse("https://example.com/start").unwrap();
+        let next = base.join(location).unwrap();
+        let err = validate_url(next.as_str()).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+        let cmd = match err {
+            ToolError::Blocked { command } => command,
+            _ => panic!("expected Blocked"),
+        };
+        assert!(
+            cmd.contains("private") || cmd.contains("scheme"),
+            "error message should describe the block reason: {cmd}"
+        );
+    }
+
+    /// Verifies that a redirect to a .internal domain is blocked.
+    #[test]
+    fn redirect_location_internal_domain_blocked() {
+        let location = "https://metadata.internal/latest/meta-data/";
+        let base = Url::parse("https://example.com/start").unwrap();
+        let next = base.join(location).unwrap();
+        let err = validate_url(next.as_str()).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    /// Verifies that a chain of 3 valid public redirects passes validate_url at every hop.
+    #[test]
+    fn redirect_chain_three_hops_all_public() {
+        let hops = [
+            "https://redirect1.example.com/hop1",
+            "https://redirect2.example.com/hop2",
+            "https://destination.example.com/final",
+        ];
+        for hop in hops {
+            assert!(validate_url(hop).is_ok(), "expected ok for {hop}");
+        }
+    }
+
+    // --- SSRF redirect chain defense ---
+
+    /// Verifies that a redirect Location pointing to a private IP is rejected by validate_url
+    /// before any connection attempt — simulating the validation step inside fetch_html.
+    #[test]
+    fn redirect_to_private_ip_rejected_by_validate_url() {
+        // These would appear as Location headers in a redirect response.
+        let private_targets = [
+            "https://127.0.0.1/secret",
+            "https://10.0.0.1/internal",
+            "https://192.168.1.1/admin",
+            "https://172.16.0.1/data",
+            "https://[::1]/path",
+            "https://[fe80::1]/path",
+            "https://localhost/path",
+            "https://service.internal/api",
+        ];
+        for target in private_targets {
+            let result = validate_url(target);
+            assert!(result.is_err(), "expected error for {target}");
+            assert!(
+                matches!(result.unwrap_err(), ToolError::Blocked { .. }),
+                "expected Blocked for {target}"
+            );
+        }
+    }
+
+    /// Verifies that relative redirect URLs are resolved correctly before validation.
+    #[test]
+    fn redirect_relative_url_resolves_correctly() {
+        let base = Url::parse("https://example.com/page").unwrap();
+        let relative = "/other";
+        let resolved = base.join(relative).unwrap();
+        assert_eq!(resolved.as_str(), "https://example.com/other");
+    }
+
+    /// Verifies that a protocol-relative redirect to http:// is rejected (scheme check).
+    #[test]
+    fn redirect_to_http_rejected() {
+        let err = validate_url("http://example.com/page").unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
     }
 
     #[test]

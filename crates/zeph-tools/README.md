@@ -18,7 +18,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `executor` | `ToolExecutor` trait, `ToolOutput`, `ToolCall`; `DynExecutor` newtype wrapping `Arc<dyn ErasedToolExecutor>` for object-safe executor composition |
 | `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping; receives skill-scoped env vars injected by the agent for active skills that declare `x-requires-secrets`. Default `confirm_patterns` cover process substitution (`<(`, `>(`), here-strings (`<<<`), and `eval` |
 | `file` | File operation executor |
-| `scrape` | Web scraping executor with SSRF protection (post-DNS private IP validation, pinned address client) |
+| `scrape` | Web scraping executor with SSRF protection: HTTPS-only, pre-DNS host blocklist, post-DNS private IP validation, pinned address client, and redirect chain defense (up to 3 hops each re-validated before following) |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
 | `filter` | Output filtering pipeline — unified declarative TOML engine with 9 strategy types (`strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`) and 19 embedded built-in rules; user-configurable via `filters.toml` |
 | `permissions` | Permission checks for tool invocation |
@@ -31,6 +31,21 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, optional custom dir) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`
+
+## Security
+
+### SSRF Protection in `WebScrapeExecutor`
+
+`WebScrapeExecutor` applies a layered SSRF defense:
+
+1. **HTTPS-only** — non-HTTPS schemes (`http://`, `ftp://`, `file://`, `javascript:`, etc.) are blocked before any network activity.
+2. **Pre-DNS host blocklist** — `localhost`, `*.localhost`, `*.internal`, `*.local`, and literal private/loopback IPs are rejected at URL parse time.
+3. **Post-DNS IP validation** — all resolved socket addresses are checked against private, loopback, link-local, and unspecified ranges (IPv4 and IPv6, including IPv4-mapped IPv6).
+4. **Pinned address client** — the validated IP set is pinned into the HTTP client via `resolve_to_addrs`, eliminating DNS TOCTOU rebinding attacks.
+5. **Redirect chain defense** — automatic redirects are disabled; the executor manually follows up to 3 redirect hops. Each `Location` header (including relative URLs resolved against the current request URL) is passed through steps 1–4 before the next request is made.
+
+> [!WARNING]
+> Any redirect hop that resolves to a private or internal address causes the entire request to fail with `ToolError::Blocked`. This prevents open-redirect SSRF where a public server redirects to an internal endpoint.
 
 ## Shell sandbox
 
