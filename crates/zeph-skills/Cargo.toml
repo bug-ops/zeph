@@ -30,6 +30,7 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
+zeph-tools.workspace = true
 
 [[bench]]
 name = "matcher"

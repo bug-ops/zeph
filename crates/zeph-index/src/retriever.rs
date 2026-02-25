@@ -6,8 +6,6 @@
 use std::fmt::Write;
 use std::sync::Arc;
 
-use qdrant_client::qdrant::{Condition, Filter};
-
 use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
 use zeph_llm::any::AnyProvider;
@@ -90,7 +88,9 @@ impl CodeRetriever {
                 strategy,
             }),
             RetrievalStrategy::Semantic | RetrievalStrategy::Hybrid => {
-                let chunks = self.semantic_search(query, token_budget, None).await?;
+                let chunks = self
+                    .semantic_search(query, token_budget, None::<String>)
+                    .await?;
                 let total_tokens: usize = chunks
                     .iter()
                     .map(|c| self.token_counter.count_tokens(&c.code) + 20)
@@ -119,10 +119,8 @@ impl CodeRetriever {
 
         let token_budget = budget_tokens(available_tokens, self.config.budget_ratio);
 
-        let filter = Filter::must(vec![Condition::matches("language", language.to_string())]);
-
         let chunks = self
-            .semantic_search(query, token_budget, Some(filter))
+            .semantic_search(query, token_budget, Some(language.to_string()))
             .await?;
         let total_tokens: usize = chunks
             .iter()
@@ -140,13 +138,13 @@ impl CodeRetriever {
         &self,
         query: &str,
         token_budget: usize,
-        filter: Option<Filter>,
+        language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
         let query_vector = self.provider.embed(query).await?;
 
         let mut hits = self
             .store
-            .search(query_vector, self.config.max_chunks, filter)
+            .search(query_vector, self.config.max_chunks, language_filter)
             .await?;
 
         hits.retain(|h| h.score >= self.config.score_threshold);
@@ -339,5 +337,77 @@ mod tests {
     #[test]
     fn snake_case_a_b_three_chars_passes() {
         assert!(has_snake_case_identifier("a_b"));
+    }
+
+    #[test]
+    fn budget_tokens_ratio_zero() {
+        assert_eq!(budget_tokens(10_000, 0.0), 0);
+    }
+
+    #[test]
+    fn budget_tokens_ratio_one() {
+        assert_eq!(budget_tokens(10_000, 1.0), 10_000);
+    }
+
+    #[test]
+    fn budget_tokens_ratio_half() {
+        assert_eq!(budget_tokens(8_000, 0.5), 4_000);
+    }
+
+    #[test]
+    fn budget_tokens_zero_available() {
+        assert_eq!(budget_tokens(0, 0.4), 0);
+    }
+
+    #[test]
+    fn format_as_context_uses_node_type_when_no_entity_name() {
+        let result = RetrievedCode {
+            chunks: vec![SearchHit {
+                code: "struct Foo {}".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                line_range: (1, 2),
+                score: 0.75,
+                node_type: "struct_item".to_string(),
+                entity_name: None,
+                scope_chain: String::new(),
+            }],
+            total_tokens: 5,
+            strategy: RetrievalStrategy::Semantic,
+        };
+        let xml = format_as_context(&result);
+        assert!(xml.contains("name=\"struct_item\""));
+    }
+
+    #[test]
+    fn classify_fn_keyword_is_grep() {
+        assert_eq!(classify_query("fn my_func"), RetrievalStrategy::Grep);
+    }
+
+    #[test]
+    fn classify_struct_keyword_is_grep() {
+        assert_eq!(classify_query("struct MyType"), RetrievalStrategy::Grep);
+    }
+
+    #[test]
+    fn classify_explain_conceptual_is_semantic() {
+        assert_eq!(
+            classify_query("explain the architecture"),
+            RetrievalStrategy::Semantic
+        );
+    }
+
+    #[test]
+    fn retrieval_strategy_debug() {
+        assert_eq!(format!("{:?}", RetrievalStrategy::Semantic), "Semantic");
+        assert_eq!(format!("{:?}", RetrievalStrategy::Grep), "Grep");
+        assert_eq!(format!("{:?}", RetrievalStrategy::Hybrid), "Hybrid");
+    }
+
+    #[test]
+    fn retrieval_config_defaults() {
+        let cfg = RetrievalConfig::default();
+        assert_eq!(cfg.max_chunks, 12);
+        assert!(cfg.score_threshold > 0.0);
+        assert!(cfg.budget_ratio > 0.0 && cfg.budget_ratio < 1.0);
     }
 }
