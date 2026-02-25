@@ -87,9 +87,9 @@ impl<C: Channel> Agent<C> {
             provider = self.provider.name(),
             "using legacy text extraction path"
         );
-        self.doom_loop_history.clear();
+        self.tool_orchestrator.clear_doom_history();
 
-        for iteration in 0..self.runtime.max_tool_iterations {
+        for iteration in 0..self.tool_orchestrator.max_iterations {
             if self.cancel_token.is_cancelled() {
                 tracing::info!("tool loop cancelled by user");
                 break;
@@ -98,7 +98,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send_typing().await?;
 
             // Context budget check at 80% threshold
-            if let Some(ref budget) = self.context_state.budget {
+            if let Some(ref budget) = self.context_manager.budget {
                 let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
@@ -126,7 +126,7 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!("received empty response from LLM, skipping");
                 self.record_skill_outcomes("empty_response", None).await;
 
-                if !self.reflection_used
+                if !self.learning_engine.was_reflection_used()
                     && self
                         .attempt_self_reflection("LLM returned empty response", "")
                         .await?
@@ -167,21 +167,17 @@ impl<C: Channel> Agent<C> {
 
             // Doom-loop detection: compare last N outputs by content hash
             if let Some(last_msg) = self.messages.last() {
-                self.doom_loop_history
-                    .push(doom_loop_hash(&last_msg.content));
-                if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
-                    let recent =
-                        &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
-                    if recent.windows(2).all(|w| w[0] == w[1]) {
-                        tracing::warn!(
-                            iteration,
-                            "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
-                        );
-                        self.channel
-                            .send("Stopping: detected repeated identical tool outputs.")
-                            .await?;
-                        break;
-                    }
+                self.tool_orchestrator
+                    .push_doom_hash(doom_loop_hash(&last_msg.content));
+                if self.tool_orchestrator.is_doom_loop() {
+                    tracing::warn!(
+                        iteration,
+                        "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
+                    );
+                    self.channel
+                        .send("Stopping: detected repeated identical tool outputs.")
+                        .await?;
+                    break;
                 }
             }
         }
@@ -386,17 +382,17 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
-        if output.len() <= self.runtime.overflow_config.threshold {
+        if output.len() <= self.tool_orchestrator.overflow_config.threshold {
             return output.to_string();
         }
         let overflow_notice = if let Some(filename) =
-            zeph_tools::save_overflow(output, &self.runtime.overflow_config)
+            zeph_tools::save_overflow(output, &self.tool_orchestrator.overflow_config)
         {
             format!("\n[full output saved to {filename}, use read tool to access]")
         } else {
             String::new()
         };
-        let truncated = if self.runtime.summarize_tool_output_enabled {
+        let truncated = if self.tool_orchestrator.summarize_tool_output_enabled {
             self.summarize_tool_output(output).await
         } else {
             zeph_tools::truncate_tool_output(output)
@@ -451,7 +447,7 @@ impl<C: Channel> Agent<C> {
                     self.record_skill_outcomes("tool_failure", Some(&output.summary))
                         .await;
 
-                    if !self.reflection_used
+                    if !self.learning_engine.was_reflection_used()
                         && self
                             .attempt_self_reflection(&output.summary, &output.summary)
                             .await?
@@ -540,7 +536,9 @@ impl<C: Channel> Agent<C> {
                 self.record_skill_outcomes("tool_failure", Some(&err_str))
                     .await;
 
-                if !self.reflection_used && self.attempt_self_reflection(&err_str, "").await? {
+                if !self.learning_engine.was_reflection_used()
+                    && self.attempt_self_reflection(&err_str, "").await?
+                {
                     return Ok(false);
                 }
 
@@ -630,7 +628,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn process_response_native_tools(&mut self) -> Result<(), super::error::AgentError> {
-        self.doom_loop_history.clear();
+        self.tool_orchestrator.clear_doom_history();
 
         let tool_defs: Vec<ToolDefinition> = self
             .tool_executor
@@ -645,7 +643,7 @@ impl<C: Channel> Agent<C> {
             "native tool_use: collected tool definitions"
         );
 
-        for iteration in 0..self.runtime.max_tool_iterations {
+        for iteration in 0..self.tool_orchestrator.max_iterations {
             if *self.shutdown.borrow() {
                 tracing::info!("native tool loop interrupted by shutdown");
                 break;
@@ -657,7 +655,7 @@ impl<C: Channel> Agent<C> {
 
             self.channel.send_typing().await?;
 
-            if let Some(ref budget) = self.context_state.budget {
+            if let Some(ref budget) = self.context_manager.budget {
                 let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
@@ -999,21 +997,17 @@ impl<C: Channel> Agent<C> {
         iteration: usize,
     ) -> Result<bool, super::error::AgentError> {
         if let Some(last_msg) = self.messages.last() {
-            self.doom_loop_history
-                .push(doom_loop_hash(&last_msg.content));
-            if self.doom_loop_history.len() >= DOOM_LOOP_WINDOW {
-                let recent =
-                    &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
-                if recent.windows(2).all(|w| w[0] == w[1]) {
-                    tracing::warn!(
-                        iteration,
-                        "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
-                    );
-                    self.channel
-                        .send("Stopping: detected repeated identical tool outputs.")
-                        .await?;
-                    return Ok(true);
-                }
+            self.tool_orchestrator
+                .push_doom_hash(doom_loop_hash(&last_msg.content));
+            if self.tool_orchestrator.is_doom_loop() {
+                tracing::warn!(
+                    iteration,
+                    "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
+                );
+                self.channel
+                    .send("Stopping: detected repeated identical tool outputs.")
+                    .await?;
+                return Ok(true);
             }
         }
         Ok(false)
@@ -1568,7 +1562,7 @@ mod tests {
             streamed: false,
         };
         // reflection_used = true so reflection path is skipped
-        agent.reflection_used = true;
+        agent.learning_engine.mark_reflection_used();
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
             .await
@@ -1929,7 +1923,7 @@ mod tests {
             );
             let mut agent = agent_with_provider(provider);
             // Add context budget so compact_context can run
-            agent.context_state.budget = Some(zeph_core_budget_for_test());
+            agent.context_manager.budget = Some(zeph_core_budget_for_test());
             let result = agent.call_llm_with_retry(2).await.unwrap();
             assert_eq!(result.as_deref(), Some("recovered"));
         }
@@ -1961,7 +1955,7 @@ mod tests {
                     LlmError::ContextLengthExceeded,
                 ]));
             let mut agent = agent_with_provider(provider);
-            agent.context_state.budget = Some(zeph_core_budget_for_test());
+            agent.context_manager.budget = Some(zeph_core_budget_for_test());
             let result: Result<Option<String>, _> = agent.call_llm_with_retry(2).await;
             assert!(result.is_err());
             assert!(result.unwrap_err().is_context_length_error());
@@ -2017,7 +2011,7 @@ mod tests {
                     .with_errors(vec![LlmError::ContextLengthExceeded]),
             );
             let mut agent = agent_with_provider(provider);
-            agent.context_state.budget = Some(budget_for_test());
+            agent.context_manager.budget = Some(budget_for_test());
             let result = agent
                 .call_chat_with_tools_retry(&no_tools(), 2)
                 .await
@@ -2034,7 +2028,7 @@ mod tests {
                     LlmError::ContextLengthExceeded,
                 ]));
             let mut agent = agent_with_provider(provider);
-            agent.context_state.budget = Some(budget_for_test());
+            agent.context_manager.budget = Some(budget_for_test());
             let result: Result<Option<_>, _> =
                 agent.call_chat_with_tools_retry(&no_tools(), 2).await;
             assert!(result.is_err());
