@@ -753,6 +753,8 @@ fn apply_git_diff(raw: &str, max_diff_lines: usize) -> FilterResult {
             additions = 0;
             deletions = 0;
             kept_indices.push(idx);
+        } else if line.starts_with("@@ ") {
+            kept_indices.push(idx);
         } else if line.starts_with('+') && !line.starts_with("+++") {
             additions += 1;
             kept_indices.push(idx);

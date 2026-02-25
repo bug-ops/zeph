@@ -5,7 +5,7 @@
 
 [[rules]]
 name = "cargo-build"
-match = { regex = "^cargo\\s+(?!test\\b|nextest\\b|clippy\\b)" }
+match = { regex = "^cargo\\s+(test\\b|nextest\\b|clippy\\b)" }
 strategy = { type = "strip_annotated", patterns = [
   "^\\s*Compiling ",
   "^\\s*Downloading ",
