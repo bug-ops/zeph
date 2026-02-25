@@ -203,6 +203,46 @@ embedding_seconds = 30  # Embedding generation
 a2a_seconds = 30        # A2A remote calls
 ```
 
+## A2A and Gateway Bearer Authentication
+
+Both the A2A server and the HTTP gateway use bearer token authentication backed by constant-time comparison (`subtle::ConstantTimeEq`) to prevent timing side-channel attacks.
+
+### A2A Server
+
+Configure via `config.toml` or environment variable:
+
+```toml
+[a2a]
+auth_token = "secret"  # or use vault: ZEPH_A2A_AUTH_TOKEN
+```
+
+The `/.well-known/agent-card.json` endpoint is intentionally public and bypasses auth to allow agent discovery.
+
+If `auth_token` is `None` at startup, the server logs a `WARN`-level message:
+
+```
+WARN zeph_a2a: A2A server started without auth_token — endpoint is unauthenticated
+```
+
+### HTTP Gateway
+
+Configure via `config.toml` or environment variable:
+
+```toml
+[gateway]
+auth_token = "secret"  # or use vault: ZEPH_GATEWAY_TOKEN
+```
+
+The `GET /health` endpoint is intentionally public and bypasses auth.
+
+If `auth_token` is `None` at startup, the server logs a `WARN`-level message:
+
+```
+WARN zeph_gateway: Gateway started without auth_token — endpoint is unauthenticated
+```
+
+**Recommendation:** Always set `auth_token` when binding to a non-loopback interface. Use the [Age Vault](security.md#age-vault) to store the token rather than embedding it in plain text in `config.toml`.
+
 ## A2A Network Security
 
 - **TLS enforcement:** `a2a.require_tls = true` rejects HTTP endpoints (HTTPS only)
