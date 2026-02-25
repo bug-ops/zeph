@@ -7,60 +7,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-/// Trust tier controlling what a skill is allowed to do.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TrustLevel {
-    /// Built-in or user-audited skill: full tool access.
-    Trusted,
-    /// Signature or hash verified: default tool access.
-    Verified,
-    /// Newly imported or hash-mismatch: restricted tool access.
-    #[default]
-    Quarantined,
-    /// Explicitly disabled by user or auto-blocked by anomaly detector.
-    Blocked,
-}
-
-impl TrustLevel {
-    /// Ordered severity: lower value = more trusted.
-    #[must_use]
-    pub fn severity(self) -> u8 {
-        match self {
-            Self::Trusted => 0,
-            Self::Verified => 1,
-            Self::Quarantined => 2,
-            Self::Blocked => 3,
-        }
-    }
-
-    /// Returns the least-trusted (highest severity) of two levels.
-    #[must_use]
-    pub fn min_trust(self, other: Self) -> Self {
-        if self.severity() >= other.severity() {
-            self
-        } else {
-            other
-        }
-    }
-
-    #[must_use]
-    pub fn is_active(self) -> bool {
-        !matches!(self, Self::Blocked)
-    }
-}
-
-impl fmt::Display for TrustLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Trusted => f.write_str("trusted"),
-            Self::Verified => f.write_str("verified"),
-            Self::Quarantined => f.write_str("quarantined"),
-            Self::Blocked => f.write_str("blocked"),
-        }
-    }
-}
+pub use zeph_tools::TrustLevel;
 
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,41 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn severity_ordering() {
-        assert!(TrustLevel::Trusted.severity() < TrustLevel::Verified.severity());
-        assert!(TrustLevel::Verified.severity() < TrustLevel::Quarantined.severity());
-        assert!(TrustLevel::Quarantined.severity() < TrustLevel::Blocked.severity());
-    }
-
-    #[test]
-    fn min_trust_picks_least_trusted() {
-        assert_eq!(
-            TrustLevel::Trusted.min_trust(TrustLevel::Quarantined),
-            TrustLevel::Quarantined
-        );
-        assert_eq!(
-            TrustLevel::Blocked.min_trust(TrustLevel::Trusted),
-            TrustLevel::Blocked
-        );
-    }
-
-    #[test]
-    fn is_active() {
-        assert!(TrustLevel::Trusted.is_active());
-        assert!(TrustLevel::Verified.is_active());
-        assert!(TrustLevel::Quarantined.is_active());
-        assert!(!TrustLevel::Blocked.is_active());
-    }
-
-    #[test]
-    fn default_is_quarantined() {
-        assert_eq!(TrustLevel::default(), TrustLevel::Quarantined);
-    }
-
-    #[test]
     fn display() {
-        assert_eq!(TrustLevel::Trusted.to_string(), "trusted");
-        assert_eq!(TrustLevel::Blocked.to_string(), "blocked");
         assert_eq!(SkillSource::Local.to_string(), "local");
         assert_eq!(
             SkillSource::Hub {
@@ -152,15 +65,6 @@ mod tests {
             .to_string(),
             "hub(https://example.com)"
         );
-    }
-
-    #[test]
-    fn serde_roundtrip() {
-        let level = TrustLevel::Quarantined;
-        let json = serde_json::to_string(&level).unwrap();
-        assert_eq!(json, "\"quarantined\"");
-        let back: TrustLevel = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, level);
     }
 
     #[test]
@@ -189,6 +93,50 @@ mod tests {
     fn source_serde_roundtrip() {
         let source = SkillSource::Hub {
             url: "https://hub.example.com/skill".into(),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        let back: SkillSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, source);
+    }
+
+    #[test]
+    fn display_file_source() {
+        let source = SkillSource::File {
+            path: std::path::PathBuf::from("/tmp/my-skill"),
+        };
+        assert_eq!(source.to_string(), "file(/tmp/my-skill)");
+    }
+
+    #[test]
+    fn display_local_source() {
+        assert_eq!(SkillSource::Local.to_string(), "local");
+    }
+
+    #[test]
+    fn compute_hash_missing_skill_md_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // No SKILL.md written — expect IO error
+        let result = compute_skill_hash(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn trust_level_reexport_accessible() {
+        // Ensure TrustLevel re-exported from zeph-tools is usable
+        let level: TrustLevel = TrustLevel::default();
+        assert_eq!(level, TrustLevel::Quarantined);
+        assert!(level.is_active());
+    }
+
+    #[test]
+    fn source_default_is_local() {
+        assert_eq!(SkillSource::default(), SkillSource::Local);
+    }
+
+    #[test]
+    fn source_file_serde_roundtrip() {
+        let source = SkillSource::File {
+            path: std::path::PathBuf::from("/skills/my_skill"),
         };
         let json = serde_json::to_string(&source).unwrap();
         let back: SkillSource = serde_json::from_str(&json).unwrap();

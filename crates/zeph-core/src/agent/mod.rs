@@ -281,9 +281,9 @@ impl<C: Channel> Agent<C> {
             .filter_map(|(id, status)| {
                 if matches!(
                     status.state,
-                    zeph_a2a::types::TaskState::Completed
-                        | zeph_a2a::types::TaskState::Failed
-                        | zeph_a2a::types::TaskState::Canceled
+                    crate::subagent::SubAgentState::Completed
+                        | crate::subagent::SubAgentState::Failed
+                        | crate::subagent::SubAgentState::Canceled
                 ) {
                     Some(id)
                 } else {

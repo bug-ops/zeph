@@ -10,7 +10,6 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use zeph_a2a::types::TaskState;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_tools::executor::ErasedToolExecutor;
@@ -19,6 +18,7 @@ use super::def::SubAgentDef;
 use super::error::SubAgentError;
 use super::filter::FilteredToolExecutor;
 use super::grants::PermissionGrants;
+use super::state::SubAgentState;
 
 struct AgentLoopArgs {
     provider: AnyProvider,
@@ -83,7 +83,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         started_at,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
-        state: TaskState::Working,
+        state: SubAgentState::Working,
         last_message: None,
         turns_used: 0,
         started_at,
@@ -111,7 +111,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             Err(e) => {
                 tracing::error!(error = %e, "sub-agent LLM call failed");
                 let _ = status_tx.send(SubAgentStatus {
-                    state: TaskState::Failed,
+                    state: SubAgentState::Failed,
                     last_message: Some(e.to_string()),
                     turns_used: turns,
                     started_at,
@@ -123,7 +123,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         turns += 1;
         last_result.clone_from(&response);
         let _ = status_tx.send(SubAgentStatus {
-            state: TaskState::Working,
+            state: SubAgentState::Working,
             last_message: Some(response.chars().take(120).collect()),
             turns_used: turns,
             started_at,
@@ -135,7 +135,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
     }
 
     let _ = status_tx.send(SubAgentStatus {
-        state: TaskState::Completed,
+        state: SubAgentState::Completed,
         last_message: Some(last_result.chars().take(120).collect()),
         turns_used: turns,
         started_at,
@@ -147,7 +147,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
 /// Live status of a running sub-agent.
 #[derive(Debug, Clone)]
 pub struct SubAgentStatus {
-    pub state: TaskState,
+    pub state: SubAgentState,
     pub last_message: Option<String>,
     pub turns_used: u32,
     pub started_at: Instant,
@@ -162,7 +162,7 @@ pub struct SubAgentHandle {
     pub(crate) def: SubAgentDef,
     /// Task ID (UUID). Currently the same as `id`; separated for future use.
     pub(crate) task_id: String,
-    pub(crate) state: TaskState,
+    pub(crate) state: SubAgentState,
     pub(crate) join_handle: Option<JoinHandle<anyhow::Result<String>>>,
     pub(crate) cancel: CancellationToken,
     pub(crate) status_rx: watch::Receiver<SubAgentStatus>,
@@ -277,7 +277,7 @@ impl SubAgentManager {
         let active = self
             .agents
             .values()
-            .filter(|h| matches!(h.state, TaskState::Working | TaskState::Submitted))
+            .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
             .count();
 
         if active >= self.max_concurrent {
@@ -292,7 +292,7 @@ impl SubAgentManager {
 
         let started_at = Instant::now();
         let initial_status = SubAgentStatus {
-            state: TaskState::Submitted,
+            state: SubAgentState::Submitted,
             last_message: None,
             turns_used: 0,
             started_at,
@@ -321,7 +321,7 @@ impl SubAgentManager {
             id: task_id.clone(),
             def,
             task_id: task_id.clone(),
-            state: TaskState::Submitted,
+            state: SubAgentState::Submitted,
             join_handle: Some(join_handle),
             cancel,
             status_rx,
@@ -352,7 +352,7 @@ impl SubAgentManager {
             .get_mut(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
         handle.cancel.cancel();
-        handle.state = TaskState::Canceled;
+        handle.state = SubAgentState::Canceled;
         handle.grants.revoke_all();
         tracing::info!(task_id, "sub-agent cancelled");
         Ok(())
@@ -432,8 +432,8 @@ impl SubAgentManager {
                 let mut status = h.status_rx.borrow().clone();
                 // cancel() updates handle.state synchronously but the background task
                 // may not have sent the final watch update yet; reflect it here.
-                if h.state == TaskState::Canceled {
-                    status.state = TaskState::Canceled;
+                if h.state == SubAgentState::Canceled {
+                    status.state = SubAgentState::Canceled;
                 }
                 (h.task_id.clone(), status)
             })
@@ -568,7 +568,7 @@ mod tests {
         assert!(!task_id.is_empty());
 
         mgr.cancel(&task_id).unwrap();
-        assert_eq!(mgr.agents[&task_id].state, TaskState::Canceled);
+        assert_eq!(mgr.agents[&task_id].state, SubAgentState::Canceled);
     }
 
     #[test]
@@ -743,7 +743,7 @@ mod tests {
 
         // All agents should be in Canceled state
         for (_, status) in mgr.statuses() {
-            assert_eq!(status.state, TaskState::Canceled);
+            assert_eq!(status.state, SubAgentState::Canceled);
         }
     }
 
@@ -782,7 +782,7 @@ mod tests {
             .map(|(_, s)| s);
         // The background loop should have caught the LLM error and reported Failed.
         assert!(
-            status.is_some_and(|s| s.state == TaskState::Failed),
+            status.is_some_and(|s| s.state == SubAgentState::Failed),
             "expected Failed, got: {status:?}"
         );
     }

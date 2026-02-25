@@ -3,11 +3,7 @@
 
 //! `Qdrant` collection + `SQLite` metadata for code chunks.
 
-use qdrant_client::qdrant::{
-    CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType, Filter,
-    PointStruct, ScalarQuantizationBuilder, ScoredPoint, VectorParamsBuilder,
-};
-use zeph_memory::QdrantOps;
+use zeph_memory::{FieldCondition, FieldValue, QdrantOps, VectorFilter, VectorPoint, VectorStore};
 
 use crate::error::Result;
 
@@ -51,7 +47,8 @@ impl CodeStore {
     ///
     /// Returns an error if the `Qdrant` client fails to connect.
     pub fn new(qdrant_url: &str, pool: sqlx::SqlitePool) -> Result<Self> {
-        let ops = QdrantOps::new(qdrant_url).map_err(crate::error::IndexError::Qdrant)?;
+        let ops = QdrantOps::new(qdrant_url)
+            .map_err(|e| crate::error::IndexError::Other(e.to_string()))?;
         Ok(Self {
             ops,
             collection: CODE_COLLECTION.into(),
@@ -65,32 +62,13 @@ impl CodeStore {
     ///
     /// Returns an error if `Qdrant` operations fail.
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<()> {
-        if self.ops.collection_exists(&self.collection).await? {
-            return Ok(());
-        }
-
         self.ops
-            .client()
-            .create_collection(
-                CreateCollectionBuilder::new(&self.collection)
-                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
-                    .quantization_config(ScalarQuantizationBuilder::default()),
+            .ensure_collection_with_quantization(
+                &self.collection,
+                vector_size,
+                &["language", "file_path", "node_type"],
             )
-            .await
-            .map_err(Box::new)?;
-
-        for field in ["language", "file_path", "node_type"] {
-            self.ops
-                .client()
-                .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                    &self.collection,
-                    field,
-                    FieldType::Keyword,
-                ))
-                .await
-                .map_err(Box::new)?;
-        }
-
+            .await?;
         Ok(())
     }
 
@@ -102,7 +80,7 @@ impl CodeStore {
     pub async fn upsert_chunk(&self, chunk: &ChunkInsert<'_>, vector: Vec<f32>) -> Result<String> {
         let point_id = uuid::Uuid::new_v4().to_string();
 
-        let payload = QdrantOps::json_to_payload(serde_json::json!({
+        let payload = serde_json::json!({
             "file_path": chunk.file_path,
             "language": chunk.language,
             "node_type": chunk.node_type,
@@ -112,14 +90,23 @@ impl CodeStore {
             "code": chunk.code,
             "scope_chain": chunk.scope_chain,
             "content_hash": chunk.content_hash,
-        }))?;
+        });
 
-        self.ops
-            .upsert(
-                &self.collection,
-                vec![PointStruct::new(point_id.clone(), vector, payload)],
-            )
-            .await?;
+        let payload_map = match payload {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => std::collections::HashMap::new(),
+        };
+
+        VectorStore::upsert(
+            &self.ops,
+            &self.collection,
+            vec![VectorPoint {
+                id: point_id.clone(),
+                vector,
+                payload: payload_map,
+            }],
+        )
+        .await?;
 
         let line_start = i64::try_from(chunk.line_start)?;
         let line_end = i64::try_from(chunk.line_end)?;
@@ -173,12 +160,9 @@ impl CodeStore {
             return Ok(0);
         }
 
-        let point_ids = ids
-            .iter()
-            .map(|(id,)| id.clone().into())
-            .collect::<Vec<_>>();
+        let point_ids: Vec<String> = ids.iter().map(|(id,)| id.clone()).collect();
 
-        self.ops.delete_by_ids(&self.collection, point_ids).await?;
+        VectorStore::delete_by_ids(&self.ops, &self.collection, point_ids).await?;
 
         let count = ids.len();
         sqlx::query("DELETE FROM chunk_metadata WHERE file_path = ?")
@@ -198,17 +182,24 @@ impl CodeStore {
         &self,
         query_vector: Vec<f32>,
         limit: usize,
-        filter: Option<Filter>,
+        language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
         let limit_u64 = u64::try_from(limit)?;
-        let results = self
-            .ops
-            .search(&self.collection, query_vector, limit_u64, filter)
-            .await?;
+        let filter = language_filter.map(|lang| VectorFilter {
+            must: vec![FieldCondition {
+                field: "language".into(),
+                value: FieldValue::Text(lang),
+            }],
+            must_not: vec![],
+        });
+
+        let results =
+            VectorStore::search(&self.ops, &self.collection, query_vector, limit_u64, filter)
+                .await?;
 
         Ok(results
-            .iter()
-            .filter_map(SearchHit::from_scored_point)
+            .into_iter()
+            .filter_map(|p| SearchHit::from_payload(&p))
             .collect())
     }
 
@@ -226,23 +217,26 @@ impl CodeStore {
 }
 
 impl SearchHit {
-    fn from_scored_point(point: &ScoredPoint) -> Option<Self> {
-        let p = &point.payload;
-        let get_str = |key: &str| {
-            p.get(key)
-                .and_then(qdrant_client::qdrant::Value::as_str)
-                .cloned()
+    fn from_payload(point: &zeph_memory::ScoredVectorPoint) -> Option<Self> {
+        let get_str = |key: &str| -> Option<String> {
+            point
+                .payload
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
         };
-        let get_int = |key: &str| {
-            p.get(key)
-                .and_then(qdrant_client::qdrant::Value::as_integer)
+        let get_usize = |key: &str| -> Option<usize> {
+            point
+                .payload
+                .get(key)
+                .and_then(serde_json::Value::as_i64)
                 .and_then(|v| usize::try_from(v).ok())
         };
 
         Some(Self {
             code: get_str("code")?,
             file_path: get_str("file_path")?,
-            line_range: (get_int("line_start")?, get_int("line_end")?),
+            line_range: (get_usize("line_start")?, get_usize("line_end")?),
             score: point.score,
             node_type: get_str("node_type")?,
             entity_name: get_str("entity_name"),
@@ -253,6 +247,78 @@ impl SearchHit {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use zeph_memory::ScoredVectorPoint;
+
+    fn make_scored_point(payload: serde_json::Value, score: f32) -> ScoredVectorPoint {
+        let map = match payload {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => std::collections::HashMap::new(),
+        };
+        ScoredVectorPoint {
+            id: "test-id".to_string(),
+            score,
+            payload: map,
+        }
+    }
+
+    #[test]
+    fn search_hit_from_payload_full() {
+        let point = make_scored_point(
+            serde_json::json!({
+                "code": "fn foo() {}",
+                "file_path": "src/lib.rs",
+                "line_start": 10,
+                "line_end": 12,
+                "node_type": "function_item",
+                "entity_name": "foo",
+                "scope_chain": "mod::foo"
+            }),
+            0.9,
+        );
+        let hit = SearchHit::from_payload(&point).unwrap();
+        assert_eq!(hit.code, "fn foo() {}");
+        assert_eq!(hit.file_path, "src/lib.rs");
+        assert_eq!(hit.line_range, (10, 12));
+        assert!((hit.score - 0.9).abs() < f32::EPSILON);
+        assert_eq!(hit.node_type, "function_item");
+        assert_eq!(hit.entity_name, Some("foo".to_string()));
+        assert_eq!(hit.scope_chain, "mod::foo");
+    }
+
+    #[test]
+    fn search_hit_from_payload_no_entity_name() {
+        let point = make_scored_point(
+            serde_json::json!({
+                "code": "struct Bar {}",
+                "file_path": "src/bar.rs",
+                "line_start": 1,
+                "line_end": 3,
+                "node_type": "struct_item",
+                "scope_chain": ""
+            }),
+            0.7,
+        );
+        let hit = SearchHit::from_payload(&point).unwrap();
+        assert!(hit.entity_name.is_none());
+        assert_eq!(hit.node_type, "struct_item");
+    }
+
+    #[test]
+    fn search_hit_from_payload_missing_required_field_returns_none() {
+        // Missing "code" field — should return None
+        let point = make_scored_point(
+            serde_json::json!({
+                "file_path": "src/lib.rs",
+                "line_start": 1,
+                "line_end": 2,
+                "node_type": "function_item"
+            }),
+            0.5,
+        );
+        assert!(SearchHit::from_payload(&point).is_none());
+    }
+
     async fn setup_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         zeph_memory::sqlite::SqliteStore::run_migrations(&pool)

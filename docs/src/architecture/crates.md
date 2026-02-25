@@ -11,6 +11,7 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `ContextManager` — owns context budget configuration, `token_counter` (`Arc<TokenCounter>`), compaction threshold (80%), compaction tail preservation, prune-protect token floor, and token safety margin. Exposes `should_compact()` used by the agent loop before each LLM call
 - `ToolOrchestrator` — owns `doom_loop_history` (rolling hash window), `max_iterations` (default 10), summarize-tool-output flag, and `OverflowConfig`. Exposes `push_doom_hash()`, `clear_doom_history()`, and `is_doom_loop()` (returns `true` when last `DOOM_LOOP_WINDOW` hashes are identical)
 - `LearningEngine` — owns `LearningConfig` and per-turn `reflection_used` flag. Exposes `is_enabled()`, `mark_reflection_used()`, `was_reflection_used()`, and `reset_reflection()` called at the start of each agent turn
+- `SubAgentState` — state enum for sub-agent lifecycle (`Idle`, `Working`, `Completed`, `Failed`, `Cancelled`); defined in `zeph-core::subagent::state`, eliminating the former dependency on `zeph-a2a` for state types
 - `AgentError` — typed error enum covering LLM, memory, channel, tool, context, and I/O failures (replaces prior `anyhow` usage)
 - `Config` — TOML config loading with env var overrides
 - `Channel` trait — abstraction for I/O (CLI, Telegram, TUI) with `recv()`, `try_recv()`, `send_queue_count()` for queue management. Returns `Result<_, ChannelError>` with typed variants (`Io`, `ChannelClosed`, `ConfirmationCancelled`)
@@ -23,6 +24,8 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking (feature-gated: `daemon`)
 - `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` — headless channel for daemon mode using paired tokio mpsc channels; auto-approves confirmations
 - `LoopbackHandle::cancel_signal` — `Arc<Notify>` shared between the ACP session and the agent loop; calling `notify_one()` interrupts the running agent turn
+- `hash::content_hash()` — BLAKE3-based utility returning a hex-encoded content hash for any byte slice; used for delta-sync checks and integrity verification across crates; available as `zeph_core::content_hash`
+- `DiffData` — re-exported from `zeph_tools::executor::DiffData` as `zeph_core::DiffData`; the `zeph-core::diff` module has been removed in favour of this direct re-export
 
 ## zeph-llm
 
@@ -53,6 +56,7 @@ SKILL.md loader, skill registry, and prompt formatter.
 - `resource.rs` — `discover_resources()` + `load_resource()` with path traversal protection and canonical path validation; lazy resource loading (resources resolved on first activation, not at startup)
 - File reference validation — local links in skill bodies are checked against the skill directory; broken references and path traversal attempts are rejected at load time
 - `sanitize_skill_body()` — escapes XML-like structural tags in untrusted (non-`Trusted`) skill bodies before prompt injection, preventing prompt boundary confusion
+- `TrustLevel` — re-exported from `zeph-tools::trust_level` for use by skill trust logic; the canonical definition lives in `zeph-tools`
 - Filesystem watcher for hot-reload (500ms debounce)
 
 ## zeph-memory
@@ -78,13 +82,12 @@ SQLite-backed conversation persistence with Qdrant vector search.
 Channel implementations for the Zeph agent.
 
 - `AnyChannel` — enum dispatch over all channel variants (Cli, Telegram, Discord, Slack, Tui, Loopback), used by the binary for runtime channel selection
-- `ChannelError` — typed error enum (`Telegram`, `NoActiveChat`) replacing prior `anyhow` usage
 - `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
 - `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window
 
 ## zeph-tools
 
-Tool execution abstraction and shell backend.
+Tool execution abstraction and shell backend. This crate has no dependency on `zeph-skills`.
 
 - `ToolExecutor` trait + `ErasedToolExecutor` — `ErasedToolExecutor` is an object-safe wrapper enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch in `Agent<C>`
 - `ToolRegistry` — typed definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape), injected into system prompt as `<tools>` catalog
@@ -94,17 +97,20 @@ Tool execution abstraction and shell backend.
 - `WebScrapeExecutor` — HTML scraping with CSS selectors, SSRF protection
 - `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch, routes structured tool calls by `tool_id` to the appropriate backend; used to place ACP executors ahead of local tools so IDE-proxied operations take priority
 - `DynExecutor` — newtype wrapping `Arc<dyn ErasedToolExecutor>` so a heap-allocated erased executor can be used anywhere a concrete `ToolExecutor` is required; enables runtime composition without static type chains
+- `TrustLevel` — canonical trust tier enum (`Trusted`, `Verified`, `Quarantined`, `Blocked`) used by `TrustGateExecutor` to enforce per-skill tool access restrictions; re-exported by `zeph-skills` for convenience
+- `TrustGateExecutor` — wraps any `ToolExecutor` and blocks tool calls that exceed the active skill's `TrustLevel`
+- `DiffData` — structured diff payload; re-exported as `zeph_core::DiffData` via `pub use zeph_tools::executor::DiffData` in `zeph-core`
 - `AuditLogger` — structured JSON audit trail for all executions
 - `truncate_tool_output()` — head+tail split at 30K chars with UTF-8 safe boundaries
 
 ## zeph-index
 
-AST-based code indexing, semantic retrieval, and repo map generation (optional, feature-gated).
+AST-based code indexing, semantic retrieval, and repo map generation (optional, feature-gated). This crate does not depend directly on `qdrant-client`; all vector operations go through the `VectorStore` trait from `zeph-memory`, keeping the crate decoupled from the Qdrant client library.
 
 - `Lang` enum — supported languages with tree-sitter grammar registry, feature-gated per language group
 - `chunk_file()` — AST-based chunking with greedy sibling merge, scope chains, import extraction
 - `contextualize_for_embedding()` — prepends file path, scope, language, imports to code for better embedding quality
-- `CodeStore` — dual-write storage: Qdrant vectors (`zeph_code_chunks` collection) + SQLite metadata with BLAKE3 content-hash change detection
+- `CodeStore` — dual-write storage: vector store via `VectorStore` trait (`zeph_code_chunks` collection) + SQLite metadata with BLAKE3 content-hash change detection; vector operations are delegated to `QdrantOps` which implements `VectorStore`
 - `CodeIndexer<P>` — project indexer orchestrator: walk, chunk, embed, store with incremental skip of unchanged chunks
 - `CodeRetriever<P>` — hybrid retrieval with query classification (Semantic / Grep / Hybrid), budget-aware chunk packing
 - `generate_repo_map()` — compact structural view via tree-sitter signature extraction, budget-constrained

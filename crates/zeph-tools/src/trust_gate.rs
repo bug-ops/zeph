@@ -3,7 +3,7 @@
 
 //! Trust-level enforcement layer for tool execution.
 
-use zeph_skills::TrustLevel;
+use crate::TrustLevel;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::permissions::{PermissionAction, PermissionPolicy};

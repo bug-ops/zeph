@@ -19,7 +19,7 @@ pub mod project;
 pub mod redact;
 pub mod vault;
 
-pub mod diff;
+pub mod hash;
 pub mod http;
 pub mod subagent;
 
@@ -30,4 +30,5 @@ pub use channel::{
     LoopbackEvent, LoopbackHandle,
 };
 pub use config::{Config, ConfigError};
-pub use diff::DiffData;
+pub use hash::content_hash;
+pub use zeph_tools::executor::DiffData;

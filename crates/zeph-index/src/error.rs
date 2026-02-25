@@ -16,9 +16,9 @@ pub enum IndexError {
     #[error("database error: {0}")]
     Sqlite(#[from] sqlx::Error),
 
-    /// Qdrant vector store error.
-    #[error("Qdrant error: {0}")]
-    Qdrant(#[from] Box<qdrant_client::QdrantError>),
+    /// Vector store error.
+    #[error("vector store error: {0}")]
+    VectorStore(#[from] zeph_memory::VectorStoreError),
 
     /// LLM provider error (embedding).
     #[error("LLM error: {0}")]
