@@ -18,7 +18,9 @@ Five file tools (`read`, `write`, `edit`, `glob`, `grep`) provide structured acc
 
 ## Web Scraping
 
-The `web_scrape` tool extracts data from web pages using CSS selectors. Configurable timeout (default: 15s) and body size limit (default: 1 MB).
+The `web_scrape` tool extracts data from web pages using CSS selectors. Configurable timeout (default: 15s) and body size limit (default: 1 MiB).
+
+SSRF protection is applied at every stage: private hostnames and IP ranges are blocked before any connection is made, DNS results are validated to prevent rebinding attacks, and HTTP redirects are followed manually (up to 3 hops) with each target re-validated. See [SSRF Protection for Web Scraping](../reference/security.md#ssrf-protection-for-web-scraping).
 
 ## MCP Tools
 

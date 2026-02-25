@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 - Enforce `unsafe_code = "deny"` at workspace lint level; existing unavoidable unsafe blocks (mmap via candle, `std::env` in tests) annotated with `#[allow(unsafe_code)]` (#867)
 - Replace `HashMap` with `BTreeMap` in `AgeVaultProvider` to produce deterministic JSON key ordering on `vault.save()` (#876)
+- `WebScrapeExecutor`: redirect targets now validated against private/internal IP ranges to prevent SSRF via redirect chains (#871)
 - Gateway webhook payload: per-field length limits (sender/channel <= 256 bytes, body <= 65536 bytes) and ASCII control char stripping to prevent prompt injection (#868)
 - ACP permission cache: null bytes stripped from tool names before cache key construction to prevent key collision (#872)
 - Config validation: `gateway.max_body_size` bounded to 10 MiB (10485760 bytes) to prevent memory exhaustion (#875)
