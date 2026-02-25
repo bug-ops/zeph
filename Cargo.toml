@@ -186,7 +186,6 @@ serde_json.workspace = true
 [dev-dependencies]
 serial_test.workspace = true
 tempfile.workspace = true
-tokio-stream.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
@@ -196,9 +195,11 @@ zeph-skills.workspace = true
 workspace = true
 
 [profile.release]
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
 
 [profile.bench]
 debug = true
