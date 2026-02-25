@@ -671,6 +671,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send(&user_msg).await?;
             self.messages.pop();
             self.recompute_prompt_tokens();
+            self.channel.flush_chunks().await?;
         }
 
         Ok(())
