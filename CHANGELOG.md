@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[profile.ci]` build profile with thin LTO and 16 codegen-units for faster CI release builds (#878)
 - `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
 
+### Performance
+- Added composite covering index `(conversation_id, id)` on `messages` table (migration 015); replaces single-column index for filter+order access patterns in `oldest_message_ids` and `load_history_filtered` (#895)
+- Replaced double-sort subquery in `load_history_filtered` with a CTE — eliminates redundant `ORDER BY` on the derived table (#896)
+
 ### Changed
 - Split 3177-line `src/main.rs` into focused modules: `runner.rs` (dispatch), `agent_setup.rs` (tool/MCP/feature setup), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
 - Split 1791-line `crates/zeph-core/src/bootstrap.rs` into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
