@@ -958,11 +958,19 @@ async fn handle_skill_command(
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let (source_kind, source_url, source_path) = match &result.source {
-                zeph_skills::SkillSource::Hub { url } => ("hub", Some(url.as_str()), None),
-                zeph_skills::SkillSource::File { path } => {
-                    ("file", None, Some(path.to_string_lossy().into_owned()))
+                zeph_skills::SkillSource::Hub { url } => (
+                    zeph_memory::sqlite::SourceKind::Hub,
+                    Some(url.as_str()),
+                    None,
+                ),
+                zeph_skills::SkillSource::File { path } => (
+                    zeph_memory::sqlite::SourceKind::File,
+                    None,
+                    Some(path.to_string_lossy().into_owned()),
+                ),
+                zeph_skills::SkillSource::Local => {
+                    (zeph_memory::sqlite::SourceKind::Local, None, None)
                 }
-                zeph_skills::SkillSource::Local => ("local", None, None),
             };
             store
                 .upsert_skill_trust(

@@ -417,7 +417,6 @@ mod tests {
     fn deserialize_params_missing_required_field() {
         #[derive(Debug, serde::Deserialize)]
         struct P {
-            #[allow(dead_code)]
             name: String,
         }
         let map = serde_json::Map::new();
@@ -429,7 +428,6 @@ mod tests {
     fn deserialize_params_wrong_type() {
         #[derive(Debug, serde::Deserialize)]
         struct P {
-            #[allow(dead_code)]
             count: u32,
         }
         let mut map = serde_json::Map::new();

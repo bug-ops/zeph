@@ -1147,11 +1147,24 @@ impl Default for AcpConfig {
     }
 }
 
+/// Task kind for scheduled tasks.
+///
+/// Known variants map to built-in handlers; `Custom` accommodates user-defined task types.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledTaskKind {
+    MemoryCleanup,
+    SkillRefresh,
+    HealthCheck,
+    UpdateCheck,
+    Custom(String),
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
     pub cron: String,
-    pub kind: String,
+    pub kind: ScheduledTaskKind,
     #[serde(default)]
     pub config: serde_json::Value,
 }
