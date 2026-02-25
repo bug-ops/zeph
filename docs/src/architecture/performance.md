@@ -43,6 +43,12 @@ The TUI applies two optimizations to maintain responsive input during heavy stre
 - **Event loop batching**: `biased` `tokio::select!` prioritizes keyboard/mouse input over agent events. Agent events are drained via `try_recv` loop, coalescing multiple streaming chunks into a single frame redraw.
 - **Per-message render cache**: Syntax highlighting and markdown parsing results are cached with content-hash keys. Only messages with changed content are re-parsed. Cache invalidation triggers: content mutation, terminal resize, and view mode toggle.
 
+## SQLite Message Index
+
+Migration `015_messages_covering_index.sql` replaces the single-column `conversation_id` index on the `messages` table with a composite covering index on `(conversation_id, id)`. History queries filter by `conversation_id` and order by `id`, so the covering index satisfies both clauses from the index alone, eliminating the post-filter sort step.
+
+The `load_history_filtered` query uses a CTE to express the base filter before applying ordering and limit, replacing the previous double-sort subquery pattern.
+
 ## SQLite WAL Mode
 
 SQLite is opened with WAL (Write-Ahead Logging) mode, enabling concurrent reads during writes and improving throughput for the message persistence hot path.
