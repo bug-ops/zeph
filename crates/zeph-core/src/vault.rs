@@ -20,6 +20,14 @@ use zeroize::Zeroizing;
 /// The inner value is wrapped in [`Zeroizing`] which overwrites the memory on drop.
 /// `Clone` is intentionally not derived — secrets must be explicitly duplicated via
 /// `Secret::new(existing.expose().to_owned())`.
+///
+/// # Clone is not implemented
+///
+/// ```compile_fail
+/// use zeph_core::vault::Secret;
+/// let s = Secret::new("x");
+/// let _ = s.clone(); // must not compile — Secret intentionally does not implement Clone
+/// ```
 #[derive(Deserialize)]
 #[serde(transparent)]
 pub struct Secret(Zeroizing<String>);
@@ -763,6 +771,29 @@ mod age_tests {
 
         let orig = reloaded.get_secret("ORIG").await.unwrap();
         assert_eq!(orig.as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn age_vault_get_method_returns_str() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"FOO": "bar"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(vault.get("FOO"), Some("bar"));
+        assert_eq!(vault.get("MISSING"), None);
+    }
+
+    #[test]
+    fn age_vault_empty_secret_value() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"EMPTY": ""});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(vault.get("EMPTY"), Some(""));
     }
 
     #[test]
