@@ -27,6 +27,46 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 
 See [Security](../reference/security.md#file-executor-sandbox) for details on the path validation mechanism.
 
+## WebScrapeExecutor
+
+`WebScrapeExecutor` handles the `web_scrape` tool. It fetches an HTTPS URL, parses the HTML response with `scrape-core`, and returns elements matching a CSS selector.
+
+### SSRF Defense Layers
+
+Three defense layers run for every request, including each hop in a redirect chain:
+
+1. **URL validation** — only `https://` is accepted; private hostnames, RFC 1918 IP literals, loopback, link-local, unique-local, IPv4-mapped IPv6, and non-HTTPS schemes are rejected before any socket is opened.
+2. **DNS rebinding prevention** — `resolve_and_validate` resolves the hostname and checks every returned IP against the same private-range rules. The validated socket addresses are pinned to the HTTP client via `resolve_to_addrs`, closing the TOCTOU window.
+3. **Manual redirect following** — auto-redirect is disabled. Up to 3 redirects are followed manually; each `Location` header value goes through steps 1 and 2 before the next connection is made. This blocks "open redirect to internal service" attacks.
+
+Exceeding 3 hops, or any redirect targeting a blocked host or IP, terminates the request with an error. See [SSRF Protection for Web Scraping](../reference/security.md#ssrf-protection-for-web-scraping) for the full rule set.
+
+### Configuration
+
+```toml
+[tools.scrape]
+timeout = 15              # Request timeout in seconds (default: 15)
+max_body_bytes = 1048576  # Maximum response body size in bytes (default: 1 MiB)
+```
+
+### Invocation
+
+```json
+{
+  "url": "https://example.com",
+  "select": "h1",
+  "extract": "text",
+  "limit": 5
+}
+```
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `url` | Yes | — | HTTPS URL to fetch |
+| `select` | Yes | — | CSS selector |
+| `extract` | No | `text` | Extraction mode: `text`, `html`, or `attr:<name>` |
+| `limit` | No | `10` | Maximum number of matching elements to return |
+
 ## Native Tool Use
 
 Providers that support structured tool calling (Claude, OpenAI) use the native API-level tool mechanism instead of text-based fenced blocks. The agent detects this via `LlmProvider::supports_tool_use()` and switches to the native path automatically.
