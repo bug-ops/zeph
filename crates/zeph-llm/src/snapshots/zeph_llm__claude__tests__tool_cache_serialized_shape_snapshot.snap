@@ -1,0 +1,23 @@
+---
+source: crates/zeph-llm/src/claude.rs
+assertion_line: 1601
+expression: pretty
+---
+[
+  {
+    "name": "bash",
+    "description": "Run a shell command",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to run"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  }
+]
