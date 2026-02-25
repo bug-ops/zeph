@@ -1,160 +1,213 @@
 # ACP (Agent Client Protocol)
 
-Zeph implements the [Agent Client Protocol](https://agentclientprotocol.com) for IDE integration. The ACP server manages concurrent sessions, proxies tool execution to the IDE, and exposes a set of custom extension methods for session management and agent introspection.
+Zeph implements the [Agent Client Protocol](https://agentclientprotocol.com) — an open standard that lets AI agents communicate with editors and IDEs. With ACP, Zeph becomes a coding assistant inside your editor: it reads files, runs shell commands, and streams responses — all through a standardized protocol.
 
-## Custom Methods
+## Prerequisites
 
-Zeph extends the base ACP protocol with 7 custom methods dispatched via `ext_method`. All method names use a leading underscore prefix to avoid collision with the standard protocol.
+- Zeph installed and configured (`zeph init` completed, at least one LLM provider set up)
+- The `acp` feature enabled (included in the default release binary)
 
-| Method | Description |
-|---|---|
-| `_session/list` | List all sessions (in-memory + persisted) |
-| `_session/get` | Get session details and event history |
-| `_session/delete` | Delete a session from memory and persistent store |
-| `_session/export` | Export session events for backup or migration |
-| `_session/import` | Import events into a new session |
-| `_agent/tools` | List available agent tools |
-| `_agent/working_dir/update` | Update the working directory for a session |
+Verify that ACP is available:
 
-### _session/list
+```bash
+zeph --acp-manifest
+```
 
-Returns all known sessions, merging in-memory (live) sessions with persisted sessions from SQLite. In-memory sessions override persisted entries when both exist for the same ID.
-
-**Params:** `{}`
-
-**Response:**
+Expected output:
 
 ```json
 {
-  "sessions": [
-    { "session_id": "abc-123", "created_at": "2026-01-15T10:30:00Z", "busy": false }
-  ]
+  "name": "zeph",
+  "version": "0.12.0",
+  "transport": "stdio",
+  "command": ["zeph", "--acp"],
+  "capabilities": ["prompt", "cancel", "load_session"],
+  "description": "Zeph AI Agent"
 }
 ```
 
-The `busy` field is `true` when the session is actively processing a prompt (no output available yet).
+## Transport modes
 
-### _session/get
+Zeph supports three ACP transports:
 
-Retrieves details for a single session, including its full event history from the persistent store.
+| Transport | Flag | Use case |
+|-----------|------|----------|
+| **stdio** | `--acp` | Editor spawns Zeph as a child process (recommended for local use) |
+| **HTTP+SSE** | `--acp-http` | Shared or remote server, multiple clients |
+| **WebSocket** | `--acp-http` | Same server, alternative protocol for WS-native clients |
 
-**Params:** `{ "session_id": "abc-123" }`
+The stdio transport is the simplest — the editor manages the process lifecycle, no ports or network configuration needed.
 
-**Response:**
+## IDE setup
+
+### Zed
+
+1. Open **Settings** (`Cmd+,` on macOS, `Ctrl+,` on Linux).
+
+2. Add the agent configuration:
 
 ```json
 {
-  "session_id": "abc-123",
-  "created_at": "2026-01-15T10:30:00Z",
-  "busy": false,
-  "events": [
-    { "event_type": "user_message", "payload": "..." }
-  ]
+  "agent": {
+    "profiles": {
+      "zeph": {
+        "provider": "acp",
+        "binary": {
+          "path": "zeph",
+          "args": ["--acp"]
+        }
+      }
+    },
+    "default_profile": "zeph"
+  }
 }
 ```
 
-Returns an error if the session is not found in memory or in the persistent store.
+3. Open the assistant panel (`Cmd+Shift+A`) — Zed will spawn `zeph --acp` and connect over stdio.
 
-### _session/delete
+> **Tip:** If Zeph is not in your `PATH`, use the full binary path (e.g., `"path": "/usr/local/bin/zeph"`).
 
-Removes a session from both in-memory state and SQLite. Returns `{ "deleted": true }` if the session existed in either location.
+### Helix
 
-**Params:** `{ "session_id": "abc-123" }`
+Helix does not have native ACP support yet. Use the HTTP transport with an ACP-compatible proxy or plugin:
 
-### _session/export
+1. Start Zeph as an HTTP server:
 
-Exports all persisted events for a session. Useful for backup, migration, or debugging.
+```bash
+zeph --acp-http --acp-http-bind 127.0.0.1:8080
+```
 
-**Params:** `{ "session_id": "abc-123" }`
+2. Configure a language server or external tool in `~/.config/helix/languages.toml` that communicates with the ACP HTTP endpoint at `http://127.0.0.1:8080`.
 
-**Response:**
+### VS Code
+
+1. Install an ACP client extension (e.g., [ACP Client](https://marketplace.visualstudio.com/items?itemName=anthropic.acp-client) or any extension implementing the ACP spec).
+
+2. Configure the extension to use Zeph:
 
 ```json
 {
-  "session_id": "abc-123",
-  "events": [ ... ],
-  "exported_at": "2026-01-15T10:35:00Z"
+  "acp.command": ["zeph", "--acp"],
+  "acp.transport": "stdio"
 }
 ```
 
-### _session/import
+Alternatively, for a shared server setup:
 
-Creates a new session and replays imported events into SQLite using an atomic transaction. Returns the newly generated session ID (UUID v4).
-
-**Params:**
-
-```json
-{
-  "events": [
-    { "event_type": "user_message", "payload": "..." }
-  ]
-}
+```bash
+zeph --acp-http --acp-http-bind 127.0.0.1:8080
 ```
 
-**Response:** `{ "session_id": "<new-uuid>" }`
+Then point the extension to `http://127.0.0.1:8080`.
 
-The event count is capped at 10,000 (`MAX_IMPORT_EVENTS`). Requests exceeding this limit are rejected.
+### Any ACP client
 
-### _agent/tools
+For editors or tools implementing the ACP spec:
 
-Returns the list of tools available to the agent within a session context.
-
-**Params:** `{ "session_id": "abc-123" }`
-
-**Response:**
-
-```json
-{
-  "tools": [
-    { "id": "bash", "description": "Execute shell commands" },
-    { "id": "read_file", "description": "Read file contents" },
-    { "id": "write_file", "description": "Write or update file contents" },
-    { "id": "search", "description": "Search file content with regex" },
-    { "id": "web_scrape", "description": "Fetch and extract content from a URL" }
-  ]
-}
-```
-
-### _agent/working_dir/update
-
-Updates the working directory for an active in-memory session. Only succeeds if the session exists in memory.
-
-**Params:** `{ "session_id": "abc-123", "path": "/workspace/project" }`
-
-**Response:** `{ "updated": true }`
-
-## Auth Hints
-
-The `initialize` response includes an `auth_hint` key in its `meta` field, signaling to the IDE client that authentication is required. This allows clients to present appropriate credential prompts before sending prompts.
-
-## Security
-
-### Session ID Validation
-
-All methods that accept a `session_id` parameter enforce strict validation:
-
-- Maximum length: 128 characters
-- Allowed characters: `[a-zA-Z0-9_-]`
-
-Requests with invalid session IDs are rejected with an `invalid_request` error.
-
-### Path Traversal Protection
-
-The `_agent/working_dir/update` method rejects any path containing `..` (parent directory) components, preventing path traversal attacks that could escape the intended workspace boundary.
-
-### Import Size Cap
-
-Session import is limited to 10,000 events per request (`MAX_IMPORT_EVENTS`), preventing denial-of-service through oversized payloads. The import is executed as an atomic SQLite transaction — either all events are written or none are.
+- **stdio** — spawn `zeph --acp` as a subprocess, communicate over stdin/stdout
+- **HTTP+SSE** — start `zeph --acp-http` and connect to the bind address
+- **WebSocket** — connect to the `/ws` endpoint on the same HTTP server
 
 ## Configuration
 
-ACP is configured in `config.toml` under the `[acp]` section:
+ACP settings live in `config.toml` under the `[acp]` section:
 
 ```toml
 [acp]
+enabled = true
+agent_name = "zeph"
+agent_version = "0.12.0"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 # permission_file = "~/.config/zeph/acp-permissions.toml"
+# available_models = ["claude:claude-sonnet-4-5", "ollama:llama3"]
+# transport = "stdio"             # "stdio", "http", or "both"
+# http_bind = "127.0.0.1:8080"
 ```
 
-See [Configuration Reference](../reference/configuration.md) for environment variable overrides.
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable ACP server |
+| `agent_name` | `"zeph"` | Agent name advertised to the IDE |
+| `agent_version` | package version | Agent version advertised to the IDE |
+| `max_sessions` | `4` | Maximum concurrent sessions |
+| `session_idle_timeout_secs` | `1800` | Idle sessions are reaped after this timeout (seconds) |
+| `permission_file` | none | Path to persisted tool permission decisions |
+| `available_models` | `[]` | Models advertised to the IDE for runtime switching (format: `provider:model`) |
+| `transport` | `"stdio"` | Transport mode: `"stdio"`, `"http"`, or `"both"` |
+| `http_bind` | `"127.0.0.1:8080"` | Bind address for the HTTP transport |
+
+You can also configure ACP via the interactive wizard:
+
+```bash
+zeph init
+```
+
+The wizard will ask whether to enable ACP and which agent name/version to use.
+
+## Model switching
+
+If you configure `available_models`, the IDE can switch between LLM providers at runtime:
+
+```toml
+[acp]
+available_models = [
+  "claude:claude-sonnet-4-5",
+  "openai:gpt-4o",
+  "ollama:qwen3:14b",
+]
+```
+
+The IDE presents these as selectable options. Zeph routes each prompt to the chosen provider without restarting the server.
+
+## Custom extension methods
+
+Zeph extends the base ACP protocol with custom methods via `ext_method`. All use a leading underscore to avoid collisions with the standard spec.
+
+| Method | Description |
+|--------|-------------|
+| `_session/list` | List all sessions (in-memory + persisted) |
+| `_session/get` | Get session details and event history |
+| `_session/delete` | Delete a session |
+| `_session/export` | Export session events for backup |
+| `_session/import` | Import events into a new session |
+| `_agent/tools` | List available tools for a session |
+| `_agent/working_dir/update` | Change the working directory for a session |
+
+These methods are useful for building custom IDE integrations or debugging session state.
+
+## Security
+
+- **Session IDs** — validated against `[a-zA-Z0-9_-]`, max 128 characters
+- **Path traversal** — `_agent/working_dir/update` rejects paths containing `..`
+- **Import cap** — session import limited to 10,000 events per request
+- **Tool permissions** — optionally persisted to `permission_file` so users don't re-approve tools on every session
+
+## Troubleshooting
+
+**Zeph binary not found by the editor**
+
+Ensure `zeph` is in your shell `PATH`. Test with:
+
+```bash
+which zeph
+zeph --acp-manifest
+```
+
+If using a custom install path, specify the full path in the editor config.
+
+**Connection drops or no response**
+
+Check that your `config.toml` has a valid LLM provider configured. Zeph needs at least one working provider to process prompts. Run `zeph` in CLI mode first to verify your setup works.
+
+**HTTP transport: "address already in use"**
+
+Another process is using the bind port. Change the port:
+
+```bash
+zeph --acp-http --acp-http-bind 127.0.0.1:9090
+```
+
+**Sessions accumulate in memory**
+
+Idle sessions are automatically reaped after `session_idle_timeout_secs` (default: 30 minutes). Lower this value if memory is a concern.

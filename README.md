@@ -73,6 +73,18 @@ zeph --tui         # run with TUI dashboard
 
 [Architecture →](https://bug-ops.github.io/zeph/architecture/overview.html) · [Feature flags →](https://bug-ops.github.io/zeph/reference/feature-flags.html) · [Security model →](https://bug-ops.github.io/zeph/reference/security.html)
 
+## IDE Integration (ACP)
+
+Zeph implements the [Agent Client Protocol](https://agentclientprotocol.com/) — use it as an AI backend in Zed, Helix, VS Code, or any ACP-compatible editor via stdio, HTTP+SSE, or WebSocket transport.
+
+```bash
+zeph acp                    # stdio (editor spawns as subprocess)
+zeph acp --http :8080       # HTTP+SSE (shared/remote)
+zeph acp --ws :8080         # WebSocket
+```
+
+[ACP setup guide →](https://bug-ops.github.io/zeph/advanced/acp.html)
+
 ## TUI Demo
 
 <div align="center">
