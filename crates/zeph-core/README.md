@@ -38,7 +38,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking |
 
-**Re-exports:** `Agent`, `content_hash`
+**Re-exports:** `Agent`, `content_hash`, `DiffData`
 
 ## Configuration
 

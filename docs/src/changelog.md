@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependency hygiene** (epic #832): eliminated reverse dependencies and duplicate types across the workspace
+  - `TrustLevel` moved to `zeph-tools::trust_level`; `zeph-skills` re-exports it. `zeph-tools` no longer depends on `zeph-skills` (#841)
+  - Removed duplicate `ChannelError` from `zeph-channels::error`; all adapters use `zeph_core::channel::ChannelError` (#842)
+  - `SubAgentState` defined in `zeph-core::subagent::state`, replacing `zeph_a2a::TaskState`; `zeph-core` no longer depends on `zeph-a2a` (#843)
+  - `zeph-index` routes all Qdrant operations through the `VectorStore` trait from `zeph-memory`; direct `qdrant-client` dependency removed (#844)
+  - `content_hash(data: &[u8]) -> String` added to `zeph-core::hash` (BLAKE3) and available as `zeph_core::content_hash` (#845)
+  - `zeph-core::diff` re-export module removed; `zeph_core::DiffData` is now a direct `pub use zeph_tools::executor::DiffData` (#846)
+
 ## [0.12.0] - 2026-02-24
 
 ### Added

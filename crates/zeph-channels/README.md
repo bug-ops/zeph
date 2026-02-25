@@ -21,9 +21,11 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 | `slack` | Slack adapter (optional feature); audio file detection and download with Bearer auth |
 | `any` | `AnyChannel` — enum dispatch over all channels |
 | `markdown` | Markdown rendering helpers |
-| `error` | `ChannelError` — unified error type |
 
-**Re-exports:** `AnyChannel`, `CliChannel`, `ChannelError`
+**Re-exports:** `AnyChannel`, `CliChannel`
+
+> [!NOTE]
+> `ChannelError` is defined in `zeph-core::channel` and used directly by all channel adapters. `zeph-channels` does not re-export it.
 
 ## Installation
 
