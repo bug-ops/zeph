@@ -30,6 +30,8 @@ pub struct ClaudeProvider {
     max_tokens: u32,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    /// Cached pre-serialized tool definitions. Keyed by tool names; invalidated when the set changes.
+    tool_cache: std::sync::Mutex<Option<(Vec<String>, Vec<serde_json::Value>)>>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -41,6 +43,14 @@ impl fmt::Debug for ClaudeProvider {
             .field("max_tokens", &self.max_tokens)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_cache", &self.last_cache.lock().ok())
+            .field(
+                "tool_cache",
+                &self
+                    .tool_cache
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|(k, _)| k.len())),
+            )
             .finish()
     }
 }
@@ -54,6 +64,7 @@ impl Clone for ClaudeProvider {
             max_tokens: self.max_tokens,
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
+            tool_cache: std::sync::Mutex::new(None),
         }
     }
 }
@@ -68,6 +79,7 @@ impl ClaudeProvider {
             max_tokens,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
+            tool_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -81,6 +93,31 @@ impl ClaudeProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let mut guard = self
+            .tool_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((ref cached_names, ref cached_values)) = *guard
+            && cached_names == &names
+        {
+            return cached_values.clone();
+        }
+        let serialized: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
+            })
+            .collect();
+        *guard = Some((names, serialized.clone()));
+        serialized
     }
 
     fn store_cache_usage(&self, usage: &ApiUsage) {
@@ -345,14 +382,7 @@ impl LlmProvider for ClaudeProvider {
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
         let (system, chat_messages) = split_messages_structured(messages);
-        let api_tools: Vec<AnthropicTool> = tools
-            .iter()
-            .map(|t| AnthropicTool {
-                name: &t.name,
-                description: &t.description,
-                input_schema: &t.parameters,
-            })
-            .collect();
+        let api_tools = self.get_or_build_api_tools(tools);
 
         let system_blocks = system.map(|s| split_system_into_blocks(&s));
         let body = ToolRequestBody {
@@ -556,7 +586,7 @@ struct ToolRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Vec<SystemContentBlock>>,
     messages: &'a [StructuredApiMessage],
-    tools: &'a [AnthropicTool<'a>],
+    tools: &'a [serde_json::Value],
 }
 
 #[derive(Serialize)]
@@ -1513,6 +1543,42 @@ mod tests {
             }
             _ => panic!("expected Blocks content"),
         }
+    }
+
+    #[test]
+    fn tool_cache_returns_same_values_on_second_call() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run shell commands".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools);
+        let second = provider.get_or_build_api_tools(&tools);
+        assert_eq!(first, second);
+        assert_eq!(first[0]["name"], "bash");
+        assert_eq!(first[0]["description"], "Run shell commands");
+    }
+
+    #[test]
+    fn tool_cache_invalidates_when_tools_change() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools_a = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run shell commands".into(),
+            parameters: serde_json::json!({}),
+        }];
+        let tools_b = vec![ToolDefinition {
+            name: "read".into(),
+            description: "Read files".into(),
+            parameters: serde_json::json!({}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools_a);
+        let second = provider.get_or_build_api_tools(&tools_b);
+        assert_eq!(first[0]["name"], "bash");
+        assert_eq!(second[0]["name"], "read");
     }
 
     #[test]
