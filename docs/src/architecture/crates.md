@@ -69,6 +69,7 @@ SQLite-backed conversation persistence with Qdrant vector search.
 - `SemanticMemory<P>` — orchestrator coordinating SQLite + Qdrant + LlmProvider
 - `Embeddable` trait — generic interface for types that can be embedded and synced to Qdrant (provides `id`, `content_for_embedding`, `content_hash`, `to_payload`)
 - `EmbeddingRegistry<T: Embeddable>` — generic Qdrant sync/search engine: delta-syncs items by BLAKE3 content hash, performs cosine similarity search, and returns scored results
+- `VectorStore` trait — object-safe abstraction over vector database operations (`ensure_collection`, `upsert_points`, `search`, `delete_points`, `scroll_points`); implemented by `QdrantOps`. `zeph-index` uses this trait instead of depending on `qdrant-client` directly, keeping the crate decoupled from the Qdrant client library
 - Automatic collection creation, graceful degradation without Qdrant
 - `DocumentLoader` trait — async document loading with `load(&Path)` returning `Vec<Document>`, dyn-compatible via `Pin<Box<dyn Future>>`
 - `TextLoader` — plain text and markdown loader (`.txt`, `.md`, `.markdown`) with configurable `max_file_size` (50 MiB default) and path canonicalization
@@ -84,6 +85,7 @@ Channel implementations for the Zeph agent.
 - `AnyChannel` — enum dispatch over all channel variants (Cli, Telegram, Discord, Slack, Tui, Loopback), used by the binary for runtime channel selection
 - `CliChannel` — stdin/stdout with immediate streaming output, blocking recv (queue always empty)
 - `TelegramChannel` — teloxide adapter with MarkdownV2 rendering, streaming via edit-in-place, user whitelisting, inline confirmation keyboards, mpsc-backed message queue with 500ms merge window
+- `ChannelError` is not defined in this crate; use `zeph_core::channel::ChannelError` directly. The duplicate definition that previously existed in `zeph-channels::error` has been removed.
 
 ## zeph-tools
 
@@ -133,7 +135,7 @@ Cron-based periodic task scheduler with SQLite persistence (optional, feature-ga
 
 - `Scheduler` -- tick loop checking due tasks every 60 seconds
 - `ScheduledTask` -- task definition with 6-field cron expression (via `cron` crate)
-- `TaskKind` -- built-in kinds (`memory_cleanup`, `skill_refresh`, `health_check`) and `Custom(String)`
+- `TaskKind` -- built-in kinds (`memory_cleanup`, `skill_refresh`, `health_check`, `update_check`) and `Custom(String)`
 - `TaskHandler` trait -- async execution interface receiving `serde_json::Value` config
 - `JobStore` -- SQLite-backed persistence tracking `last_run` timestamps and status
 - Graceful shutdown via `watch::Receiver<bool>`
