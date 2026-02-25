@@ -202,6 +202,7 @@ This is independent of `security.redact_secrets` — output redaction sanitizes 
 - `agent.max_tool_iterations` <= 100
 - `a2a.rate_limit` > 0
 - `gateway.rate_limit` > 0
+- `gateway.max_body_size` <= 10,485,760 (10 MiB)
 
 The agent exits with an error message if any bound is violated.
 

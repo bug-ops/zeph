@@ -8,7 +8,7 @@ Criterion benchmarks cover three critical hot paths:
 
 | Benchmark | Crate | What it measures |
 |-----------|-------|------------------|
-| `token_estimation` | zeph-memory | `estimate_tokens()` throughput on varying input sizes |
+| `token_estimation` | zeph-memory | `TokenCounter` throughput on varying input sizes |
 | `matcher` | zeph-skills | In-memory cosine similarity matching latency |
 | `context_building` | zeph-core | Full context assembly pipeline |
 
@@ -20,9 +20,9 @@ cargo bench -p zeph-skills --bench matcher
 cargo bench -p zeph-core --bench context_building
 ```
 
-## Token Estimation
+## Token Counting
 
-Token count is estimated as `input.len() / 3` (byte length divided by 3). This avoids the overhead of `chars().count()` while remaining a reasonable approximation for mixed ASCII/UTF-8 text across common LLM tokenizers.
+Token counts are computed by `TokenCounter` in `zeph-memory` using the `tiktoken-rs` BPE tokenizer (`cl100k_base`). Results are cached in a `DashMap` (10,000-entry cap) for O(1) amortized lookups on repeated inputs. An input size guard (64 KiB) prevents oversized text from polluting the cache. When the tokenizer is unavailable, the implementation falls back to `input.len() / 4`.
 
 ## Concurrent Skill Embedding
 

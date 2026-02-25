@@ -18,7 +18,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session"],
@@ -116,7 +116,7 @@ ACP settings live in `config.toml` under the `[acp]` section:
 [acp]
 enabled = true
 agent_name = "zeph"
-agent_version = "0.12.0"
+agent_version = "0.12.1"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 # permission_file = "~/.config/zeph/acp-permissions.toml"

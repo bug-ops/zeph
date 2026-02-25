@@ -34,6 +34,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `acp.session_idle_timeout_secs` | > 0 |
 | `acp.permission_file` | valid file path (optional) |
 | `gateway.rate_limit` | > 0 |
+| `gateway.max_body_size` | <= 10,485,760 (10 MiB) |
 
 ## Hot-Reload
 
@@ -64,7 +65,7 @@ auto_update_check = true  # Query GitHub Releases API for newer versions (defaul
 [llm]
 provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator, router
 base_url = "http://localhost:11434"
-model = "mistral:7b"
+model = "qwen3:8b"
 embedding_model = "qwen3-embedding"  # Model for text embeddings
 # vision_model = "llava:13b"        # Ollama only: dedicated model for image requests
 # response_cache_enabled = false     # SQLite-backed LLM response cache (default: false)

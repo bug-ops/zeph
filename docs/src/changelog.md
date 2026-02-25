@@ -6,15 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-02-25
+
+### Security
+
+- Enforce `unsafe_code = "deny"` at workspace lint level; audited `unsafe` blocks (mmap via candle, `std::env` in tests) annotated with `#[allow(unsafe_code)]` (#867)
+- `AgeVaultProvider` secrets map switched from `HashMap` to `BTreeMap` for deterministic JSON key ordering on `vault.save()` (#876)
+- `WebScrapeExecutor`: redirect targets now validated against private/internal IP ranges to prevent SSRF via redirect chains (#871)
+- Gateway webhook payload: per-field length limits (sender/channel <= 256 bytes, body <= 65536 bytes) and ASCII control-char stripping to prevent prompt injection (#868)
+- ACP permission cache: null bytes stripped from tool names before cache key construction to prevent key collision (#872)
+- `gateway.max_body_size` bounded to 10 MiB (10,485,760 bytes) at config validation to prevent memory exhaustion (#875)
+- Shell sandbox: `<(`, `>(`, `<<<`, `eval ` added to default `confirm_patterns` to mitigate process substitution, here-string, and eval bypass vectors (#870)
+
+### Performance
+
+- `ClaudeProvider` caches pre-serialized `ToolDefinition` slices; cache is invalidated only when the tool set changes, eliminating per-call JSON construction overhead (#894)
+- `should_compact()` replaced O(N) message scan with direct comparison against `cached_prompt_tokens` (#880)
+- `EnvironmentContext` cached on `Agent`; only `git_branch` refreshed on skill reload instead of spawning a full git subprocess per turn (#881)
+- Doom-loop content hashed in-place by feeding stable message parts directly into the hasher, eliminating the intermediate normalized `String` allocation (#882)
+- `prune_stale_tool_outputs`: `count_tokens` called once per `ToolResult` part instead of twice (#883)
+- Composite covering index `(conversation_id, id)` on `messages` table (migration 015) replaces single-column index; eliminates post-filter sort step (#895)
+- `load_history_filtered` rewritten as a CTE, replacing the previous double-sort subquery (#896)
+- `remove_tool_responses_middle_out` takes ownership of the message `Vec` instead of cloning; `HashSet` replaced with `Vec::with_capacity` for small-N index tracking (#884, #888)
+- Fast-path `parts_json == "[]"` check in history load functions skips serde parse on the common empty case (#886)
+- `consolidate_summaries` uses `String::with_capacity` + `write!` loop instead of `collect::<Vec<_>>().join()` (#887)
+- TUI `tui_loop()` skips `terminal.draw()` when no events occurred in the 250ms tick, reducing idle CPU usage (#892)
+
+### Added
+
+- `sqlite_pool_size: u32` in `MemoryConfig` (default 5) — configurable via `[memory] sqlite_pool_size` (#893)
+- Background cleanup task for `ResponseCache::cleanup_expired()` — interval configurable via `[memory] response_cache_cleanup_interval_secs` (default 3600s) (#891)
+- `schema` feature flag in `zeph-llm` gating `schemars` dependency and typed output API (#879)
+
 ### Changed
 
-- **Dependency hygiene** (epic #832): eliminated reverse dependencies and duplicate types across the workspace
-  - `TrustLevel` moved to `zeph-tools::trust_level`; `zeph-skills` re-exports it. `zeph-tools` no longer depends on `zeph-skills` (#841)
-  - Removed duplicate `ChannelError` from `zeph-channels::error`; all adapters use `zeph_core::channel::ChannelError` (#842)
-  - `SubAgentState` defined in `zeph-core::subagent::state`, replacing `zeph_a2a::TaskState`; `zeph-core` no longer depends on `zeph-a2a` (#843)
-  - `zeph-index` routes all Qdrant operations through the `VectorStore` trait from `zeph-memory`; direct `qdrant-client` dependency removed (#844)
-  - `content_hash(data: &[u8]) -> String` added to `zeph-core::hash` (BLAKE3) and available as `zeph_core::content_hash` (#845)
-  - `zeph-core::diff` re-export module removed; `zeph_core::DiffData` is now a direct `pub use zeph_tools::executor::DiffData` (#846)
+- `check_summarization()` uses in-memory `unsummarized_count` counter on `MemoryState` instead of issuing a `COUNT(*)` SQL query on every message save (#890)
+- Removed 4 `channel.send_status()` calls from `persist_message()` in `zeph-core` — SQLite WAL inserts < 1ms do not warrant status reporting (#889)
+- Default Ollama model changed from `mistral:7b` to `qwen3:8b`; `"qwen3"` and `"qwen"` added as `ChatML` template aliases (#897)
+- `src/main.rs` split into focused modules: `runner.rs`, `agent_setup.rs`, `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `tests.rs` — `main.rs` reduced to 26 LOC (#839)
+- `zeph-core/src/bootstrap.rs` split into submodule directory: `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`, `tests.rs` — `bootstrap/mod.rs` reduced to 278 LOC (#840)
+- `SkillTrustRow.source_kind` changed from `String` to `SourceKind` enum (`Local`, `Hub`, `File`) with serde DB serialization (#848)
+- `ScheduledTaskConfig.kind` changed from `String` to `ScheduledTaskKind` enum (#850)
+- `TrustLevel` moved to `zeph-tools::trust_level`; `zeph-skills` re-exports it, removing the `zeph-tools → zeph-skills` reverse dependency (#841)
+- Duplicate `ChannelError` removed from `zeph-channels::error`; all channel adapters use `zeph_core::channel::ChannelError` (#842)
+- `zeph_a2a::types::TaskState` replaced in `zeph-core` with a local `SubAgentState` enum; `zeph-a2a` removed from `zeph-core` dependencies (#843)
+- `zeph-index` Qdrant access consolidated through `VectorStore` trait from `zeph-memory`; direct `qdrant-client` dependency removed (#844)
+- `content_hash(data: &[u8]) -> String` utility added to `zeph-core::hash` backed by BLAKE3 (#845)
+- `zeph-core::diff` re-export module removed; `zeph_core::DiffData` is now a direct re-export of `zeph_tools::executor::DiffData` (#846)
+- `ContextManager`, `ToolOrchestrator`, `LearningEngine` extracted from `Agent` into standalone structs with pure delegation (#830, #836, #837, #838)
+- `Secret` type wraps inner value in `Zeroizing<String>`; `Clone` removed (#865)
+- `AgeVaultProvider` secrets and intermediate decrypt/encrypt buffers wrapped in `Zeroizing` (#866, #874)
+- `A2aServer::serve()` and `GatewayServer::serve()` emit `tracing::warn!` when `auth_token` is `None` (#869, #873)
 
 ## [0.12.0] - 2026-02-24
 
