@@ -416,6 +416,7 @@ mod tests {
     #[test]
     fn deserialize_params_missing_required_field() {
         #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
         struct P {
             name: String,
         }
@@ -427,6 +428,7 @@ mod tests {
     #[test]
     fn deserialize_params_wrong_type() {
         #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
         struct P {
             count: u32,
         }
