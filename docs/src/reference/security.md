@@ -229,6 +229,29 @@ a2a_seconds = 30        # A2A remote calls
 - Automated Dependabot PRs for dependency updates
 - `cargo-deny` checks in CI for license/vulnerability compliance
 
+## Secret Memory Hygiene
+
+Zeph uses the [`zeroize`](https://crates.io/crates/zeroize) crate to ensure that secret material is erased from process memory as soon as it is no longer needed.
+
+**`Secret` type:**
+
+```rust
+// Internal representation — wraps Zeroizing<String> instead of plain String
+Secret(Zeroizing<String>)
+```
+
+`Zeroizing<T>` implements `Drop` to overwrite heap memory with zeros before deallocation, preventing secrets from lingering in freed pages.
+
+**`AgeVaultProvider`:**
+
+All decrypted values in the in-memory secrets map are stored as `HashMap<String, Zeroizing<String>>`. Key-file content and intermediate decrypt buffers are also wrapped in `Zeroizing` so they are cleared when the local binding is dropped.
+
+**`Clone` intentionally removed:**
+
+`Secret` no longer derives `Clone`. This is a deliberate trade-off: preventing accidental cloning reduces the number of live copies of a secret value in memory at any given time.
+
+If you need to pass a secret to a function, accept `&Secret` or extract the inner `&str` directly rather than cloning.
+
 ## Code Security
 
 Rust-native memory safety guarantees:
