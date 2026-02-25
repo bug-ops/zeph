@@ -2554,3 +2554,23 @@ fn tool_call_cutoff_one_accepted_by_validate() {
     config.memory.tool_call_cutoff = 1;
     assert!(config.validate().is_ok());
 }
+
+#[test]
+fn gateway_max_body_size_over_limit_rejected() {
+    let mut config = Config::default();
+    config.gateway.max_body_size = 20_000_000;
+    let result = config.validate();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("gateway.max_body_size must be <= 10485760"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn gateway_max_body_size_at_limit_accepted() {
+    let mut config = Config::default();
+    config.gateway.max_body_size = 10_485_760;
+    assert!(config.validate().is_ok());
+}
