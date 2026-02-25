@@ -28,7 +28,6 @@ toml.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
-zeph-skills.workspace = true
 
 [dev-dependencies]
 filetime = "0.2"

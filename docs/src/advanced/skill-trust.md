@@ -2,6 +2,8 @@
 
 Zeph assigns a trust level to every loaded skill, controlling which tools it can invoke. This prevents untrusted or tampered skills from executing dangerous operations like shell commands or file writes.
 
+> **Crate ownership:** `TrustLevel` is defined in `zeph-tools::trust_level` and re-exported by `zeph-skills` for convenience. `TrustGateExecutor`, which enforces the trust policy at execution time, also lives in `zeph-tools`. This keeps `zeph-tools` independent of `zeph-skills` while sharing the common type.
+
 ## Trust Tiers
 
 | Level | Tool Access | Description |

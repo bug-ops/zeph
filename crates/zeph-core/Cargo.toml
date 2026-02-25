@@ -23,6 +23,7 @@ metal = ["zeph-llm/metal"]
 [dependencies]
 age.workspace = true
 anyhow.workspace = true
+blake3.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 futures.workspace = true
 notify.workspace = true
@@ -37,7 +38,6 @@ tokio-stream.workspace = true
 toml.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-zeph-a2a.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
 zeph-mcp.workspace = true

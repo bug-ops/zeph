@@ -13,7 +13,7 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 ├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
-├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor
+├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor, TrustLevel
 ├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (optional)
 ├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
 ├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
@@ -24,19 +24,19 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 
 ```text
 zeph (binary)
-  └── zeph-core (orchestrates everything)
-        ├── zeph-llm (leaf)
-        ├── zeph-skills (leaf)
-        ├── zeph-memory (leaf)
-        ├── zeph-channels (leaf)
-        ├── zeph-tools (leaf)
-        ├── zeph-index (optional, leaf)
-        ├── zeph-mcp (optional, leaf)
-        ├── zeph-a2a (optional, leaf)
-        └── zeph-tui (optional, leaf)
+  ├── zeph-core (orchestrates everything)
+  │     ├── zeph-llm (leaf)
+  │     ├── zeph-skills (leaf)
+  │     ├── zeph-memory (leaf)
+  │     ├── zeph-channels (leaf)
+  │     ├── zeph-tools (leaf)
+  │     ├── zeph-index (optional, leaf)
+  │     ├── zeph-mcp (optional, leaf)
+  │     └── zeph-tui (optional, leaf)
+  └── zeph-a2a (optional, wired by binary, not by zeph-core)
 ```
 
-`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation.
+`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation. `zeph-a2a` is feature-gated and wired directly by the binary — `zeph-core` does not depend on it. Sub-agent lifecycle state (`SubAgentState`) is defined inside `zeph-core` to keep the core agent loop self-contained.
 
 ## Agent Loop
 
