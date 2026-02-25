@@ -13,20 +13,25 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 /// Wrapper for sensitive strings with redacted Debug/Display.
-#[derive(Clone, Deserialize)]
+///
+/// The inner value is wrapped in [`Zeroizing`] which overwrites the memory on drop.
+/// `Clone` is intentionally not derived — secrets must be explicitly duplicated via
+/// `Secret::new(existing.expose().to_owned())`.
+#[derive(Deserialize)]
 #[serde(transparent)]
-pub struct Secret(String);
+pub struct Secret(Zeroizing<String>);
 
 impl Secret {
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(Zeroizing::new(s.into()))
     }
 
     #[must_use]
     pub fn expose(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -81,7 +86,7 @@ pub enum AgeVaultError {
 }
 
 pub struct AgeVaultProvider {
-    secrets: HashMap<String, String>,
+    secrets: HashMap<String, Zeroizing<String>>,
     key_path: PathBuf,
     vault_path: PathBuf,
 }
@@ -115,7 +120,8 @@ impl AgeVaultProvider {
     ///
     /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
     pub fn load(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
-        let key_str = std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?;
+        let key_str =
+            Zeroizing::new(std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?);
         let identity = parse_identity(&key_str)?;
         let ciphertext = std::fs::read(vault_path).map_err(AgeVaultError::VaultRead)?;
         let secrets = decrypt_secrets(&identity, &ciphertext)?;
@@ -135,7 +141,9 @@ impl AgeVaultProvider {
     /// Note: re-reads and re-parses the key file on each call. For CLI one-shot use this
     /// is acceptable; if used in a long-lived context consider caching the parsed identity.
     pub fn save(&self) -> Result<(), AgeVaultError> {
-        let key_str = std::fs::read_to_string(&self.key_path).map_err(AgeVaultError::KeyRead)?;
+        let key_str = Zeroizing::new(
+            std::fs::read_to_string(&self.key_path).map_err(AgeVaultError::KeyRead)?,
+        );
         let identity = parse_identity(&key_str)?;
         let ciphertext = encrypt_secrets(&identity, &self.secrets)?;
         atomic_write(&self.vault_path, &ciphertext)
@@ -143,7 +151,7 @@ impl AgeVaultProvider {
 
     /// Insert or update a secret in the in-memory map.
     pub fn set_secret_mut(&mut self, key: String, value: String) {
-        self.secrets.insert(key, value);
+        self.secrets.insert(key, Zeroizing::new(value));
     }
 
     /// Remove a secret from the in-memory map. Returns `true` if the key existed.
@@ -162,7 +170,7 @@ impl AgeVaultProvider {
     /// Look up a secret value by key, returning `None` if not present.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.secrets.get(key).map(String::as_str)
+        self.secrets.get(key).map(|v| v.as_str())
     }
 
     /// Generate a new x25519 keypair, write key file (mode 0600), and create an empty encrypted vault.
@@ -182,17 +190,17 @@ impl AgeVaultProvider {
         let identity = age::x25519::Identity::generate();
         let public_key = identity.to_public();
 
-        let key_content = format!(
+        let key_content = Zeroizing::new(format!(
             "# public key: {}\n{}\n",
             public_key,
             identity.to_string().expose_secret()
-        );
+        ));
 
         let key_path = dir.join("vault-key.txt");
         write_private_file(&key_path, key_content.as_bytes())?;
 
         let vault_path = dir.join("secrets.age");
-        let empty: HashMap<String, String> = HashMap::new();
+        let empty: HashMap<String, Zeroizing<String>> = HashMap::new();
         let ciphertext = encrypt_secrets(&identity, &empty)?;
         atomic_write(&vault_path, &ciphertext)?;
 
@@ -231,28 +239,33 @@ fn parse_identity(key_str: &str) -> Result<age::x25519::Identity, AgeVaultError>
 fn decrypt_secrets(
     identity: &age::x25519::Identity,
     ciphertext: &[u8],
-) -> Result<HashMap<String, String>, AgeVaultError> {
+) -> Result<HashMap<String, Zeroizing<String>>, AgeVaultError> {
     let decryptor = age::Decryptor::new(ciphertext).map_err(AgeVaultError::Decrypt)?;
     let mut reader = decryptor
         .decrypt(std::iter::once(identity as &dyn age::Identity))
         .map_err(AgeVaultError::Decrypt)?;
-    let mut plaintext = Vec::with_capacity(ciphertext.len());
+    let mut plaintext = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
     reader
         .read_to_end(&mut plaintext)
         .map_err(AgeVaultError::Io)?;
-    // TODO: zeroize plaintext buffer after use once zeroize is added to workspace deps.
-    serde_json::from_slice(&plaintext).map_err(AgeVaultError::Json)
+    let mut raw: HashMap<String, String> =
+        serde_json::from_slice(&plaintext).map_err(AgeVaultError::Json)?;
+    Ok(raw.drain().map(|(k, v)| (k, Zeroizing::new(v))).collect())
 }
 
 fn encrypt_secrets(
     identity: &age::x25519::Identity,
-    secrets: &HashMap<String, String>,
+    secrets: &HashMap<String, Zeroizing<String>>,
 ) -> Result<Vec<u8>, AgeVaultError> {
     let recipient = identity.to_public();
     let encryptor =
         age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
             .map_err(|e| AgeVaultError::Encrypt(e.to_string()))?;
-    let json = serde_json::to_vec(secrets).map_err(AgeVaultError::Json)?;
+    let plain: HashMap<&str, &str> = secrets
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let json = Zeroizing::new(serde_json::to_vec(&plain).map_err(AgeVaultError::Json)?);
     let mut ciphertext = Vec::with_capacity(json.len() + 64);
     let mut writer = encryptor
         .wrap_output(&mut ciphertext)
@@ -295,7 +308,7 @@ impl VaultProvider for AgeVaultProvider {
         &self,
         key: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
-        let result = self.secrets.get(key).cloned();
+        let result = self.secrets.get(key).map(|v| (**v).clone());
         Box::pin(async move { Ok(result) })
     }
 
@@ -441,10 +454,11 @@ mod tests {
     }
 
     #[test]
-    fn secret_clone() {
-        let s1 = Secret::new("test");
-        let s2 = s1.clone();
-        assert_eq!(s1.expose(), s2.expose());
+    fn secret_expose_roundtrip() {
+        let s = Secret::new("test");
+        let owned = s.expose().to_owned();
+        let s2 = Secret::new(owned);
+        assert_eq!(s.expose(), s2.expose());
     }
 
     #[test]

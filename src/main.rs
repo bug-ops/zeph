@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use zeph_core::vault::AgeVaultProvider;
+use zeph_core::vault::{AgeVaultProvider, Secret};
 
 #[cfg(any(feature = "a2a", feature = "tui", feature = "scheduler"))]
 use tokio::sync::watch;
@@ -607,7 +607,7 @@ async fn main() -> anyhow::Result<()> {
             .secrets
             .custom
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
+            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
     )
     .with_autosave_config(
         config.memory.autosave_assistant,
@@ -1680,7 +1680,7 @@ async fn run_daemon(
             .secrets
             .custom
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
+            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
     );
 
     let summary_provider = app.build_summary_provider();
@@ -2347,7 +2347,11 @@ async fn spawn_acp_agent(
     )
     .with_learning(d.learning)
     .with_tool_call_cutoff(d.tool_call_cutoff)
-    .with_available_secrets(d.secrets.iter().map(|(k, v)| (k.clone(), v.clone())));
+    .with_available_secrets(
+        d.secrets
+            .iter()
+            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
+    );
 
     if let Some(signal) = cancel_signal {
         agent = agent.with_cancel_signal(signal);

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Secret type wraps inner value in `Zeroizing<String>` for memory zeroization on drop; `Clone` removed (#865)
+- AgeVaultProvider secrets HashMap uses `Zeroizing<String>` values (#866)
+- Age private key reads, decrypt plaintext buffer, and encrypt JSON buffer wrapped in `Zeroizing` (#874)
+
 ## [0.12.0] - 2026-02-24
 
 ### Added

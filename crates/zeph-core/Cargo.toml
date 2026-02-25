@@ -44,6 +44,7 @@ zeph-mcp.workspace = true
 zeph-memory.workspace = true
 zeph-skills.workspace = true
 zeph-tools.workspace = true
+zeroize.workspace = true
 
 [[bench]]
 name = "context_building"
