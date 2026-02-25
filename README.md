@@ -103,6 +103,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and guidelines.
 
 ## Security
 
+The workspace enforces `unsafe_code = "deny"` at the Cargo workspace lint level — no unsafe Rust is permitted in any crate without an explicit override.
+
 Found a vulnerability? Please use [GitHub Security Advisories](https://github.com/bug-ops/zeph/security/advisories/new) for responsible disclosure.
 
 ## License

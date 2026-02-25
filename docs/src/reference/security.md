@@ -284,7 +284,7 @@ Secret(Zeroizing<String>)
 
 **`AgeVaultProvider`:**
 
-All decrypted values in the in-memory secrets map are stored as `HashMap<String, Zeroizing<String>>`. Key-file content and intermediate decrypt buffers are also wrapped in `Zeroizing` so they are cleared when the local binding is dropped.
+All decrypted values in the in-memory secrets map are stored as `BTreeMap<String, Zeroizing<String>>`. Using `BTreeMap` instead of `HashMap` ensures that secrets are serialized in deterministic key order when `vault.save()` re-encrypts the vault. This makes repeated save operations produce consistent JSON output, which is important for diffing and auditing encrypted vault changes. Key-file content and intermediate decrypt buffers are also wrapped in `Zeroizing` so they are cleared when the local binding is dropped.
 
 **`Clone` intentionally removed:**
 
@@ -296,7 +296,7 @@ If you need to pass a secret to a function, accept `&Secret` or extract the inne
 
 Rust-native memory safety guarantees:
 
-- **Minimal `unsafe`:** One audited `unsafe` block behind `candle` feature flag (memory-mapped safetensors loading). Core crates enforce `#![deny(unsafe_code)]`
+- **Workspace-level `unsafe` ban:** `unsafe_code = "deny"` is set in `[workspace.lints.rust]` in the root `Cargo.toml`, propagating the restriction to every crate in the workspace automatically. The single audited exception is an `#[allow(unsafe_code)]`-annotated block behind the `candle` feature flag for memory-mapped safetensors loading.
 - **No panic in production:** `unwrap()` and `expect()` linted via clippy
 - **Reduced attack surface:** Unused database backends (MySQL) and transitive dependencies (RSA) are excluded from the build
 - **Secure dependencies:** All crates audited with `cargo-deny`
