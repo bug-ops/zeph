@@ -39,9 +39,11 @@ pub(crate) async fn handle_skill_command(
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let (source_kind, source_url, source_path) = match &result.source {
-                zeph_skills::SkillSource::Hub { url } => {
-                    (zeph_memory::sqlite::SourceKind::Hub, Some(url.as_str()), None)
-                }
+                zeph_skills::SkillSource::Hub { url } => (
+                    zeph_memory::sqlite::SourceKind::Hub,
+                    Some(url.as_str()),
+                    None,
+                ),
                 zeph_skills::SkillSource::File { path } => (
                     zeph_memory::sqlite::SourceKind::File,
                     None,

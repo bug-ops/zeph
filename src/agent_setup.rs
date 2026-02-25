@@ -80,6 +80,8 @@ pub(crate) async fn build_tool_setup(
 }
 
 use zeph_core::agent::Agent;
+#[cfg(feature = "index")]
+use zeph_core::config::IndexConfig;
 use zeph_core::cost::CostTracker;
 #[cfg(feature = "index")]
 use zeph_index::{
@@ -88,8 +90,6 @@ use zeph_index::{
     store::CodeStore,
     watcher::IndexWatcher,
 };
-#[cfg(feature = "index")]
-use zeph_core::config::IndexConfig;
 
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
