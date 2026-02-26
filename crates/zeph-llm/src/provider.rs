@@ -370,6 +370,12 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Return token counts from the last API call, if available.
+    /// Returns `(input_tokens, output_tokens)`.
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     /// Whether this provider supports native structured output.
     fn supports_structured_output(&self) -> bool {
         false

@@ -114,6 +114,20 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send token usage after an LLM call. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_usage(
+        &mut self,
+        _input_tokens: u64,
+        _output_tokens: u64,
+        _context_window: u64,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Send diff data for a tool result. No-op by default (TUI overrides).
     ///
     /// # Errors
@@ -204,6 +218,24 @@ pub enum LoopbackEvent {
         /// Terminal ID for shell tool calls routed through the IDE terminal.
         terminal_id: Option<String>,
     },
+    /// Token usage from the last LLM turn.
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        context_window: u64,
+    },
+    /// Generated session title (emitted after the first agent response).
+    SessionTitle(String),
+    /// Execution plan update.
+    Plan(Vec<(String, PlanItemStatus)>),
+}
+
+/// Status of a plan item, mirroring `acp::PlanEntryStatus`.
+#[derive(Debug, Clone)]
+pub enum PlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
 }
 
 /// Caller-side handle for sending input and receiving agent output.
@@ -317,6 +349,22 @@ impl Channel for LoopbackChannel {
 
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         Ok(true)
+    }
+
+    async fn send_usage(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        context_window: u64,
+    ) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Usage {
+                input_tokens,
+                output_tokens,
+                context_window,
+            })
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
     }
 }
 
@@ -600,5 +648,71 @@ mod tests {
         channel.send_status("working...").await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         assert!(matches!(event, LoopbackEvent::Status(s) if s == "working..."));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_usage_produces_usage_event() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.send_usage(100, 50, 200_000).await.unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        match event {
+            LoopbackEvent::Usage {
+                input_tokens,
+                output_tokens,
+                context_window,
+            } => {
+                assert_eq!(input_tokens, 100);
+                assert_eq!(output_tokens, 50);
+                assert_eq!(context_window, 200_000);
+            }
+            _ => panic!("expected Usage event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_send_usage_error_when_closed() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        drop(handle);
+        let result = channel.send_usage(1, 2, 3).await;
+        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+    }
+
+    #[test]
+    fn plan_item_status_variants_are_distinct() {
+        assert!(!matches!(
+            PlanItemStatus::Pending,
+            PlanItemStatus::InProgress
+        ));
+        assert!(!matches!(
+            PlanItemStatus::InProgress,
+            PlanItemStatus::Completed
+        ));
+        assert!(!matches!(
+            PlanItemStatus::Completed,
+            PlanItemStatus::Pending
+        ));
+    }
+
+    #[test]
+    fn loopback_event_session_title_carries_string() {
+        let event = LoopbackEvent::SessionTitle("hello".to_owned());
+        assert!(matches!(event, LoopbackEvent::SessionTitle(s) if s == "hello"));
+    }
+
+    #[test]
+    fn loopback_event_plan_carries_entries() {
+        let entries = vec![
+            ("step 1".to_owned(), PlanItemStatus::Pending),
+            ("step 2".to_owned(), PlanItemStatus::InProgress),
+        ];
+        let event = LoopbackEvent::Plan(entries);
+        match event {
+            LoopbackEvent::Plan(e) => {
+                assert_eq!(e.len(), 2);
+                assert!(matches!(e[0].1, PlanItemStatus::Pending));
+                assert!(matches!(e[1].1, PlanItemStatus::InProgress));
+            }
+            _ => panic!("expected Plan event"),
+        }
     }
 }

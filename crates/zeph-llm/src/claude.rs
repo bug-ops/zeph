@@ -30,6 +30,7 @@ pub struct ClaudeProvider {
     max_tokens: u32,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     /// Cached pre-serialized tool definitions. Keyed by tool names; invalidated when the set changes.
     tool_cache: std::sync::Mutex<Option<(Vec<String>, Vec<serde_json::Value>)>>,
 }
@@ -42,6 +43,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
             .field("status_tx", &self.status_tx.is_some())
+            .field("last_usage", &self.last_usage.lock().ok())
             .field("last_cache", &self.last_cache.lock().ok())
             .field(
                 "tool_cache",
@@ -64,6 +66,7 @@ impl Clone for ClaudeProvider {
             max_tokens: self.max_tokens,
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
+            last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
         }
     }
@@ -127,6 +130,9 @@ impl ClaudeProvider {
                 usage.cache_creation_input_tokens,
                 usage.cache_read_input_tokens,
             ));
+        }
+        if let Ok(mut guard) = self.last_usage.lock() {
+            *guard = Some((usage.input_tokens, usage.output_tokens));
         }
     }
 
@@ -375,6 +381,10 @@ impl LlmProvider for ClaudeProvider {
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.last_cache.lock().ok().and_then(|g| *g)
+    }
+
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        self.last_usage.lock().ok().and_then(|g| *g)
     }
 
     async fn chat_with_tools(

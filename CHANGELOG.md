@@ -16,10 +16,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `deny_secret()` sends `None` over the secret channel to immediately unblock a waiting sub-agent (#969)
 - `MockProvider::with_recording()` builder in `zeph-llm` for call-inspection in tests (#967)
 - Tests for `SubAgentConfig` deserialization, skill injection with and without skills, secret approval and deny flows (#973, #967, #969)
+- `zeph-acp`: LSP diagnostics content block (#962): `ContentBlock::Resource` with MIME `application/vnd.zed.diagnostics+json` formatted as `<diagnostics>file:line: [SEVERITY] message</diagnostics>` before the prompt; unknown MIME types logged and skipped
+- `zeph-acp`: `AvailableCommandsUpdate` (#961): emitted after `new_session` and `load_session`; slash commands (`/help`, `/model`, `/mode`, `/clear`, `/compact`) dispatched without entering agent loop
+- `zeph-acp`: `UsageUpdate` via `unstable-session-usage` feature (#957): token usage emitted after each LLM turn via `LoopbackEvent::Usage`; `LlmProvider::last_usage()` added with `ClaudeProvider` implementation
+- `zeph-acp`: `SetSessionModel` via `unstable-session-model` feature (#958): `set_session_model` implemented; validates model against allowed list and swaps provider override
+- `zeph-acp`: `SessionInfoUpdate` via `unstable-session-info-update` feature (#959): title generated after first agent response; persisted to SQLite via migration `016_acp_session_title.sql`
+- `zeph-acp`: `Plan` session updates (#960): `LoopbackEvent::Plan` variant; `SessionUpdate::Plan` emitted from `loopback_event_to_updates`
+- `zeph-core`: `LoopbackEvent::Usage`, `SessionTitle`, `Plan` variants; `PlanItemStatus` enum; `Channel::send_usage` method
+- New `zeph-acp` feature flags: `unstable-session-usage`, `unstable-session-model`, `unstable-session-info-update`; all enabled by default
 
 ### Fixed
 - `AcpShellExecutor`: `terminal_timeout_secs` config value was silently ignored; now correctly passed to `with_timeout` (#956)
 - `tests/integration.rs`: added missing `llm_request_timeout_secs` field in `TimeoutConfig` initializer (#956)
+- `zeph-acp`: XML-escape `path`, `severity`, and `message` fields in diagnostics context block to prevent prompt injection (#962)
+- `zeph-acp`: trim leading whitespace before slash-command prefix check to prevent bypass via `\n/command` input (#961)
 
 ## [0.12.2] - 2026-02-26
 

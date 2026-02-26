@@ -839,6 +839,15 @@ impl<C: Channel> Agent<C> {
         self.record_cache_usage();
         self.record_cost(prompt_estimate, completion_estimate);
 
+        if let Some((input_tokens, output_tokens)) = self.provider.last_usage() {
+            let context_window =
+                u64::try_from(self.provider.context_window().unwrap_or(0)).unwrap_or(0);
+            let _ = self
+                .channel
+                .send_usage(input_tokens, output_tokens, context_window)
+                .await;
+        }
+
         Ok(Some(result))
     }
 

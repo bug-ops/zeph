@@ -121,7 +121,10 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                     }
                     zeph_core::LoopbackEvent::Status(_)
                     | zeph_core::LoopbackEvent::ToolStart { .. }
-                    | zeph_core::LoopbackEvent::ToolOutput { .. } => {}
+                    | zeph_core::LoopbackEvent::ToolOutput { .. }
+                    | zeph_core::LoopbackEvent::Usage { .. }
+                    | zeph_core::LoopbackEvent::SessionTitle(_)
+                    | zeph_core::LoopbackEvent::Plan(_) => {}
                 }
             }
 

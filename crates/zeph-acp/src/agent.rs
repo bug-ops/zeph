@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::LlmProvider as _;
 use zeph_mcp::McpManager;
 use zeph_mcp::manager::ServerEntry;
 use zeph_memory::sqlite::SqliteStore;
@@ -91,6 +92,8 @@ pub(crate) struct SessionEntry {
     current_model: RefCell<String>,
     /// Current session mode (ask / architect / code).
     current_mode: RefCell<acp::SessionModeId>,
+    /// Set after the first successful prompt so title generation fires only once.
+    first_prompt_done: std::cell::Cell<bool>,
 }
 
 type SessionMap = Rc<RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>>;
@@ -391,6 +394,7 @@ impl acp::Agent for ZephAcpAgent {
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+            first_prompt_done: std::cell::Cell::new(false),
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
@@ -412,11 +416,20 @@ impl acp::Agent for ZephAcpAgent {
 
         let config_options = build_model_config_options(&self.available_models, "");
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
-        let mut resp =
-            acp::NewSessionResponse::new(session_id).modes(build_mode_state(&default_mode_id));
+        let mut resp = acp::NewSessionResponse::new(session_id.clone())
+            .modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
         }
+
+        let cmds_update = acp::SessionUpdate::AvailableCommandsUpdate(
+            acp::AvailableCommandsUpdate::new(build_available_commands()),
+        );
+        let (tx, _rx) = oneshot::channel();
+        self.notify_tx
+            .send((acp::SessionNotification::new(session_id, cmds_update), tx))
+            .ok();
+
         Ok(resp)
     }
 
@@ -475,11 +488,27 @@ impl acp::Agent for ZephAcpAgent {
                         if !text.is_empty() {
                             text.push('\n');
                         }
-                        text.push_str("<resource name=\"");
-                        text.push_str(&res.uri);
-                        text.push_str("\">");
-                        text.push_str(&res.text);
-                        text.push_str("</resource>");
+                        if res
+                            .mime_type
+                            .as_deref()
+                            .is_some_and(|m| m == DIAGNOSTICS_MIME_TYPE)
+                        {
+                            format_diagnostics_block(&res.text, &mut text);
+                        } else if res.mime_type.is_some()
+                            && res.mime_type.as_deref() != Some("text/plain")
+                        {
+                            tracing::debug!(
+                                mime_type = ?res.mime_type,
+                                uri = %res.uri,
+                                "unknown resource mime type — skipping"
+                            );
+                        } else {
+                            text.push_str("<resource name=\"");
+                            text.push_str(&res.uri.replace('"', "&quot;"));
+                            text.push_str("\">");
+                            text.push_str(&res.text);
+                            text.push_str("</resource>");
+                        }
                     }
                 }
                 acp::ContentBlock::Audio(_) => {
@@ -496,6 +525,12 @@ impl acp::Agent for ZephAcpAgent {
 
         if text.len() > MAX_PROMPT_BYTES {
             return Err(acp::Error::invalid_request().data("prompt too large"));
+        }
+
+        if text.trim_start().starts_with('/') {
+            return self
+                .handle_slash_command(&args.session_id, text.trim_start())
+                .await;
         }
 
         let (input_tx, output_rx) = {
@@ -533,7 +568,8 @@ impl acp::Agent for ZephAcpAgent {
 
         // Echo the user text back as a UserMessageChunk notification per ACP spec.
         if !text.is_empty() {
-            let echo = acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(text.into()));
+            let echo =
+                acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(text.clone().into()));
             let notification = acp::SessionNotification::new(args.session_id.clone(), echo);
             let (tx, _rx) = oneshot::channel();
             // Fire-and-forget: echo does not need to wait for delivery ack.
@@ -595,6 +631,67 @@ impl acp::Agent for ZephAcpAgent {
         } else {
             acp::StopReason::EndTurn
         };
+
+        // Generate session title after first successful agent response (fire-and-forget).
+        #[cfg(feature = "unstable-session-info-update")]
+        if !cancelled {
+            let should_generate = self
+                .sessions
+                .borrow()
+                .get(&args.session_id)
+                .is_some_and(|e| !e.first_prompt_done.get());
+            if should_generate {
+                if let Some(entry) = self.sessions.borrow().get(&args.session_id) {
+                    entry.first_prompt_done.set(true);
+                }
+                if let Some(ref factory) = self.provider_factory
+                    && let Some(model_key) = self.available_models.first()
+                    && let Some(provider) = factory(model_key)
+                {
+                    let user_text = text.clone();
+                    let sid = args.session_id.clone();
+                    let store = self.store.clone();
+                    let notify_tx = self.notify_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let prompt = format!(
+                            "Generate a concise 5-7 word title for a conversation that starts \
+                             with: {user_text}\nRespond with only the title, no quotes."
+                        );
+                        let messages = vec![zeph_llm::provider::Message::from_legacy(
+                            zeph_llm::provider::Role::User,
+                            &prompt,
+                        )];
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(15),
+                            provider.chat(&messages),
+                        )
+                        .await
+                        {
+                            Ok(Ok(title)) => {
+                                let title = title.trim().to_owned();
+                                if let Some(ref store) = store {
+                                    let _ =
+                                        store.update_session_title(&sid.to_string(), &title).await;
+                                }
+                                let update = acp::SessionUpdate::SessionInfoUpdate(
+                                    acp::SessionInfoUpdate::new().title(title),
+                                );
+                                let notification = acp::SessionNotification::new(sid, update);
+                                let (tx, _rx) = oneshot::channel();
+                                notify_tx.send((notification, tx)).ok();
+                            }
+                            Ok(Err(e)) => {
+                                tracing::debug!(error = %e, "title generation LLM call failed");
+                            }
+                            Err(_) => {
+                                tracing::debug!("title generation timed out");
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
         Ok(acp::PromptResponse::new(stop_reason))
     }
 
@@ -659,6 +756,7 @@ impl acp::Agent for ZephAcpAgent {
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+            first_prompt_done: std::cell::Cell::new(false),
         };
         self.sessions
             .borrow_mut()
@@ -707,7 +805,20 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
-        Ok(acp::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id)))
+        let load_resp = acp::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id));
+
+        let cmds_update = acp::SessionUpdate::AvailableCommandsUpdate(
+            acp::AvailableCommandsUpdate::new(build_available_commands()),
+        );
+        let (tx, _rx) = oneshot::channel();
+        self.notify_tx
+            .send((
+                acp::SessionNotification::new(args.session_id, cmds_update),
+                tx,
+            ))
+            .ok();
+
+        Ok(load_resp)
     }
 
     #[cfg(feature = "unstable-session-list")]
@@ -832,6 +943,7 @@ impl acp::Agent for ZephAcpAgent {
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+            first_prompt_done: std::cell::Cell::new(false),
         };
         self.sessions.borrow_mut().insert(new_id.clone(), entry);
 
@@ -916,6 +1028,7 @@ impl acp::Agent for ZephAcpAgent {
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+            first_prompt_done: std::cell::Cell::new(false),
         };
         self.sessions
             .borrow_mut()
@@ -1010,9 +1123,145 @@ impl acp::Agent for ZephAcpAgent {
 
         Ok(acp::SetSessionModeResponse::new())
     }
+
+    #[cfg(feature = "unstable-session-model")]
+    async fn set_session_model(
+        &self,
+        args: acp::SetSessionModelRequest,
+    ) -> acp::Result<acp::SetSessionModelResponse> {
+        let model_id: &str = &args.model_id.0;
+
+        let Some(ref factory) = self.provider_factory else {
+            return Err(acp::Error::internal_error().data("model switching not configured"));
+        };
+
+        if !self.available_models.iter().any(|m| m == model_id) {
+            return Err(acp::Error::invalid_request().data("model not in allowed list"));
+        }
+
+        let Some(new_provider) = factory(model_id) else {
+            return Err(acp::Error::invalid_request().data("unknown model"));
+        };
+
+        let sessions = self.sessions.borrow();
+        let entry = sessions
+            .get(&args.session_id)
+            .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+        *entry
+            .provider_override
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+        model_id.clone_into(&mut entry.current_model.borrow_mut());
+
+        tracing::debug!(
+            session_id = %args.session_id,
+            model = %model_id,
+            "ACP session model switched via set_session_model"
+        );
+
+        Ok(acp::SetSessionModelResponse::new())
+    }
 }
 
 impl ZephAcpAgent {
+    /// Dispatch a slash command, returning a short-circuit `PromptResponse`.
+    async fn handle_slash_command(
+        &self,
+        session_id: &acp::SessionId,
+        text: &str,
+    ) -> acp::Result<acp::PromptResponse> {
+        let mut parts = text.splitn(2, ' ');
+        let cmd = parts.next().unwrap_or("").trim();
+        let arg = parts.next().unwrap_or("").trim();
+
+        let reply = match cmd {
+            "/help" => "Available commands:\n\
+                 /help — show this message\n\
+                 /model <id> — switch the active model\n\
+                 /mode <code|architect|ask> — switch session mode\n\
+                 /clear — clear session history\n\
+                 /compact — summarize and compact context"
+                .to_owned(),
+            "/model" => {
+                if arg.is_empty() {
+                    let models = self.available_models.join(", ");
+                    format!("Available models: {models}")
+                } else {
+                    let Some(ref factory) = self.provider_factory else {
+                        return Err(
+                            acp::Error::internal_error().data("model switching not configured")
+                        );
+                    };
+                    if !self.available_models.iter().any(|m| m == arg) {
+                        return Err(acp::Error::invalid_request().data("model not in allowed list"));
+                    }
+                    let Some(new_provider) = factory(arg) else {
+                        return Err(acp::Error::invalid_request().data("unknown model"));
+                    };
+                    let sessions = self.sessions.borrow();
+                    let entry = sessions
+                        .get(session_id)
+                        .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+                    *entry
+                        .provider_override
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+                    arg.clone_into(&mut entry.current_model.borrow_mut());
+                    format!("Switched to model: {arg}")
+                }
+            }
+            "/mode" => {
+                let valid_ids: &[&str] = &["code", "architect", "ask"];
+                if !valid_ids.contains(&arg) {
+                    return Err(acp::Error::invalid_request().data(format!("unknown mode: {arg}")));
+                }
+                {
+                    let sessions = self.sessions.borrow();
+                    let entry = sessions
+                        .get(session_id)
+                        .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
+                    *entry.current_mode.borrow_mut() = acp::SessionModeId::new(arg);
+                }
+                let update = acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                    acp::SessionModeId::new(arg),
+                ));
+                let notification = acp::SessionNotification::new(session_id.clone(), update);
+                if let Err(e) = self.send_notification(notification).await {
+                    tracing::warn!(error = %e, "failed to send current_mode_update from /mode");
+                }
+                format!("Switched to mode: {arg}")
+            }
+            "/clear" => {
+                if let Some(ref store) = self.store {
+                    let sid = session_id.to_string();
+                    let store = store.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store.delete_acp_session(&sid).await {
+                            tracing::warn!(error = %e, "failed to clear session history");
+                        }
+                        if let Err(e) = store.create_acp_session(&sid).await {
+                            tracing::warn!(error = %e, "failed to recreate session after clear");
+                        }
+                    });
+                }
+                "Session history cleared.".to_owned()
+            }
+            "/compact" => "Context compaction is not yet implemented.".to_owned(),
+            _ => {
+                return Err(acp::Error::invalid_request().data(format!("unknown command: {cmd}")));
+            }
+        };
+
+        let update =
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(reply.clone().into()));
+        let notification = acp::SessionNotification::new(session_id.clone(), update);
+        if let Err(e) = self.send_notification(notification).await {
+            tracing::warn!(error = %e, "failed to send command reply");
+        }
+
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
     async fn ext_method_mcp(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
         let method = args.method.as_ref();
         match method {
@@ -1143,6 +1392,81 @@ fn tool_kind_from_name(name: &str) -> acp::ToolKind {
 
 const DEFAULT_MODE_ID: &str = "code";
 
+/// MIME type used by Zed IDE to deliver LSP diagnostics as embedded resource blocks.
+const DIAGNOSTICS_MIME_TYPE: &str = "application/vnd.zed.diagnostics+json";
+
+/// Deserialize Zed LSP diagnostics JSON and append a formatted `<diagnostics>` block to `out`.
+///
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Each entry is rendered as `file:line: [SEVERITY] message`.
+/// On parse error the block is emitted empty to avoid injecting untrusted raw JSON into the prompt.
+fn format_diagnostics_block(json: &str, out: &mut String) {
+    #[derive(serde::Deserialize)]
+    struct DiagEntry {
+        path: Option<String>,
+        row: Option<u32>,
+        severity: Option<String>,
+        message: Option<String>,
+    }
+
+    out.push_str("<diagnostics>\n");
+    match serde_json::from_str::<Vec<DiagEntry>>(json) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry
+                    .path
+                    .as_deref()
+                    .map_or_else(|| "<unknown>".to_owned(), xml_escape);
+                let row = entry.row.map_or_else(|| "?".to_owned(), |r| r.to_string());
+                let sev = entry
+                    .severity
+                    .as_deref()
+                    .map_or_else(|| "?".to_owned(), xml_escape);
+                let msg = entry
+                    .message
+                    .as_deref()
+                    .map_or_else(String::new, xml_escape);
+                out.push_str(&path);
+                out.push(':');
+                out.push_str(&row);
+                out.push_str(": [");
+                out.push_str(&sev);
+                out.push_str("] ");
+                out.push_str(&msg);
+                out.push('\n');
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "failed to parse diagnostics JSON — skipping");
+        }
+    }
+    out.push_str("</diagnostics>");
+}
+
+fn build_available_commands() -> Vec<acp::AvailableCommand> {
+    vec![
+        acp::AvailableCommand::new("/help", "Show available commands"),
+        acp::AvailableCommand::new("/model", "Switch the active model").input(
+            acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
+                "model id",
+            )),
+        ),
+        acp::AvailableCommand::new("/mode", "Switch session mode (code/architect/ask)").input(
+            acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
+                "code | architect | ask",
+            )),
+        ),
+        acp::AvailableCommand::new("/clear", "Clear session history"),
+        acp::AvailableCommand::new("/compact", "Summarize and compact context"),
+    ]
+}
+
 fn available_session_modes() -> Vec<acp::SessionMode> {
     vec![
         acp::SessionMode::new("code", "Code").description("Write and edit code, execute tools"),
@@ -1182,6 +1506,7 @@ fn build_model_config_options(
     ]
 }
 
+#[allow(clippy::too_many_lines)]
 fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
     match event {
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
@@ -1244,6 +1569,48 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             )]
         }
         LoopbackEvent::Flush => vec![],
+        #[cfg(feature = "unstable-session-usage")]
+        LoopbackEvent::Usage {
+            input_tokens,
+            output_tokens,
+            context_window,
+        } => {
+            let used = input_tokens.saturating_add(output_tokens);
+            vec![acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(
+                used,
+                context_window,
+            ))]
+        }
+        #[cfg(not(feature = "unstable-session-usage"))]
+        LoopbackEvent::Usage { .. } => vec![],
+        #[cfg(feature = "unstable-session-info-update")]
+        LoopbackEvent::SessionTitle(title) => {
+            vec![acp::SessionUpdate::SessionInfoUpdate(
+                acp::SessionInfoUpdate::new().title(title),
+            )]
+        }
+        #[cfg(not(feature = "unstable-session-info-update"))]
+        LoopbackEvent::SessionTitle(_) => vec![],
+        LoopbackEvent::Plan(entries) => {
+            let acp_entries = entries
+                .into_iter()
+                .map(|(content, status)| {
+                    let acp_status = match status {
+                        zeph_core::channel::PlanItemStatus::Pending => {
+                            acp::PlanEntryStatus::Pending
+                        }
+                        zeph_core::channel::PlanItemStatus::InProgress => {
+                            acp::PlanEntryStatus::InProgress
+                        }
+                        zeph_core::channel::PlanItemStatus::Completed => {
+                            acp::PlanEntryStatus::Completed
+                        }
+                    };
+                    acp::PlanEntry::new(content, acp::PlanEntryPriority::Medium, acp_status)
+                })
+                .collect();
+            vec![acp::SessionUpdate::Plan(acp::Plan::new(acp_entries))]
+        }
     }
 }
 
@@ -2357,14 +2724,25 @@ mod tests {
                     .unwrap();
                 let sid = resp.session_id.clone();
 
+                // Drain any notifications enqueued by new_session before the mode change.
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+
                 let result = tokio::join!(
                     agent.set_session_mode(acp::SetSessionModeRequest::new(sid, "ask")),
                     async {
-                        if let Some((notif, ack)) = rx.recv().await {
-                            let _ = ack.send(());
-                            Some(notif)
-                        } else {
-                            None
+                        // Drain until CurrentModeUpdate is found.
+                        loop {
+                            if let Some((notif, ack)) = rx.recv().await {
+                                let _ = ack.send(());
+                                if matches!(notif.update, acp::SessionUpdate::CurrentModeUpdate(_))
+                                {
+                                    return Some(notif);
+                                }
+                            } else {
+                                return None;
+                            }
                         }
                     }
                 );
@@ -2544,6 +2922,276 @@ mod tests {
                     .resume_session(acp::ResumeSessionRequest::new(
                         unknown_id,
                         std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    // --- #962 diagnostics ---
+
+    #[test]
+    fn format_diagnostics_valid_json() {
+        let json =
+            r#"[{"path":"src/main.rs","row":10,"severity":"error","message":"type mismatch"}]"#;
+        let mut out = String::new();
+        format_diagnostics_block(json, &mut out);
+        assert!(out.starts_with("<diagnostics>\n"));
+        assert!(out.contains("src/main.rs:10: [error] type mismatch\n"));
+        assert!(out.ends_with("</diagnostics>"));
+    }
+
+    #[test]
+    fn format_diagnostics_invalid_json_emits_empty_block() {
+        let json = "not json";
+        let mut out = String::new();
+        format_diagnostics_block(json, &mut out);
+        assert!(
+            !out.contains("not json"),
+            "raw JSON must not be injected into prompt"
+        );
+        assert!(out.starts_with("<diagnostics>\n"));
+        assert!(out.ends_with("</diagnostics>"));
+    }
+
+    #[test]
+    fn format_diagnostics_missing_fields_uses_defaults() {
+        let json = r#"[{}]"#;
+        let mut out = String::new();
+        format_diagnostics_block(json, &mut out);
+        assert!(out.contains("<unknown>:?: [?] \n"));
+    }
+
+    #[tokio::test]
+    async fn prompt_diagnostics_block_formatted() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // Manually test format_diagnostics_block since prompt requires live agent.
+                let json = r#"[{"path":"lib.rs","row":5,"severity":"warning","message":"unused"}]"#;
+                let mut out = String::new();
+                format_diagnostics_block(json, &mut out);
+                assert!(out.contains("lib.rs:5: [warning] unused"));
+            })
+            .await;
+    }
+
+    // --- #961 AvailableCommandsUpdate / slash commands ---
+
+    #[test]
+    fn build_available_commands_returns_expected_set() {
+        let cmds = build_available_commands();
+        let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"/help"));
+        assert!(names.contains(&"/model"));
+        assert!(names.contains(&"/mode"));
+        assert!(names.contains(&"/clear"));
+        assert!(names.contains(&"/compact"));
+    }
+
+    #[test]
+    fn build_available_commands_model_has_input() {
+        let cmds = build_available_commands();
+        let model_cmd = cmds.iter().find(|c| c.name == "/model").unwrap();
+        assert!(model_cmd.input.is_some());
+    }
+
+    #[tokio::test]
+    async fn slash_help_returns_end_turn() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+
+                // Drain AvailableCommandsUpdate from new_session.
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+
+                let result = tokio::join!(
+                    agent.prompt(acp::PromptRequest::new(
+                        sid,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("/help"))]
+                    )),
+                    async {
+                        if let Some((_, ack)) = rx.recv().await {
+                            let _ = ack.send(());
+                        }
+                    }
+                );
+                let resp = result.0.unwrap();
+                assert!(matches!(resp.stop_reason, acp::StopReason::EndTurn));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn slash_unknown_command_returns_error() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+                let result = agent
+                    .prompt(acp::PromptRequest::new(
+                        sid,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new(
+                            "/nonexistent",
+                        ))],
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    // --- #957 UsageUpdate ---
+
+    #[test]
+    fn loopback_usage_maps_to_usage_update() {
+        let event = LoopbackEvent::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            context_window: 200_000,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        #[cfg(feature = "unstable-session-usage")]
+        assert!(matches!(updates[0], acp::SessionUpdate::UsageUpdate(_)));
+        #[cfg(not(feature = "unstable-session-usage"))]
+        assert!(updates.is_empty());
+    }
+
+    // --- #959 SessionTitle ---
+
+    #[test]
+    fn loopback_session_title_maps_to_session_info_update() {
+        let event = LoopbackEvent::SessionTitle("My Session".to_owned());
+        let updates = loopback_event_to_updates(event);
+        #[cfg(feature = "unstable-session-info-update")]
+        {
+            assert_eq!(updates.len(), 1);
+            assert!(matches!(
+                updates[0],
+                acp::SessionUpdate::SessionInfoUpdate(_)
+            ));
+        }
+        #[cfg(not(feature = "unstable-session-info-update"))]
+        assert!(updates.is_empty());
+    }
+
+    // --- #960 Plan ---
+
+    #[test]
+    fn loopback_plan_maps_to_plan_update() {
+        use zeph_core::channel::PlanItemStatus;
+        let event = LoopbackEvent::Plan(vec![
+            ("step 1".to_owned(), PlanItemStatus::Pending),
+            ("step 2".to_owned(), PlanItemStatus::InProgress),
+            ("step 3".to_owned(), PlanItemStatus::Completed),
+        ]);
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::Plan(plan) => {
+                assert_eq!(plan.entries.len(), 3);
+                assert!(matches!(
+                    plan.entries[0].status,
+                    acp::PlanEntryStatus::Pending
+                ));
+                assert!(matches!(
+                    plan.entries[1].status,
+                    acp::PlanEntryStatus::InProgress
+                ));
+                assert!(matches!(
+                    plan.entries[2].status,
+                    acp::PlanEntryStatus::Completed
+                ));
+            }
+            _ => panic!("expected Plan update"),
+        }
+    }
+
+    #[test]
+    fn loopback_plan_empty_entries() {
+        let event = LoopbackEvent::Plan(vec![]);
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            &updates[0],
+            acp::SessionUpdate::Plan(p) if p.entries.is_empty()
+        ));
+    }
+
+    // --- #958 SetSessionModel ---
+
+    #[cfg(feature = "unstable-session-model")]
+    #[tokio::test]
+    async fn set_session_model_no_factory_errors() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+                let result = agent
+                    .set_session_model(acp::SetSessionModelRequest::new(
+                        resp.session_id,
+                        "some:model",
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-model")]
+    #[tokio::test]
+    async fn set_session_model_rejects_unknown_model() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let factory: ProviderFactory = Arc::new(|_| None);
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_provider_factory(factory, vec!["claude:claude-3-5-sonnet".to_owned()]);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let result = agent
+                    .set_session_model(acp::SetSessionModelRequest::new(
+                        resp.session_id,
+                        "ollama:llama3",
                     ))
                     .await;
                 assert!(result.is_err());

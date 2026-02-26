@@ -94,9 +94,15 @@ zeph acp --ws :8080         # WebSocket
 - `AgentCapabilities` advertises `session_capabilities`: `list`, `fork`, `resume`
 - MCP HTTP transport support in the MCP bridge
 - Unsupported content blocks (Audio, ResourceLink) produce structured log warnings instead of silent drops
+- **Usage reporting** — token counts (input, output, cache) streamed back to the IDE as `UsageUpdate` events after each turn (`unstable-session-usage`)
+- **IDE model picker** — `SetSessionModel` lets the editor switch the active model via a native dropdown without a custom `session/configure` call (`unstable-session-model`)
+- **Auto session title** — `SessionInfoUpdate` notifies the IDE of an agent-generated session title after the first turn (`unstable-session-info-update`)
+- **Plan updates** — `SessionUpdate::Plan` events emitted during orchestrator runs so the editor can display intermediate planning steps
+- **Slash commands** — `AvailableCommandsUpdate` advertises built-in slash commands (`/help`, `/model`, `/mode`, `/clear`, `/compact`); user input starting with `/` is dispatched to the matching handler
+- **LSP diagnostics injection** — `@diagnostics` mention in a Zed prompt triggers LSP diagnostic context injection, providing the agent with current editor diagnostics
 
 > [!NOTE]
-> `list_sessions`, `fork_session`, and `resume_session` are gated behind the `unstable` feature flag.
+> `list_sessions`, `fork_session`, and `resume_session` are gated behind the `unstable` feature flag. `UsageUpdate`, `SetSessionModel`, and `SessionInfoUpdate` are gated behind their respective `unstable-session-usage`, `unstable-session-model`, and `unstable-session-info-update` flags.
 
 ### WebSocket transport hardening
 

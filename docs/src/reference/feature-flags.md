@@ -45,18 +45,21 @@ Some workspace crates expose their own feature flags for fine-grained control:
 | `zeph-acp` | `unstable-session-list` | on | `list_sessions` RPC handler — enumerate in-memory sessions (unstable, see [ACP guide](../advanced/acp.md#list_sessions)) |
 | `zeph-acp` | `unstable-session-fork` | on | `fork_session` RPC handler — clone session history into a new session (unstable, see [ACP guide](../advanced/acp.md#fork_session)) |
 | `zeph-acp` | `unstable-session-resume` | on | `resume_session` RPC handler — reattach to a persisted session without replaying events (unstable, see [ACP guide](../advanced/acp.md#resume_session)) |
+| `zeph-acp` | `unstable-session-usage` | on | `UsageUpdate` in `PromptResponse` — per-turn token consumption (input, output, cache read/write) for IDE cost display (unstable, see [ACP guide](../advanced/acp.md#usage-tracking-unstable-session-usage)) |
+| `zeph-acp` | `unstable-session-model` | on | `set_session_model` handler — IDE model picker support; emits `SetSessionModel` notification on switch (unstable, see [ACP guide](../advanced/acp.md#model-picker-unstable-session-model)) |
+| `zeph-acp` | `unstable-session-info-update` | on | `SessionInfoUpdate` notification — auto-generated session title emitted after the first exchange (unstable, see [ACP guide](../advanced/acp.md#session-title-unstable-session-info-update)) |
 
 ### ACP session management (unstable)
 
-The three `unstable-session-*` flags gate ACP session lifecycle handlers that depend on draft ACP spec additions. They are enabled by default but the API surface may change before the spec stabilises. Each flag also enables the corresponding feature in `agent-client-protocol` so the SDK advertises the capability during `initialize`.
+The `unstable-session-*` flags gate ACP session lifecycle handlers and IDE integration features that depend on draft ACP spec additions. They are enabled by default but the API surface may change before the spec stabilises. Each flag also enables the corresponding feature in `agent-client-protocol` so the SDK advertises the capability during `initialize`.
 
-The root crate provides a composite flag to enable all three at once:
+The root crate provides a composite flag to enable all six at once:
 
 | Feature | Description |
 |---------|-------------|
-| `acp-unstable` | Enables `unstable-session-list`, `unstable-session-fork`, and `unstable-session-resume` in `zeph-acp` |
+| `acp-unstable` | Enables all `unstable-session-*` flags in `zeph-acp` (list, fork, resume, usage, model, info-update) |
 
-Disable all three to build a minimal ACP server without session management:
+Disable all six to build a minimal ACP server without session management or IDE integration features:
 
 ```bash
 cargo build -p zeph-acp --no-default-features

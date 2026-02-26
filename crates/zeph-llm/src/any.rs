@@ -152,6 +152,10 @@ impl LlmProvider for AnyProvider {
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         delegate_provider!(self, |p| p.last_cache_usage())
     }
+
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        delegate_provider!(self, |p| p.last_usage())
+    }
 }
 
 #[cfg(test)]

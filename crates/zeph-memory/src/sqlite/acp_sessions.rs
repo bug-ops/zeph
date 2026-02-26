@@ -133,6 +133,24 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Update the title of an ACP session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn update_session_title(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<(), MemoryError> {
+        sqlx::query("UPDATE acp_sessions SET title = ? WHERE id = ?")
+            .bind(title)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Check whether an ACP session record exists.
     ///
     /// # Errors
