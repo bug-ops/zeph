@@ -696,8 +696,7 @@ impl<C: Channel> Agent<C> {
         };
         let prompt =
             Self::build_tool_pair_summary_prompt(&self.messages[req_idx], &self.messages[resp_idx]);
-        let llm_timeout =
-            std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let msgs = [Message {
             role: Role::User,
             content: prompt,
