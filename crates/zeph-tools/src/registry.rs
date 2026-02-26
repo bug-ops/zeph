@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::borrow::Cow;
 use std::fmt::Write;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,8 +14,8 @@ pub enum InvocationHint {
 
 #[derive(Debug, Clone)]
 pub struct ToolDef {
-    pub id: &'static str,
-    pub description: &'static str,
+    pub id: Cow<'static, str>,
+    pub description: Cow<'static, str>,
     pub schema: schemars::Schema,
     pub invocation: InvocationHint,
 }
@@ -37,7 +38,7 @@ impl ToolRegistry {
 
     #[must_use]
     pub fn find(&self, id: &str) -> Option<&ToolDef> {
-        self.tools.iter().find(|t| t.id == id)
+        self.tools.iter().find(|t| t.id.as_ref() == id)
     }
 
     /// Format tools for prompt, excluding tools fully denied by policy.
@@ -48,7 +49,7 @@ impl ToolRegistry {
     ) -> String {
         let mut out = String::from("<tools>\n");
         for tool in &self.tools {
-            if policy.is_fully_denied(tool.id) {
+            if policy.is_fully_denied(&tool.id) {
                 continue;
             }
             format_tool(&mut out, tool);
@@ -140,14 +141,14 @@ mod tests {
     fn sample_tools() -> Vec<ToolDef> {
         vec![
             ToolDef {
-                id: "bash",
-                description: "Execute a shell command",
+                id: "bash".into(),
+                description: "Execute a shell command".into(),
                 schema: schemars::schema_for!(BashParams),
                 invocation: InvocationHint::FencedBlock("bash"),
             },
             ToolDef {
-                id: "read",
-                description: "Read file contents",
+                id: "read".into(),
+                description: "Read file contents".into(),
                 schema: schemars::schema_for!(ReadParams),
                 invocation: InvocationHint::ToolCall,
             },

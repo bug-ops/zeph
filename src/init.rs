@@ -443,6 +443,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .clone()
             .unwrap_or_else(|| "qwen3-embedding".into()),
         cloud: None,
+        ollama: None,
         openai: None,
         candle: None,
         orchestrator,

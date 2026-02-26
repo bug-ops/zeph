@@ -192,6 +192,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let tool_executor = tool_setup.executor;
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
+    let mcp_shared_tools = tool_setup.mcp_shared_tools;
     #[cfg(feature = "tui")]
     let shell_executor_for_tui = tool_setup.tool_event_rx;
     #[cfg(not(feature = "tui"))]
@@ -288,6 +289,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await;
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
+    let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_learning(config.skills.learning.clone());
 
     #[cfg(feature = "scheduler")]

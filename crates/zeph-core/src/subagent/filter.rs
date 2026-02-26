@@ -74,7 +74,7 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         self.inner
             .tool_definitions_erased()
             .into_iter()
-            .filter(|def| self.is_allowed(def.id))
+            .filter(|def| self.is_allowed(&def.id))
             .collect()
     }
 
@@ -230,8 +230,8 @@ mod tests {
             self.tools
                 .iter()
                 .map(|id| ToolDef {
-                    id,
-                    description: "stub",
+                    id: (*id).into(),
+                    description: "stub".into(),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
                 })

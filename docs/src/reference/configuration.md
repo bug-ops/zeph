@@ -82,6 +82,10 @@ max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
+# [llm.ollama]
+# tool_use = false  # Enable Ollama native tool calling (default: false)
+#                   # Requires a model with function-calling support (e.g. qwen3:8b, llama3.1)
+
 [llm.stt]
 provider = "whisper"
 model = "whisper-1"

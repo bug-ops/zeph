@@ -148,16 +148,16 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
         let mut defs = Vec::new();
         if self.can_read {
             defs.push(ToolDef {
-                id: "read_file",
-                description: "Read a file from the IDE workspace",
+                id: "read_file".into(),
+                description: "Read a file from the IDE workspace".into(),
                 schema: schemars::schema_for!(ReadFileParams),
                 invocation: InvocationHint::ToolCall,
             });
         }
         if self.can_write {
             defs.push(ToolDef {
-                id: "write_file",
-                description: "Write content to a file in the IDE workspace",
+                id: "write_file".into(),
+                description: "Write content to a file in the IDE workspace".into(),
                 schema: schemars::schema_for!(WriteFileParams),
                 invocation: InvocationHint::ToolCall,
             });

@@ -93,11 +93,13 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvider> {
     match name {
         "ollama" => {
+            let tool_use = config.llm.ollama.as_ref().is_some_and(|c| c.tool_use);
             let mut provider = OllamaProvider::new(
                 &config.llm.base_url,
                 config.llm.model.clone(),
                 config.llm.embedding_model.clone(),
-            );
+            )
+            .with_tool_use(tool_use);
             if let Some(ref vm) = config.llm.vision_model {
                 provider = provider.with_vision_model(vm.clone());
             }

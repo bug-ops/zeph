@@ -13,9 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `unstable-session-resume`: implements `session/resume` — restores a persisted session without history replay (unlike `session/load`)
 - Root `acp-unstable` feature activates all three unstable features for the `zeph` binary; included in `full`
 - `initialize()` advertises `SessionCapabilities` (list/fork/resume) when corresponding features are enabled
+- `McpToolExecutor` now implements `tool_definitions()` and `execute_tool_call()` — MCP tools are exposed as native `ToolDefinition`s and dispatched via structured tool_use when provider supports it
+- `McpToolExecutor` accepts `Arc<RwLock<Vec<McpTool>>>` at construction; shared reference is kept in `McpState.shared_tools` and updated on `/mcp add`/`/mcp remove`
+- `append_mcp_prompt()` skips text-based MCP tool injection when `provider.supports_tool_use()` is true, preventing duplicate tool descriptions
+- `OllamaProvider` supports native tool calling via `chat_with_tools()` and `supports_tool_use()` when `llm.ollama.tool_use = true` in config
+- `OllamaConfig` struct with `tool_use: bool` field (default false) in `LlmConfig`
+- `AgentBuilder::with_mcp_shared_tools()` method to wire the shared tool list into the agent
 - ACP session modes support: `set_session_mode` method (ask/architect/code), `current_mode_update` notification emission on mode switch, and `availableModes` field in `new_session`/`load_session` responses (#920)
 
 ### Changed
+- `ToolDef.id` and `ToolDef.description` changed from `&'static str` to `Cow<'static, str>` to support dynamic MCP tool names without memory leaks
 - `AgentCapabilities` in `initialize()` now advertises `PromptCapabilities` with `image=true` and `embedded_context=true`, reflecting actual Image and Resource content block support (#917)
 
 ## [0.12.1] - 2026-02-25

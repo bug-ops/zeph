@@ -54,6 +54,7 @@ struct AgentDeps {
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
+    mcp_shared_tools: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
     mcp_config: zeph_core::config::McpConfig,
     learning: zeph_core::config::LearningConfig,
     tool_call_cutoff: usize,
@@ -118,7 +119,9 @@ async fn build_acp_deps(
     );
     let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
     let mcp_tools = mcp_manager.connect_all().await;
-    let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+    let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_executor =
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
@@ -171,6 +174,7 @@ async fn build_acp_deps(
         mcp_tools,
         mcp_registry,
         mcp_manager,
+        mcp_shared_tools,
         mcp_config: config.mcp.clone(),
         learning: config.skills.learning.clone(),
         tool_call_cutoff: config.memory.tool_call_cutoff,
@@ -279,6 +283,7 @@ async fn spawn_acp_agent(
         Some(d.mcp_manager),
         &d.mcp_config,
     )
+    .with_mcp_shared_tools(d.mcp_shared_tools)
     .with_learning(d.learning)
     .with_tool_call_cutoff(d.tool_call_cutoff)
     .with_available_secrets(
