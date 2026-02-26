@@ -84,9 +84,25 @@ Types involved: `ToolDefinition` (name + description + JSON Schema), `ChatRespon
 
 Prompt caching is enabled automatically for Anthropic and OpenAI providers, reducing latency and cost when the system prompt and tool definitions remain stable across turns.
 
+## Ollama Native Tool Calling
+
+Ollama can use the native tool calling path by setting `tool_use = true` in the `[llm.ollama]` config section:
+
+```toml
+[llm.ollama]
+tool_use = true
+```
+
+When enabled, `OllamaProvider::supports_tool_use()` returns `true`. The agent switches to `chat_with_tools()`, which converts `ToolDefinition`s to `ollama_rs::ToolInfo`, sends them alongside the messages, and parses `tool_calls` blocks from the response. `ToolResult` message parts are sent back as `role: tool` messages.
+
+When `tool_use = false` (the default), Ollama falls back to text-based extraction described below.
+
+> [!NOTE]
+> Requires a model that supports function calling (e.g. `qwen3:8b`, `llama3.1`, `mistral-nemo`). Check the Ollama model page to confirm tool support.
+
 ## Legacy Text Extraction
 
-Providers without native tool support (Ollama, Candle) use text-based tool invocation, distinguished by `InvocationHint` on each `ToolDef`:
+Providers without native tool support (Ollama with `tool_use = false`, Candle) use text-based tool invocation, distinguished by `InvocationHint` on each `ToolDef`:
 
 1. **Fenced block** (`InvocationHint::FencedBlock("bash")` / `FencedBlock("scrape")`) — the LLM emits a fenced code block with the specified tag. `ShellExecutor` handles ` ```bash ` blocks, `WebScrapeExecutor` handles ` ```scrape ` blocks containing JSON with CSS selectors.
 2. **Structured tool call** (`InvocationHint::ToolCall`) — the LLM emits a `ToolCall` with `tool_id` and typed `params`. `CompositeExecutor` routes the call to `FileExecutor` for file tools.

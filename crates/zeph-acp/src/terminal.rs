@@ -99,8 +99,8 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![ToolDef {
-            id: "bash",
-            description: "Execute a shell command in the IDE terminal",
+            id: "bash".into(),
+            description: "Execute a shell command in the IDE terminal".into(),
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::ToolCall,
         }]

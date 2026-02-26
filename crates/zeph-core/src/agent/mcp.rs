@@ -89,6 +89,7 @@ impl<C: Channel> Agent<C> {
                 let _ = self.channel.send_status("").await;
                 let count = tools.len();
                 self.mcp.tools.extend(tools);
+                self.sync_mcp_executor_tools();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_servers = self
@@ -204,6 +205,7 @@ impl<C: Channel> Agent<C> {
                 let before = self.mcp.tools.len();
                 self.mcp.tools.retain(|t| t.server_id != server_id);
                 let removed = before - self.mcp.tools.len();
+                self.sync_mcp_executor_tools();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_servers = self
@@ -255,6 +257,11 @@ impl<C: Channel> Agent<C> {
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_servers;
         });
+        // When native tool_use is active, MCP tools flow through the executor chain
+        // as ToolDefinitions — skip text prompt injection to avoid duplication.
+        if self.provider.supports_tool_use() {
+            return;
+        }
         if !matched_tools.is_empty() {
             let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
             tracing::debug!(
@@ -287,6 +294,15 @@ impl<C: Channel> Agent<C> {
     #[cfg(test)]
     pub(crate) fn mcp_tool_count(&self) -> usize {
         self.mcp.tools.len()
+    }
+
+    pub(super) fn sync_mcp_executor_tools(&self) {
+        if let Some(ref shared) = self.mcp.shared_tools {
+            let mut guard = shared
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.clone_from(&self.mcp.tools);
+        }
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {

@@ -9,9 +9,13 @@ use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::images::Image as OllamaImage;
+use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
 use tokio_stream::StreamExt;
 
-use crate::provider::{ChatStream, LlmProvider, Message, MessagePart, Role};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, ToolDefinition,
+    ToolUseRequest,
+};
 
 #[derive(Debug)]
 pub struct ModelInfo {
@@ -25,6 +29,7 @@ pub struct OllamaProvider {
     embedding_model: String,
     context_window_size: Option<usize>,
     vision_model: Option<String>,
+    tool_use: bool,
 }
 
 impl OllamaProvider {
@@ -37,12 +42,19 @@ impl OllamaProvider {
             embedding_model,
             context_window_size: None,
             vision_model: None,
+            tool_use: false,
         }
     }
 
     #[must_use]
     pub fn with_vision_model(mut self, model: String) -> Self {
         self.vision_model = Some(model);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_use(mut self, enabled: bool) -> Self {
+        self.tool_use = enabled;
         self
     }
 
@@ -170,6 +182,63 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
+    fn supports_tool_use(&self) -> bool {
+        self.tool_use
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        let ollama_tools: Vec<ToolInfo> = tools
+            .iter()
+            .map(|t| ToolInfo {
+                tool_type: ToolType::Function,
+                function: ToolFunctionInfo {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: serde_json::from_value(t.parameters.clone()).unwrap_or_default(),
+                },
+            })
+            .collect();
+
+        let ollama_messages: Vec<ChatMessage> =
+            messages.iter().map(convert_message_structured).collect();
+
+        let request =
+            ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
+
+        let response =
+            self.client.send_chat_messages(request).await.map_err(|e| {
+                LlmError::Other(format!("Ollama chat_with_tools request failed: {e}"))
+            })?;
+
+        if response.message.tool_calls.is_empty() {
+            return Ok(ChatResponse::Text(response.message.content));
+        }
+
+        let tool_calls: Vec<ToolUseRequest> = response
+            .message
+            .tool_calls
+            .into_iter()
+            .enumerate()
+            .map(|(i, tc)| ToolUseRequest {
+                id: format!("call_{i}"),
+                name: tc.function.name,
+                input: tc.function.arguments,
+            })
+            .collect();
+
+        let text = if response.message.content.is_empty() {
+            None
+        } else {
+            Some(response.message.content)
+        };
+
+        Ok(ChatResponse::ToolUse { text, tool_calls })
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let request = GenerateEmbeddingsRequest::new(
             self.embedding_model.clone(),
@@ -199,6 +268,33 @@ impl LlmProvider for OllamaProvider {
     fn name(&self) -> &str {
         "ollama"
     }
+}
+
+/// Convert a message for tool-aware requests. Handles `ToolUse` and `ToolResult` parts.
+fn convert_message_structured(msg: &Message) -> ChatMessage {
+    // If the message contains ToolResult parts, emit them as role:tool messages.
+    // ollama-rs represents tool results as a single ChatMessage with role Tool.
+    // We concatenate all tool result contents (Ollama expects one message per turn).
+    let tool_results: Vec<&MessagePart> = msg
+        .parts
+        .iter()
+        .filter(|p| matches!(p, MessagePart::ToolResult { .. }))
+        .collect();
+    if !tool_results.is_empty() {
+        let content = tool_results
+            .iter()
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return ChatMessage::tool(content);
+    }
+    convert_message(msg)
 }
 
 fn convert_message(msg: &Message) -> ChatMessage {
@@ -705,5 +801,96 @@ mod tests {
         let provider = OllamaProvider::new("http://localhost:11434", "main".into(), "embed".into());
         let selected = provider.vision_model.as_deref().unwrap_or(&provider.model);
         assert_eq!(selected, "main");
+    }
+
+    #[test]
+    fn supports_tool_use_default_false() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        assert!(!provider.supports_tool_use());
+    }
+
+    #[test]
+    fn supports_tool_use_enabled_via_builder() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into())
+            .with_tool_use(true);
+        assert!(provider.supports_tool_use());
+    }
+
+    #[test]
+    fn with_tool_use_false_disables() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into())
+            .with_tool_use(true)
+            .with_tool_use(false);
+        assert!(!provider.supports_tool_use());
+    }
+
+    #[test]
+    fn convert_message_structured_tool_result_emits_tool_role() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "id1".into(),
+                content: "file list".into(),
+                is_error: false,
+            }],
+        );
+        let chat_msg = convert_message_structured(&msg);
+        assert_eq!(
+            chat_msg.role,
+            ollama_rs::generation::chat::MessageRole::Tool
+        );
+        assert_eq!(chat_msg.content, "file list");
+    }
+
+    #[test]
+    fn convert_message_structured_multiple_tool_results_joined() {
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::ToolResult {
+                    tool_use_id: "id1".into(),
+                    content: "result_a".into(),
+                    is_error: false,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "id2".into(),
+                    content: "result_b".into(),
+                    is_error: false,
+                },
+            ],
+        );
+        let chat_msg = convert_message_structured(&msg);
+        assert_eq!(
+            chat_msg.role,
+            ollama_rs::generation::chat::MessageRole::Tool
+        );
+        assert!(chat_msg.content.contains("result_a"));
+        assert!(chat_msg.content.contains("result_b"));
+    }
+
+    #[test]
+    fn convert_message_structured_no_tool_results_delegates_to_convert_message() {
+        let msg = Message::from_legacy(Role::Assistant, "response");
+        let chat_msg = convert_message_structured(&msg);
+        assert_eq!(
+            chat_msg.role,
+            ollama_rs::generation::chat::MessageRole::Assistant
+        );
+        assert_eq!(chat_msg.content, "response");
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_unreachable_endpoint_errors() {
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into())
+                .with_tool_use(true);
+        let messages = vec![Message::from_legacy(Role::User, "hello")];
+        let tools = vec![ToolDefinition {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let result = provider.chat_with_tools(&messages, &tools).await;
+        assert!(result.is_err());
     }
 }

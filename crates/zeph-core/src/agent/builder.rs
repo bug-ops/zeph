@@ -162,6 +162,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_mcp_shared_tools(
+        mut self,
+        shared: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
+    ) -> Self {
+        self.mcp.shared_tools = Some(shared);
+        self
+    }
+
+    #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;

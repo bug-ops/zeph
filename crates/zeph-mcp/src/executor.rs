@@ -1,25 +1,101 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
+use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
+use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::manager::McpManager;
+use crate::tool::McpTool;
 
 #[derive(Debug, Clone)]
 pub struct McpToolExecutor {
     manager: Arc<McpManager>,
+    tools: Arc<RwLock<Vec<McpTool>>>,
 }
 
 impl McpToolExecutor {
     #[must_use]
-    pub fn new(manager: Arc<McpManager>) -> Self {
-        Self { manager }
+    pub fn new(manager: Arc<McpManager>, tools: Arc<RwLock<Vec<McpTool>>>) -> Self {
+        Self { manager, tools }
+    }
+
+    pub fn set_tools(&self, tools: Vec<McpTool>) {
+        let mut guard = self
+            .tools
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = tools;
     }
 }
 
 impl ToolExecutor for McpToolExecutor {
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        let tools = self
+            .tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tools
+            .iter()
+            .map(|t| ToolDef {
+                id: t.qualified_name().into(),
+                description: t.description.clone().into(),
+                schema: serde_json::from_value(t.input_schema.clone())
+                    .unwrap_or_else(|_| schemars::Schema::default()),
+                invocation: InvocationHint::ToolCall,
+            })
+            .collect()
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        let Some((server_id, tool_name)) = call.tool_id.split_once(':') else {
+            return Ok(None);
+        };
+
+        let is_known = {
+            let tools = self
+                .tools
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            tools
+                .iter()
+                .any(|t| t.server_id == server_id && t.name == tool_name)
+        };
+        if !is_known {
+            return Ok(None);
+        }
+
+        let args = serde_json::Value::Object(call.params.clone());
+        let result = self
+            .manager
+            .call_tool(server_id, tool_name, args)
+            .await
+            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| {
+                if let rmcp::model::RawContent::Text(t) = &c.raw {
+                    Some(t.text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: text,
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+        }))
+    }
+
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let blocks = extract_fenced_blocks(response, "mcp");
         if blocks.is_empty() {
@@ -92,6 +168,12 @@ fn default_args() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_executor() -> McpToolExecutor {
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
+        let tools = Arc::new(RwLock::new(vec![]));
+        McpToolExecutor::new(mgr, tools)
+    }
 
     #[test]
     fn parse_instruction_full() {
@@ -206,24 +288,58 @@ mod tests {
 
     #[test]
     fn executor_construction() {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
-        let executor = McpToolExecutor::new(mgr);
+        let executor = make_executor();
         let dbg = format!("{executor:?}");
         assert!(dbg.contains("McpToolExecutor"));
     }
 
+    #[test]
+    fn tool_definitions_empty_when_no_tools() {
+        let executor = make_executor();
+        assert!(executor.tool_definitions().is_empty());
+    }
+
+    #[test]
+    fn tool_definitions_returns_qualified_names() {
+        let mgr = Arc::new(McpManager::new(vec![], vec![]));
+        let tools = Arc::new(RwLock::new(vec![McpTool {
+            server_id: "gh".into(),
+            name: "create_issue".into(),
+            description: "Create a GitHub issue".into(),
+            input_schema: serde_json::json!({}),
+        }]));
+        let executor = McpToolExecutor::new(mgr, tools);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].id.as_ref(), "gh:create_issue");
+        assert_eq!(defs[0].description.as_ref(), "Create a GitHub issue");
+    }
+
+    #[test]
+    fn set_tools_updates_definitions() {
+        let executor = make_executor();
+        assert!(executor.tool_definitions().is_empty());
+        executor.set_tools(vec![McpTool {
+            server_id: "fs".into(),
+            name: "list_dir".into(),
+            description: "List directory".into(),
+            input_schema: serde_json::json!({}),
+        }]);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].id.as_ref(), "fs:list_dir");
+    }
+
     #[tokio::test]
     async fn execute_no_blocks_returns_none() {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
-        let executor = McpToolExecutor::new(mgr);
+        let executor = make_executor();
         let result = executor.execute("no mcp blocks here").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn execute_invalid_json_block_returns_error() {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
-        let executor = McpToolExecutor::new(mgr);
+        let executor = make_executor();
         let text = "```mcp\nnot json\n```";
         let result = executor.execute(text).await;
         assert!(result.is_err());
@@ -231,10 +347,31 @@ mod tests {
 
     #[tokio::test]
     async fn execute_valid_block_server_not_connected() {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
-        let executor = McpToolExecutor::new(mgr);
+        let executor = make_executor();
         let text = "```mcp\n{\"server\":\"missing\",\"tool\":\"t\"}\n```";
         let result = executor.execute(text).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_unknown_format_returns_none() {
+        let executor = make_executor();
+        let call = ToolCall {
+            tool_id: "no_colon_here".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = executor.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_unknown_server_returns_none() {
+        let executor = make_executor();
+        let call = ToolCall {
+            tool_id: "unknown_server:tool".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = executor.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
     }
 }

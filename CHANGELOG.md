@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `McpToolExecutor` now implements `tool_definitions()` and `execute_tool_call()` — MCP tools are exposed as native `ToolDefinition`s and dispatched via structured tool_use when provider supports it
+- `McpToolExecutor` accepts `Arc<RwLock<Vec<McpTool>>>` at construction; shared reference is kept in `McpState.shared_tools` and updated on `/mcp add`/`/mcp remove`
+- `append_mcp_prompt()` skips text-based MCP tool injection when `provider.supports_tool_use()` is true, preventing duplicate tool descriptions
+- `OllamaProvider` supports native tool calling via `chat_with_tools()` and `supports_tool_use()` when `llm.ollama.tool_use = true` in config
+- `OllamaConfig` struct with `tool_use: bool` field (default false) in `LlmConfig`
+- `AgentBuilder::with_mcp_shared_tools()` method to wire the shared tool list into the agent
+
+### Changed
+- `ToolDef.id` and `ToolDef.description` changed from `&'static str` to `Cow<'static, str>` to support dynamic MCP tool names without memory leaks
+
 ## [0.12.1] - 2026-02-25
 
 ### Security
