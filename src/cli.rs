@@ -42,6 +42,11 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "ADDR")]
     pub(crate) acp_http_bind: Option<String>,
 
+    /// Bearer token for ACP HTTP/WebSocket authentication (overrides `acp.auth_token` config)
+    #[cfg(feature = "acp-http")]
+    #[arg(long, value_name = "TOKEN")]
+    pub(crate) acp_auth_token: Option<String>,
+
     /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]

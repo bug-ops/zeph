@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1281
+assertion_line: 1304
 expression: toml_str
 ---
 [agent]
@@ -184,3 +184,4 @@ session_idle_timeout_secs = 1800
 available_models = []
 transport = "stdio"
 http_bind = "127.0.0.1:9800"
+discovery_enabled = true

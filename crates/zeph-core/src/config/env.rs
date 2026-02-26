@@ -290,6 +290,14 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_ACP_PERMISSION_FILE") {
             self.acp.permission_file = Some(std::path::PathBuf::from(v));
         }
+        if let Ok(v) = std::env::var("ZEPH_ACP_AUTH_TOKEN") {
+            self.acp.auth_token = Some(v);
+        }
+        if let Ok(v) = std::env::var("ZEPH_ACP_DISCOVERY_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.acp.discovery_enabled = enabled;
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

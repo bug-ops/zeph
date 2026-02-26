@@ -45,6 +45,8 @@ fn make_server_config() -> AcpServerConfig {
         provider_factory: None,
         available_models: Vec::new(),
         mcp_manager: None,
+        auth_bearer_token: None,
+        discovery_enabled: true,
     }
 }
 

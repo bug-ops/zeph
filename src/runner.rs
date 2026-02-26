@@ -101,6 +101,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
             cli.acp_http_bind.as_deref(),
+            cli.acp_auth_token,
         )
         .await;
     }

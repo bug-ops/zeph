@@ -84,6 +84,60 @@ zeph acp --http :8080       # HTTP+SSE (shared/remote)
 zeph acp --ws :8080         # WebSocket
 ```
 
+### WebSocket transport hardening
+
+The WebSocket transport is hardened against a range of protocol and concurrency issues:
+
+| Property | Value |
+|---|---|
+| Max concurrent sessions | Configurable; enforced with atomic slot reservation (eliminates TOCTOU race) |
+| Keepalive | 30 s ping interval / 90 s pong timeout — idle connections are closed |
+| Max message size | 1 MiB |
+| Binary frames | Rejected with close code `1003 Unsupported Data` (text-only protocol) |
+| Disconnect drain | Write task given 1 s to deliver the RFC 6455 close frame before the socket is dropped |
+
+### Bearer token authentication
+
+Protect the `/acp` (HTTP+SSE) and `/acp/ws` (WebSocket) endpoints with a static bearer token. The discovery endpoint is always exempt.
+
+```toml
+# config.toml
+[acp]
+auth_bearer_token = "your-secret-token"
+```
+
+| Method | Value |
+|---|---|
+| Config key | `acp.auth_bearer_token` |
+| Environment variable | `ZEPH_ACP_AUTH_TOKEN` |
+| CLI flag | `--acp-auth-token <token>` |
+
+Requests to guarded routes without a valid `Authorization: Bearer <token>` header receive `401 Unauthorized`. When no token is configured, the server runs in open mode — no authentication is enforced. stdio transport is always unaffected.
+
+> [!TIP]
+> Always set `auth_bearer_token` when exposing the ACP server on a network interface. For local-only stdio or single-user setups no token is required.
+
+> [!CAUTION]
+> Open mode (no token configured) is suitable only for trusted local use. Any process on the same host can issue agent commands without authentication.
+
+### Agent discovery
+
+Zeph publishes a machine-readable agent manifest at `GET /.well-known/acp.json` that ACP-compatible clients use for capability discovery. The manifest includes the agent name, version, supported transports, and authentication type.
+
+```toml
+# config.toml
+[acp]
+discovery_enabled = true   # default: true
+```
+
+| Method | Value |
+|---|---|
+| Config key | `acp.discovery_enabled` |
+| Environment variable | `ZEPH_ACP_DISCOVERY_ENABLED=false` to disable |
+
+> [!NOTE]
+> The discovery endpoint is intentionally unauthenticated so clients can discover the agent and its auth requirements before presenting credentials. Do not include sensitive data in the manifest. Set `discovery_enabled = false` if the endpoint must not be publicly reachable.
+
 [ACP setup guide →](https://bug-ops.github.io/zeph/advanced/acp.html)
 
 ## TUI Demo

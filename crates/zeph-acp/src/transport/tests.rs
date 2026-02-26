@@ -35,6 +35,8 @@ fn test_state() -> AcpHttpState {
             provider_factory: None,
             available_models: vec![],
             mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
         },
     )
 }
@@ -51,6 +53,8 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             provider_factory: None,
             available_models: vec![],
             mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
         },
     )
 }
@@ -297,6 +301,173 @@ async fn ws_upgrade_returns_503_when_max_sessions_reached() {
     );
 }
 
+// ── Bearer auth tests ─────────────────────────────────────────────────────────
+
+fn state_with_auth(token: &str) -> AcpHttpState {
+    AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: vec![],
+            mcp_manager: None,
+            auth_bearer_token: Some(token.into()),
+            discovery_enabled: true,
+        },
+    )
+}
+
+#[tokio::test]
+async fn auth_valid_token_passes() {
+    let router = acp_router(state_with_auth("secret"));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acp")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer secret")
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+        ))
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_missing_token_returns_401() {
+    let router = acp_router(state_with_auth("secret"));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acp")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_wrong_token_returns_401() {
+    let router = acp_router(state_with_auth("secret"));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acp")
+        .header("authorization", "Bearer wrong")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_none_mode_allows_all_requests() {
+    // test_state() has auth_bearer_token: None — no auth layer applied.
+    let router = acp_router(test_state());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acp")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    // Any non-401 status confirms auth is not enforced.
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Discovery endpoint tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn discovery_returns_expected_json_fields() {
+    use axum::body::to_bytes;
+
+    let router = acp_router(test_state());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/.well-known/acp.json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["name"], "test");
+    assert_eq!(json["version"], "0.0.1");
+    assert!(
+        json["transports"].is_object(),
+        "transports must be an object"
+    );
+    assert!(json["transports"]["http_sse"].is_object());
+    assert!(json["transports"]["websocket"].is_object());
+    assert!(
+        json["authentication"].is_null(),
+        "authentication must be null when no token"
+    );
+}
+
+#[tokio::test]
+async fn discovery_with_bearer_token_returns_bearer_auth_type() {
+    use axum::body::to_bytes;
+
+    let router = acp_router(state_with_auth("secret"));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/.well-known/acp.json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["authentication"]["type"], "bearer");
+}
+
+#[tokio::test]
+async fn discovery_disabled_returns_404() {
+    let state = AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: vec![],
+            mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: false,
+        },
+    );
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/.well-known/acp.json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Reaper test ───────────────────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]
@@ -316,6 +487,8 @@ async fn reaper_removes_expired_connections() {
             provider_factory: None,
             available_models: vec![],
             mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
         },
     );
 

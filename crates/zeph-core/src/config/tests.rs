@@ -809,6 +809,17 @@ fn a2a_debug_redacts_auth_token() {
 }
 
 #[test]
+fn acp_debug_redacts_auth_token() {
+    let cfg = AcpConfig {
+        auth_token: Some("secret".to_string()),
+        ..AcpConfig::default()
+    };
+    let debug = format!("{cfg:?}");
+    assert!(!debug.contains("secret"));
+    assert!(debug.contains("[REDACTED]"));
+}
+
+#[test]
 fn vault_config_default_backend() {
     let config = Config::default();
     assert_eq!(config.vault.backend, "env");
