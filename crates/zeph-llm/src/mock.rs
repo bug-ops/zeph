@@ -96,10 +96,10 @@ impl LlmProvider for MockProvider {
         if self.delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         }
-        if let Some(buf) = &self.recorded {
-            if let Ok(mut guard) = buf.lock() {
-                guard.push(messages.to_vec());
-            }
+        if let Some(buf) = &self.recorded
+            && let Ok(mut guard) = buf.lock()
+        {
+            guard.push(messages.to_vec());
         }
         if self.fail_chat {
             return Err(crate::LlmError::Other("mock LLM error".into()));
