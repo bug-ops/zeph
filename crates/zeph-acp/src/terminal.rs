@@ -532,7 +532,9 @@ mod tests {
             .run_until(async {
                 let perm_conn = Rc::new(RejectPermissionClient);
                 let sid = acp::SessionId::new("s1");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, None);
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
                 tokio::task::spawn_local(perm_handler);
 
                 let term_conn = Rc::new(FakeTerminalClient);

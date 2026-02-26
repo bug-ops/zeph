@@ -1564,7 +1564,11 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             // For bash: use the command string (truncated). For others: fall back to tool_name.
             let title = params
                 .as_ref()
-                .and_then(|p| p.get("command").or_else(|| p.get("path")).or_else(|| p.get("url")))
+                .and_then(|p| {
+                    p.get("command")
+                        .or_else(|| p.get("path"))
+                        .or_else(|| p.get("url"))
+                })
                 .and_then(|v| v.as_str())
                 .map_or_else(
                     || tool_name.clone(),
