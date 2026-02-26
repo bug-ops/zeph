@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- ACP session modes support: `set_session_mode` method (ask/architect/code), `current_mode_update` notification emission on mode switch, and `availableModes` field in `new_session`/`load_session` responses (#920)
+
 ## [0.12.1] - 2026-02-25
 
 ### Security

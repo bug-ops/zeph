@@ -89,6 +89,8 @@ pub(crate) struct SessionEntry {
     provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
     /// Currently selected model identifier (display / tracking only).
     current_model: RefCell<String>,
+    /// Current session mode (ask / architect / code).
+    current_mode: RefCell<acp::SessionModeId>,
 }
 
 type SessionMap = Rc<RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>>;
@@ -343,6 +345,7 @@ impl acp::Agent for ZephAcpAgent {
             working_dir: RefCell::new(None),
             provider_override,
             current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
@@ -363,7 +366,9 @@ impl acp::Agent for ZephAcpAgent {
         });
 
         let config_options = build_model_config_options(&self.available_models, "");
-        let mut resp = acp::NewSessionResponse::new(session_id);
+        let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
+        let mut resp =
+            acp::NewSessionResponse::new(session_id).modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
         }
@@ -590,6 +595,7 @@ impl acp::Agent for ZephAcpAgent {
             working_dir: RefCell::new(None),
             provider_override,
             current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
         };
         self.sessions
             .borrow_mut()
@@ -637,7 +643,8 @@ impl acp::Agent for ZephAcpAgent {
             }
         }
 
-        Ok(acp::LoadSessionResponse::new())
+        let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
+        Ok(acp::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id)))
     }
 
     async fn set_session_config_option(
@@ -683,6 +690,41 @@ impl acp::Agent for ZephAcpAgent {
 
         let config_options = build_model_config_options(&self.available_models, &current);
         Ok(acp::SetSessionConfigOptionResponse::new(config_options))
+    }
+
+    async fn set_session_mode(
+        &self,
+        args: acp::SetSessionModeRequest,
+    ) -> acp::Result<acp::SetSessionModeResponse> {
+        let valid_ids: &[&str] = &["code", "architect", "ask"];
+        let mode_str = args.mode_id.0.as_ref();
+        if !valid_ids.contains(&mode_str) {
+            return Err(acp::Error::invalid_request().data(format!("unknown mode: {mode_str}")));
+        }
+
+        {
+            let sessions = self.sessions.borrow();
+            let entry = sessions
+                .get(&args.session_id)
+                .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
+            *entry.current_mode.borrow_mut() = args.mode_id.clone();
+        }
+
+        tracing::debug!(
+            session_id = %args.session_id,
+            mode = %mode_str,
+            "ACP session mode switched"
+        );
+
+        let update = acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            args.mode_id.clone(),
+        ));
+        let notification = acp::SessionNotification::new(args.session_id, update);
+        if let Err(e) = self.send_notification(notification).await {
+            tracing::warn!(error = %e, "failed to send current_mode_update");
+        }
+
+        Ok(acp::SetSessionModeResponse::new())
     }
 }
 
@@ -793,6 +835,22 @@ fn tool_kind_from_name(name: &str) -> acp::ToolKind {
         "web_scrape" | "fetch" => acp::ToolKind::Fetch,
         _ => acp::ToolKind::Other,
     }
+}
+
+const DEFAULT_MODE_ID: &str = "code";
+
+fn available_session_modes() -> Vec<acp::SessionMode> {
+    vec![
+        acp::SessionMode::new("code", "Code").description("Write and edit code, execute tools"),
+        acp::SessionMode::new("architect", "Architect")
+            .description("Design and plan without writing code"),
+        acp::SessionMode::new("ask", "Ask")
+            .description("Answer questions without code changes or tools"),
+    ]
+}
+
+fn build_mode_state(current_mode_id: &acp::SessionModeId) -> acp::SessionModeState {
+    acp::SessionModeState::new(current_mode_id.clone(), available_session_modes())
 }
 
 /// Build the `model` config option selector from the list of available model keys.
@@ -1687,6 +1745,137 @@ mod tests {
                     "expensive:gpt-5",
                 );
                 let result = agent.set_session_config_option(req).await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn new_session_includes_modes() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let modes = resp
+                    .modes
+                    .expect("modes should be present in new_session response");
+                assert_eq!(modes.current_mode_id.0.as_ref(), DEFAULT_MODE_ID);
+                assert_eq!(modes.available_modes.len(), 3);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_updates_entry() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+
+                // Drain notifications in background
+                tokio::task::spawn_local(async move {
+                    while let Some((_, ack)) = rx.recv().await {
+                        let _ = ack.send(());
+                    }
+                });
+
+                agent
+                    .set_session_mode(acp::SetSessionModeRequest::new(sid.clone(), "architect"))
+                    .await
+                    .unwrap();
+
+                let mode = agent
+                    .sessions
+                    .borrow()
+                    .get(&sid)
+                    .map(|e| e.current_mode.borrow().0.as_ref().to_owned())
+                    .unwrap();
+                assert_eq!(mode, "architect");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_emits_notification() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+
+                let result = tokio::join!(
+                    agent.set_session_mode(acp::SetSessionModeRequest::new(sid, "ask")),
+                    async {
+                        if let Some((notif, ack)) = rx.recv().await {
+                            let _ = ack.send(());
+                            Some(notif)
+                        } else {
+                            None
+                        }
+                    }
+                );
+
+                assert!(result.0.is_ok());
+                let notif = result.1.expect("notification should be received");
+                assert!(matches!(
+                    notif.update,
+                    acp::SessionUpdate::CurrentModeUpdate(_)
+                ));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_rejects_unknown_mode() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let result = agent
+                    .set_session_mode(acp::SetSessionModeRequest::new(
+                        resp.session_id,
+                        "invalid-mode",
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_rejects_unknown_session() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let result = agent
+                    .set_session_mode(acp::SetSessionModeRequest::new(
+                        acp::SessionId::new("nonexistent"),
+                        "code",
+                    ))
+                    .await;
                 assert!(result.is_err());
             })
             .await;
