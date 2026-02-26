@@ -153,6 +153,7 @@ pub trait Channel: Send {
         &mut self,
         _tool_name: &str,
         _tool_call_id: &str,
+        _params: Option<serde_json::Value>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -207,6 +208,8 @@ pub enum LoopbackEvent {
     ToolStart {
         tool_name: String,
         tool_call_id: String,
+        /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
+        params: Option<serde_json::Value>,
     },
     ToolOutput {
         tool_name: String,
@@ -312,11 +315,13 @@ impl Channel for LoopbackChannel {
         &mut self,
         tool_name: &str,
         tool_call_id: &str,
+        params: Option<serde_json::Value>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolStart {
                 tool_name: tool_name.to_owned(),
                 tool_call_id: tool_call_id.to_owned(),
+                params,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
