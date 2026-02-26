@@ -489,7 +489,7 @@ async fn agent_with_memory() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 }
 
@@ -567,7 +567,7 @@ async fn agent_load_history_with_memory() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
 
     agent.load_history().await.unwrap();
 }
@@ -1152,7 +1152,7 @@ async fn agent_persist_message_with_memory() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(":memory:").await.unwrap();
@@ -1181,7 +1181,7 @@ async fn agent_check_summarization_triggers() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 2);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 2);
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -1213,8 +1213,13 @@ async fn agent_skills_command_with_usage_stats() {
         .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_memory(memory, cid, 50, 5, 100);
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
@@ -1559,7 +1564,7 @@ async fn agent_persist_messages_verified() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(db_str).await.unwrap();
@@ -1606,7 +1611,7 @@ async fn agent_load_history_skips_empty_messages() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
 
     agent.load_history().await.unwrap();
 }
@@ -1637,7 +1642,7 @@ async fn agent_persist_multiple_exchanges() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(db_str).await.unwrap();
@@ -1673,7 +1678,7 @@ async fn agent_tool_output_persisted_in_memory() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(db_str).await.unwrap();
@@ -1746,7 +1751,7 @@ async fn agent_confirmation_approved_with_output_persisted() {
         5,
         executor,
     )
-    .with_memory(memory, cid, 50, 5, 100);
+    .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(db_str).await.unwrap();
@@ -2045,8 +2050,13 @@ async fn agent_records_skill_usage() {
         .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let mut agent = Agent::new(provider.clone(), channel, registry, None, 5, executor)
-        .with_memory(memory, cid, 50, 5, 100);
+    let mut agent = Agent::new(provider.clone(), channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
     agent.run().await.unwrap();
 
     let store = SqliteStore::new(db_str).await.unwrap();
@@ -2352,7 +2362,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2389,7 +2399,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2457,7 +2467,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2495,7 +2505,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2584,7 +2594,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2628,7 +2638,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
 
@@ -2707,7 +2717,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2755,7 +2765,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
 
@@ -2827,7 +2837,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2891,7 +2901,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
 
@@ -2949,7 +2959,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -2971,7 +2981,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -3017,7 +3027,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         {
@@ -3049,7 +3059,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3076,7 +3086,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100)
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
         .with_learning(config);
 
         agent.run().await.unwrap();
@@ -3120,7 +3130,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3148,7 +3158,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3222,7 +3232,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3279,7 +3289,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, ErrorToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3326,7 +3336,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3376,7 +3386,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3411,7 +3421,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3465,7 +3475,7 @@ mod self_learning {
         drop(tx);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, MockToolExecutor)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_learning(config)
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
@@ -3503,7 +3513,7 @@ mod self_learning {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100)
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
         .with_learning(config);
         agent.run().await.unwrap();
 
@@ -3558,7 +3568,7 @@ mod trust_commands {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -3596,7 +3606,7 @@ mod trust_commands {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -3634,7 +3644,7 @@ mod trust_commands {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -3672,7 +3682,7 @@ mod trust_commands {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
@@ -3720,7 +3730,7 @@ mod trust_commands {
             5,
             MockToolExecutor,
         )
-        .with_memory(memory, cid, 50, 5, 100);
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
         agent.run().await.unwrap();
 
         let collected = outputs.lock().unwrap();
