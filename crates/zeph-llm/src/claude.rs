@@ -73,7 +73,7 @@ impl ClaudeProvider {
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
-            client: crate::http::default_client(),
+            client: crate::http::llm_client(),
             api_key,
             model,
             max_tokens,

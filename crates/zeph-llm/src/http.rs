@@ -5,17 +5,16 @@
 
 use std::time::Duration;
 
-/// Create a shared HTTP client with standard Zeph configuration.
+/// Create an HTTP client for LLM inference providers.
 ///
-/// Config: 30s connect timeout, 60s request timeout, rustls TLS,
-/// `zeph/{version}` user-agent, redirect limit 10.
+/// Uses only a connect timeout — no request timeout — because LLM responses
+/// can exceed any fixed wall-clock limit (large context, tool use, streaming).
 #[must_use]
-pub fn default_client() -> reqwest::Client {
+pub fn llm_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
         .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
-        .expect("default HTTP client construction must not fail")
+        .expect("LLM HTTP client construction must not fail")
 }

@@ -72,7 +72,7 @@ impl OpenAiProvider {
             base_url.pop();
         }
         Self {
-            client: crate::http::default_client(),
+            client: crate::http::llm_client(),
             api_key,
             base_url,
             model,
