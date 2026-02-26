@@ -73,12 +73,13 @@ impl ClaudeProvider {
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
-            client: crate::http::llm_client(600),
+            client: crate::http::llm_client(),
             api_key,
             model,
             max_tokens,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
+            last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
         }
     }
