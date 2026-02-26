@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Pin `agent-client-protocol` workspace dependency to `0.9.4` for reproducible builds (#917)
+- `AgentCapabilities` in `initialize()` now advertises `PromptCapabilities` with `image=true` and `embedded_context=true`, reflecting actual Image and Resource content block support (#917)
+
 ## [0.12.1] - 2026-02-25
 
 ### Security

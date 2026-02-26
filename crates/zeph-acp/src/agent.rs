@@ -276,7 +276,15 @@ impl acp::Agent for ZephAcpAgent {
             .agent_info(
                 acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
             )
-            .agent_capabilities(acp::AgentCapabilities::new().load_session(true))
+            .agent_capabilities(
+                acp::AgentCapabilities::new()
+                    .load_session(true)
+                    .prompt_capabilities(
+                        acp::PromptCapabilities::new()
+                            .image(true)
+                            .embedded_context(true),
+                    ),
+            )
             .meta(meta))
     }
 
@@ -916,6 +924,10 @@ mod tests {
                     .await
                     .unwrap();
                 assert!(resp.agent_capabilities.load_session);
+                let prompt_caps = &resp.agent_capabilities.prompt_capabilities;
+                assert!(prompt_caps.image);
+                assert!(prompt_caps.embedded_context);
+                assert!(!prompt_caps.audio);
                 let meta = resp.meta.expect("meta should be present");
                 assert!(
                     meta.contains_key("auth_hint"),
