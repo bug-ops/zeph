@@ -18,7 +18,6 @@ use zeph_tools::{
 
 use crate::{error::AcpError, permission::AcpPermissionGate};
 
-const DEFAULT_TERMINAL_TIMEOUT: Duration = Duration::from_secs(120);
 const KILL_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ShellResult {
@@ -59,8 +58,12 @@ impl AcpShellExecutor {
     where
         C: acp::Client + 'static,
     {
-        let _ = timeout_secs;
-        Self::with_timeout(conn, session_id, permission_gate, DEFAULT_TERMINAL_TIMEOUT)
+        Self::with_timeout(
+            conn,
+            session_id,
+            permission_gate,
+            Duration::from_secs(timeout_secs),
+        )
     }
 
     /// Create the executor with a configurable command timeout.
