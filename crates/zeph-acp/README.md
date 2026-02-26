@@ -7,9 +7,38 @@
 
 ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environments.
 
+## Installation
+
+```toml
+[dependencies]
+zeph-acp = "*"
+```
+
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio or HTTP transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`.
+
+## Installation
+
+```toml
+[dependencies]
+zeph-acp = "0.1"
+
+# With HTTP+SSE transport
+zeph-acp = { version = "0.1", features = ["acp-http"] }
+```
+
+> [!IMPORTANT]
+> Requires Rust 1.88 or later.
+
+## Features
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `acp-http` | HTTP+SSE transport via axum (`AcpHttpState`, `acp_router`, `post_handler`, `get_handler`) | No |
+
+> [!TIP]
+> Enable `acp-http` only when deploying Zeph as a network-accessible ACP endpoint. The default stdio transport is sufficient for local IDE integrations.
 
 ## Key modules
 
@@ -20,10 +49,12 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
 | `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval; persists "always allow/deny" decisions to TOML file |
-| `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers into `McpServerEntry` configs |
+| `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers (Stdio, Http, Sse) into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum |
 
-**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
+**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_extras`
+
+**Re-exports (feature `acp-http`):** `SendAgentSpawner`, `AcpHttpState`, `acp_router`
 
 ## AcpContext
 
@@ -40,6 +71,86 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## Protocol methods
+
+### AgentCapabilities (G3)
+
+The `initialize` response advertises enriched capabilities:
+
+```rust
+acp::AgentCapabilities::new()
+    .load_session(true)
+    .meta({
+        cap_meta.insert("config_options", json!(true));
+        cap_meta.insert("ext_methods", json!(true));
+        cap_meta
+    })
+```
+
+This signals to the IDE that the agent supports session config options (`session/configure`) and custom `ext_method` extensions.
+
+### set_session_mode (G2)
+
+`ZephAcpAgent` implements `set_session_mode` to handle IDE-driven mode switches per session:
+
+- Validates that the target session exists; returns `invalid_request` error if not found.
+- Logs the `session_id` and `mode_id` at debug level.
+- Currently a no-op acknowledgement — mode semantics are handled by the IDE.
+
+### ext_notification (G4)
+
+`ZephAcpAgent` implements `ext_notification` to accept IDE-originated fire-and-forget notifications:
+
+- Logs the notification method name at debug level.
+- Returns `Ok(())` for all known and unknown methods — unrecognized notifications are silently accepted.
+
+## MCP transport support (G8)
+
+`acp_mcp_servers_to_entries` converts ACP-advertised MCP servers into `zeph-mcp` `ServerEntry` configs. Three transport types are supported:
+
+| ACP variant | Mapped transport | Notes |
+|-------------|-----------------|-------|
+| `McpServer::Stdio` | `McpTransport::Stdio` | Env vars forwarded as-is to child process |
+| `McpServer::Http` | `McpTransport::Http` | Streamable HTTP via rmcp |
+| `McpServer::Sse` | `McpTransport::Http` | Legacy SSE mapped to streamable HTTP (backward-compatible) |
+
+> [!NOTE]
+> SSE is a legacy MCP transport. rmcp's `StreamableHttpClientTransport` handles both SSE and streamable HTTP endpoints, so both variants map to `McpTransport::Http`.
+
+```rust
+use zeph_acp::acp_mcp_servers_to_entries;
+
+let entries = acp_mcp_servers_to_entries(&initialize_request.mcp_servers);
+// entries: Vec<ServerEntry> ready for McpManager::start_all
+```
+
+## HTTP+SSE transport (feature `acp-http`)
+
+Enable the `acp-http` feature to expose Zeph over HTTP with Server-Sent Events:
+
+```rust
+use zeph_acp::{AcpHttpState, AcpServerConfig, acp_router};
+
+let state = AcpHttpState::new(spawner, AcpServerConfig::default());
+state.start_reaper(); // prune idle connections every 60 s
+
+let app = acp_router(state);
+// mount app into your axum Router
+```
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/acp` | Send a JSON-RPC request; stream responses as SSE. Creates a new connection when `Acp-Session-Id` header is absent. |
+| `GET` | `/acp` | Reconnect to an existing connection's SSE stream. Requires `Acp-Session-Id` header. |
+| `GET` | `/acp/ws` | WebSocket upgrade for bidirectional streaming. |
+
+Session IDs are UUIDs returned in the `Acp-Session-Id` response header. Idle connections (beyond `session_idle_timeout_secs`) are reaped by a background task.
+
+> [!TIP]
+> Use `SendAgentSpawner` (the `Send`-safe variant of `AgentSpawner`) when constructing `AcpHttpState`. This satisfies axum's `State` requirement for `Send + Sync`.
 
 ## Rich content
 
@@ -105,6 +216,15 @@ pub type AgentSpawner = Arc<
 
 The host constructs an `AgentSpawner` closure that wires `AcpContext` capabilities into `Agent` via `with_cancel_signal()` on the builder, then passes the closure to `serve_stdio` or `serve_connection`.
 
+For HTTP transport, use `SendAgentSpawner` which requires `Send + Sync`:
+
+```rust
+pub type SendAgentSpawner = Arc<
+    dyn Fn(LoopbackChannel, Option<AcpContext>) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+        + Send + Sync + 'static,
+>;
+```
+
 ## Custom methods
 
 `ZephAcpAgent` exposes vendor-specific extensions via `ExtRequest` dispatch. The `custom` module matches on `req.method` and routes to the appropriate handler. Unrecognized methods return `None`, allowing the ACP runtime to respond with "method not found".
@@ -129,11 +249,56 @@ The host constructs an `AgentSpawner` closure that wires `AcpContext` capabiliti
 
 The `initialize` response includes an `auth_hint` key in its metadata map. For stdio transport (trusted local client) this is a generic `"authentication required"` string. IDEs can use this hint to prompt the user for credentials before issuing further requests.
 
-## Installation
+## Feature flags
 
-```bash
-cargo add zeph-acp
+| Feature | Status | Description |
+|---------|--------|-------------|
+| `acp-http` | stable | Enables the HTTP+SSE and WebSocket transports (axum-based). Required for `post_handler`, `get_handler`, `ws_upgrade_handler`, and `router`. |
+| `unstable-session-list` | unstable | Enables the `list_sessions` ACP method. See below. |
+| `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
+| `unstable-session-resume` | unstable | Enables the `resume_session` ACP method. See below. |
+
+> [!WARNING]
+> The three `unstable-*` features are gated because their wire protocol (`_session/list`, `_session/fork`, `_session/resume`) is not yet finalized. Expect breaking changes before these features graduate to stable.
+
+To opt in, add the desired features in your `Cargo.toml`:
+
+```toml
+[dependencies]
+zeph-acp = { version = "*", features = [
+    "unstable-session-list",
+    "unstable-session-fork",
+    "unstable-session-resume",
+] }
 ```
+
+All three flags are independent and can be combined freely.
+
+### `unstable-session-list`
+
+Enables the `list_sessions` method on `ZephAcpAgent`. Returns a snapshot of all active in-memory sessions as `SessionInfo` records (session ID, working directory, last-updated timestamp). Supports an optional `cwd` filter — when provided, only sessions whose working directory matches the given path are returned.
+
+When this feature is active, `initialize` advertises `SessionListCapabilities` in the `session` capabilities block, signalling to the IDE that the server supports session enumeration.
+
+### `unstable-session-fork`
+
+Enables the `fork_session` method. Branches an existing conversation into a new session by:
+
+1. Verifying the source session exists in memory or SQLite.
+2. Assigning a fresh UUID as the new session ID.
+3. Asynchronously copying all persisted events from the source into the new session via `import_acp_events`.
+4. Spawning a new agent loop for the forked session with the supplied `cwd`.
+
+The forked session is immediately available for new turns. The event copy is fire-and-forget — if the store write fails, a warning is logged but the session is still created. Model config options are forwarded to the fork response when `available_models` is non-empty.
+
+### `unstable-session-resume`
+
+Enables the `resume_session` method. Restores a persisted session to an active in-memory state without replaying history as `session/update` events:
+
+- If the session is already active in memory, returns success immediately (no-op).
+- Otherwise, verifies existence in SQLite and hydrates a new `SessionEntry`, making the session available for new turns with lower latency than the default `load_session` replay path.
+- Requires a configured `SqliteStore`; returns an error if no store is present.
+
 
 ## License
 
