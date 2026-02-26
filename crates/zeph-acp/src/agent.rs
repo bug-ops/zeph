@@ -285,7 +285,13 @@ impl acp::Agent for ZephAcpAgent {
                         acp::PromptCapabilities::new()
                             .image(true)
                             .embedded_context(true),
-                    ),
+                    )
+                    .meta({
+                        let mut cap_meta = serde_json::Map::new();
+                        cap_meta.insert("config_options".to_owned(), serde_json::json!(true));
+                        cap_meta.insert("ext_methods".to_owned(), serde_json::json!(true));
+                        cap_meta
+                    }),
             )
             .meta(meta))
     }
@@ -297,6 +303,11 @@ impl acp::Agent for ZephAcpAgent {
         // Fall through to inline MCP management methods from main.
         // Defined below in the second ext_method block merged from origin/main.
         self.ext_method_mcp(&args).await
+    }
+
+    async fn ext_notification(&self, args: acp::ExtNotification) -> acp::Result<()> {
+        tracing::debug!(method = %args.method, "received ext_notification");
+        Ok(())
     }
 
     async fn authenticate(
@@ -986,11 +997,43 @@ mod tests {
                 assert!(prompt_caps.image);
                 assert!(prompt_caps.embedded_context);
                 assert!(!prompt_caps.audio);
+                let cap_meta = resp
+                    .agent_capabilities
+                    .meta
+                    .as_ref()
+                    .expect("agent_capabilities.meta should be present");
+                assert!(
+                    cap_meta.contains_key("config_options"),
+                    "config_options missing from agent_capabilities meta"
+                );
+                assert!(
+                    cap_meta.contains_key("ext_methods"),
+                    "ext_methods missing from agent_capabilities meta"
+                );
                 let meta = resp.meta.expect("meta should be present");
                 assert!(
                     meta.contains_key("auth_hint"),
                     "auth_hint key missing from meta"
                 );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ext_notification_accepts_unknown_method() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let notif = acp::ExtNotification::new(
+                    "custom/ping",
+                    serde_json::value::RawValue::from_string("{}".to_owned())
+                        .unwrap()
+                        .into(),
+                );
+                let result = agent.ext_notification(notif).await;
+                assert!(result.is_ok());
             })
             .await;
     }
