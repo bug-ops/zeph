@@ -1451,19 +1451,19 @@ fn format_diagnostics_block(json: &str, out: &mut String) {
 
 fn build_available_commands() -> Vec<acp::AvailableCommand> {
     vec![
-        acp::AvailableCommand::new("/help", "Show available commands"),
-        acp::AvailableCommand::new("/model", "Switch the active model").input(
+        acp::AvailableCommand::new("help", "Show available commands"),
+        acp::AvailableCommand::new("model", "Switch the active model").input(
             acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
                 "model id",
             )),
         ),
-        acp::AvailableCommand::new("/mode", "Switch session mode (code/architect/ask)").input(
+        acp::AvailableCommand::new("mode", "Switch session mode (code/architect/ask)").input(
             acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
                 "code | architect | ask",
             )),
         ),
-        acp::AvailableCommand::new("/clear", "Clear session history"),
-        acp::AvailableCommand::new("/compact", "Summarize and compact context"),
+        acp::AvailableCommand::new("clear", "Clear session history"),
+        acp::AvailableCommand::new("compact", "Summarize and compact context"),
     ]
 }
 
@@ -2989,17 +2989,17 @@ mod tests {
     fn build_available_commands_returns_expected_set() {
         let cmds = build_available_commands();
         let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"/help"));
-        assert!(names.contains(&"/model"));
-        assert!(names.contains(&"/mode"));
-        assert!(names.contains(&"/clear"));
-        assert!(names.contains(&"/compact"));
+        assert!(names.contains(&"help"));
+        assert!(names.contains(&"model"));
+        assert!(names.contains(&"mode"));
+        assert!(names.contains(&"clear"));
+        assert!(names.contains(&"compact"));
     }
 
     #[test]
     fn build_available_commands_model_has_input() {
         let cmds = build_available_commands();
-        let model_cmd = cmds.iter().find(|c| c.name == "/model").unwrap();
+        let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
         assert!(model_cmd.input.is_some());
     }
 
