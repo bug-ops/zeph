@@ -133,6 +133,7 @@ session_idle_timeout_secs = 1800
 | `max_sessions` | `4` | Maximum concurrent sessions |
 | `session_idle_timeout_secs` | `1800` | Idle sessions are reaped after this timeout (seconds) |
 | `permission_file` | none | Path to persisted tool permission decisions |
+| `terminal_timeout_secs` | `120` | Wall-clock timeout for IDE-proxied shell commands; `0` disables the timeout |
 | `available_models` | `[]` | Models advertised to the IDE for runtime switching (format: `provider:model`) |
 | `transport` | `"stdio"` | Transport mode: `"stdio"`, `"http"`, or `"both"` |
 | `http_bind` | `"127.0.0.1:8080"` | Bind address for the HTTP transport |
@@ -144,6 +145,34 @@ zeph init
 ```
 
 The wizard will ask whether to enable ACP and which agent name/version to use.
+
+## Tool call lifecycle
+
+Zeph follows the ACP protocol specification for tool call notifications. Each tool invocation produces two session updates visible to the IDE:
+
+1. **`SessionUpdate::ToolCall` with `status: InProgress`** — emitted immediately before the tool executes. The IDE can display a running spinner or pending indicator.
+2. **`SessionUpdate::ToolCallUpdate` with `status: Completed` or `Failed`** — emitted after execution completes, carrying the output content and optional file locations for source navigation.
+
+Both updates share the same UUID so the IDE can correlate them. Tools that finish successfully use `Completed`; tools that return an error (non-zero exit code, exception, or explicit failure) use `Failed`.
+
+### Terminal command timeout
+
+Shell commands run via the IDE terminal (`bash` tool) are subject to a configurable wall-clock timeout:
+
+```toml
+[acp]
+terminal_timeout_secs = 120   # default; set to 0 to wait indefinitely
+```
+
+When the timeout expires:
+
+1. `kill_terminal_command` is called to terminate the running process.
+2. Any partial output collected up to that point is returned as an error result.
+3. The terminal session is released and the agent receives `AcpError::TerminalTimeout`.
+
+> **Tip:** Increase `terminal_timeout_secs` for long-running build or test commands that legitimately take more than two minutes.
+
+> **Caution:** Setting `terminal_timeout_secs = 0` disables the timeout entirely. Commands that hang indefinitely will stall the agent turn until cancelled.
 
 ## MCP server transports
 

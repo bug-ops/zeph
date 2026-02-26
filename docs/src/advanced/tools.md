@@ -109,6 +109,38 @@ Providers without native tool support (Ollama with `tool_use = false`, Candle) u
 
 Both modes coexist in the same iteration. The system prompt includes invocation instructions per tool so the LLM knows exactly which format to use.
 
+## ACP Tool Notifications
+
+When Zeph runs inside an IDE via the [Agent Client Protocol](acp.md), tool execution emits structured session notifications that the IDE uses to display inline status.
+
+### Lifecycle
+
+Each tool invocation generates a UUID and sends two notifications:
+
+| Notification | When | Content |
+|-------------|------|---------|
+| `SessionUpdate::ToolCall(InProgress)` | Before execution starts | Tool name, kind, UUID |
+| `SessionUpdate::ToolCallUpdate(Completed\|Failed)` | After execution finishes | Output text, file locations, UUID |
+
+The UUID links both notifications so the IDE can update the same UI element — replacing a spinner with the result rather than creating two separate entries.
+
+### Tool kinds
+
+The `kind` field on `ToolCall` tells the IDE what category of action to show:
+
+| Tool | Kind |
+|------|------|
+| `bash`, `shell` | `Execute` |
+| `read` | `Read` |
+| `write`, `edit` | `Edit` |
+| `search`, `grep`, `find` | `Search` |
+| `web_scrape`, `fetch` | `Fetch` |
+| everything else | `Other` |
+
+### IDE terminal commands
+
+Shell commands (`bash` tool) are routed through the IDE's native terminal via ACP `terminal/*` methods. This embeds the command output inside the IDE panel rather than running an invisible subprocess. See [terminal command timeout](acp.md#terminal-command-timeout) for timeout behaviour.
+
 ## DynExecutor
 
 `DynExecutor` is a newtype wrapping `Arc<dyn ErasedToolExecutor>`. It implements `ToolExecutor` by delegating all methods through the erased trait, enabling a heap-allocated executor to be used wherever a concrete `ToolExecutor` is expected.

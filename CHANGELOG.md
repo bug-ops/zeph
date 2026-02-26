@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `memory_search` queries SemanticMemory recall, key facts, and session summaries; `memory_save` persists content to long-term memory
 - `MemoryToolExecutor` registered conditionally — only when memory backend is configured
 - `MemoryState.memory` refactored to `Option<Arc<SemanticMemory>>` for shared access
+- `zeph-core`: `LoopbackEvent::ToolStart { tool_name, tool_call_id }` variant emitted before tool execution; `LoopbackEvent::ToolOutput` extended with `tool_call_id` and `is_error` fields (#926)
+- `zeph-core`: `Channel::send_tool_start` method; `LoopbackChannel` emits `ToolStart` events; tool UUIDs generated per execution and threaded through the pipeline (#926)
+- `zeph-acp`: ACP tool call lifecycle now emits `SessionUpdate::ToolCall(InProgress)` before execution and `SessionUpdate::ToolCallUpdate(Completed|Failed)` with content after, per protocol spec G5 (#926)
+- `zeph-acp`: Configurable terminal command timeout (default 120s) in `AcpShellExecutor`; on timeout calls `kill_terminal_command`, collects partial output, and returns `AcpError::TerminalTimeout` per G6 (#926)
 - `zeph-acp`: three unstable ACP session features gated behind cargo feature flags:
   - `unstable-session-list`: implements `session/list` — returns active in-memory sessions with optional `cwd` filter
   - `unstable-session-fork`: implements `session/fork` — clones an existing session (history copied via `import_acp_events`) and spawns a new agent loop

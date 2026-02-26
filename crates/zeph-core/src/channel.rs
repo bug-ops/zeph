@@ -126,6 +126,23 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Announce that a tool call is starting.
+    ///
+    /// Emitted before execution begins so the transport layer can send an
+    /// `InProgress` status to the peer before the result arrives.
+    /// No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_tool_start(
+        &mut self,
+        _tool_name: &str,
+        _tool_call_id: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Send a complete tool output with optional diff and filter stats atomically.
     ///
     /// The default implementation calls [`Self::send`] with the pre-formatted display text.
@@ -135,6 +152,7 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
+    #[allow(clippy::too_many_arguments)]
     fn send_tool_output(
         &mut self,
         _tool_name: &str,
@@ -142,6 +160,8 @@ pub trait Channel: Send {
         _diff: Option<crate::DiffData>,
         _filter_stats: Option<String>,
         _kept_lines: Option<Vec<usize>>,
+        _tool_call_id: &str,
+        _is_error: bool,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         self.send(display)
     }
@@ -167,6 +187,11 @@ pub enum LoopbackEvent {
     Flush,
     FullMessage(String),
     Status(String),
+    /// Emitted immediately before tool execution begins.
+    ToolStart {
+        tool_name: String,
+        tool_call_id: String,
+    },
     ToolOutput {
         tool_name: String,
         display: String,
@@ -174,6 +199,8 @@ pub enum LoopbackEvent {
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
         locations: Option<Vec<String>>,
+        tool_call_id: String,
+        is_error: bool,
     },
 }
 
@@ -245,6 +272,21 @@ impl Channel for LoopbackChannel {
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
+    async fn send_tool_start(
+        &mut self,
+        tool_name: &str,
+        tool_call_id: &str,
+    ) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::ToolStart {
+                tool_name: tool_name.to_owned(),
+                tool_call_id: tool_call_id.to_owned(),
+            })
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn send_tool_output(
         &mut self,
         tool_name: &str,
@@ -252,6 +294,8 @@ impl Channel for LoopbackChannel {
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        tool_call_id: &str,
+        is_error: bool,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
@@ -261,6 +305,8 @@ impl Channel for LoopbackChannel {
                 filter_stats,
                 kept_lines,
                 locations: None,
+                tool_call_id: tool_call_id.to_owned(),
+                is_error,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -483,7 +529,7 @@ mod tests {
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_tool_output("bash", "exit 0", None, None, None)
+            .send_tool_output("bash", "exit 0", None, None, None, "", false)
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -495,6 +541,8 @@ mod tests {
                 filter_stats,
                 kept_lines,
                 locations,
+                tool_call_id,
+                is_error,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
@@ -502,6 +550,8 @@ mod tests {
                 assert!(filter_stats.is_none());
                 assert!(kept_lines.is_none());
                 assert!(locations.is_none());
+                assert_eq!(tool_call_id, "");
+                assert!(!is_error);
             }
             _ => panic!("expected ToolOutput event"),
         }
