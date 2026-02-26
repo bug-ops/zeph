@@ -21,7 +21,7 @@ Expected output:
   "version": "0.12.1",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
-  "capabilities": ["prompt", "cancel", "load_session", "set_session_mode"],
+  "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
   "description": "Zeph AI Agent"
 }
 ```
@@ -145,6 +145,20 @@ zeph init
 
 The wizard will ask whether to enable ACP and which agent name/version to use.
 
+## MCP server transports
+
+When an IDE passes MCP server definitions to Zeph via the ACP `McpServer` field, Zeph's `mcp_bridge` maps each server to a `zeph-mcp` `ServerEntry`. Three transport types are supported:
+
+| ACP transport | `zeph-mcp` mapping | Notes |
+|---------------|--------------------|-------|
+| `Stdio` | `McpTransport::Stdio` | IDE spawns the MCP server binary; environment variables are forwarded as-is |
+| `Http` | `McpTransport::Http` | Connects to a Streamable HTTP MCP endpoint |
+| `Sse` | `McpTransport::Http` | Legacy SSE transport; mapped to Streamable HTTP (rmcp's `StreamableHttpClientTransport` is backward-compatible) |
+
+Unknown transport variants are skipped with a `WARN` log line and do not cause the session to fail.
+
+No configuration is needed beyond what the IDE sends. Zeph reads the server list from each `new_session` request and registers the servers with the shared `McpManager` for the duration of the session.
+
 ## Model switching
 
 If you configure `available_models`, the IDE can switch between LLM providers at runtime:
@@ -159,6 +173,17 @@ available_models = [
 ```
 
 The IDE presents these as selectable options. Zeph routes each prompt to the chosen provider without restarting the server.
+
+## Advertised capabilities
+
+During `initialize`, Zeph reports two capability flags in `AgentCapabilities.meta`:
+
+| Key | Value | Meaning |
+|-----|-------|---------|
+| `config_options` | `true` | Zeph supports runtime model switching via `set_session_config_option` |
+| `ext_methods` | `true` | Zeph accepts custom extension methods via `ext_method` |
+
+IDEs use these flags to decide which optional protocol features to activate. A client that sees `config_options: true` may render a model picker in the UI; one that sees `ext_methods: true` may call custom `_`-prefixed methods without first probing for support.
 
 ## Session modes
 
@@ -181,6 +206,10 @@ The active mode is advertised in the `new_session` and `load_session` responses 
 ```
 
 > **Note:** Mode switching takes effect on the next prompt. An in-flight prompt continues in the mode it started with.
+
+## Extension notifications
+
+Zeph implements the `ext_notification` handler. The IDE sends one-way notifications using this method without waiting for a response. Zeph accepts any method name and returns `Ok(())`. This is useful for IDE-side telemetry or state hints that do not require agent action.
 
 ## Custom extension methods
 
