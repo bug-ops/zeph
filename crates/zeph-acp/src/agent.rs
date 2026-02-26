@@ -1551,9 +1551,10 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             }
         }
         LoopbackEvent::Status(text) if text.is_empty() => vec![],
-        LoopbackEvent::Status(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
-            acp::ContentChunk::new(text.into()),
-        )],
+        LoopbackEvent::Status(text) => vec![
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new("\n".into())),
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(text.into())),
+        ],
         LoopbackEvent::ToolStart {
             tool_name,
             tool_call_id,
@@ -1952,11 +1953,41 @@ mod tests {
     #[test]
     fn loopback_status_maps_to_thought() {
         let updates = loopback_event_to_updates(LoopbackEvent::Status("thinking".into()));
-        assert_eq!(updates.len(), 1);
+        // Two chunks: a newline separator followed by the status text.
+        assert_eq!(updates.len(), 2);
         assert!(matches!(
             updates[0],
             acp::SessionUpdate::AgentThoughtChunk(_)
         ));
+        assert!(matches!(
+            updates[1],
+            acp::SessionUpdate::AgentThoughtChunk(_)
+        ));
+    }
+
+    #[test]
+    fn loopback_status_updates_show_as_separate_lines() {
+        let first = loopback_event_to_updates(LoopbackEvent::Status("matching skills".into()));
+        let second = loopback_event_to_updates(LoopbackEvent::Status("building context".into()));
+        let combined: Vec<_> = first.iter().chain(second.iter()).collect();
+        // Both status updates produce separator + text, so accumulated text contains newlines
+        // between status messages rather than concatenating them directly.
+        let text: String = combined
+            .iter()
+            .filter_map(|u| {
+                if let acp::SessionUpdate::AgentThoughtChunk(c) = u {
+                    Some(content_chunk_text(c))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            text.contains('\n'),
+            "status updates must be separated by newlines"
+        );
+        assert!(text.contains("matching skills"));
+        assert!(text.contains("building context"));
     }
 
     #[test]
