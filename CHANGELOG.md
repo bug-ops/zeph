@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `SubAgentConfig` in `zeph-core` config with `enabled`, `max_concurrent` (default 1), `extra_dirs` fields; wired into bootstrap via `with_subagent_manager()` on `AgentBuilder` (#973, #964)
+- Sub-agent definition discovery from `.zeph/agents/` (project scope) and `~/.config/zeph/agents/` (user scope) with priority-based deduplication (#964)
+- Skill injection into sub-agent system prompt: filtered skills prepended as fenced `skills` block at spawn time (#967)
+- Foreground sub-agent execution mode: `AgentCommand::Spawn` and `@mention` block the agent loop and stream status updates until the sub-agent completes (#970)
+- Secret request/approval protocol via in-process `mpsc` channel: sub-agent emits `[REQUEST_SECRET: key]` marker, main agent prompts user for approval, delivers via `PermissionGrants` without serializing the secret value into message history (#969)
+- `tokio::select!` around secret-wait in sub-agent loop to honour `CancellationToken` during approval polling (#969)
+- `deny_secret()` sends `None` over the secret channel to immediately unblock a waiting sub-agent (#969)
+- `MockProvider::with_recording()` builder in `zeph-llm` for call-inspection in tests (#967)
+- Tests for `SubAgentConfig` deserialization, skill injection with and without skills, secret approval and deny flows (#973, #967, #969)
+
 ## [0.12.2] - 2026-02-26
 
 ### Added

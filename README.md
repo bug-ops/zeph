@@ -67,7 +67,7 @@ zeph --tui         # run with TUI dashboard
 | **Skills-first architecture** | YAML+Markdown skill files with semantic matching, self-learning evolution, 4-tier trust model, and compact prompt mode for small-context models |
 | **Semantic memory** | SQLite + Qdrant (or embedded SQLite vector search) with MMR re-ranking, temporal decay scoring, resilient compaction (reactive retry, middle-out tool response removal, 9-section structured prompt, LLM-free fallback), durable compaction with message visibility control, tool-pair summarization (LLM-based, configurable cutoff), credential scrubbing, cross-session recall, vector retrieval, autosave assistant responses, snapshot export/import, configurable SQLite pool, background response-cache cleanup, and native `memory_search`/`memory_save` tools the model can invoke explicitly |
 | **Multi-channel I/O** | CLI, Telegram, Discord, Slack, TUI — all with streaming. Vision and speech-to-text input |
-| **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, ACP server for IDE integration (stdio + HTTP+SSE + WebSocket, multi-session with LRU eviction, persistence, idle reaper, permission persistence, multi-modal prompts, runtime model switching, session modes (ask/architect/code), MCP server management via `ext_method`, session export/import, tool call lifecycle notifications, terminal command timeout with kill support, `UserMessageChunk` echo, `ext_notification` passthrough, `list`/`fork`/`resume` sessions behind unstable flags), sub-agent orchestration. MCP tools exposed as native `ToolDefinition`s — used via structured tool_use with Claude and OpenAI |
+| **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, ACP server for IDE integration (stdio + HTTP+SSE + WebSocket, multi-session with LRU eviction, persistence, idle reaper, permission persistence, multi-modal prompts, runtime model switching, session modes (ask/architect/code), MCP server management via `ext_method`, session export/import, tool call lifecycle notifications, terminal command timeout with kill support, `UserMessageChunk` echo, `ext_notification` passthrough, `list`/`fork`/`resume` sessions behind unstable flags), sub-agent orchestration with zero-trust secret delegation. MCP tools exposed as native `ToolDefinition`s — used via structured tool_use with Claude and OpenAI |
 | **Defense-in-depth** | Shell sandbox (blocklist + confirmation patterns for process substitution, here-strings, eval), tool permissions, secret redaction, SSRF protection (HTTPS-only, DNS validation, address pinning, redirect chain re-validation), skill trust quarantine, audit logging. Secrets held in memory as `Zeroizing<String>` — wiped on drop |
 | **TUI dashboard** | ratatui-based with syntax highlighting, live metrics, file picker, command palette, daemon mode |
 | **Single binary** | ~15 MB, no runtime dependencies, ~50ms startup, ~20 MB idle memory |
@@ -153,6 +153,59 @@ discovery_enabled = true   # default: true
 > The discovery endpoint is intentionally unauthenticated so clients can discover the agent and its auth requirements before presenting credentials. Do not include sensitive data in the manifest. Set `discovery_enabled = false` if the endpoint must not be publicly reachable.
 
 [ACP setup guide →](https://bug-ops.github.io/zeph/advanced/acp.html)
+
+## Sub-Agents
+
+Zeph supports spawning sub-agents — isolated agent instances with their own LLM provider, filtered tool access, and injected skills. Sub-agents are defined as Markdown files with TOML frontmatter and loaded from `.zeph/agents/` (project scope) or `~/.config/zeph/agents/` (user scope).
+
+### Definition format
+
+```markdown
++++
+name = "code-reviewer"
+description = "Reviews code changes for correctness and style"
+model = "claude-sonnet-4-20250514"
+
+[tools]
+allow = ["shell", "web_scrape"]
+
+[permissions]
+network = true
+filesystem = "read"
+secrets = ["GITHUB_TOKEN"]
+ttl_secs = 120
+
+[skills]
+include = ["git-*", "rust-*"]
+exclude = ["deploy-*"]
++++
+
+You are a code reviewer. Report findings with severity.
+```
+
+### CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `/agent list` | List available sub-agent definitions |
+| `/agent spawn <name> <prompt>` | Spawn a foreground sub-agent |
+| `/agent bg <name> <prompt>` | Spawn a background sub-agent |
+| `/agent status` | Show active sub-agents with state, turns, and elapsed time |
+| `/agent cancel <id>` | Cancel a running sub-agent by ID prefix |
+| `/agent approve <id>` | Approve a pending secret request |
+| `/agent deny <id>` | Deny a pending secret request |
+
+### Configuration
+
+```toml
+[agents]
+enabled = true
+max_concurrent = 4
+extra_dirs = ["/path/to/shared/agents"]
+```
+
+> [!NOTE]
+> Sub-agents are disabled by default. Set `agents.enabled = true` to activate. Each sub-agent receives only explicitly granted tools, skills, and secrets via zero-trust `PermissionGrants`.
 
 ## TUI Demo
 

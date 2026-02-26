@@ -312,6 +312,12 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[must_use]
+    pub fn with_subagent_manager(mut self, manager: crate::subagent::SubAgentManager) -> Self {
+        self.subagent_manager = Some(manager);
+        self
+    }
+
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]

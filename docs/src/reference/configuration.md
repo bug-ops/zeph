@@ -52,7 +52,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, skill paths.
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, agents config, skill paths.
 
 ## Configuration File
 
@@ -239,6 +239,11 @@ max_dynamic_servers = 10
 # env = {}                  # Environment variables passed to the child process
 # timeout = 30
 
+[agents]
+enabled = false            # Enable sub-agent system (default: false)
+max_concurrent = 1         # Max concurrent sub-agents (default: 1)
+extra_dirs = []            # Additional directories to scan for agent definitions
+
 [gateway]
 enabled = false
 bind = "127.0.0.1"
@@ -321,6 +326,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_A2A_REQUIRE_TLS` | Require HTTPS for outbound A2A connections (default: true) |
 | `ZEPH_A2A_SSRF_PROTECTION` | Block private/loopback IPs in A2A client (default: true) |
 | `ZEPH_A2A_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
+| `ZEPH_AGENTS_ENABLED` | Enable sub-agent system (default: false) |
+| `ZEPH_AGENTS_MAX_CONCURRENT` | Max concurrent sub-agents (default: 1) |
 | `ZEPH_GATEWAY_ENABLED` | Enable HTTP gateway (default: false) |
 | `ZEPH_GATEWAY_BIND` | Gateway bind address (default: `127.0.0.1`) |
 | `ZEPH_GATEWAY_PORT` | Gateway HTTP port (default: `8090`) |

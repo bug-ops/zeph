@@ -42,6 +42,8 @@ That's it. The sub-agent works in the background and reports results when done.
 | `/agent bg <name> <prompt>` | Alias for `spawn` |
 | `/agent status` | Show active sub-agents with state and progress |
 | `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `/agent approve <id>` | Approve a pending secret request |
+| `/agent deny <id>` | Deny a pending secret request |
 | `@name <prompt>` | Shorthand for `/agent spawn` |
 
 ### Checking Status
@@ -119,6 +121,7 @@ Report findings as a structured list with severity (critical/warning/info).
 | `tools.deny` | string[] | — | All tools except these (mutually exclusive with `allow`) |
 | `permissions.secrets` | string[] | `[]` | Vault keys the agent MAY request |
 | `permissions.max_turns` | u32 | `20` | Maximum LLM turns |
+| `permissions.background` | bool | `false` | Run in background (fire-and-forget) |
 | `permissions.timeout_secs` | u64 | `600` | Hard kill deadline |
 | `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |
 | `skills.include` | string[] | all | Glob patterns to include (`*` wildcard) |

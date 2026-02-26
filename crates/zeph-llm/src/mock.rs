@@ -20,6 +20,8 @@ pub struct MockProvider {
     /// Sequence of errors to return before switching to normal responses.
     /// Each call pops from the front; when empty, falls through to `responses`.
     errors: Arc<Mutex<Vec<crate::LlmError>>>,
+    /// When set, every `chat()` call appends a clone of the messages slice here.
+    recorded: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
 }
 
 impl Default for MockProvider {
@@ -33,6 +35,7 @@ impl Default for MockProvider {
             fail_chat: false,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(Vec::new())),
+            recorded: None,
         }
     }
 }
@@ -72,6 +75,15 @@ impl MockProvider {
         self.delay_ms = ms;
         self
     }
+
+    /// Enable call recording. Returns the shared buffer. Each `chat()` call
+    /// appends a clone of the messages slice so tests can inspect them.
+    #[must_use]
+    pub fn with_recording(mut self) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        self.recorded = Some(Arc::clone(&buf));
+        (self, buf)
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -80,9 +92,14 @@ impl LlmProvider for MockProvider {
         "mock"
     }
 
-    async fn chat(&self, _messages: &[Message]) -> Result<String, crate::LlmError> {
+    async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {
         if self.delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
+        if let Some(buf) = &self.recorded {
+            if let Ok(mut guard) = buf.lock() {
+                guard.push(messages.to_vec());
+            }
         }
         if self.fail_chat {
             return Err(crate::LlmError::Other("mock LLM error".into()));

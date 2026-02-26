@@ -113,6 +113,32 @@ zeph vault get ZEPH_CLAUDE_API_KEY
 zeph vault rm ZEPH_TELEGRAM_TOKEN
 ```
 
+## Interactive Commands
+
+The following `/`-prefixed commands are available during an interactive session:
+
+### `/agent`
+
+Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for details.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/agent list` | Show available sub-agent definitions |
+| `/agent spawn <name> <prompt>` | Start a sub-agent with a task |
+| `/agent bg <name> <prompt>` | Alias for `spawn` |
+| `/agent status` | Show active sub-agents with state and progress |
+| `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `/agent approve <id>` | Approve a pending secret request |
+| `/agent deny <id>` | Deny a pending secret request |
+
+```bash
+> /agent list
+> /agent spawn code-reviewer Review the auth module
+> /agent status
+> /agent cancel a1b2
+> @code-reviewer Review the auth module   # shorthand for /agent spawn
+```
+
 ## Global Options
 
 | Flag | Description |

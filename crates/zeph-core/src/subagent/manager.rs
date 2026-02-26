@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -17,18 +17,25 @@ use zeph_tools::executor::ErasedToolExecutor;
 use super::def::SubAgentDef;
 use super::error::SubAgentError;
 use super::filter::FilteredToolExecutor;
-use super::grants::PermissionGrants;
+use super::grants::{PermissionGrants, SecretRequest};
 use super::state::SubAgentState;
+
+/// Marker in LLM output that triggers the secret request protocol.
+const SECRET_REQUEST_PREFIX: &str = "[REQUEST_SECRET:";
 
 struct AgentLoopArgs {
     provider: AnyProvider,
     executor: FilteredToolExecutor,
     system_prompt: String,
     task_prompt: String,
+    skills: Option<Vec<String>>,
     max_turns: u32,
     cancel: CancellationToken,
     status_tx: watch::Sender<SubAgentStatus>,
     started_at: Instant,
+    secret_request_tx: mpsc::Sender<SecretRequest>,
+    // None = denied, Some(value) = approved
+    secret_rx: mpsc::Receiver<Option<String>>,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -71,16 +78,20 @@ async fn handle_tool_step(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
     let AgentLoopArgs {
         provider,
         executor,
         system_prompt,
         task_prompt,
+        skills,
         max_turns,
         cancel,
         status_tx,
         started_at,
+        secret_request_tx,
+        mut secret_rx,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -89,8 +100,15 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         started_at,
     });
 
+    let effective_system_prompt = if let Some(skill_bodies) = skills.filter(|s| !s.is_empty()) {
+        let skill_block = skill_bodies.join("\n\n");
+        format!("{system_prompt}\n\n```skills\n{skill_block}\n```")
+    } else {
+        system_prompt
+    };
+
     let mut messages = vec![
-        make_message(Role::System, system_prompt),
+        make_message(Role::System, effective_system_prompt),
         make_message(Role::User, task_prompt),
     ];
     let mut turns: u32 = 0;
@@ -128,6 +146,41 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             turns_used: turns,
             started_at,
         });
+
+        // Detect secret request protocol: sub-agent emits [REQUEST_SECRET: key_name]
+        if let Some(rest) = response.strip_prefix(SECRET_REQUEST_PREFIX) {
+            let key_name = rest.split(']').next().unwrap_or("").trim().to_owned();
+            if !key_name.is_empty() {
+                // WARNING-1: do not log key name to avoid audit trail exposure
+                tracing::debug!("sub-agent requested secret [key redacted]");
+                let req = SecretRequest {
+                    secret_key: key_name.clone(),
+                    reason: None,
+                };
+                if secret_request_tx.send(req).await.is_ok() {
+                    // CRITICAL-3: also check cancellation while waiting for approval
+                    let outcome = tokio::select! {
+                        msg = secret_rx.recv() => msg,
+                        () = cancel.cancelled() => {
+                            tracing::debug!("sub-agent cancelled while waiting for secret approval");
+                            break;
+                        }
+                    };
+                    // CRITICAL-1: never put secret value in message history
+                    let reply = match outcome {
+                        Some(Some(_)) => {
+                            format!("[secret:{key_name} approved — value available via grants]")
+                        }
+                        Some(None) | None => {
+                            format!("[secret:{key_name}] request denied")
+                        }
+                    };
+                    messages.push(make_message(Role::Assistant, response));
+                    messages.push(make_message(Role::User, reply));
+                    continue;
+                }
+            }
+        }
 
         if handle_tool_step(&executor, response, &mut messages).await {
             break;
@@ -167,6 +220,10 @@ pub struct SubAgentHandle {
     pub(crate) cancel: CancellationToken,
     pub(crate) status_rx: watch::Receiver<SubAgentStatus>,
     pub(crate) grants: PermissionGrants,
+    /// Receives secret requests from the sub-agent loop.
+    pub(crate) pending_secret_rx: mpsc::Receiver<SecretRequest>,
+    /// Delivers approval outcome to the sub-agent loop: None = denied, Some(_) = approved.
+    pub(crate) secret_tx: mpsc::Sender<Option<String>>,
 }
 
 impl std::fmt::Debug for SubAgentHandle {
@@ -266,6 +323,7 @@ impl SubAgentManager {
         task_prompt: &str,
         provider: AnyProvider,
         tool_executor: Arc<dyn ErasedToolExecutor>,
+        skills: Option<Vec<String>>,
     ) -> Result<String, SubAgentError> {
         let def = self
             .definitions
@@ -305,16 +363,22 @@ impl SubAgentManager {
         let task_prompt = task_prompt.to_owned();
         let cancel_clone = cancel.clone();
 
+        let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
+
         let join_handle: JoinHandle<anyhow::Result<String>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
                 provider,
                 executor: filtered_executor,
                 system_prompt,
                 task_prompt,
+                skills,
                 max_turns,
                 cancel: cancel_clone,
                 status_tx,
                 started_at,
+                secret_request_tx,
+                secret_rx,
             }));
 
         let handle = SubAgentHandle {
@@ -326,6 +390,8 @@ impl SubAgentManager {
             cancel,
             status_rx,
             grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -399,6 +465,57 @@ impl SubAgentManager {
 
         handle.grants.grant_secret(secret_key, ttl);
         Ok(())
+    }
+
+    /// Deliver a secret value to a waiting sub-agent loop.
+    ///
+    /// Should be called after the user approves the request and the vault value
+    /// has been resolved. Returns an error if no such agent is found.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::NotFound`] if the task ID is unknown.
+    pub fn deliver_secret(&mut self, task_id: &str, key: String) -> Result<(), SubAgentError> {
+        // Signal approval to the sub-agent loop. The secret value is NOT passed through the
+        // channel to avoid embedding it in LLM message history. The sub-agent accesses it
+        // exclusively via PermissionGrants (granted by approve_secret() before this call).
+        let handle = self
+            .agents
+            .get_mut(task_id)
+            .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
+        handle
+            .secret_tx
+            .try_send(Some(key))
+            .map_err(|e| SubAgentError::Other(anyhow::anyhow!("{e}")))
+    }
+
+    /// Deny a pending secret request — sends `None` to unblock the waiting sub-agent loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::NotFound`] if the task ID is unknown,
+    /// [`SubAgentError::Other`] if the channel is full or closed.
+    pub fn deny_secret(&mut self, task_id: &str) -> Result<(), SubAgentError> {
+        let handle = self
+            .agents
+            .get_mut(task_id)
+            .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
+        handle
+            .secret_tx
+            .try_send(None)
+            .map_err(|e| SubAgentError::Other(anyhow::anyhow!("{e}")))
+    }
+
+    /// Try to receive a pending secret request from a sub-agent (non-blocking).
+    ///
+    /// Returns `Some((task_id, SecretRequest))` if a request is waiting.
+    pub fn try_recv_secret_request(&mut self) -> Option<(String, SecretRequest)> {
+        for handle in self.agents.values_mut() {
+            if let Ok(req) = handle.pending_secret_rx.try_recv() {
+                return Some((handle.task_id.clone(), req));
+            }
+        }
+        None
     }
 
     /// Collect the result from a completed sub-agent, removing it from the active set.
@@ -531,7 +648,13 @@ mod tests {
         name: &str,
         prompt: &str,
     ) -> Result<String, SubAgentError> {
-        mgr.spawn(name, prompt, mock_provider(vec!["done"]), noop_executor())
+        mgr.spawn(
+            name,
+            prompt,
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+        )
     }
 
     #[test]
@@ -700,6 +823,7 @@ mod tests {
                 "task",
                 mock_provider(vec!["final answer"]),
                 noop_executor(),
+                None,
             )
             .unwrap();
 
@@ -769,7 +893,7 @@ mod tests {
 
         let failing = AnyProvider::Mock(MockProvider::failing());
         let task_id = mgr
-            .spawn("bot", "do work", failing, noop_executor())
+            .spawn("bot", "do work", failing, noop_executor(), None)
             .unwrap();
 
         // Wait for the background task to complete.
@@ -869,7 +993,7 @@ mod tests {
         });
 
         let task_id = mgr
-            .spawn("bot", "run two turns", provider, executor)
+            .spawn("bot", "run two turns", provider, executor, None)
             .unwrap();
 
         // Wait for background loop to finish.
@@ -921,6 +1045,71 @@ mod tests {
             result.is_ok(),
             "expected spawn to succeed after cancel, got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn skill_bodies_prepended_to_system_prompt() {
+        // Verify that when skills are passed to spawn(), the agent loop prepends
+        // them to the system prompt inside a ```skills fence.
+        use zeph_llm::mock::MockProvider;
+
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let skill_bodies = vec!["# skill-one\nDo something useful.".to_owned()];
+        let task_id = mgr
+            .spawn("bot", "task", provider, noop_executor(), Some(skill_bodies))
+            .unwrap();
+
+        // Wait for the loop to call the provider at least once.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let calls = recorded.lock().unwrap();
+        assert!(!calls.is_empty(), "provider should have been called");
+        // The first message in the first call is the system prompt.
+        let system_msg = &calls[0][0].content;
+        assert!(
+            system_msg.contains("```skills"),
+            "system prompt must contain ```skills fence, got: {system_msg}"
+        );
+        assert!(
+            system_msg.contains("skill-one"),
+            "system prompt must contain the skill body, got: {system_msg}"
+        );
+        drop(calls);
+
+        let _ = mgr.collect(&task_id).await;
+    }
+
+    #[tokio::test]
+    async fn no_skills_does_not_add_fence_to_system_prompt() {
+        use zeph_llm::mock::MockProvider;
+
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let task_id = mgr
+            .spawn("bot", "task", provider, noop_executor(), None)
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let calls = recorded.lock().unwrap();
+        assert!(!calls.is_empty());
+        let system_msg = &calls[0][0].content;
+        assert!(
+            !system_msg.contains("```skills"),
+            "system prompt must not contain skills fence when no skills passed"
+        );
+        drop(calls);
+
+        let _ = mgr.collect(&task_id).await;
     }
 
     #[tokio::test]

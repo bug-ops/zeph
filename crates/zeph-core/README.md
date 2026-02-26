@@ -82,6 +82,8 @@ In-session commands for managing sub-agents:
 | `/agent bg <name> <prompt>` | Spawn a background sub-agent |
 | `/agent status` | Show active sub-agents with state, turns, and elapsed time |
 | `/agent cancel <id>` | Cancel a running sub-agent by ID prefix |
+| `/agent approve <id>` | Approve a pending secret request |
+| `/agent deny <id>` | Deny a pending secret request |
 | `@agent_name <prompt>` | Mention shorthand for `/agent spawn` (disambiguated from file references) |
 
 Sub-agents run as independent tokio tasks with their own LLM provider and filtered tool executor. Each sub-agent receives only explicitly granted tools, skills, and secrets via `PermissionGrants`.

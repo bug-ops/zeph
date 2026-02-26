@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use zeph_skills::TrustLevel;
@@ -49,8 +50,33 @@ pub struct Config {
     pub tui: TuiConfig,
     #[serde(default)]
     pub acp: AcpConfig,
+    #[serde(default)]
+    pub agents: SubAgentConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SubAgentConfig {
+    pub enabled: bool,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+    pub extra_dirs: Vec<PathBuf>,
+}
+
+impl Default for SubAgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_concurrent: default_max_concurrent(),
+            extra_dirs: Vec::new(),
+        }
+    }
+}
+
+fn default_max_concurrent() -> usize {
+    1
 }
 
 fn default_max_tool_iterations() -> usize {
@@ -1312,6 +1338,7 @@ impl Default for Config {
             scheduler: SchedulerConfig::default(),
             tui: TuiConfig::default(),
             acp: AcpConfig::default(),
+            agents: SubAgentConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
@@ -1453,5 +1480,45 @@ mod tests {
         "#;
         let cfg: MemoryConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.sqlite_pool_size, 5);
+    }
+
+    #[test]
+    fn subagent_config_defaults_when_section_absent() {
+        let cfg = SubAgentConfig::default();
+        assert!(!cfg.enabled, "enabled defaults to false");
+        assert_eq!(cfg.max_concurrent, 1, "max_concurrent defaults to 1");
+        assert!(cfg.extra_dirs.is_empty(), "extra_dirs defaults to empty");
+
+        let default_cfg = Config::default();
+        assert!(!default_cfg.agents.enabled);
+        assert_eq!(default_cfg.agents.max_concurrent, 1);
+        assert!(default_cfg.agents.extra_dirs.is_empty());
+    }
+
+    #[test]
+    fn subagent_config_full_section_deserializes() {
+        let toml = r#"
+            enabled = true
+            max_concurrent = 8
+            extra_dirs = ["/custom/agents", "/other/agents"]
+        "#;
+        let cfg: SubAgentConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_concurrent, 8);
+        assert_eq!(cfg.extra_dirs.len(), 2);
+        assert_eq!(
+            cfg.extra_dirs[0],
+            std::path::PathBuf::from("/custom/agents")
+        );
+    }
+
+    #[test]
+    fn subagent_config_partial_section_uses_field_defaults() {
+        // Only max_concurrent provided — other fields use Default.
+        let toml = r#"max_concurrent = 3"#;
+        let cfg: SubAgentConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.max_concurrent, 3);
+        assert!(!cfg.enabled);
+        assert!(cfg.extra_dirs.is_empty());
     }
 }

@@ -301,6 +301,20 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_learning(config.skills.learning.clone());
 
+    let agent = {
+        let mut mgr = zeph_core::subagent::SubAgentManager::new(config.agents.max_concurrent);
+        let mut agent_dirs: Vec<std::path::PathBuf> =
+            vec![std::path::PathBuf::from(".zeph/agents")];
+        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+            agent_dirs.push(home.join(".config/zeph/agents"));
+        }
+        agent_dirs.extend(config.agents.extra_dirs.clone());
+        if let Err(e) = mgr.load_definitions(&agent_dirs) {
+            tracing::warn!("sub-agent definition loading failed: {e:#}");
+        }
+        agent.with_subagent_manager(mgr)
+    };
+
     #[cfg(feature = "scheduler")]
     let agent = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
 

@@ -185,3 +185,8 @@ available_models = []
 transport = "stdio"
 http_bind = "127.0.0.1:9800"
 discovery_enabled = true
+
+[agents]
+enabled = false
+max_concurrent = 1
+extra_dirs = []
