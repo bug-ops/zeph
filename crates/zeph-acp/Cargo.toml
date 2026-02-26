@@ -14,9 +14,12 @@ readme = "README.md"
 
 [features]
 acp-http = ["dep:axum", "dep:dashmap", "dep:async-stream", "dep:tower-http"]
+unstable-session-list = ["agent-client-protocol/unstable_session_list"]
+unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
+unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true }
 async-trait.workspace = true
 base64.workspace = true
 chrono = { workspace = true }
