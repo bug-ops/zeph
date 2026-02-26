@@ -877,6 +877,15 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
+        // Assign stable IDs before execution so ToolStart and ToolOutput share the same ID.
+        let tool_call_ids: Vec<String> = tool_calls
+            .iter()
+            .map(|_| uuid::Uuid::new_v4().to_string())
+            .collect();
+        for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
+            self.channel.send_tool_start(&tc.name, tool_call_id).await?;
+        }
+
         // Inject active skill secrets before tool execution
         self.inject_active_skill_env();
         // Execute tool calls in parallel, with cancellation
@@ -918,7 +927,11 @@ impl<C: Channel> Agent<C> {
 
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
-        for (tc, tool_result) in tool_calls.iter().zip(tool_results) {
+        for ((tc, tool_result), tool_call_id) in tool_calls
+            .iter()
+            .zip(tool_results)
+            .zip(tool_call_ids.iter())
+        {
             let (output, is_error, diff, inline_stats, already_streamed, kept_lines) =
                 match tool_result {
                     Ok(Some(out)) => {
@@ -975,7 +988,15 @@ impl<C: Channel> Agent<C> {
             // output displayed by the TUI event forwarder; skip duplicate send.
             if !already_streamed {
                 self.channel
-                    .send_tool_output(&tc.name, &display, diff, inline_stats, kept_lines)
+                    .send_tool_output(
+                        &tc.name,
+                        &display,
+                        diff,
+                        inline_stats,
+                        kept_lines,
+                        tool_call_id,
+                        is_error,
+                    )
                     .await?;
             }
 

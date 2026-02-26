@@ -27,6 +27,7 @@ struct TerminalRequest {
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    timeout_secs: u64,
     reply: oneshot::Sender<Result<ShellResult, AcpError>>,
 }
 
@@ -39,6 +40,7 @@ pub struct AcpShellExecutor {
     session_id: acp::SessionId,
     request_tx: mpsc::UnboundedSender<TerminalRequest>,
     permission_gate: Option<AcpPermissionGate>,
+    timeout_secs: u64,
 }
 
 impl AcpShellExecutor {
@@ -47,6 +49,7 @@ impl AcpShellExecutor {
         conn: Rc<C>,
         session_id: acp::SessionId,
         permission_gate: Option<AcpPermissionGate>,
+        timeout_secs: u64,
     ) -> (Self, impl std::future::Future<Output = ()>)
     where
         C: acp::Client + 'static,
@@ -58,6 +61,7 @@ impl AcpShellExecutor {
                 session_id,
                 request_tx: tx,
                 permission_gate,
+                timeout_secs,
             },
             handler,
         )
@@ -76,6 +80,7 @@ impl AcpShellExecutor {
                 command,
                 args,
                 cwd,
+                timeout_secs: self.timeout_secs,
                 reply: reply_tx,
             })
             .map_err(|_| AcpError::ChannelClosed)?;
@@ -158,8 +163,15 @@ where
     C: acp::Client,
 {
     while let Some(req) = rx.recv().await {
-        let result =
-            execute_in_terminal(&conn, req.session_id, req.command, req.args, req.cwd).await;
+        let result = execute_in_terminal(
+            &conn,
+            req.session_id,
+            req.command,
+            req.args,
+            req.cwd,
+            req.timeout_secs,
+        )
+        .await;
         req.reply.send(result).ok();
     }
 }
@@ -170,6 +182,7 @@ async fn execute_in_terminal<C>(
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    timeout_secs: u64,
 ) -> Result<ShellResult, AcpError>
 where
     C: acp::Client,
@@ -184,13 +197,33 @@ where
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
     let terminal_id = create_resp.terminal_id;
 
-    // 2. Wait for exit.
+    // 2. Wait for exit with timeout.
     let wait_req = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
-    let wait_resp = conn
-        .wait_for_terminal_exit(wait_req)
-        .await
-        .map_err(|e| AcpError::ClientError(e.to_string()))?;
-    let exit_code = wait_resp.exit_status.exit_code;
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    let exit_code = match tokio::time::timeout(timeout, conn.wait_for_terminal_exit(wait_req)).await
+    {
+        Ok(Ok(resp)) => resp.exit_status.exit_code,
+        Ok(Err(e)) => return Err(AcpError::ClientError(e.to_string())),
+        Err(_elapsed) => {
+            // Kill the command, collect partial output, release, then return timeout error.
+            let kill_req =
+                acp::KillTerminalCommandRequest::new(session_id.clone(), terminal_id.clone());
+            conn.kill_terminal_command(kill_req).await.ok();
+
+            let output_req =
+                acp::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
+            let partial = conn
+                .terminal_output(output_req)
+                .await
+                .map(|r| r.output)
+                .unwrap_or_default();
+
+            let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id);
+            conn.release_terminal(release_req).await.ok();
+
+            return Err(AcpError::TerminalTimeout { output: partial });
+        }
+    };
 
     // 3. Get final output.
     let output_req = acp::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
@@ -260,6 +293,13 @@ mod tests {
             Ok(acp::ReleaseTerminalResponse::new())
         }
 
+        async fn kill_terminal_command(
+            &self,
+            _args: acp::KillTerminalCommandRequest,
+        ) -> acp::Result<acp::KillTerminalCommandResponse> {
+            Ok(acp::KillTerminalCommandResponse::new())
+        }
+
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
             Ok(())
         }
@@ -272,7 +312,7 @@ mod tests {
             .run_until(async {
                 let conn = Rc::new(FakeTerminalClient);
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None);
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -297,7 +337,7 @@ mod tests {
             .run_until(async {
                 let conn = Rc::new(FakeTerminalClient);
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None);
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
@@ -317,6 +357,7 @@ mod tests {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             permission_gate: None,
+            timeout_secs: 120,
         };
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -364,6 +405,13 @@ mod tests {
             Ok(acp::ReleaseTerminalResponse::new())
         }
 
+        async fn kill_terminal_command(
+            &self,
+            _args: acp::KillTerminalCommandRequest,
+        ) -> acp::Result<acp::KillTerminalCommandResponse> {
+            Ok(acp::KillTerminalCommandResponse::new())
+        }
+
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
             Ok(())
         }
@@ -376,7 +424,7 @@ mod tests {
             .run_until(async {
                 let conn = Rc::new(NonZeroExitClient);
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None);
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -440,6 +488,13 @@ mod tests {
             panic!("should not be called when permission denied")
         }
 
+        async fn kill_terminal_command(
+            &self,
+            _args: acp::KillTerminalCommandRequest,
+        ) -> acp::Result<acp::KillTerminalCommandResponse> {
+            panic!("should not be called when permission denied")
+        }
+
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
             Ok(())
         }
@@ -456,7 +511,7 @@ mod tests {
                 tokio::task::spawn_local(perm_handler);
 
                 let term_conn = Rc::new(FakeTerminalClient);
-                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate));
+                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
                 tokio::task::spawn_local(term_handler);
 
                 let mut params = serde_json::Map::new();
