@@ -566,16 +566,6 @@ impl acp::Agent for ZephAcpAgent {
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
 
-        // Echo the user text back as a UserMessageChunk notification per ACP spec.
-        if !text.is_empty() {
-            let echo =
-                acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(text.clone().into()));
-            let notification = acp::SessionNotification::new(args.session_id.clone(), echo);
-            let (tx, _rx) = oneshot::channel();
-            // Fire-and-forget: echo does not need to wait for delivery ack.
-            self.notify_tx.send((notification, tx)).ok();
-        }
-
         // Grab the cancel_signal so we can detect cancellation during the drain loop.
         let cancel_signal = self
             .sessions
