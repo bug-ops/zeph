@@ -18,7 +18,7 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 | `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
 | `transport` | `serve_stdio` / `serve_connection` (stdio), HTTP+SSE handlers (`post_handler`, `get_handler`), WebSocket handler (`ws_upgrade_handler`), duplex bridge, axum router; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
-| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal |
+| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal_command` on expiry |
 | `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval; persists "always allow/deny" decisions to TOML file |
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum |
@@ -40,6 +40,28 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## Tool call lifecycle
+
+`ZephAcpAgent` emits ACP session notifications following the protocol-specified two-step lifecycle:
+
+1. **Before execution** — `SessionUpdate::ToolCall` with `status: InProgress` is sent as soon as tool invocation begins, enabling the IDE to display a running indicator.
+2. **After execution** — `SessionUpdate::ToolCallUpdate` with `status: Completed` (or `Failed` on error) carries the output content and optional file locations.
+
+Each tool call is identified by a UUID generated at the start of the turn. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement.
+
+### Terminal command timeout
+
+`AcpShellExecutor` enforces a configurable wall-clock timeout on every IDE-proxied shell command (default: 120 seconds, controlled via `acp.terminal_timeout_secs`). When the timeout expires:
+
+1. `kill_terminal_command` is called to terminate the running process.
+2. Partial output collected so far is returned as an error result.
+3. The terminal is released and `AcpError::TerminalTimeout` is propagated to the agent loop.
+
+```toml
+[acp]
+terminal_timeout_secs = 120   # set to 0 to disable (wait indefinitely)
+```
 
 ## Rich content
 
@@ -82,6 +104,7 @@ Requires a shared `McpManager` reference set via `AcpServerConfig::mcp_manager`.
 | `acp.max_sessions` | usize | `16` | `ZEPH_ACP_MAX_SESSIONS` |
 | `acp.session_idle_timeout_secs` | u64 | `1800` | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` |
 | `acp.permission_file` | PathBuf | `~/.config/zeph/acp-permissions.toml` | `ZEPH_ACP_PERMISSION_FILE` |
+| `acp.terminal_timeout_secs` | u64 | `120` | `ZEPH_ACP_TERMINAL_TIMEOUT_SECS` |
 | `acp.available_models` | `Vec<String>` | `[]` | — |
 
 ## Permission persistence
