@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-02-26
+
 ### Added
 - `MemoryToolExecutor` in `zeph-core` exposes `memory_search` and `memory_save` as native tools the model can invoke explicitly
 - `memory_search` queries SemanticMemory recall, key facts, and session summaries; `memory_save` persists content to long-term memory
@@ -1346,7 +1348,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/bug-ops/zeph/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/bug-ops/zeph/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/bug-ops/zeph/compare/v0.11.6...v0.12.0
 [0.11.6]: https://github.com/bug-ops/zeph/compare/v0.11.5...v0.11.6
