@@ -142,7 +142,9 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
         let cwd = params.cwd.map(PathBuf::from);
 
         if let Some(gate) = &self.permission_gate {
-            let fields = acp::ToolCallUpdateFields::new().title(params.command.clone());
+            let fields = acp::ToolCallUpdateFields::new()
+                .title(call.tool_id.clone())
+                .raw_input(serde_json::json!({ "command": params.command }));
             let tool_call = acp::ToolCallUpdate::new(call.tool_id.clone(), fields);
             let allowed = gate
                 .check_permission(self.session_id.clone(), tool_call)
