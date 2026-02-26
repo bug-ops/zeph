@@ -159,9 +159,10 @@ pub trait Channel: Send {
 
     /// Send a complete tool output with optional diff and filter stats atomically.
     ///
-    /// The default implementation calls [`Self::send`] with the pre-formatted display text.
-    /// TUI overrides this to emit a single event that creates the Tool message and attaches
-    /// diff/filter data without a race between separate sends.
+    /// `body` is the raw tool output content (no header). The default implementation
+    /// formats it with `[tool output: <name>]` prefix for human-readable channels.
+    /// Structured channels (e.g. `LoopbackChannel`) override this to emit a typed event
+    /// so consumers can access `tool_name` and `body` as separate fields.
     ///
     /// # Errors
     ///
@@ -169,15 +170,16 @@ pub trait Channel: Send {
     #[allow(clippy::too_many_arguments)]
     fn send_tool_output(
         &mut self,
-        _tool_name: &str,
-        display: &str,
+        tool_name: &str,
+        body: &str,
         _diff: Option<crate::DiffData>,
         _filter_stats: Option<String>,
         _kept_lines: Option<Vec<usize>>,
         _tool_call_id: &str,
         _is_error: bool,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        self.send(display)
+        let formatted = crate::agent::format_tool_output(tool_name, body);
+        async move { self.send(&formatted).await }
     }
 
     /// Request user confirmation for a destructive action. Returns `true` if confirmed.
@@ -324,7 +326,7 @@ impl Channel for LoopbackChannel {
     async fn send_tool_output(
         &mut self,
         tool_name: &str,
-        display: &str,
+        body: &str,
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
@@ -334,7 +336,7 @@ impl Channel for LoopbackChannel {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
                 tool_name: tool_name.to_owned(),
-                display: display.to_owned(),
+                display: body.to_owned(),
                 diff,
                 filter_stats,
                 kept_lines,

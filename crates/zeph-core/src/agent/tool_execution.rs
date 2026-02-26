@@ -1004,15 +1004,14 @@ impl<C: Channel> Agent<C> {
             } else {
                 processed.clone()
             };
-            let formatted = format_tool_output(&tc.name, &body);
-            let display = self.maybe_redact(&formatted);
+            let body_display = self.maybe_redact(&body);
             // Tools that already streamed via ToolEvent channel (e.g. bash) have their
             // output displayed by the TUI event forwarder; skip duplicate send.
             if !already_streamed {
                 self.channel
                     .send_tool_output(
                         &tc.name,
-                        &display,
+                        &body_display,
                         diff,
                         inline_stats,
                         kept_lines,

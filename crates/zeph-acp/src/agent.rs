@@ -1359,18 +1359,6 @@ fn is_tool_use_marker(text: &str) -> bool {
     trimmed.starts_with("[tool_use:") && trimmed.ends_with(']')
 }
 
-/// Strip the internal `[tool output: <name>]` header line produced by
-/// `format_tool_output`. Returns the remainder (the code-block content) so
-/// that Zed does not render the noisy bracket header.
-fn strip_tool_output_header(text: &str) -> &str {
-    let trimmed = text.trim_start();
-    if trimmed.starts_with("[tool output:") {
-        trimmed.find('\n').map_or("", |pos| &trimmed[pos + 1..])
-    } else {
-        text
-    }
-}
-
 fn mime_to_ext(mime: &str) -> &str {
     match mime {
         "image/jpeg" | "image/jpg" => "jpg",
@@ -1517,12 +1505,11 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             vec![]
         }
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
-            let content = strip_tool_output_header(&text).to_owned();
-            if content.is_empty() {
+            if text.is_empty() {
                 vec![]
             } else {
                 vec![acp::SessionUpdate::AgentMessageChunk(
-                    acp::ContentChunk::new(content.into()),
+                    acp::ContentChunk::new(text.into()),
                 )]
             }
         }
