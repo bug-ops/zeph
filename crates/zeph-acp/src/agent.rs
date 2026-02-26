@@ -769,6 +769,7 @@ impl acp::Agent for ZephAcpAgent {
             working_dir: RefCell::new(Some(args.cwd.clone())),
             provider_override,
             current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
         };
         self.sessions.borrow_mut().insert(new_id.clone(), entry);
 
@@ -825,6 +826,7 @@ impl acp::Agent for ZephAcpAgent {
             working_dir: RefCell::new(Some(args.cwd)),
             provider_override,
             current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
         };
         self.sessions
             .borrow_mut()
