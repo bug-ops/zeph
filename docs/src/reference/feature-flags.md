@@ -42,6 +42,15 @@ Some workspace crates expose their own feature flags for fine-grained control:
 | Crate | Feature | Default | Description |
 |-------|---------|---------|-------------|
 | `zeph-llm` | `schema` | on | Enables `schemars` dependency and typed output API (`chat_typed`, `Extractor`, `cached_schema`) |
+| `zeph-acp` | `unstable-session-list` | off | `_session/list_active` — enumerate in-memory sessions with optional `cwd` filter (unstable) |
+| `zeph-acp` | `unstable-session-fork` | off | `_session/fork` — clone session history to a new session and spawn a fresh agent loop (unstable) |
+| `zeph-acp` | `unstable-session-resume` | off | `_session/resume` — restore session from SQLite without replaying events (unstable) |
+
+The root crate also provides a composite flag:
+
+| Feature | Description |
+|---------|-------------|
+| `acp-unstable` | Enables all three `zeph-acp` unstable session flags at once |
 
 Disable the `schema` feature to compile `zeph-llm` without `schemars`:
 

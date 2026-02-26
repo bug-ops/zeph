@@ -129,6 +129,27 @@ The host constructs an `AgentSpawner` closure that wires `AcpContext` capabiliti
 
 The `initialize` response includes an `auth_hint` key in its metadata map. For stdio transport (trusted local client) this is a generic `"authentication required"` string. IDEs can use this hint to prompt the user for credentials before issuing further requests.
 
+## Feature Flags
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| `unstable-session-list` | unstable | Enables `list_sessions` — enumerates all active in-memory and persisted sessions. Returns a snapshot of session metadata (ID, created-at, last-active, message count). Gated behind this flag because the response schema and pagination contract may change before stabilization. |
+| `unstable-session-fork` | unstable | Enables `fork_session` — branches an existing conversation at a specified event index into a new session. The fork inherits the parent's history up to the branch point and receives a fresh session ID. Useful for exploring alternative continuations without mutating the original session. |
+| `unstable-session-resume` | unstable | Enables `resume_session` — restores a persisted session to an active state without replaying history as `session/update` events. The session is hydrated from SQLite and made immediately available for new turns, preserving conversation context across process restarts with lower latency than the default replay path. |
+
+All three flags are independent and can be combined freely. They are kept unstable because the wire protocol for the corresponding `ext_method` routes (`_session/list`, `_session/fork`, `_session/resume`) is not yet finalized. Expect breaking changes before these features graduate to stable.
+
+To opt in, add the desired features in your `Cargo.toml`:
+
+```toml
+[dependencies]
+zeph-acp = { version = "*", features = [
+    "unstable-session-list",
+    "unstable-session-fork",
+    "unstable-session-resume",
+] }
+```
+
 ## Installation
 
 ```bash

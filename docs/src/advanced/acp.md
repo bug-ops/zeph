@@ -176,6 +176,39 @@ Zeph extends the base ACP protocol with custom methods via `ext_method`. All use
 
 These methods are useful for building custom IDE integrations or debugging session state.
 
+## Unstable session features
+
+Three session management capabilities are available behind dedicated feature flags. They are considered unstable — their interfaces may change before stabilization.
+
+| Feature flag | Method | Description |
+|--------------|--------|-------------|
+| `unstable-session-list` | `_session/list_active` | Enumerate in-memory sessions with an optional `cwd` filter. Returns session ID, working directory, creation timestamp, and message count. |
+| `unstable-session-fork` | `_session/fork` | Clone an existing session's history into a new session and spawn a fresh agent loop from that checkpoint. The source session continues unaffected. |
+| `unstable-session-resume` | `_session/resume` | Restore a session from SQLite without replaying its events through the agent loop. Useful for inspecting or continuing a session after a restart. |
+
+The composite flag `acp-unstable` (root crate) enables all three at once.
+
+Enable via Cargo features:
+
+```bash
+# individual flags
+cargo build --features unstable-session-list
+cargo build --features unstable-session-fork
+cargo build --features unstable-session-resume
+
+# all unstable session features at once
+cargo build --features acp-unstable
+```
+
+Or in `Cargo.toml`:
+
+```toml
+[dependencies]
+zeph-acp = { version = "...", features = ["unstable-session-list", "unstable-session-fork", "unstable-session-resume"] }
+```
+
+> **Note:** These features are gated on the `zeph-acp` crate. Stability and wire format are not guaranteed across minor versions until they are promoted to stable.
+
 ## Security
 
 - **Session IDs** — validated against `[a-zA-Z0-9_-]`, max 128 characters
