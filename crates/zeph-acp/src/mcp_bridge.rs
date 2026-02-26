@@ -11,8 +11,8 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 
 /// Convert ACP `McpServer` list to `zeph-mcp` `ServerEntry` configs.
 ///
-/// Only `Stdio` transport is supported. `Http` and `Sse` variants are skipped
-/// with a warning — the agent does not advertise those capabilities.
+/// `Stdio`, `Http`, and `Sse` transports are supported. `Sse` is mapped to
+/// `McpTransport::Http` since rmcp's `StreamableHttpClientTransport` handles both.
 #[must_use]
 pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry> {
     servers
@@ -36,13 +36,23 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                 })
             }
-            acp::McpServer::Http(http) => {
-                tracing::warn!(name = %http.name, "skipping HTTP MCP server — not supported");
-                None
-            }
+            acp::McpServer::Http(http) => Some(ServerEntry {
+                id: http.name.clone(),
+                transport: McpTransport::Http {
+                    url: http.url.clone(),
+                },
+                timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
+            }),
             acp::McpServer::Sse(sse) => {
-                tracing::warn!(name = %sse.name, "skipping SSE MCP server — not supported");
-                None
+                // SSE is a legacy MCP transport; map to Streamable HTTP which is
+                // backward-compatible. rmcp's StreamableHttpClientTransport handles both.
+                Some(ServerEntry {
+                    id: sse.name.clone(),
+                    transport: McpTransport::Http {
+                        url: sse.url.clone(),
+                    },
+                    timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
+                })
             }
             _ => {
                 tracing::warn!("skipping unknown MCP server transport — not supported");
@@ -69,13 +79,29 @@ mod tests {
     }
 
     #[test]
-    fn skips_http_server() {
+    fn converts_http_server() {
         let servers = vec![acp::McpServer::Http(acp::McpServerHttp::new(
             "http-mcp",
             "http://localhost",
         ))];
         let entries = acp_mcp_servers_to_entries(&servers);
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "http-mcp");
+        assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
+    }
+
+    #[test]
+    fn converts_http_server_url() {
+        let servers = vec![acp::McpServer::Http(acp::McpServerHttp::new(
+            "http-mcp",
+            "http://example.com:8080/mcp",
+        ))];
+        let entries = acp_mcp_servers_to_entries(&servers);
+        if let McpTransport::Http { url } = &entries[0].transport {
+            assert_eq!(url, "http://example.com:8080/mcp");
+        } else {
+            panic!("expected Http transport");
+        }
     }
 
     #[test]
@@ -99,17 +125,33 @@ mod tests {
     }
 
     #[test]
-    fn skips_sse_server() {
+    fn converts_sse_server() {
         let servers = vec![acp::McpServer::Sse(acp::McpServerSse::new(
             "sse-mcp",
             "http://localhost/sse",
         ))];
         let entries = acp_mcp_servers_to_entries(&servers);
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "sse-mcp");
+        assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
     }
 
     #[test]
-    fn mixed_list_returns_only_stdio() {
+    fn converts_sse_server_url() {
+        let servers = vec![acp::McpServer::Sse(acp::McpServerSse::new(
+            "sse-mcp",
+            "http://example.com/sse",
+        ))];
+        let entries = acp_mcp_servers_to_entries(&servers);
+        if let McpTransport::Http { url } = &entries[0].transport {
+            assert_eq!(url, "http://example.com/sse");
+        } else {
+            panic!("expected Http transport");
+        }
+    }
+
+    #[test]
+    fn mixed_list_returns_all() {
         let servers = vec![
             acp::McpServer::Stdio(acp::McpServerStdio::new("stdio-1", "/bin/mcp1")),
             acp::McpServer::Http(acp::McpServerHttp::new("http-1", "http://localhost")),
@@ -117,8 +159,10 @@ mod tests {
             acp::McpServer::Sse(acp::McpServerSse::new("sse-1", "http://localhost/sse")),
         ];
         let entries = acp_mcp_servers_to_entries(&servers);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].id, "stdio-1");
-        assert_eq!(entries[1].id, "stdio-2");
+        assert_eq!(entries[1].id, "http-1");
+        assert_eq!(entries[2].id, "stdio-2");
+        assert_eq!(entries[3].id, "sse-1");
     }
 }
