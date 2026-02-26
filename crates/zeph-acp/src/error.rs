@@ -14,4 +14,7 @@ pub enum AcpError {
 
     #[error("channel closed")]
     ChannelClosed,
+
+    #[error("terminal command timed out; partial output: {output}")]
+    TerminalTimeout { output: String },
 }

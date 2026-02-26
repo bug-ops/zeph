@@ -228,8 +228,12 @@ impl ZephAcpAgent {
             AcpFileExecutor::new(Rc::clone(conn), session_id.clone(), can_read, can_write);
         tokio::task::spawn_local(fs_handler);
 
-        let (shell_exec, shell_handler) =
-            AcpShellExecutor::new(Rc::clone(conn), session_id.clone(), Some(perm_gate.clone()));
+        let (shell_exec, shell_handler) = AcpShellExecutor::new(
+            Rc::clone(conn),
+            session_id.clone(),
+            Some(perm_gate.clone()),
+            120,
+        );
         tokio::task::spawn_local(shell_handler);
 
         Some(AcpContext {
@@ -539,7 +543,7 @@ impl acp::Agent for ZephAcpAgent {
             };
             let Some(event) = event else { break };
             let is_flush = matches!(event, LoopbackEvent::Flush);
-            if let Some(update) = loopback_event_to_update(event) {
+            for update in loopback_event_to_update(event) {
                 // Persist event before sending notification (best-effort).
                 if let Some(ref store) = self.store {
                     let sid = args.session_id.to_string();
@@ -1011,6 +1015,16 @@ fn session_update_to_event(update: &acp::SessionUpdate) -> (&'static str, String
             };
             ("tool_call", payload)
         }
+        acp::SessionUpdate::ToolCallUpdate(tcu) => {
+            let payload = match serde_json::to_string(tcu) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to serialize ToolCallUpdate for persistence");
+                    String::new()
+                }
+            };
+            ("tool_call_update", payload)
+        }
         _ => ("unknown", String::new()),
     }
 }
@@ -1084,42 +1098,62 @@ fn build_model_config_options(
     ]
 }
 
-fn loopback_event_to_update(event: LoopbackEvent) -> Option<acp::SessionUpdate> {
+fn loopback_event_to_update(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
     match event {
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
             if text.is_empty() || is_tool_use_marker(&text) =>
         {
-            None
+            vec![]
         }
-        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => Some(
-            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(text.into())),
-        ),
-        LoopbackEvent::Status(text) if text.is_empty() => None,
-        LoopbackEvent::Status(text) => Some(acp::SessionUpdate::AgentThoughtChunk(
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
+            vec![acp::SessionUpdate::AgentMessageChunk(
+                acp::ContentChunk::new(text.into()),
+            )]
+        }
+        LoopbackEvent::Status(text) if text.is_empty() => vec![],
+        LoopbackEvent::Status(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
             acp::ContentChunk::new(text.into()),
-        )),
-        LoopbackEvent::ToolOutput {
+        )],
+        LoopbackEvent::ToolStart {
             tool_name,
+            tool_call_id,
+        } => {
+            let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
+                .kind(tool_kind_from_name(&tool_name))
+                .status(acp::ToolCallStatus::InProgress);
+            vec![acp::SessionUpdate::ToolCall(tool_call)]
+        }
+        LoopbackEvent::ToolOutput {
+            tool_name: _,
             display,
             locations,
+            tool_call_id,
+            is_error,
             ..
         } => {
-            let tool_call_id = uuid::Uuid::new_v4().to_string();
             let acp_locations: Vec<acp::ToolCallLocation> = locations
                 .unwrap_or_default()
                 .into_iter()
                 .map(|p| acp::ToolCallLocation::new(std::path::PathBuf::from(p)))
                 .collect();
-            let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
-                .kind(tool_kind_from_name(&tool_name))
-                .status(acp::ToolCallStatus::Completed)
+            let status = if is_error {
+                acp::ToolCallStatus::Failed
+            } else {
+                acp::ToolCallStatus::Completed
+            };
+            let mut fields = acp::ToolCallUpdateFields::new()
+                .status(status)
                 .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
                     acp::TextContent::new(display),
-                ))])
-                .locations(acp_locations);
-            Some(acp::SessionUpdate::ToolCall(tool_call))
+                ))]);
+            if !acp_locations.is_empty() {
+                fields = fields.locations(acp_locations);
+            }
+            vec![acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(tool_call_id, fields),
+            )]
         }
-        LoopbackEvent::Flush => None,
+        LoopbackEvent::Flush => vec![],
     }
 }
 
@@ -1414,34 +1448,56 @@ mod tests {
 
     #[test]
     fn loopback_flush_returns_none() {
-        assert!(loopback_event_to_update(LoopbackEvent::Flush).is_none());
+        assert!(loopback_event_to_update(LoopbackEvent::Flush).is_empty());
     }
 
     #[test]
     fn loopback_chunk_maps_to_agent_message() {
+        let updates = loopback_event_to_update(LoopbackEvent::Chunk("hi".into()));
+        assert_eq!(updates.len(), 1);
         assert!(matches!(
-            loopback_event_to_update(LoopbackEvent::Chunk("hi".into())),
-            Some(acp::SessionUpdate::AgentMessageChunk(_))
+            updates[0],
+            acp::SessionUpdate::AgentMessageChunk(_)
         ));
     }
 
     #[test]
     fn loopback_status_maps_to_thought() {
+        let updates = loopback_event_to_update(LoopbackEvent::Status("thinking".into()));
+        assert_eq!(updates.len(), 1);
         assert!(matches!(
-            loopback_event_to_update(LoopbackEvent::Status("thinking".into())),
-            Some(acp::SessionUpdate::AgentThoughtChunk(_))
+            updates[0],
+            acp::SessionUpdate::AgentThoughtChunk(_)
         ));
     }
 
     #[test]
     fn loopback_empty_chunk_returns_none() {
-        assert!(loopback_event_to_update(LoopbackEvent::Chunk(String::new())).is_none());
-        assert!(loopback_event_to_update(LoopbackEvent::FullMessage(String::new())).is_none());
-        assert!(loopback_event_to_update(LoopbackEvent::Status(String::new())).is_none());
+        assert!(loopback_event_to_update(LoopbackEvent::Chunk(String::new())).is_empty());
+        assert!(loopback_event_to_update(LoopbackEvent::FullMessage(String::new())).is_empty());
+        assert!(loopback_event_to_update(LoopbackEvent::Status(String::new())).is_empty());
     }
 
     #[test]
-    fn loopback_tool_output_maps_to_tool_call() {
+    fn loopback_tool_start_maps_to_tool_call_in_progress() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "test-id".to_owned(),
+        };
+        let updates = loopback_event_to_update(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert_eq!(tc.title, "bash");
+                assert_eq!(tc.status, acp::ToolCallStatus::InProgress);
+                assert_eq!(tc.kind, acp::ToolKind::Execute);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_output_maps_to_tool_call_update() {
         let event = LoopbackEvent::ToolOutput {
             tool_name: "bash".to_owned(),
             display: "done".to_owned(),
@@ -1449,15 +1505,38 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
+            tool_call_id: "test-id".to_owned(),
+            is_error: false,
         };
-        let update = loopback_event_to_update(event);
-        match update {
-            Some(acp::SessionUpdate::ToolCall(tc)) => {
-                assert_eq!(tc.title, "bash");
-                assert_eq!(tc.status, acp::ToolCallStatus::Completed);
-                assert_eq!(tc.kind, acp::ToolKind::Execute);
+        let updates = loopback_event_to_update(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Completed));
             }
-            other => panic!("expected ToolCall, got {other:?}"),
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_output_error_maps_to_failed() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "error".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "test-id".to_owned(),
+            is_error: true,
+        };
+        let updates = loopback_event_to_update(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Failed));
+            }
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
         }
     }
 
@@ -1751,21 +1830,19 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: Some(vec!["/src/main.rs".to_owned(), "/src/lib.rs".to_owned()]),
+            tool_call_id: "test-id".to_owned(),
+            is_error: false,
         };
-        let update = loopback_event_to_update(event);
-        match update {
-            Some(acp::SessionUpdate::ToolCall(tc)) => {
-                assert_eq!(tc.locations.len(), 2);
-                assert_eq!(
-                    tc.locations[0].path,
-                    std::path::PathBuf::from("/src/main.rs")
-                );
-                assert_eq!(
-                    tc.locations[1].path,
-                    std::path::PathBuf::from("/src/lib.rs")
-                );
+        let updates = loopback_event_to_update(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let locs = tcu.fields.locations.as_deref().unwrap_or(&[]);
+                assert_eq!(locs.len(), 2);
+                assert_eq!(locs[0].path, std::path::PathBuf::from("/src/main.rs"));
+                assert_eq!(locs[1].path, std::path::PathBuf::from("/src/lib.rs"));
             }
-            other => panic!("expected ToolCall, got {other:?}"),
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
         }
     }
 
@@ -1778,28 +1855,31 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
+            tool_call_id: "test-id".to_owned(),
+            is_error: false,
         };
-        let update = loopback_event_to_update(event);
-        match update {
-            Some(acp::SessionUpdate::ToolCall(tc)) => {
-                assert!(tc.locations.is_empty());
+        let updates = loopback_event_to_update(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(tcu.fields.locations.as_deref().unwrap_or(&[]).is_empty());
             }
-            other => panic!("expected ToolCall, got {other:?}"),
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
         }
     }
 
     #[test]
-    fn tool_use_marker_filtered() {
+    fn tool_use_marker_filtered_duplicate() {
         let event =
             LoopbackEvent::Chunk("[tool_use: bash (toolu_01VzP6Q9b6JQY6ZP5r6qY9Wm)]".into());
-        assert!(loopback_event_to_update(event).is_none());
+        assert!(loopback_event_to_update(event).is_empty());
 
         let event = LoopbackEvent::FullMessage("[tool_use: read (toolu_abc)]".into());
-        assert!(loopback_event_to_update(event).is_none());
+        assert!(loopback_event_to_update(event).is_empty());
 
         // Normal text should pass through.
         let event = LoopbackEvent::Chunk("hello [tool_use: not a marker".into());
-        assert!(loopback_event_to_update(event).is_some());
+        assert!(!loopback_event_to_update(event).is_empty());
     }
 
     #[test]

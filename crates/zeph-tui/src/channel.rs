@@ -121,6 +121,7 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_tool_output(
         &mut self,
         tool_name: &str,
@@ -128,6 +129,8 @@ impl Channel for TuiChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        _tool_call_id: &str,
+        is_error: bool,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
             %tool_name,
@@ -139,7 +142,7 @@ impl Channel for TuiChannel {
                 tool_name: tool_name.to_owned(),
                 command: display.to_owned(),
                 output: display.to_owned(),
-                success: true,
+                success: !is_error,
                 diff,
                 filter_stats,
                 kept_lines,
@@ -363,6 +366,8 @@ mod tests {
             Some(diff),
             None,
             None,
+            "",
+            false,
         )
         .await
         .unwrap();
@@ -383,6 +388,8 @@ mod tests {
             None,
             None,
             None,
+            "",
+            false,
         )
         .await
         .unwrap();

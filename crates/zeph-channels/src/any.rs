@@ -82,6 +82,7 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_diff, diff)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_tool_output(
         &mut self,
         tool_name: &str,
@@ -89,6 +90,8 @@ impl Channel for AnyChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        tool_call_id: &str,
+        is_error: bool,
     ) -> Result<(), ChannelError> {
         dispatch_channel!(
             self,
@@ -97,7 +100,9 @@ impl Channel for AnyChannel {
             display,
             diff,
             filter_stats,
-            kept_lines
+            kept_lines,
+            tool_call_id,
+            is_error
         )
     }
 }
