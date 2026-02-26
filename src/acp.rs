@@ -203,6 +203,7 @@ async fn build_acp_deps(
 /// When `acp_ctx` is `Some`, ACP executors are composed on top of the local tool executor
 /// (ACP-first, local fallback). When `None`, local tools handle everything.
 #[cfg(feature = "acp")]
+#[allow(clippy::too_many_lines)]
 async fn spawn_acp_agent(
     d: AgentDeps,
     channel: zeph_core::channel::LoopbackChannel,
@@ -215,40 +216,37 @@ async fn spawn_acp_agent(
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     let memory_executor =
         zeph_core::memory_tools::MemoryToolExecutor::new(Arc::clone(&d.memory), d.conversation_id);
-    let (tool_executor, cancel_signal, provider_override) = match acp_ctx {
-        Some(ctx) => {
-            let cancel_signal = Arc::clone(&ctx.cancel_signal);
-            let provider_override = Arc::clone(&ctx.provider_override);
-            let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
-            if let Some(fs) = ctx.file_executor {
-                base = Arc::new(zeph_tools::CompositeExecutor::new(
-                    fs,
-                    zeph_tools::DynExecutor(base),
-                ));
-            }
-            if let Some(shell) = ctx.shell_executor {
-                base = Arc::new(zeph_tools::CompositeExecutor::new(
-                    shell,
-                    zeph_tools::DynExecutor(base),
-                ));
-            }
+    let (tool_executor, cancel_signal, provider_override) = if let Some(ctx) = acp_ctx {
+        let cancel_signal = Arc::clone(&ctx.cancel_signal);
+        let provider_override = Arc::clone(&ctx.provider_override);
+        let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
+        if let Some(fs) = ctx.file_executor {
             base = Arc::new(zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                fs,
                 zeph_tools::DynExecutor(base),
             ));
-            (
+        }
+        if let Some(shell) = ctx.shell_executor {
+            base = Arc::new(zeph_tools::CompositeExecutor::new(
+                shell,
                 zeph_tools::DynExecutor(base),
-                Some(cancel_signal),
-                Some(provider_override),
-            )
-        }
-        None => {
-            let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
-                memory_executor,
-                zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
             ));
-            (zeph_tools::DynExecutor(base), None, None)
         }
+        base = Arc::new(zeph_tools::CompositeExecutor::new(
+            memory_executor,
+            zeph_tools::DynExecutor(base),
+        ));
+        (
+            zeph_tools::DynExecutor(base),
+            Some(cancel_signal),
+            Some(provider_override),
+        )
+    } else {
+        let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
+            memory_executor,
+            zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
+        ));
+        (zeph_tools::DynExecutor(base), None, None)
     };
 
     let mut agent = Agent::new(
