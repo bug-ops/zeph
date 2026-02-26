@@ -920,7 +920,10 @@ impl<C: Channel> Agent<C> {
             .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
         for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
-            self.channel.send_tool_start(&tc.name, tool_call_id).await?;
+            let raw_params = tc.input.clone();
+            self.channel
+                .send_tool_start(&tc.name, tool_call_id, Some(raw_params))
+                .await?;
         }
 
         // Inject active skill secrets before tool execution

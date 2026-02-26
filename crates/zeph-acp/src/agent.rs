@@ -1558,10 +1558,35 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
         LoopbackEvent::ToolStart {
             tool_name,
             tool_call_id,
+            params,
         } => {
-            let tool_call = acp::ToolCall::new(tool_call_id, &tool_name)
+            // Derive a human-readable title from params when available.
+            // For bash: use the command string (truncated). For others: fall back to tool_name.
+            let title = params
+                .as_ref()
+                .and_then(|p| {
+                    p.get("command")
+                        .or_else(|| p.get("path"))
+                        .or_else(|| p.get("url"))
+                })
+                .and_then(|v| v.as_str())
+                .map_or_else(
+                    || tool_name.clone(),
+                    |s| {
+                        const MAX: usize = 120;
+                        if s.len() > MAX {
+                            format!("{}…", &s[..MAX])
+                        } else {
+                            s.to_owned()
+                        }
+                    },
+                );
+            let mut tool_call = acp::ToolCall::new(tool_call_id, title)
                 .kind(tool_kind_from_name(&tool_name))
                 .status(acp::ToolCallStatus::InProgress);
+            if let Some(p) = params {
+                tool_call = tool_call.raw_input(p);
+            }
             vec![acp::SessionUpdate::ToolCall(tool_call)]
         }
         LoopbackEvent::ToolOutput {
@@ -2002,6 +2027,7 @@ mod tests {
         let event = LoopbackEvent::ToolStart {
             tool_name: "bash".to_owned(),
             tool_call_id: "test-id".to_owned(),
+            params: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2010,6 +2036,45 @@ mod tests {
                 assert_eq!(tc.title, "bash");
                 assert_eq!(tc.status, acp::ToolCallStatus::InProgress);
                 assert_eq!(tc.kind, acp::ToolKind::Execute);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_start_uses_command_as_title() {
+        let params = serde_json::json!({ "command": "ls -la /tmp" });
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "test-id-2".to_owned(),
+            params: Some(params),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert_eq!(tc.title, "ls -la /tmp");
+                assert!(tc.raw_input.is_some());
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_start_truncates_long_command() {
+        let long_cmd = "a".repeat(200);
+        let params = serde_json::json!({ "command": long_cmd });
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "test-id-3".to_owned(),
+            params: Some(params),
+        };
+        let updates = loopback_event_to_updates(event);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                // 120 ASCII chars + '…' (3 UTF-8 bytes) = 123 bytes
+                assert!(tc.title.len() <= 123);
+                assert!(tc.title.ends_with('…'));
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
