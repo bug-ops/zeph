@@ -11,6 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: `Channel::send_tool_start` method; `LoopbackChannel` emits `ToolStart` events; tool UUIDs generated per execution and threaded through the pipeline (#926)
 - `zeph-acp`: ACP tool call lifecycle now emits `SessionUpdate::ToolCall(InProgress)` before execution and `SessionUpdate::ToolCallUpdate(Completed|Failed)` with content after, per protocol spec G5 (#926)
 - `zeph-acp`: Configurable terminal command timeout (default 120s) in `AcpShellExecutor`; on timeout calls `kill_terminal_command`, collects partial output, and returns `AcpError::TerminalTimeout` per G6 (#926)
+- `zeph-acp`: three unstable ACP session features gated behind cargo feature flags:
+  - `unstable-session-list`: implements `session/list` — returns active in-memory sessions with optional `cwd` filter
+  - `unstable-session-fork`: implements `session/fork` — clones an existing session (history copied via `import_acp_events`) and spawns a new agent loop
+  - `unstable-session-resume`: implements `session/resume` — restores a persisted session without history replay (unlike `session/load`)
+- Root `acp-unstable` feature activates all three unstable features for the `zeph` binary; included in `full`
+- `initialize()` advertises `SessionCapabilities` (list/fork/resume) when corresponding features are enabled
 - `McpToolExecutor` now implements `tool_definitions()` and `execute_tool_call()` — MCP tools are exposed as native `ToolDefinition`s and dispatched via structured tool_use when provider supports it
 - `McpToolExecutor` accepts `Arc<RwLock<Vec<McpTool>>>` at construction; shared reference is kept in `McpState.shared_tools` and updated on `/mcp add`/`/mcp remove`
 - `append_mcp_prompt()` skips text-based MCP tool injection when `provider.supports_tool_use()` is true, preventing duplicate tool descriptions

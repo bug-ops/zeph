@@ -256,6 +256,108 @@ Zeph extends the base ACP protocol with custom methods via `ext_method`. All use
 
 These methods are useful for building custom IDE integrations or debugging session state.
 
+## Unstable session features
+
+Three session management capabilities are available behind dedicated feature flags. They are part of the ACP protocol's unstable surface — their wire format and behavior may change before stabilization.
+
+Each feature adds a standard ACP protocol method to the agent's advertised `session_capabilities`. The IDE discovers these capabilities in the `initialize` response and can invoke the corresponding methods.
+
+| Feature flag | ACP method | Description |
+|--------------|------------|-------------|
+| `unstable-session-list` | `list_sessions` | Enumerate in-memory sessions. Accepts an optional `cwd` filter; returns session ID, working directory, and last-updated timestamp for each matching session. |
+| `unstable-session-fork` | `fork_session` | Clone an existing session's persisted event history into a new session and immediately spawn a fresh agent loop from that checkpoint. The source session continues unaffected. |
+| `unstable-session-resume` | `resume_session` | Reattach to a session that exists in SQLite but is not currently active in memory. Spawns an agent loop without replaying historical events. Useful for continuing a session after a Zeph restart. |
+
+The composite flag `acp-unstable` (root crate) enables all three at once.
+
+> **Note:** These features are gated on the `zeph-acp` crate. The `unstable-session-list` flag also enables the corresponding feature in the `agent-client-protocol` dependency (`unstable_session_list`), and likewise for the other two. Stability and wire format are not guaranteed across minor versions until promoted to stable.
+
+### Enabling the features
+
+Enable individual flags:
+
+```bash
+cargo build --features unstable-session-list
+cargo build --features unstable-session-fork
+cargo build --features unstable-session-resume
+```
+
+Enable all three at once with the composite flag:
+
+```bash
+cargo build --features acp-unstable
+```
+
+When embedding `zeph-acp` as a library dependency:
+
+```toml
+[dependencies]
+zeph-acp = { version = "...", features = ["unstable-session-list", "unstable-session-fork", "unstable-session-resume"] }
+```
+
+### list_sessions
+
+When `unstable-session-list` is active, the agent advertises `list` in `session_capabilities`. The IDE can call `list_sessions` to enumerate all sessions currently live in memory.
+
+Request parameters:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cwd` | path | no | Filter — only return sessions whose working directory matches this path |
+
+Response fields per session entry:
+
+| Field | Description |
+|-------|-------------|
+| `session_id` | Unique session identifier |
+| `cwd` | Session working directory |
+| `updated_at` | RFC 3339 timestamp of session creation or last update |
+
+Sessions that are in memory but have no working directory set are included with an empty path. Persisted-only sessions (in SQLite but not active) are not enumerated by `list_sessions`.
+
+### fork_session
+
+When `unstable-session-fork` is active, the agent advertises `fork` in `session_capabilities`. The IDE can call `fork_session` to branch an existing session.
+
+The fork operation:
+
+1. Looks up the source session — in memory or in the SQLite store.
+2. Copies all persisted events from the source into a new session record (async, does not block the response).
+3. Spawns a fresh agent loop for the new session starting from the forked state.
+4. Returns the new session ID and any available model config options.
+
+The source session remains active and unchanged. Both sessions are independent after the fork.
+
+```jsonc
+// Request
+{ "method": "fork_session", "params": { "session_id": "<source-id>", "cwd": "/workspace" } }
+
+// Response
+{ "session_id": "<new-forked-id>", "config_options": [...] }
+```
+
+> **Note:** The event copy is performed asynchronously. There is a brief window where the new session's agent loop starts before all events are written to SQLite.
+
+### resume_session
+
+When `unstable-session-resume` is active, the agent advertises `resume` in `session_capabilities`. The IDE can call `resume_session` to reattach to a previously persisted session.
+
+The resume operation:
+
+1. Checks whether the session is already active in memory — if so, returns immediately (no-op).
+2. Verifies the session exists in SQLite.
+3. Spawns a fresh agent loop for the session **without** replaying historical events through the loop. The session's stored event log is preserved in SQLite and accessible via `_session/get`.
+
+```jsonc
+// Request
+{ "method": "resume_session", "params": { "session_id": "<persisted-id>", "cwd": "/workspace" } }
+
+// Response (empty on success)
+{}
+```
+
+Use `resume_session` to continue a session after a Zeph process restart, or to open a background session for inspection without disturbing its history.
+
 ## Security
 
 - **Session IDs** — validated against `[a-zA-Z0-9_-]`, max 128 characters
