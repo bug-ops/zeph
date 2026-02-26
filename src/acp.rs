@@ -329,31 +329,123 @@ async fn spawn_acp_agent(
 
 /// Collect model keys from config when `acp.available_models` is not set.
 ///
-/// Each key uses `"{provider_name}:{model}"` format matching the provider factory.
+/// For each configured provider the disk cache is consulted first (24 h TTL).
+/// When the cache is warm the full remote model list is returned; otherwise the
+/// single model from config is used as the fallback so startup is never blocked
+/// on network I/O.  Call `/model refresh` at runtime to populate the caches.
+///
+/// Each key uses `"{provider_name}:{model_id}"` format matching the provider factory.
 #[cfg(feature = "acp")]
 fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String> {
+    use zeph_llm::model_cache::ModelCache;
+
+    /// Expand a provider slug using its on-disk cache, or fall back to `fallback`.
+    fn expand_from_cache(slug: &str, fallback: &str) -> Vec<String> {
+        let cache = ModelCache::for_slug(slug);
+        if !cache.is_stale()
+            && let Ok(Some(entries)) = cache.load()
+            && !entries.is_empty()
+        {
+            return entries
+                .into_iter()
+                .map(|m| format!("{slug}:{}", m.id))
+                .collect();
+        }
+        vec![format!("{slug}:{fallback}")]
+    }
+
     let mut models: Vec<String> = Vec::new();
-    models.push(format!("ollama:{}", config.llm.model));
-    if config.secrets.claude_api_key.is_some() {
-        let model = config
+
+    if config.llm.provider == zeph_core::config::ProviderKind::Orchestrator {
+        // Orchestrator: enumerate sub-providers and use their own cache/fallback.
+        if let Some(ref orch) = config.llm.orchestrator {
+            for sub in orch.providers.values() {
+                let slug = sub.provider_type.as_str();
+                let fallback = sub.model.as_deref().unwrap_or("unknown");
+                models.extend(expand_from_cache(slug, fallback));
+            }
+        }
+    } else {
+        // Single provider — use top-level llm section.
+        models.extend(expand_from_cache("ollama", &config.llm.model));
+    }
+
+    // Claude — always add when API key present, even under orchestrator.
+    if config.secrets.claude_api_key.is_some()
+        && config.llm.provider != zeph_core::config::ProviderKind::Orchestrator
+    {
+        let fallback = config
             .llm
             .cloud
             .as_ref()
             .map_or("claude-sonnet-4-5", |c| c.model.as_str());
-        models.push(format!("claude:{model}"));
+        models.extend(expand_from_cache("claude", fallback));
     }
-    if let (Some(_), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai) {
-        models.push(format!("openai:{}", openai_cfg.model));
+
+    // OpenAI — only when API key and config section are present (non-orchestrator).
+    if config.llm.provider != zeph_core::config::ProviderKind::Orchestrator
+        && let (Some(_), Some(openai_cfg)) =
+            (&config.secrets.openai_api_key, &config.llm.openai)
+    {
+        models.extend(expand_from_cache("openai", &openai_cfg.model));
     }
+
+    // Compatible providers.
     if let Some(ref entries) = config.llm.compatible {
         for entry in entries {
             if config.secrets.compatible_api_keys.contains_key(&entry.name) {
-                models.push(format!("{}:{}", entry.name, entry.model));
+                models.extend(expand_from_cache(&entry.name, &entry.model));
             }
         }
     }
+
     models.dedup();
     models
+}
+
+/// Populate model caches for all providers before the ACP server starts.
+///
+/// Uses a 5-second timeout so that a slow or unavailable provider does not block startup.
+/// After a successful fetch, each entry in `acp_available_models` that matches the provider
+/// slug is replaced by the full set of models returned from the provider's cache.
+#[cfg(feature = "acp")]
+async fn warm_model_caches(deps: &mut AgentDeps) {
+    use zeph_llm::model_cache::ModelCache;
+    use zeph_llm::provider::LlmProvider as _;
+
+    let slug = deps.provider.name().to_owned();
+    let provider = deps.provider.clone();
+    let fetch = async move {
+        match provider.list_models_remote().await {
+            Ok(models) => tracing::debug!(count = models.len(), "model cache warmed"),
+            Err(e) => tracing::debug!(error = %e, "model cache warm-up failed"),
+        }
+    };
+
+    if tokio::time::timeout(std::time::Duration::from_secs(5), fetch)
+        .await
+        .is_err()
+    {
+        tracing::debug!("model cache warm-up timed out; using config fallback");
+        return;
+    }
+
+    // Replace entries for this provider slug with the full cached list.
+    let cache = ModelCache::for_slug(&slug);
+    if cache.is_stale() {
+        return;
+    }
+    if let Ok(Some(entries)) = cache.load()
+        && !entries.is_empty()
+    {
+        let new_keys: Vec<String> = entries.into_iter().map(|m| format!("{slug}:{}", m.id)).collect();
+        // Remove old single-model entries for this slug, then prepend the full list.
+        deps.acp_available_models.retain(|k| !k.starts_with(&format!("{slug}:")));
+        let tail = std::mem::take(&mut deps.acp_available_models);
+        deps.acp_available_models = new_keys;
+        deps.acp_available_models.extend(tail);
+        deps.acp_available_models.dedup();
+    }
 }
 
 /// Build a `ProviderFactory` from the known named providers in config.
@@ -524,6 +616,10 @@ pub(crate) async fn run_acp_server(
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
 
+    // Warm model caches before advertising available_models to the ACP client.
+    // A 5-second budget is given; on timeout the fallback list from config is used.
+    warm_model_caches(&mut deps).await;
+
     let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: deps.acp_agent_name.clone(),
@@ -578,6 +674,8 @@ pub(crate) async fn run_acp_http_server(
 
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
+
+    warm_model_caches(&mut deps).await;
 
     let bind_addr = bind_override.map_or_else(|| "127.0.0.1:9800".to_owned(), str::to_owned);
 
