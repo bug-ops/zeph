@@ -501,8 +501,18 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns `Err` if the model is not found.
     pub fn set_model(&mut self, model_id: &str) -> Result<(), String> {
-        // For now: store intent; actual provider swap requires bootstrap context.
-        // We set model_name for metrics/display and apply via provider_override slot if available.
+        if model_id.is_empty() {
+            return Err("model id must not be empty".to_string());
+        }
+        if model_id.len() > 256 {
+            return Err("model id exceeds maximum length of 256 characters".to_string());
+        }
+        if !model_id
+            .chars()
+            .all(|c| c.is_ascii() && !c.is_ascii_control())
+        {
+            return Err("model id must contain only printable ASCII characters".to_string());
+        }
         self.runtime.model_name = model_id.to_string();
         tracing::info!(model = model_id, "set_model called");
         Ok(())
@@ -513,9 +523,18 @@ impl<C: Channel> Agent<C> {
         let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
 
         if arg == "refresh" {
-            // Invalidate caches and re-fetch.
-            zeph_llm::model_cache::ModelCache::for_slug("ollama").invalidate();
-            zeph_llm::model_cache::ModelCache::for_slug("claude").invalidate();
+            // Invalidate all model cache files in the cache directory.
+            if let Some(cache_dir) = dirs::cache_dir() {
+                let models_dir = cache_dir.join("zeph").join("models");
+                if let Ok(entries) = std::fs::read_dir(&models_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
             match self.provider.list_models_remote().await {
                 Ok(models) => {
                     let _ = self
@@ -2759,6 +2778,86 @@ pub(super) mod agent_tests {
             .await
             .unwrap();
         assert!(resp.contains("No pending secret request"));
+    }
+
+    #[test]
+    fn set_model_updates_model_name() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        assert!(agent.set_model("claude-opus-4-6").is_ok());
+        assert_eq!(agent.runtime.model_name, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn set_model_overwrites_previous_value() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.set_model("model-a").unwrap();
+        agent.set_model("model-b").unwrap();
+        assert_eq!(agent.runtime.model_name, "model-b");
+    }
+
+    #[tokio::test]
+    async fn model_command_switch_sends_confirmation() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.handle_model_command("/model my-new-model").await;
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("my-new-model")),
+            "expected switch confirmation, got: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_list_no_cache_fetches_remote() {
+        // With mock provider, list_models_remote returns empty vec — agent sends "No models".
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // Ensure cache is stale for mock provider slug
+        zeph_llm::model_cache::ModelCache::for_slug("mock").invalidate();
+        agent.handle_model_command("/model").await;
+        let messages = sent.lock().unwrap();
+        // Mock returns empty list → "No models available."
+        assert!(
+            messages.iter().any(|m| m.contains("No models")),
+            "expected empty model list message, got: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_refresh_sends_result() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.handle_model_command("/model refresh").await;
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("Fetched")),
+            "expected fetch confirmation, got: {messages:?}"
+        );
     }
 }
 

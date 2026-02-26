@@ -137,8 +137,9 @@ impl ClaudeProvider {
             }
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
+                tracing::debug!(status = %status, body = %body, "Claude list_models_remote error body");
                 return Err(LlmError::Other(format!(
-                    "Claude list models failed {status}: {body}"
+                    "Claude list models failed: {status}"
                 )));
             }
 
@@ -1910,5 +1911,101 @@ mod tests {
         let without_image = Message::from_legacy(Role::User, "plain text");
         assert!(ClaudeProvider::has_image_parts(&[with_image]));
         assert!(!ClaudeProvider::has_image_parts(&[without_image]));
+    }
+
+    // Test that the pagination response JSON structure is correctly parsed inline.
+    // list_models_remote uses serde_json::Value for page parsing; test the same logic here.
+    #[test]
+    fn pagination_response_has_more_true_extracts_last_id() {
+        let page = serde_json::json!({
+            "data": [{"id": "model-a", "type": "model", "display_name": "Model A"}],
+            "has_more": true,
+            "last_id": "model-a"
+        });
+        let has_more = page
+            .get("has_more")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let last_id = page
+            .get("last_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        assert!(has_more);
+        assert_eq!(last_id, Some("model-a".to_string()));
+    }
+
+    #[test]
+    fn pagination_response_has_more_false_stops_loop() {
+        let page = serde_json::json!({
+            "data": [{"id": "model-b", "type": "model", "display_name": "Model B"}],
+            "has_more": false
+        });
+        let has_more = page
+            .get("has_more")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn model_item_filters_non_model_type() {
+        let page = serde_json::json!({
+            "data": [
+                {"id": "model-ok", "type": "model", "display_name": "OK"},
+                {"id": "skip-me", "type": "other", "display_name": "Skip"}
+            ],
+            "has_more": false
+        });
+        let models: Vec<crate::model_cache::RemoteModelInfo> = page
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let type_field = item
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        if type_field != "model" {
+                            return None;
+                        }
+                        let id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let display_name = item
+                            .get("display_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&id)
+                            .to_string();
+                        Some(crate::model_cache::RemoteModelInfo {
+                            id,
+                            display_name,
+                            context_window: None,
+                            created_at: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "model-ok");
+    }
+
+    #[test]
+    fn model_item_uses_id_as_display_name_when_missing() {
+        let item = serde_json::json!({"id": "claude-x", "type": "model"});
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let display_name = item
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&id)
+            .to_string();
+        assert_eq!(display_name, "claude-x");
     }
 }

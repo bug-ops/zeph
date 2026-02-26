@@ -97,6 +97,9 @@ impl OpenAiProvider {
     }
 
     /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
+    ///
+    /// Only ASCII alphanumeric characters and underscores are kept to prevent
+    /// path traversal via unusual base URLs.
     #[must_use]
     pub fn cache_slug(&self) -> String {
         let host = self
@@ -109,7 +112,16 @@ impl OpenAiProvider {
             .split(':')
             .next()
             .unwrap_or("openai");
-        host.replace(['.', '-'], "_")
+        let slug: String = host
+            .chars()
+            .map(|c| if c == '.' || c == '-' { '_' } else { c })
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if slug.is_empty() {
+            "openai".to_string()
+        } else {
+            slug
+        }
     }
 
     /// Fetch the list of available models from GET `{base_url}/v1/models` and cache them.
@@ -131,8 +143,9 @@ impl OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
             return Err(LlmError::Other(format!(
-                "OpenAI list models failed {status}: {body}"
+                "OpenAI list models failed: {status}"
             )));
         }
 
@@ -1662,5 +1675,148 @@ mod tests {
             &converted[0].content[0],
             OpenAiContentPart::ImageUrl { .. }
         ));
+    }
+
+    #[test]
+    fn cache_slug_openai() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.cache_slug(), "api_openai_com");
+    }
+
+    #[test]
+    fn cache_slug_custom_host() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "https://my-llm.example.com/v1".into(),
+            "model".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.cache_slug(), "my_llm_example_com");
+    }
+
+    #[test]
+    fn cache_slug_localhost_with_port() {
+        let p = OpenAiProvider::new(
+            "k".into(),
+            "http://localhost:8080/v1".into(),
+            "model".into(),
+            1024,
+            None,
+            None,
+        );
+        assert_eq!(p.cache_slug(), "localhost");
+    }
+
+    // Tests for list_models_remote JSON response parsing (inline, no HTTP server needed).
+    #[test]
+    fn list_models_response_parses_data_array() {
+        let page = serde_json::json!({
+            "data": [
+                {"id": "gpt-4o", "created": 1_700_000_000i64},
+                {"id": "gpt-3.5-turbo", "created": 1_600_000_000i64}
+            ]
+        });
+        let models: Vec<crate::model_cache::RemoteModelInfo> = page
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let id = item.get("id")?.as_str()?.to_string();
+                        let created_at = item.get("created").and_then(serde_json::Value::as_i64);
+                        Some(crate::model_cache::RemoteModelInfo {
+                            display_name: id.clone(),
+                            id,
+                            context_window: None,
+                            created_at,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-4o");
+        assert_eq!(models[0].created_at, Some(1_700_000_000));
+        assert_eq!(models[1].id, "gpt-3.5-turbo");
+    }
+
+    #[test]
+    fn list_models_response_empty_data_array() {
+        let page = serde_json::json!({"data": []});
+        let models: Vec<crate::model_cache::RemoteModelInfo> = page
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let id = item.get("id")?.as_str()?.to_string();
+                        Some(crate::model_cache::RemoteModelInfo {
+                            display_name: id.clone(),
+                            id,
+                            context_window: None,
+                            created_at: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn list_models_response_missing_data_key_returns_empty() {
+        let page = serde_json::json!({"error": "some error"});
+        let models: Vec<crate::model_cache::RemoteModelInfo> = page
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let id = item.get("id")?.as_str()?.to_string();
+                        Some(crate::model_cache::RemoteModelInfo {
+                            display_name: id.clone(),
+                            id,
+                            context_window: None,
+                            created_at: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_models_remote_http_error_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "key".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        );
+        let result = p.list_models_remote().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("500"));
     }
 }

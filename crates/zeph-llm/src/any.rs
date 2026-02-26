@@ -89,26 +89,36 @@ impl AnyProvider {
             AnyProvider::Claude(p) => p.list_models_remote().await,
             AnyProvider::OpenAi(p) => p.list_models_remote().await,
             AnyProvider::Compatible(p) => p.list_models_remote().await,
-            AnyProvider::Router(p) => Ok(p
-                .list_models()
-                .into_iter()
-                .map(|id| crate::model_cache::RemoteModelInfo {
-                    display_name: id.clone(),
-                    id,
-                    context_window: None,
-                    created_at: None,
-                })
-                .collect()),
-            AnyProvider::Orchestrator(p) => Ok(p
-                .list_models()
-                .into_iter()
-                .map(|id| crate::model_cache::RemoteModelInfo {
-                    display_name: id.clone(),
-                    id,
-                    context_window: None,
-                    created_at: None,
-                })
-                .collect()),
+            // Router and Orchestrator use synchronous list_models() to avoid recursive async cycles.
+            // Results reflect config-time model lists (potentially stale vs. live remote data).
+            AnyProvider::Router(p) => {
+                tracing::debug!(
+                    "list_models_remote: Router falling back to sync list_models (config-time data)"
+                );
+                Ok(p.list_models()
+                    .into_iter()
+                    .map(|id| crate::model_cache::RemoteModelInfo {
+                        display_name: id.clone(),
+                        id,
+                        context_window: None,
+                        created_at: None,
+                    })
+                    .collect())
+            }
+            AnyProvider::Orchestrator(p) => {
+                tracing::debug!(
+                    "list_models_remote: Orchestrator falling back to sync list_models (config-time data)"
+                );
+                Ok(p.list_models()
+                    .into_iter()
+                    .map(|id| crate::model_cache::RemoteModelInfo {
+                        display_name: id.clone(),
+                        id,
+                        context_window: None,
+                        created_at: None,
+                    })
+                    .collect())
+            }
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
             #[cfg(feature = "mock")]
