@@ -75,6 +75,8 @@ impl Channel for AppChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        tool_call_id: &str,
+        is_error: bool,
     ) -> Result<(), ChannelError> {
         dispatch_app_channel!(
             self,
@@ -83,7 +85,9 @@ impl Channel for AppChannel {
             display,
             diff,
             filter_stats,
-            kept_lines
+            kept_lines,
+            tool_call_id,
+            is_error
         )
     }
 }
