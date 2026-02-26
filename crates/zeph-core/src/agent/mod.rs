@@ -109,6 +109,8 @@ pub(super) struct McpState {
     pub(super) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     pub(super) allowed_commands: Vec<String>,
     pub(super) max_dynamic: usize,
+    /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
+    pub(super) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
 }
 
 #[cfg(feature = "index")]
@@ -246,6 +248,7 @@ impl<C: Channel> Agent<C> {
                 manager: None,
                 allowed_commands: Vec::new(),
                 max_dynamic: 10,
+                shared_tools: None,
             },
             #[cfg(feature = "index")]
             index: IndexState {

@@ -38,9 +38,10 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
         let mut defs = self.first.tool_definitions();
-        let seen: std::collections::HashSet<&str> = defs.iter().map(|d| d.id).collect();
+        let seen: std::collections::HashSet<String> =
+            defs.iter().map(|d| d.id.to_string()).collect();
         for def in self.second.tool_definitions() {
-            if !seen.contains(def.id) {
+            if !seen.contains(def.id.as_ref()) {
                 defs.push(def);
             }
         }

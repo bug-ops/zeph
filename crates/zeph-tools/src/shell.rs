@@ -425,8 +425,8 @@ impl ToolExecutor for ShellExecutor {
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         use crate::registry::{InvocationHint, ToolDef};
         vec![ToolDef {
-            id: "bash",
-            description: "Execute a shell command",
+            id: "bash".into(),
+            description: "Execute a shell command".into(),
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::FencedBlock("bash"),
         }]

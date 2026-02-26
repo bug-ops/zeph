@@ -19,6 +19,7 @@ pub(crate) struct ToolSetup {
     pub(crate) executor: ToolExecutor,
     pub(crate) mcp_tools: Vec<zeph_mcp::McpTool>,
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
+    pub(crate) mcp_shared_tools: Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
 }
 
@@ -64,7 +65,9 @@ pub(crate) async fn build_tool_setup(
     let mcp_tools = mcp_manager.connect_all().await;
     tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 
-    let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+    let mcp_shared_tools = Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_executor =
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
@@ -75,6 +78,7 @@ pub(crate) async fn build_tool_setup(
         executor,
         mcp_tools,
         mcp_manager,
+        mcp_shared_tools,
         tool_event_rx,
     }
 }

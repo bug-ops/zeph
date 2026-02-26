@@ -46,6 +46,16 @@ Add and remove MCP servers at runtime via chat commands:
 
 After adding or removing a server, Qdrant registry syncs automatically for semantic tool matching.
 
+## Native Tool Integration (Claude / OpenAI)
+
+When the active provider supports structured tool calling (Claude, OpenAI), MCP tools are exposed as native `ToolDefinition`s — no text injection into the system prompt.
+
+`McpToolExecutor` implements `tool_definitions()`, which returns all connected MCP tools as typed definitions with qualified names in `server_id:tool_name` format. The agent calls `execute_tool_call()` when the LLM returns a structured tool_use block for an MCP tool. The executor parses the qualified name, looks up the tool in the shared list, and dispatches the call to `manager.call_tool()`.
+
+The shared tool list (`Arc<RwLock<Vec<McpTool>>>`) is updated automatically when servers are added or removed via `/mcp add` / `/mcp remove`. This means the provider sees the current tool set on every turn without requiring a restart.
+
+For providers without native tool support (Ollama with `tool_use = false`, Candle), `append_mcp_prompt()` falls back to injecting tool descriptions as text into the system prompt, filtered by relevance score via Qdrant.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.

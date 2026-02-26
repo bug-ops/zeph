@@ -195,7 +195,9 @@ pub(crate) async fn run_daemon(
     );
     let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
     let mcp_tools = mcp_manager.connect_all().await;
-    let mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone());
+    let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_executor =
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
@@ -253,6 +255,7 @@ pub(crate) async fn run_daemon(
     .with_permission_policy(permission_policy)
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
+    .with_mcp_shared_tools(mcp_shared_tools)
     .with_learning(config.skills.learning.clone())
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_available_secrets(

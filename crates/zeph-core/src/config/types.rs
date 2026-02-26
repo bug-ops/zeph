@@ -125,6 +125,8 @@ pub struct LlmConfig {
     pub compatible: Option<Vec<CompatibleConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<RouterConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama: Option<OllamaConfig>,
     pub stt: Option<SttConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_model: Option<String>,
@@ -170,6 +172,13 @@ pub(crate) fn default_stt_language() -> String {
 pub struct CloudLlmConfig {
     pub model: String,
     pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OllamaConfig {
+    /// Enable native `tool_use` / function calling for compatible models (e.g. llama3.1, qwen2.5).
+    #[serde(default)]
+    pub tool_use: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1203,6 +1212,7 @@ impl Default for Config {
                 model: "qwen3:8b".into(),
                 embedding_model: default_embedding_model(),
                 cloud: None,
+                ollama: None,
                 openai: None,
                 candle: None,
                 orchestrator: None,
