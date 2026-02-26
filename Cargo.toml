@@ -29,7 +29,7 @@ candle-nn = { version = "0.9", default-features = false }
 candle-transformers = { version = "0.9", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 dashmap = "6.1"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 criterion = "0.8"
 cron = "0.15"
 crossterm = "0.29"

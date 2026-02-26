@@ -256,6 +256,99 @@ Zeph extends the base ACP protocol with custom methods via `ext_method`. All use
 
 These methods are useful for building custom IDE integrations or debugging session state.
 
+## WebSocket transport
+
+When running in HTTP mode (`--acp-http`), Zeph exposes a WebSocket endpoint at `/acp/ws` alongside the SSE endpoint at `/acp`. The server enforces the following constraints:
+
+**Session concurrency** — slot reservation is atomic (compare-and-swap on an `AtomicUsize` counter), so `max_sessions` is a hard cap regardless of how many connections race to upgrade simultaneously. No TOCTOU window exists between the check and the increment.
+
+**Keepalive** — the server sends a WebSocket ping every 30 seconds. If a pong is not received within 90 seconds of the ping, the connection is closed.
+
+**Binary frames** — only text frames carry ACP JSON messages. If a client sends a binary frame the server responds with WebSocket close code `1003` (Unsupported Data) as required by RFC 6455.
+
+**Close frame delivery** — on graceful shutdown the write task is given a 1-second drain window to deliver the close frame before the TCP connection is dropped. This satisfies the RFC 6455 §7.1.1 requirement that both sides exchange close frames.
+
+**Max message size** — incoming WebSocket messages are limited to 1 MiB (1,048,576 bytes). Messages exceeding this limit cause an immediate close with code `1009` (Message Too Big).
+
+## Bearer authentication
+
+The ACP HTTP server (both `/acp` SSE and `/acp/ws` WebSocket endpoints) supports optional bearer token authentication.
+
+```toml
+[acp]
+auth_bearer_token = "your-secret-token"
+```
+
+The token can also be supplied via environment variable or CLI argument:
+
+| Method | Value |
+|--------|-------|
+| `config.toml` | `acp.auth_bearer_token = "token"` |
+| Environment | `ZEPH_ACP_AUTH_TOKEN=token` |
+| CLI | `--acp-auth-token TOKEN` |
+
+When a token is configured, every request to `/acp` and `/acp/ws` must include an `Authorization: Bearer <token>` header. Requests without a valid token receive `401 Unauthorized`.
+
+The agent discovery endpoint (`GET /.well-known/acp.json`) is always exempt from authentication — clients need to discover the agent manifest before they can authenticate.
+
+When no token is configured the server runs in open mode. This is acceptable for local loopback use where network access is restricted.
+
+> **Warning:** Always set `auth_bearer_token` (or `ZEPH_ACP_AUTH_TOKEN`) when binding to a non-loopback address or exposing the ACP port over a network. Running without a token on a publicly reachable interface allows any client to connect and issue commands.
+
+## Agent discovery
+
+Zeph publishes an ACP agent manifest at a well-known URL:
+
+```
+GET /.well-known/acp.json
+```
+
+Example response (with bearer auth configured):
+
+```json
+{
+  "name": "zeph",
+  "version": "0.12.1",
+  "protocol": "acp",
+  "protocol_version": "0.9",
+  "transports": {
+    "http_sse": { "url": "/acp" },
+    "websocket": { "url": "/acp/ws" }
+  },
+  "authentication": { "type": "bearer" }
+}
+```
+
+When `auth_bearer_token` is not set, the `authentication` field is `null`:
+
+```json
+{
+  "name": "zeph",
+  "version": "0.12.1",
+  "protocol": "acp",
+  "protocol_version": "0.9",
+  "transports": {
+    "http_sse": { "url": "/acp" },
+    "websocket": { "url": "/acp/ws" }
+  },
+  "authentication": null
+}
+```
+
+Discovery is enabled by default and can be disabled if needed:
+
+```toml
+[acp]
+discovery_enabled = true   # set to false to suppress the manifest endpoint
+```
+
+| Method | Value |
+|--------|-------|
+| `config.toml` | `acp.discovery_enabled = false` |
+| Environment | `ZEPH_ACP_DISCOVERY_ENABLED=false` |
+
+The discovery endpoint is always unauthenticated by design. ACP clients must be able to read the manifest before they know which authentication scheme to use.
+
 ## Unstable session features
 
 Three session management capabilities are available behind dedicated feature flags. They are part of the ACP protocol's unstable surface — their wire format and behavior may change before stabilization.
@@ -364,6 +457,8 @@ Use `resume_session` to continue a session after a Zeph process restart, or to o
 - **Path traversal** — `_agent/working_dir/update` rejects paths containing `..`
 - **Import cap** — session import limited to 10,000 events per request
 - **Tool permissions** — optionally persisted to `permission_file` so users don't re-approve tools on every session
+- **Bearer auth** — see [Bearer authentication](#bearer-authentication) above
+- **Atomic slot reservation** — `max_sessions` enforced without TOCTOU race; see [WebSocket transport](#websocket-transport) above
 
 ## Troubleshooting
 

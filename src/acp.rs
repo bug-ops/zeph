@@ -66,6 +66,8 @@ struct AgentDeps {
     acp_session_idle_timeout_secs: u64,
     acp_permission_file: Option<std::path::PathBuf>,
     acp_available_models: Vec<String>,
+    acp_auth_bearer_token: Option<String>,
+    acp_discovery_enabled: bool,
     /// Pre-built provider factory for ACP model switching.
     #[cfg(feature = "acp")]
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
@@ -191,6 +193,8 @@ async fn build_acp_deps(
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
         acp_permission_file: config.acp.permission_file.clone(),
         acp_available_models: config.acp.available_models.clone(),
+        acp_auth_bearer_token: config.acp.auth_token.clone(),
+        acp_discovery_enabled: config.acp.discovery_enabled,
         acp_provider_factory: Some(build_acp_provider_factory(config)),
     };
 
@@ -497,6 +501,8 @@ pub(crate) async fn run_acp_server(
         provider_factory: deps.acp_provider_factory.take(),
         available_models: deps.acp_available_models.clone(),
         mcp_manager: Some(mcp_manager_for_acp),
+        auth_bearer_token: deps.acp_auth_bearer_token.clone(),
+        discovery_enabled: deps.acp_discovery_enabled,
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -531,6 +537,7 @@ pub(crate) async fn run_acp_http_server(
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
     bind_override: Option<&str>,
+    auth_token_override: Option<String>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -539,6 +546,9 @@ pub(crate) async fn run_acp_http_server(
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
 
     let bind_addr = bind_override.map_or_else(|| "127.0.0.1:9800".to_owned(), str::to_owned);
+
+    // CLI flag overrides config/env values for auth token.
+    let auth_bearer_token = auth_token_override.or(deps.acp_auth_bearer_token.clone());
 
     let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
@@ -550,6 +560,8 @@ pub(crate) async fn run_acp_http_server(
         provider_factory: deps.acp_provider_factory.take(),
         available_models: deps.acp_available_models.clone(),
         mcp_manager: Some(mcp_manager_for_acp),
+        auth_bearer_token,
+        discovery_enabled: deps.acp_discovery_enabled,
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));

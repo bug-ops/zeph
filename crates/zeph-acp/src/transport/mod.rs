@@ -6,7 +6,11 @@ use std::rc::Rc;
 
 use agent_client_protocol as acp;
 
+#[cfg(feature = "acp-http")]
+pub mod auth;
 pub mod bridge;
+#[cfg(feature = "acp-http")]
+pub mod discovery;
 pub mod http;
 pub mod router;
 pub mod stdio;
@@ -39,6 +43,11 @@ pub struct AcpServerConfig {
     pub available_models: Vec<String>,
     /// Optional shared MCP manager for `ext_method` add/remove/list.
     pub mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    /// Bearer token for HTTP and WebSocket transport authentication.
+    /// When `Some`, all /acp and /acp/ws requests must include the token.
+    pub auth_bearer_token: Option<String>,
+    /// Whether to serve the /.well-known/acp.json discovery manifest.
+    pub discovery_enabled: bool,
 }
 
 impl Clone for AcpServerConfig {
@@ -52,6 +61,8 @@ impl Clone for AcpServerConfig {
             provider_factory: self.provider_factory.clone(),
             available_models: self.available_models.clone(),
             mcp_manager: self.mcp_manager.clone(),
+            auth_bearer_token: self.auth_bearer_token.clone(),
+            discovery_enabled: self.discovery_enabled,
         }
     }
 }
@@ -67,6 +78,8 @@ impl Default for AcpServerConfig {
             provider_factory: None,
             available_models: Vec::new(),
             mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
         }
     }
 }

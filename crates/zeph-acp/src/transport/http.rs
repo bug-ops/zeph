@@ -4,7 +4,7 @@
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;
 #[cfg(feature = "acp-http")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "acp-http")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -65,6 +65,10 @@ pub struct AcpHttpState {
     pub(crate) connections: Arc<DashMap<String, Arc<ConnectionHandle>>>,
     pub spawner: SendAgentSpawner,
     pub server_config: Arc<AcpServerConfig>,
+    /// Atomic counter for active WebSocket sessions.
+    /// Used to atomically reserve a slot before the upgrade handshake, eliminating TOCTOU
+    /// between the capacity check and the actual `DashMap` insertion.
+    pub(crate) active_ws: Arc<AtomicUsize>,
 }
 
 #[cfg(feature = "acp-http")]
@@ -74,7 +78,42 @@ impl AcpHttpState {
             connections: Arc::new(DashMap::new()),
             spawner,
             server_config: Arc::new(server_config),
+            active_ws: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Try to atomically reserve a WebSocket session slot.
+    ///
+    /// Returns `true` and increments the counter if a slot is available.
+    /// Returns `false` if `max_sessions` is already reached, without modifying the counter.
+    pub(crate) fn try_reserve_ws_slot(&self) -> bool {
+        let max = self.server_config.max_sessions;
+        // Saturating loop: attempt CAS until either we claim a slot or find it full.
+        let mut current = self.active_ws.load(Ordering::Relaxed);
+        loop {
+            if current >= max {
+                return false;
+            }
+            match self.active_ws.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Release a previously reserved WebSocket session slot.
+    pub(crate) fn release_ws_slot(&self) {
+        self.active_ws.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Remove a connection from the session map immediately (e.g. on WebSocket disconnect).
+    pub(crate) fn remove_connection(&self, id: &str) {
+        self.connections.remove(id);
     }
 
     /// Spawn a background task that reaps idle connections every 60 seconds.

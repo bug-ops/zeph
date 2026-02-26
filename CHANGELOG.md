@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `memory_search` queries SemanticMemory recall, key facts, and session summaries; `memory_save` persists content to long-term memory
 - `MemoryToolExecutor` registered conditionally — only when memory backend is configured
 - `MemoryState.memory` refactored to `Option<Arc<SemanticMemory>>` for shared access
+- WebSocket connection lifecycle hardening: `AtomicUsize` slot reservation before upgrade handshake eliminates TOCTOU between capacity check and `DashMap` insertion; 30s ping / 90s pong-timeout keepalive; binary frame rejection with close code 1003; graceful disconnect with 1s write-task drain window to ensure close frame delivery per RFC 6455 (#936)
+- Bearer token authentication middleware for ACP HTTP and WebSocket transports (`auth.rs`): constant-time token comparison via `subtle::ConstantTimeEq`, configurable via `acp.auth_bearer_token` / `ZEPH_ACP_AUTH_TOKEN` env var; no-auth open mode when token is unset (#936)
+- Agent discovery manifest endpoint `GET /.well-known/acp.json`: returns agent name, version, supported transports, and authentication type; publicly accessible (exempt from bearer auth), controlled by `acp.discovery_enabled` (default `true`) / `ZEPH_ACP_DISCOVERY_ENABLED` env var (#936)
+- `AcpConfig` fields: `auth_bearer_token: Option<String>`, `discovery_enabled: bool` (#936)
+- `--acp-auth-token` CLI flag for runtime bearer token injection (#936)
 - `zeph-core`: `LoopbackEvent::ToolStart { tool_name, tool_call_id }` variant emitted before tool execution; `LoopbackEvent::ToolOutput` extended with `tool_call_id` and `is_error` fields (#926)
 - `zeph-core`: `Channel::send_tool_start` method; `LoopbackChannel` emits `ToolStart` events; tool UUIDs generated per execution and threaded through the pipeline (#926)
 - `zeph-acp`: ACP tool call lifecycle now emits `SessionUpdate::ToolCall(InProgress)` before execution and `SessionUpdate::ToolCallUpdate(Completed|Failed)` with content after, per protocol spec G5 (#926)
@@ -35,6 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ToolDef.id` and `ToolDef.description` changed from `&'static str` to `Cow<'static, str>` to support dynamic MCP tool names without memory leaks
 - `AgentCapabilities` in `initialize()` now advertises `PromptCapabilities` with `image=true` and `embedded_context=true`, reflecting actual Image and Resource content block support (#917)
 - ACP: `AgentCapabilities` in `initialize` response now advertises `config_options` and `ext_methods` support via meta fields (#930)
+
+### Security
+- `AcpConfig` now uses custom `impl std::fmt::Debug` that redacts `auth_token` as `[REDACTED]`, consistent with `A2aServerConfig` and `TelegramConfig` (#936)
 
 ## [0.12.1] - 2026-02-25
 

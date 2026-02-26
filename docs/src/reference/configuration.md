@@ -225,6 +225,8 @@ rate_limit = 60
 max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
 session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
 # permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions (default: ~/.config/zeph/acp-permissions.toml)
+# auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN, CLI: --acp-auth-token); omit for open mode (local use only)
+discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (env: ZEPH_ACP_DISCOVERY_ENABLED, default: true)
 
 [mcp]
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
@@ -308,6 +310,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_ACP_MAX_SESSIONS` | Max concurrent ACP sessions (default: 4) |
 | `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS` | Idle session reaper timeout in seconds (default: 1800) |
 | `ZEPH_ACP_PERMISSION_FILE` | Path to persisted ACP permission decisions (default: `~/.config/zeph/acp-permissions.toml`) |
+| `ZEPH_ACP_AUTH_TOKEN` | Bearer token for ACP HTTP/WS authentication; omit for open mode (local use only) |
+| `ZEPH_ACP_DISCOVERY_ENABLED` | Expose `GET /.well-known/acp.json` manifest endpoint (default: `true`) |
 | `ZEPH_A2A_ENABLED` | Enable A2A server (default: false) |
 | `ZEPH_A2A_HOST` | A2A server bind address (default: `0.0.0.0`) |
 | `ZEPH_A2A_PORT` | A2A server port (default: `8080`) |

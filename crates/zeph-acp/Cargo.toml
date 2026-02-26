@@ -13,7 +13,7 @@ description = "ACP (Agent Client Protocol) server for IDE embedding"
 readme = "README.md"
 
 [features]
-acp-http = ["dep:axum", "dep:dashmap", "dep:async-stream", "dep:tower-http"]
+acp-http = ["dep:axum", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
 unstable-session-list = ["agent-client-protocol/unstable_session_list"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
@@ -42,6 +42,8 @@ zeph-tools.workspace = true
 axum = { workspace = true, features = ["ws"], optional = true }
 async-stream = { version = "0.3", optional = true }
 dashmap = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+tower = { workspace = true, features = ["util"], optional = true }
 tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
 
 [dev-dependencies]

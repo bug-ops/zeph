@@ -1120,7 +1120,7 @@ pub enum AcpTransport {
     Both,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AcpConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -1144,6 +1144,20 @@ pub struct AcpConfig {
     /// Bind address for the HTTP transport.
     #[serde(default = "default_acp_http_bind")]
     pub http_bind: String,
+    /// Bearer token for HTTP and WebSocket transport authentication.
+    /// When set, all /acp and /acp/ws requests must include `Authorization: Bearer <token>`.
+    /// Omit for local unauthenticated access. TLS termination is assumed to be handled by a
+    /// reverse proxy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+    /// Whether to serve the /.well-known/acp.json agent discovery manifest.
+    /// Only effective when transport is "http" or "both". Default: true.
+    #[serde(default = "default_acp_discovery_enabled")]
+    pub discovery_enabled: bool,
+}
+
+fn default_acp_discovery_enabled() -> bool {
+    true
 }
 
 impl Default for AcpConfig {
@@ -1158,7 +1172,30 @@ impl Default for AcpConfig {
             available_models: Vec::new(),
             transport: default_acp_transport(),
             http_bind: default_acp_http_bind(),
+            auth_token: None,
+            discovery_enabled: default_acp_discovery_enabled(),
         }
+    }
+}
+
+impl std::fmt::Debug for AcpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpConfig")
+            .field("enabled", &self.enabled)
+            .field("agent_name", &self.agent_name)
+            .field("agent_version", &self.agent_version)
+            .field("max_sessions", &self.max_sessions)
+            .field("session_idle_timeout_secs", &self.session_idle_timeout_secs)
+            .field("permission_file", &self.permission_file)
+            .field("available_models", &self.available_models)
+            .field("transport", &self.transport)
+            .field("http_bind", &self.http_bind)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("discovery_enabled", &self.discovery_enabled)
+            .finish()
     }
 }
 
