@@ -428,3 +428,78 @@ async fn e2e_initialize_returns_auth_hint_and_load_session() {
         _ = client_fut => {}
     }
 }
+
+#[tokio::test]
+async fn e2e_new_session_includes_available_modes() {
+    with_initialized_client(|conn| async move {
+        let resp = conn
+            .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
+            .await
+            .expect("new_session failed");
+        let modes = resp
+            .modes
+            .expect("modes field must be present in new_session response");
+        assert_eq!(modes.current_mode_id.0.as_ref(), "code");
+        assert_eq!(modes.available_modes.len(), 3);
+        let ids: Vec<&str> = modes
+            .available_modes
+            .iter()
+            .map(|m| m.id.0.as_ref())
+            .collect();
+        assert!(ids.contains(&"code"));
+        assert!(ids.contains(&"architect"));
+        assert!(ids.contains(&"ask"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_set_session_mode_success() {
+    with_initialized_client(|conn| async move {
+        let session = conn
+            .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
+            .await
+            .expect("new_session failed");
+
+        conn.set_session_mode(acp::SetSessionModeRequest::new(
+            session.session_id,
+            "architect",
+        ))
+        .await
+        .expect("set_session_mode failed");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_set_session_mode_rejects_invalid_mode() {
+    with_initialized_client(|conn| async move {
+        let session = conn
+            .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
+            .await
+            .expect("new_session failed");
+
+        let err = conn
+            .set_session_mode(acp::SetSessionModeRequest::new(
+                session.session_id,
+                "nonexistent-mode",
+            ))
+            .await;
+        assert!(err.is_err(), "unknown mode must be rejected");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_set_session_mode_rejects_unknown_session() {
+    with_initialized_client(|conn| async move {
+        let err = conn
+            .set_session_mode(acp::SetSessionModeRequest::new(
+                acp::SessionId::new("no-such-session"),
+                "code",
+            ))
+            .await;
+        assert!(err.is_err(), "unknown session must be rejected");
+    })
+    .await;
+}
