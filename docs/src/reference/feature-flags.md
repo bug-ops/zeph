@@ -42,17 +42,25 @@ Some workspace crates expose their own feature flags for fine-grained control:
 | Crate | Feature | Default | Description |
 |-------|---------|---------|-------------|
 | `zeph-llm` | `schema` | on | Enables `schemars` dependency and typed output API (`chat_typed`, `Extractor`, `cached_schema`) |
-| `zeph-acp` | `unstable-session-list` | off | Adds `list_sessions` to the ACP agent — enumerate in-memory sessions with an optional `cwd` filter (unstable, see [ACP guide](../advanced/acp.md#list_sessions)) |
-| `zeph-acp` | `unstable-session-fork` | off | Adds `fork_session` to the ACP agent — clone session history into a new session and spawn a fresh agent loop (unstable, see [ACP guide](../advanced/acp.md#fork_session)) |
-| `zeph-acp` | `unstable-session-resume` | off | Adds `resume_session` to the ACP agent — reattach to a persisted session without replaying events (unstable, see [ACP guide](../advanced/acp.md#resume_session)) |
+| `zeph-acp` | `unstable-session-list` | on | `list_sessions` RPC handler — enumerate in-memory sessions (unstable, see [ACP guide](../advanced/acp.md#list_sessions)) |
+| `zeph-acp` | `unstable-session-fork` | on | `fork_session` RPC handler — clone session history into a new session (unstable, see [ACP guide](../advanced/acp.md#fork_session)) |
+| `zeph-acp` | `unstable-session-resume` | on | `resume_session` RPC handler — reattach to a persisted session without replaying events (unstable, see [ACP guide](../advanced/acp.md#resume_session)) |
 
-Each `unstable-session-*` flag also enables the corresponding feature in the `agent-client-protocol` dependency so that the ACP SDK advertises the capability during the `initialize` handshake.
+### ACP session management (unstable)
+
+The three `unstable-session-*` flags gate ACP session lifecycle handlers that depend on draft ACP spec additions. They are enabled by default but the API surface may change before the spec stabilises. Each flag also enables the corresponding feature in `agent-client-protocol` so the SDK advertises the capability during `initialize`.
 
 The root crate provides a composite flag to enable all three at once:
 
 | Feature | Description |
 |---------|-------------|
 | `acp-unstable` | Enables `unstable-session-list`, `unstable-session-fork`, and `unstable-session-resume` in `zeph-acp` |
+
+Disable all three to build a minimal ACP server without session management:
+
+```bash
+cargo build -p zeph-acp --no-default-features
+```
 
 Disable the `schema` feature to compile `zeph-llm` without `schemars`:
 

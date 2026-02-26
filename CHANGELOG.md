@@ -35,11 +35,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACP session modes support: `set_session_mode` method (ask/architect/code), `current_mode_update` notification emission on mode switch, and `availableModes` field in `new_session`/`load_session` responses (#920)
 - ACP: `ext_notification` handler logs method name and returns `Ok(())` instead of `method_not_found` (#930)
 - ACP: MCP bridge now supports HTTP and SSE server transports — both are mapped to `McpTransport::Http` since rmcp's `StreamableHttpClientTransport` handles both; previously HTTP and SSE servers were silently skipped (#930)
+- ACP `AgentCapabilities` now advertises `session_capabilities` with list/fork/resume support (G3) (#922)
+- ACP tool call lifecycle: `loopback_event_to_updates` emits `InProgress` then `Completed` `ToolCall` updates per turn (G5) (#922)
+- ACP terminal command timeout with `kill_terminal_command` on expiry; configurable via `AcpServerConfig.terminal_timeout_secs` (default 120s) (G6) (#922)
+- ACP `ToolCallContent::Terminal` emitted for bash tool calls routed through IDE terminal (G7) (#922)
+- ACP `UserMessageChunk` echo notification after user prompt is sent to agent (G10) (#922)
+- ACP `list_sessions` implementation (unstable, behind `unstable_session_list` feature) (G12) (#922)
+- ACP `fork_session` implementation — copies event history from source session; enforces `max_sessions` with LRU eviction (unstable, behind `unstable_session_fork` feature) (G13) (#922)
+- ACP `resume_session` implementation — restores session from SQLite without event replay; enforces `max_sessions` with LRU eviction (unstable, behind `unstable_session_resume` feature) (G14) (#922)
 
 ### Changed
 - `ToolDef.id` and `ToolDef.description` changed from `&'static str` to `Cow<'static, str>` to support dynamic MCP tool names without memory leaks
 - `AgentCapabilities` in `initialize()` now advertises `PromptCapabilities` with `image=true` and `embedded_context=true`, reflecting actual Image and Resource content block support (#917)
 - ACP: `AgentCapabilities` in `initialize` response now advertises `config_options` and `ext_methods` support via meta fields (#930)
+- ACP unsupported content blocks (`Audio`, `ResourceLink`) now log structured `warn!` with block type/URI instead of silent drop (G9) (#922)
+- `ToolOutput` struct gained `terminal_id: Option<String>` field; all call sites updated with `None` (#922)
+- `LoopbackEvent::ToolOutput` gained `terminal_id: Option<String>` field (#922)
 
 ### Security
 - `AcpConfig` now uses custom `impl std::fmt::Debug` that redacts `auth_token` as `[REDACTED]`, consistent with `A2aServerConfig` and `TelegramConfig` (#936)

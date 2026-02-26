@@ -180,6 +180,7 @@ impl ToolExecutor for OutputToolExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }
@@ -195,6 +196,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }
@@ -210,6 +212,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }
@@ -241,6 +244,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }
@@ -277,6 +281,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }
@@ -2275,6 +2280,7 @@ mod self_learning {
                 filter_stats: None,
                 diff: None,
                 streamed: false,
+                terminal_id: None,
             }))
         }
     }

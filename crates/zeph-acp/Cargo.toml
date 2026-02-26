@@ -13,6 +13,7 @@ description = "ACP (Agent Client Protocol) server for IDE embedding"
 readme = "README.md"
 
 [features]
+default = ["unstable-session-list", "unstable-session-fork", "unstable-session-resume"]
 acp-http = ["dep:axum", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
 unstable-session-list = ["agent-client-protocol/unstable_session_list"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]

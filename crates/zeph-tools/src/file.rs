@@ -151,6 +151,7 @@ impl FileExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 
@@ -174,6 +175,7 @@ impl FileExecutor {
                 new_content: params.content.clone(),
             }),
             streamed: false,
+            terminal_id: None,
         }))
     }
 
@@ -202,6 +204,7 @@ impl FileExecutor {
                 new_content,
             }),
             streamed: false,
+            terminal_id: None,
         }))
     }
 
@@ -232,6 +235,7 @@ impl FileExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 
@@ -268,6 +272,7 @@ impl FileExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         }))
     }
 }

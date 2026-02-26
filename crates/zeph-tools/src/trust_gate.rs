@@ -123,6 +123,7 @@ mod tests {
                 filter_stats: None,
                 diff: None,
                 streamed: false,
+                terminal_id: None,
             }))
         }
     }

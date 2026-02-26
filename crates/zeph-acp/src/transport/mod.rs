@@ -48,6 +48,8 @@ pub struct AcpServerConfig {
     pub auth_bearer_token: Option<String>,
     /// Whether to serve the /.well-known/acp.json discovery manifest.
     pub discovery_enabled: bool,
+    /// Timeout in seconds for terminal command execution before kill is sent.
+    pub terminal_timeout_secs: u64,
 }
 
 impl Clone for AcpServerConfig {
@@ -63,6 +65,7 @@ impl Clone for AcpServerConfig {
             mcp_manager: self.mcp_manager.clone(),
             auth_bearer_token: self.auth_bearer_token.clone(),
             discovery_enabled: self.discovery_enabled,
+            terminal_timeout_secs: self.terminal_timeout_secs,
         }
     }
 }
@@ -80,6 +83,7 @@ impl Default for AcpServerConfig {
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
+            terminal_timeout_secs: 120,
         }
     }
 }

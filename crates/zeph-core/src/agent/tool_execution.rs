@@ -1260,6 +1260,7 @@ mod tests {
                     diff: None,
                     filter_stats: None,
                     streamed: false,
+                    terminal_id: None,
                 }))
             }
         }
@@ -1299,6 +1300,7 @@ mod tests {
                         diff: None,
                         filter_stats: None,
                         streamed: false,
+                        terminal_id: None,
                     }))
                 }
             }
@@ -1620,6 +1622,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             streamed: false,
+            terminal_id: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1648,6 +1651,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             streamed: false,
+            terminal_id: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1676,6 +1680,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             streamed: false,
+            terminal_id: None,
         };
         // reflection_used = true so reflection path is skipped
         agent.learning_engine.mark_reflection_used();

@@ -47,6 +47,7 @@ fn make_server_config() -> AcpServerConfig {
         mcp_manager: None,
         auth_bearer_token: None,
         discovery_enabled: true,
+        terminal_timeout_secs: 120,
     }
 }
 

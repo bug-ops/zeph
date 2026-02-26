@@ -119,6 +119,7 @@ agent_name = "zeph"
 agent_version = "0.12.1"
 max_sessions = 4
 session_idle_timeout_secs = 1800
+terminal_timeout_secs = 120
 # permission_file = "~/.config/zeph/acp-permissions.toml"
 # available_models = ["claude:claude-sonnet-4-5", "ollama:llama3"]
 # transport = "stdio"             # "stdio", "http", or "both"
@@ -132,6 +133,7 @@ session_idle_timeout_secs = 1800
 | `agent_version` | package version | Agent version advertised to the IDE |
 | `max_sessions` | `4` | Maximum concurrent sessions |
 | `session_idle_timeout_secs` | `1800` | Idle sessions are reaped after this timeout (seconds) |
+| `terminal_timeout_secs` | `120` | Terminal command execution timeout; `kill_terminal_command` is sent on expiry |
 | `permission_file` | none | Path to persisted tool permission decisions |
 | `terminal_timeout_secs` | `120` | Wall-clock timeout for IDE-proxied shell commands; `0` disables the timeout |
 | `available_models` | `[]` | Models advertised to the IDE for runtime switching (format: `provider:model`) |
@@ -188,6 +190,143 @@ Unknown transport variants are skipped with a `WARN` log line and do not cause t
 
 No configuration is needed beyond what the IDE sends. Zeph reads the server list from each `new_session` request and registers the servers with the shared `McpManager` for the duration of the session.
 
+## Session modes
+
+Each ACP session operates in a mode that signals intent to the agent. Modes are set by the IDE using `set_session_mode` and can be changed at any time during a session.
+
+| Mode | Description |
+|------|-------------|
+| `ask` | Question-answering; agent does not modify files |
+| `code` | Active coding assistance; file edits and shell commands are permitted (default) |
+| `architect` | High-level design and planning; agent focuses on reasoning over implementation |
+
+When the mode changes, Zeph emits a `current_mode_update` notification so the IDE can update its UI immediately.
+
+## Capabilities
+
+Zeph advertises the following capabilities in the `initialize` response:
+
+```json
+{
+  "agent_capabilities": {
+    "load_session": true,
+    "session_capabilities": {
+      "list": {},
+      "fork": {},
+      "resume": {}
+    }
+  }
+}
+```
+
+`session_capabilities` is always present regardless of whether the `unstable_session_*` features are compiled in. The actual `list_sessions`, `fork_session`, and `resume_session` handlers are available when the corresponding features are enabled (all three are on by default — see [Feature Flags](../reference/feature-flags.md#acp-session-management-unstable)).
+
+## Session management
+
+### list_sessions
+
+`list_sessions` returns all in-memory sessions with their working directory and last-active timestamp.
+
+```json
+// Request
+{ "method": "list_sessions", "params": {} }
+
+// Response
+{
+  "sessions": [
+    {
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "working_dir": "/home/user/project",
+      "updated_at": "42"
+    }
+  ]
+}
+```
+
+### fork_session
+
+`fork_session` creates a new session that starts with a copy of the source session's persisted event history. The forked session is independent — changes to either session do not affect the other.
+
+```json
+// Request
+{
+  "method": "fork_session",
+  "params": { "session_id": "550e8400-e29b-41d4-a716-446655440000" }
+}
+
+// Response
+{
+  "session_id": "661f9511-f3ac-52e5-b827-557766551111",
+  "modes": { "current": "code", "available": ["ask", "code", "architect"] }
+}
+```
+
+Event history is copied asynchronously from SQLite. If no store is configured, the fork starts with an empty history.
+
+### resume_session
+
+`resume_session` restores a previously terminated session from SQLite persistence without replaying its event history into the agent loop. Use this to reconnect to a session after a process restart.
+
+```json
+// Request
+{
+  "method": "resume_session",
+  "params": { "session_id": "550e8400-e29b-41d4-a716-446655440000" }
+}
+
+// Response: {}
+```
+
+If the session is already in memory, `resume_session` returns immediately without creating a duplicate.
+
+## Tool call lifecycle
+
+Each tool invocation follows a two-step lifecycle:
+
+1. **`InProgress`** — emitted immediately when the agent starts executing a tool
+2. **`Completed`** — emitted after the tool returns its output
+
+The IDE can use the `InProgress` update to show a spinner or disable UI input while the tool runs. Zeph emits both updates in order for every tool output within a turn before streaming the next assistant token.
+
+### Terminal tool calls
+
+When a bash tool call is routed through the IDE terminal (rather than Zeph's internal shell executor), Zeph attaches a `ToolCallContent::Terminal` entry to the tool call update. This carries the terminal ID so the IDE can display the output in the correct terminal pane.
+
+The terminal command timeout applies to these calls: if execution exceeds `terminal_timeout_secs` (default: 120 s), Zeph sends `kill_terminal_command` to the IDE and the tool call resolves with a timeout error.
+
+## Extension notifications
+
+`ext_notification` is the fire-and-forget counterpart to `ext_method`. The IDE sends a notification and does not wait for a response. Zeph logs the method name at `DEBUG` level and discards the payload.
+
+```json
+{
+  "method": "ext_notification",
+  "params": {
+    "method": "editor/fileSaved",
+    "params": { "uri": "file:///home/user/project/src/main.rs" }
+  }
+}
+```
+
+Use `ext_notification` for event telemetry from the IDE (file saves, cursor moves, selection changes) that the agent should be aware of but need not respond to.
+
+## User message echo
+
+After the IDE sends a user prompt, Zeph immediately echoes the text back as a `UserMessageChunk` session notification. This allows the IDE to attribute streaming output correctly and render the full conversation in order even when the agent response begins before the IDE has rendered the original prompt.
+
+## MCP HTTP transport
+
+ACP sessions can connect to MCP servers over HTTP in addition to the default stdio transport. Configure `McpServer::Http` in the MCP section of `config.toml`:
+
+```toml
+[[mcp.servers]]
+name = "my-tools"
+transport = "http"
+url = "http://localhost:3000/mcp"
+```
+
+Zeph routes the connection through `mcp_bridge`, which maps `McpServer::Http` to `McpTransport::Http` at session startup. No additional flags are required.
+
 ## Model switching
 
 If you configure `available_models`, the IDE can switch between LLM providers at runtime:
@@ -240,6 +379,21 @@ The active mode is advertised in the `new_session` and `load_session` responses 
 
 Zeph implements the `ext_notification` handler. The IDE sends one-way notifications using this method without waiting for a response. Zeph accepts any method name and returns `Ok(())`. This is useful for IDE-side telemetry or state hints that do not require agent action.
 
+## Content block support
+
+Zeph handles the following ACP content block types in user messages:
+
+| Block type | Handling |
+|------------|----------|
+| `Text` | Processed normally |
+| `Image` | Supported for JPEG, PNG, GIF, WebP up to 20 MiB (base64-encoded) |
+| `Audio` | Not supported — logged as a structured `WARN` and skipped |
+| `ResourceLink` | Not supported — logged as a structured `WARN` with the URI and skipped |
+
+Unsupported blocks do not terminate the session. The remaining content in the message is processed normally.
+
+User message text is limited to 1 MiB per prompt. Prompts exceeding this limit are rejected with an `invalid_request` error.
+
 ## Custom extension methods
 
 Zeph extends the base ACP protocol with custom methods via `ext_method`. All use a leading underscore to avoid collisions with the standard spec.
@@ -253,6 +407,7 @@ Zeph extends the base ACP protocol with custom methods via `ext_method`. All use
 | `_session/import` | Import events into a new session |
 | `_agent/tools` | List available tools for a session |
 | `_agent/working_dir/update` | Change the working directory for a session |
+| `_agent/mcp/list` | List connected MCP servers for a session |
 
 These methods are useful for building custom IDE integrations or debugging session state.
 
@@ -488,3 +643,12 @@ zeph --acp-http --acp-http-bind 127.0.0.1:9090
 **Sessions accumulate in memory**
 
 Idle sessions are automatically reaped after `session_idle_timeout_secs` (default: 30 minutes). Lower this value if memory is a concern.
+
+**Terminal commands hang**
+
+If a terminal command does not complete, Zeph sends `kill_terminal_command` after `terminal_timeout_secs` (default: 120 s). Reduce this value in `config.toml` if you need faster timeout behavior:
+
+```toml
+[acp]
+terminal_timeout_secs = 30
+```

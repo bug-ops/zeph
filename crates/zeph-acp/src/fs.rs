@@ -183,6 +183,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     filter_stats: None,
                     diff: None,
                     streamed: false,
+                    terminal_id: None,
                 }))
             }
             "write_file" if self.can_write => {
@@ -200,6 +201,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     filter_stats: None,
                     diff: None,
                     streamed: false,
+                    terminal_id: None,
                 }))
             }
             _ => Ok(None),

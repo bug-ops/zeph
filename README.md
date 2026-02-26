@@ -67,7 +67,7 @@ zeph --tui         # run with TUI dashboard
 | **Skills-first architecture** | YAML+Markdown skill files with semantic matching, self-learning evolution, 4-tier trust model, and compact prompt mode for small-context models |
 | **Semantic memory** | SQLite + Qdrant (or embedded SQLite vector search) with MMR re-ranking, temporal decay scoring, resilient compaction (reactive retry, middle-out tool response removal, 9-section structured prompt, LLM-free fallback), durable compaction with message visibility control, tool-pair summarization (LLM-based, configurable cutoff), credential scrubbing, cross-session recall, vector retrieval, autosave assistant responses, snapshot export/import, configurable SQLite pool, background response-cache cleanup, and native `memory_search`/`memory_save` tools the model can invoke explicitly |
 | **Multi-channel I/O** | CLI, Telegram, Discord, Slack, TUI — all with streaming. Vision and speech-to-text input |
-| **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, ACP server for IDE integration (stdio + HTTP+SSE + WebSocket, multi-session with LRU eviction, persistence, idle reaper, permission persistence, multi-modal prompts, runtime model switching, session modes (ask/architect/code), MCP server management via `ext_method`, session export/import), sub-agent orchestration. MCP tools exposed as native `ToolDefinition`s — used via structured tool_use with Claude and OpenAI |
+| **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, ACP server for IDE integration (stdio + HTTP+SSE + WebSocket, multi-session with LRU eviction, persistence, idle reaper, permission persistence, multi-modal prompts, runtime model switching, session modes (ask/architect/code), MCP server management via `ext_method`, session export/import, tool call lifecycle notifications, terminal command timeout with kill support, `UserMessageChunk` echo, `ext_notification` passthrough, `list`/`fork`/`resume` sessions behind unstable flags), sub-agent orchestration. MCP tools exposed as native `ToolDefinition`s — used via structured tool_use with Claude and OpenAI |
 | **Defense-in-depth** | Shell sandbox (blocklist + confirmation patterns for process substitution, here-strings, eval), tool permissions, secret redaction, SSRF protection (HTTPS-only, DNS validation, address pinning, redirect chain re-validation), skill trust quarantine, audit logging. Secrets held in memory as `Zeroizing<String>` — wiped on drop |
 | **TUI dashboard** | ratatui-based with syntax highlighting, live metrics, file picker, command palette, daemon mode |
 | **Single binary** | ~15 MB, no runtime dependencies, ~50ms startup, ~20 MB idle memory |
@@ -83,6 +83,20 @@ zeph acp                    # stdio (editor spawns as subprocess)
 zeph acp --http :8080       # HTTP+SSE (shared/remote)
 zeph acp --ws :8080         # WebSocket
 ```
+
+**ACP capabilities:**
+
+- Session modes: `ask`, `code`, `architect` — switch at runtime via `set_session_mode`; editors receive `current_mode_update` notifications
+- Tool call lifecycle: `InProgress` → `Completed` updates with `ToolCallContent::Terminal` for shell calls
+- Terminal command timeout (default 120 s, configurable via `terminal_timeout_secs`) with `kill_terminal_command` support
+- `UserMessageChunk` echo notification after each user prompt
+- `ext_notification` passthrough to running sessions
+- `AgentCapabilities` advertises `session_capabilities`: `list`, `fork`, `resume`
+- MCP HTTP transport support in the MCP bridge
+- Unsupported content blocks (Audio, ResourceLink) produce structured log warnings instead of silent drops
+
+> [!NOTE]
+> `list_sessions`, `fork_session`, and `resume_session` are gated behind the `unstable` feature flag.
 
 ### WebSocket transport hardening
 

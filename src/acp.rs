@@ -503,6 +503,7 @@ pub(crate) async fn run_acp_server(
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token: deps.acp_auth_bearer_token.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
+        terminal_timeout_secs: 120,
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -562,6 +563,7 @@ pub(crate) async fn run_acp_http_server(
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token,
         discovery_enabled: deps.acp_discovery_enabled,
+        terminal_timeout_secs: 120,
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));

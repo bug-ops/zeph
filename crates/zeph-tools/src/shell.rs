@@ -310,6 +310,7 @@ impl ShellExecutor {
             filter_stats: cumulative_filter_stats,
             diff: None,
             streamed: self.tool_event_tx.is_some(),
+            terminal_id: None,
         }))
     }
 

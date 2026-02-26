@@ -201,6 +201,8 @@ pub enum LoopbackEvent {
         locations: Option<Vec<String>>,
         tool_call_id: String,
         is_error: bool,
+        /// Terminal ID for shell tool calls routed through the IDE terminal.
+        terminal_id: Option<String>,
     },
 }
 
@@ -307,6 +309,7 @@ impl Channel for LoopbackChannel {
                 locations: None,
                 tool_call_id: tool_call_id.to_owned(),
                 is_error,
+                terminal_id: None,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -543,6 +546,7 @@ mod tests {
                 locations,
                 tool_call_id,
                 is_error,
+                terminal_id,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
@@ -552,6 +556,7 @@ mod tests {
                 assert!(locations.is_none());
                 assert_eq!(tool_call_id, "");
                 assert!(!is_error);
+                assert!(terminal_id.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }

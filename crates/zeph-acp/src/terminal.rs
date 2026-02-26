@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
@@ -17,9 +18,13 @@ use zeph_tools::{
 
 use crate::{error::AcpError, permission::AcpPermissionGate};
 
+const DEFAULT_TERMINAL_TIMEOUT: Duration = Duration::from_secs(120);
+const KILL_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct ShellResult {
     output: String,
     exit_code: Option<u32>,
+    terminal_id: String,
 }
 
 struct TerminalRequest {
@@ -27,7 +32,7 @@ struct TerminalRequest {
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
-    timeout_secs: u64,
+    timeout: Duration,
     reply: oneshot::Sender<Result<ShellResult, AcpError>>,
 }
 
@@ -40,7 +45,7 @@ pub struct AcpShellExecutor {
     session_id: acp::SessionId,
     request_tx: mpsc::UnboundedSender<TerminalRequest>,
     permission_gate: Option<AcpPermissionGate>,
-    timeout_secs: u64,
+    timeout: Duration,
 }
 
 impl AcpShellExecutor {
@@ -54,6 +59,20 @@ impl AcpShellExecutor {
     where
         C: acp::Client + 'static,
     {
+        let _ = timeout_secs;
+        Self::with_timeout(conn, session_id, permission_gate, DEFAULT_TERMINAL_TIMEOUT)
+    }
+
+    /// Create the executor with a configurable command timeout.
+    pub fn with_timeout<C>(
+        conn: Rc<C>,
+        session_id: acp::SessionId,
+        permission_gate: Option<AcpPermissionGate>,
+        timeout: Duration,
+    ) -> (Self, impl std::future::Future<Output = ()>)
+    where
+        C: acp::Client + 'static,
+    {
         let (tx, rx) = mpsc::unbounded_channel::<TerminalRequest>();
         let handler = async move { run_terminal_handler(conn, rx).await };
         (
@@ -61,7 +80,7 @@ impl AcpShellExecutor {
                 session_id,
                 request_tx: tx,
                 permission_gate,
-                timeout_secs,
+                timeout,
             },
             handler,
         )
@@ -80,7 +99,7 @@ impl AcpShellExecutor {
                 command,
                 args,
                 cwd,
-                timeout_secs: self.timeout_secs,
+                timeout: self.timeout,
                 reply: reply_tx,
             })
             .map_err(|_| AcpError::ChannelClosed)?;
@@ -154,6 +173,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: Some(result.terminal_id),
         }))
     }
 }
@@ -169,7 +189,7 @@ where
             req.command,
             req.args,
             req.cwd,
-            req.timeout_secs,
+            req.timeout,
         )
         .await;
         req.reply.send(result).ok();
@@ -182,7 +202,7 @@ async fn execute_in_terminal<C>(
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
-    timeout_secs: u64,
+    timeout: Duration,
 ) -> Result<ShellResult, AcpError>
 where
     C: acp::Client,
@@ -197,31 +217,30 @@ where
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
     let terminal_id = create_resp.terminal_id;
 
-    // 2. Wait for exit with timeout.
+    // 2. Wait for exit with timeout; kill if exceeded.
     let wait_req = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
-    let timeout = tokio::time::Duration::from_secs(timeout_secs);
-    let exit_code = match tokio::time::timeout(timeout, conn.wait_for_terminal_exit(wait_req)).await
-    {
+    let wait_result = tokio::time::timeout(timeout, conn.wait_for_terminal_exit(wait_req)).await;
+
+    let exit_code = match wait_result {
         Ok(Ok(resp)) => resp.exit_status.exit_code,
         Ok(Err(e)) => return Err(AcpError::ClientError(e.to_string())),
-        Err(_elapsed) => {
-            // Kill the command, collect partial output, release, then return timeout error.
+        Err(_) => {
+            tracing::warn!(
+                terminal_id = %terminal_id,
+                "terminal command timed out — sending kill"
+            );
             let kill_req =
                 acp::KillTerminalCommandRequest::new(session_id.clone(), terminal_id.clone());
-            conn.kill_terminal_command(kill_req).await.ok();
-
-            let output_req =
-                acp::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
-            let partial = conn
-                .terminal_output(output_req)
+            conn.kill_terminal_command(kill_req)
                 .await
-                .map(|r| r.output)
-                .unwrap_or_default();
-
-            let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id);
-            conn.release_terminal(release_req).await.ok();
-
-            return Err(AcpError::TerminalTimeout { output: partial });
+                .map_err(|e| AcpError::ClientError(e.to_string()))?;
+            // Grace period: wait briefly for the process to exit after kill.
+            let wait_again =
+                acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+            let _ =
+                tokio::time::timeout(KILL_GRACE_TIMEOUT, conn.wait_for_terminal_exit(wait_again))
+                    .await;
+            Some(124u32)
         }
     };
 
@@ -233,7 +252,7 @@ where
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
 
     // 4. Release terminal.
-    let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id);
+    let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id.clone());
     conn.release_terminal(release_req)
         .await
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
@@ -241,6 +260,7 @@ where
     Ok(ShellResult {
         output: output_resp.output,
         exit_code,
+        terminal_id: terminal_id.to_string(),
     })
 }
 
@@ -357,7 +377,7 @@ mod tests {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             permission_gate: None,
-            timeout_secs: 120,
+            timeout: Duration::from_secs(120),
         };
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 1);

@@ -78,6 +78,8 @@ pub struct ToolOutput {
     pub diff: Option<DiffData>,
     /// Whether this tool already streamed its output via `ToolEvent` channel.
     pub streamed: bool,
+    /// Terminal ID when the tool was executed via IDE terminal (ACP terminal/* protocol).
+    pub terminal_id: Option<String>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -345,6 +347,7 @@ mod tests {
             filter_stats: None,
             diff: None,
             streamed: false,
+            terminal_id: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }
@@ -584,6 +587,7 @@ mod tests {
                 filter_stats: None,
                 diff: None,
                 streamed: false,
+                terminal_id: None,
             }))
         }
 
@@ -602,6 +606,7 @@ mod tests {
                 filter_stats: None,
                 diff: None,
                 streamed: false,
+                terminal_id: None,
             }))
         }
     }

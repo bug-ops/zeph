@@ -37,6 +37,7 @@ fn test_state() -> AcpHttpState {
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
+            terminal_timeout_secs: 120,
         },
     )
 }
@@ -55,6 +56,7 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
+            terminal_timeout_secs: 120,
         },
     )
 }
@@ -317,6 +319,7 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             mcp_manager: None,
             auth_bearer_token: Some(token.into()),
             discovery_enabled: true,
+            terminal_timeout_secs: 120,
         },
     )
 }
@@ -454,6 +457,7 @@ async fn discovery_disabled_returns_404() {
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: false,
+            terminal_timeout_secs: 120,
         },
     );
     let router = acp_router(state);
@@ -489,6 +493,7 @@ async fn reaper_removes_expired_connections() {
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
+            terminal_timeout_secs: 120,
         },
     );
 

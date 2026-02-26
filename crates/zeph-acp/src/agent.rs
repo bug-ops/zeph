@@ -261,6 +261,7 @@ struct McpRemoveParams {
 }
 
 #[async_trait::async_trait(?Send)]
+#[allow(clippy::too_many_lines)]
 impl acp::Agent for ZephAcpAgent {
     async fn initialize(
         &self,
@@ -481,8 +482,14 @@ impl acp::Agent for ZephAcpAgent {
                         text.push_str("</resource>");
                     }
                 }
-                acp::ContentBlock::Audio(_) | acp::ContentBlock::ResourceLink(_) | &_ => {
-                    tracing::debug!("unsupported content block type in ACP prompt, skipping");
+                acp::ContentBlock::Audio(_) => {
+                    tracing::warn!("unsupported content block: Audio — skipping");
+                }
+                acp::ContentBlock::ResourceLink(link) => {
+                    tracing::warn!(uri = %link.uri, "unsupported content block: ResourceLink — skipping");
+                }
+                &_ => {
+                    tracing::warn!("unsupported content block: unknown — skipping");
                 }
             }
         }
@@ -517,9 +524,21 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         input_tx
-            .send(ChannelMessage { text, attachments })
+            .send(ChannelMessage {
+                text: text.clone(),
+                attachments,
+            })
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
+
+        // Echo the user text back as a UserMessageChunk notification per ACP spec.
+        if !text.is_empty() {
+            let echo = acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(text.into()));
+            let notification = acp::SessionNotification::new(args.session_id.clone(), echo);
+            let (tx, _rx) = oneshot::channel();
+            // Fire-and-forget: echo does not need to wait for delivery ack.
+            self.notify_tx.send((notification, tx)).ok();
+        }
 
         // Grab the cancel_signal so we can detect cancellation during the drain loop.
         let cancel_signal = self
@@ -543,7 +562,7 @@ impl acp::Agent for ZephAcpAgent {
             };
             let Some(event) = event else { break };
             let is_flush = matches!(event, LoopbackEvent::Flush);
-            for update in loopback_event_to_update(event) {
+            for update in loopback_event_to_updates(event) {
                 // Persist event before sending notification (best-effort).
                 if let Some(ref store) = self.store {
                     let sid = args.session_id.to_string();
@@ -738,7 +757,35 @@ impl acp::Agent for ZephAcpAgent {
             }
         }
 
+        // LRU eviction: find and remove the oldest idle session when at limit.
+        if self.sessions.borrow().len() >= self.max_sessions {
+            let evict_id = {
+                let sessions = self.sessions.borrow();
+                sessions
+                    .iter()
+                    .filter(|(_, e)| e.output_rx.borrow().is_some())
+                    .min_by_key(|(_, e)| e.last_active.get())
+                    .map(|(id, _)| id.clone())
+            };
+            match evict_id {
+                Some(id) => {
+                    if let Some(entry) = self.sessions.borrow_mut().remove(&id) {
+                        entry.cancel_signal.notify_one();
+                        tracing::debug!(session_id = %id, "evicted idle ACP session (LRU)");
+                    }
+                }
+                None => {
+                    return Err(acp::Error::internal_error().data("session limit reached"));
+                }
+            }
+        }
+
         let new_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+        tracing::debug!(
+            source = %args.session_id,
+            new = %new_id,
+            "forking ACP session"
+        );
 
         if let Some(s) = store {
             let source_events = s
@@ -795,7 +842,9 @@ impl acp::Agent for ZephAcpAgent {
         });
 
         let config_options = build_model_config_options(&self.available_models, "");
-        let mut resp = acp::ForkSessionResponse::new(new_id);
+        let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
+        let mut resp =
+            acp::ForkSessionResponse::new(new_id).modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
         }
@@ -807,10 +856,12 @@ impl acp::Agent for ZephAcpAgent {
         &self,
         args: acp::ResumeSessionRequest,
     ) -> acp::Result<acp::ResumeSessionResponse> {
+        // Session already in memory — nothing to restore.
         if self.sessions.borrow().contains_key(&args.session_id) {
             return Ok(acp::ResumeSessionResponse::new());
         }
 
+        // Try to restore from SQLite persistence (same as load_session but no event replay).
         let Some(ref store) = self.store else {
             return Err(acp::Error::internal_error().data("session not found"));
         };
@@ -825,6 +876,29 @@ impl acp::Agent for ZephAcpAgent {
 
         if !exists {
             return Err(acp::Error::internal_error().data("session not found"));
+        }
+
+        // LRU eviction: find and remove the oldest idle session when at limit.
+        if self.sessions.borrow().len() >= self.max_sessions {
+            let evict_id = {
+                let sessions = self.sessions.borrow();
+                sessions
+                    .iter()
+                    .filter(|(_, e)| e.output_rx.borrow().is_some())
+                    .min_by_key(|(_, e)| e.last_active.get())
+                    .map(|(id, _)| id.clone())
+            };
+            match evict_id {
+                Some(id) => {
+                    if let Some(entry) = self.sessions.borrow_mut().remove(&id) {
+                        entry.cancel_signal.notify_one();
+                        tracing::debug!(session_id = %id, "evicted idle ACP session (LRU)");
+                    }
+                }
+                None => {
+                    return Err(acp::Error::internal_error().data("session limit reached"));
+                }
+            }
         }
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
@@ -947,11 +1021,15 @@ impl ZephAcpAgent {
                     return Err(acp::Error::internal_error().data("MCP manager not configured"));
                 };
                 let servers = manager.list_servers().await;
-                let json = serde_json::to_string(&servers)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let json = serde_json::to_string(&servers).map_err(|e| {
+                    tracing::error!(error = %e, "failed to serialize MCP server list");
+                    acp::Error::internal_error().data("internal error")
+                })?;
                 let raw: Box<serde_json::value::RawValue> =
-                    serde_json::value::RawValue::from_string(json)
-                        .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                    serde_json::value::RawValue::from_string(json).map_err(|e| {
+                        tracing::error!(error = %e, "failed to build MCP list response");
+                        acp::Error::internal_error().data("internal error")
+                    })?;
                 Ok(acp::ExtResponse::new(raw.into()))
             }
             "_agent/mcp/add" => {
@@ -960,13 +1038,16 @@ impl ZephAcpAgent {
                 };
                 let entry: ServerEntry = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                let tools = manager
-                    .add_server(&entry)
-                    .await
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let tools = manager.add_server(&entry).await.map_err(|e| {
+                    tracing::error!(error = %e, "failed to add MCP server");
+                    acp::Error::internal_error().data("internal error")
+                })?;
                 let json = serde_json::json!({ "added": entry.id, "tools": tools.len() });
-                let raw = serde_json::value::RawValue::from_string(json.to_string())
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let raw =
+                    serde_json::value::RawValue::from_string(json.to_string()).map_err(|e| {
+                        tracing::error!(error = %e, "failed to build MCP add response");
+                        acp::Error::internal_error().data("internal error")
+                    })?;
                 Ok(acp::ExtResponse::new(raw.into()))
             }
             "_agent/mcp/remove" => {
@@ -975,14 +1056,17 @@ impl ZephAcpAgent {
                 };
                 let params: McpRemoveParams = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                manager
-                    .remove_server(&params.id)
-                    .await
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                manager.remove_server(&params.id).await.map_err(|e| {
+                    tracing::error!(error = %e, "failed to remove MCP server");
+                    acp::Error::internal_error().data("internal error")
+                })?;
                 let raw = serde_json::value::RawValue::from_string(
                     serde_json::json!({ "removed": params.id }).to_string(),
                 )
-                .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                .map_err(|e| {
+                    tracing::error!(error = %e, "failed to build MCP remove response");
+                    acp::Error::internal_error().data("internal error")
+                })?;
                 Ok(acp::ExtResponse::new(raw.into()))
             }
             _ => Ok(acp::ExtResponse::new(
@@ -1098,7 +1182,7 @@ fn build_model_config_options(
     ]
 }
 
-fn loopback_event_to_update(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
+fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
     match event {
         LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
             if text.is_empty() || is_tool_use_marker(&text) =>
@@ -1129,6 +1213,7 @@ fn loopback_event_to_update(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             locations,
             tool_call_id,
             is_error,
+            terminal_id,
             ..
         } => {
             let acp_locations: Vec<acp::ToolCallLocation> = locations
@@ -1136,16 +1221,21 @@ fn loopback_event_to_update(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 .into_iter()
                 .map(|p| acp::ToolCallLocation::new(std::path::PathBuf::from(p)))
                 .collect();
+
             let status = if is_error {
                 acp::ToolCallStatus::Failed
             } else {
                 acp::ToolCallStatus::Completed
             };
+            let mut content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                acp::TextContent::new(display),
+            ))];
+            if let Some(tid) = terminal_id {
+                content.push(acp::ToolCallContent::Terminal(acp::Terminal::new(tid)));
+            }
             let mut fields = acp::ToolCallUpdateFields::new()
                 .status(status)
-                .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
-                    acp::TextContent::new(display),
-                ))]);
+                .content(content);
             if !acp_locations.is_empty() {
                 fields = fields.locations(acp_locations);
             }
@@ -1448,12 +1538,12 @@ mod tests {
 
     #[test]
     fn loopback_flush_returns_none() {
-        assert!(loopback_event_to_update(LoopbackEvent::Flush).is_empty());
+        assert!(loopback_event_to_updates(LoopbackEvent::Flush).is_empty());
     }
 
     #[test]
     fn loopback_chunk_maps_to_agent_message() {
-        let updates = loopback_event_to_update(LoopbackEvent::Chunk("hi".into()));
+        let updates = loopback_event_to_updates(LoopbackEvent::Chunk("hi".into()));
         assert_eq!(updates.len(), 1);
         assert!(matches!(
             updates[0],
@@ -1463,7 +1553,7 @@ mod tests {
 
     #[test]
     fn loopback_status_maps_to_thought() {
-        let updates = loopback_event_to_update(LoopbackEvent::Status("thinking".into()));
+        let updates = loopback_event_to_updates(LoopbackEvent::Status("thinking".into()));
         assert_eq!(updates.len(), 1);
         assert!(matches!(
             updates[0],
@@ -1473,9 +1563,9 @@ mod tests {
 
     #[test]
     fn loopback_empty_chunk_returns_none() {
-        assert!(loopback_event_to_update(LoopbackEvent::Chunk(String::new())).is_empty());
-        assert!(loopback_event_to_update(LoopbackEvent::FullMessage(String::new())).is_empty());
-        assert!(loopback_event_to_update(LoopbackEvent::Status(String::new())).is_empty());
+        assert!(loopback_event_to_updates(LoopbackEvent::Chunk(String::new())).is_empty());
+        assert!(loopback_event_to_updates(LoopbackEvent::FullMessage(String::new())).is_empty());
+        assert!(loopback_event_to_updates(LoopbackEvent::Status(String::new())).is_empty());
     }
 
     #[test]
@@ -1484,7 +1574,7 @@ mod tests {
             tool_name: "bash".to_owned(),
             tool_call_id: "test-id".to_owned(),
         };
-        let updates = loopback_event_to_update(event);
+        let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
         match &updates[0] {
             acp::SessionUpdate::ToolCall(tc) => {
@@ -1507,8 +1597,9 @@ mod tests {
             locations: None,
             tool_call_id: "test-id".to_owned(),
             is_error: false,
+            terminal_id: None,
         };
-        let updates = loopback_event_to_update(event);
+        let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
         match &updates[0] {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
@@ -1529,8 +1620,9 @@ mod tests {
             locations: None,
             tool_call_id: "test-id".to_owned(),
             is_error: true,
+            terminal_id: None,
         };
-        let updates = loopback_event_to_update(event);
+        let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
         match &updates[0] {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
@@ -1832,8 +1924,9 @@ mod tests {
             locations: Some(vec!["/src/main.rs".to_owned(), "/src/lib.rs".to_owned()]),
             tool_call_id: "test-id".to_owned(),
             is_error: false,
+            terminal_id: None,
         };
-        let updates = loopback_event_to_update(event);
+        let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
         match &updates[0] {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
@@ -1857,8 +1950,9 @@ mod tests {
             locations: None,
             tool_call_id: "test-id".to_owned(),
             is_error: false,
+            terminal_id: None,
         };
-        let updates = loopback_event_to_update(event);
+        let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
         match &updates[0] {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
@@ -1872,14 +1966,44 @@ mod tests {
     fn tool_use_marker_filtered_duplicate() {
         let event =
             LoopbackEvent::Chunk("[tool_use: bash (toolu_01VzP6Q9b6JQY6ZP5r6qY9Wm)]".into());
-        assert!(loopback_event_to_update(event).is_empty());
+        assert!(loopback_event_to_updates(event).is_empty());
 
         let event = LoopbackEvent::FullMessage("[tool_use: read (toolu_abc)]".into());
-        assert!(loopback_event_to_update(event).is_empty());
+        assert!(loopback_event_to_updates(event).is_empty());
 
         // Normal text should pass through.
         let event = LoopbackEvent::Chunk("hello [tool_use: not a marker".into());
-        assert!(!loopback_event_to_update(event).is_empty());
+        assert!(!loopback_event_to_updates(event).is_empty());
+    }
+
+    #[test]
+    fn loopback_tool_output_with_terminal_id() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "ls output".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tid-1".to_owned(),
+            is_error: false,
+            terminal_id: Some("term-42".to_owned()),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(
+                    tcu.fields
+                        .content
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|c| matches!(c, acp::ToolCallContent::Terminal(_)))
+                );
+            }
+            other => panic!("expected ToolCallUpdate with Terminal content, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1908,6 +2032,98 @@ mod tests {
         ];
         let opts = build_model_config_options(&models, "ollama:llama3");
         assert_eq!(opts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_session_capabilities() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                let caps = resp.agent_capabilities;
+                let session_caps = caps.session_capabilities;
+                assert!(
+                    session_caps.list.is_some(),
+                    "list capability must be advertised"
+                );
+                assert!(
+                    session_caps.fork.is_some(),
+                    "fork capability must be advertised"
+                );
+                assert!(
+                    session_caps.resume.is_some(),
+                    "resume capability must be advertised"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_valid_updates_current_mode() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, mut notify_rx) = make_agent();
+                // Drain notifications and send ack so send_notification doesn't block.
+                tokio::task::spawn_local(async move {
+                    while let Some((_notif, ack)) = notify_rx.recv().await {
+                        ack.send(()).ok();
+                    }
+                });
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+                let req = acp::SetSessionModeRequest::new(sid.clone(), "ask");
+                let result = agent.set_session_mode(req).await;
+                assert!(result.is_ok());
+                let sessions = agent.sessions.borrow();
+                let entry = sessions.get(&sid).unwrap();
+                assert_eq!(*entry.current_mode.borrow(), acp::SessionModeId::new("ask"));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_unknown_mode_errors() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let req = acp::SetSessionModeRequest::new(resp.session_id.clone(), "turbo");
+                let result = agent.set_session_mode(req).await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ext_notification_always_ok() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let notif = acp::ExtNotification::new(
+                    "_agent/some/event",
+                    serde_json::value::RawValue::NULL.to_owned().into(),
+                );
+                let result = agent.ext_notification(notif).await;
+                assert!(result.is_ok());
+            })
+            .await;
     }
 
     #[tokio::test]
@@ -2331,26 +2547,6 @@ mod tests {
                     ))
                     .await;
                 assert!(result.is_err());
-            })
-            .await;
-    }
-
-    #[cfg(feature = "unstable-session-list")]
-    #[tokio::test]
-    async fn initialize_advertises_session_capabilities() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                use acp::Agent as _;
-                let resp = agent
-                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                    .await
-                    .unwrap();
-                assert!(
-                    resp.agent_capabilities.session_capabilities.list.is_some(),
-                    "session_capabilities.list must be advertised"
-                );
             })
             .await;
     }
