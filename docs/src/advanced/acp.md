@@ -21,7 +21,7 @@ Expected output:
   "version": "0.12.1",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
-  "capabilities": ["prompt", "cancel", "load_session"],
+  "capabilities": ["prompt", "cancel", "load_session", "set_session_mode"],
   "description": "Zeph AI Agent"
 }
 ```
@@ -159,6 +159,28 @@ available_models = [
 ```
 
 The IDE presents these as selectable options. Zeph routes each prompt to the chosen provider without restarting the server.
+
+## Session modes
+
+Zeph supports ACP session modes, allowing the IDE to switch the agent's behavior within a session:
+
+| Mode | Description |
+|------|-------------|
+| `code` | Default mode — full tool access, code generation, file operations |
+| `architect` | Design-focused — emphasizes planning and architecture over direct edits |
+| `ask` | Read-only — answers questions without making changes |
+
+The active mode is advertised in the `new_session` and `load_session` responses via the `modes` field. The IDE can switch modes at any time using `set_session_mode`:
+
+```jsonc
+// Request
+{ "method": "set_session_mode", "params": { "session_id": "...", "mode_id": "architect" } }
+
+// Zeph emits a CurrentModeUpdate notification after a successful switch
+{ "method": "notifications/session", "params": { "session_id": "...", "update": { "type": "current_mode_update", "mode_id": "architect" } } }
+```
+
+> **Note:** Mode switching takes effect on the next prompt. An in-flight prompt continues in the mode it started with.
 
 ## Custom extension methods
 
