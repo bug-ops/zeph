@@ -41,14 +41,25 @@ pub struct ModelCache {
 impl ModelCache {
     /// Build a cache handle for `slug` (e.g. `"ollama"`, `"claude"`).
     ///
+    /// The slug is sanitized to `[a-zA-Z0-9_]` to prevent path traversal.
     /// Cache file lives at `{cache_dir}/zeph/models/{slug}.json`.
     #[must_use]
     pub fn for_slug(slug: &str) -> Self {
+        let safe: String = slug
+            .chars()
+            .map(|c| if c == '-' { '_' } else { c })
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let safe = if safe.is_empty() {
+            "unknown".to_string()
+        } else {
+            safe
+        };
         let path = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from(".cache"))
             .join("zeph")
             .join("models")
-            .join(format!("{slug}.json"));
+            .join(format!("{safe}.json"));
         Self { path }
     }
 

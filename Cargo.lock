@@ -9279,6 +9279,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "criterion",
+ "dirs",
  "futures",
  "insta",
  "notify",
@@ -9380,6 +9381,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

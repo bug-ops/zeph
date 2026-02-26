@@ -1573,9 +1573,10 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 .map_or_else(
                     || tool_name.clone(),
                     |s| {
-                        const MAX: usize = 120;
-                        if s.len() > MAX {
-                            format!("{}…", &s[..MAX])
+                        const MAX_CHARS: usize = 120;
+                        if s.chars().count() > MAX_CHARS {
+                            let truncated: String = s.chars().take(MAX_CHARS).collect();
+                            format!("{truncated}…")
                         } else {
                             s.to_owned()
                         }

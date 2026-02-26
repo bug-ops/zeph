@@ -107,6 +107,10 @@ impl ClaudeProvider {
     /// # Errors
     ///
     /// Returns an error if the API request fails or returns an auth error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hardcoded Anthropic API URL cannot be parsed (impossible in practice).
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -114,14 +118,19 @@ impl ClaudeProvider {
         let mut after_id: Option<String> = None;
 
         loop {
-            let mut url = "https://api.anthropic.com/v1/models".to_string();
-            if let Some(ref cursor) = after_id {
-                url = format!("{url}?after_id={cursor}");
-            }
+            // Build URL with cursor as a proper query parameter to avoid injection.
+            let url = {
+                let mut u = reqwest::Url::parse("https://api.anthropic.com/v1/models")
+                    .expect("static URL is valid");
+                if let Some(ref cursor) = after_id {
+                    u.query_pairs_mut().append_pair("after_id", cursor);
+                }
+                u
+            };
 
             let resp = self
                 .client
-                .get(&url)
+                .get(url)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .send()

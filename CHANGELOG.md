@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `ModelInfo` struct (`id`, `display_name`, `context_window`, `created_at`) in `zeph-llm` for dynamic model discovery (#992)
+- `ModelCache` in `zeph-llm/src/model_cache.rs`: disk-backed per-provider model list with 24h TTL, atomic writes, `~/.cache/zeph/models/{slug}.json` (#992)
+- `LlmProvider::list_models_remote()` async trait method with default fallback to `list_models()` (#992)
+- `OllamaProvider::list_models_remote()` via `ollama_rs::list_local_models`; maps parameter size and quantization into `display_name` (#993)
+- `ClaudeProvider::list_models_remote()` via paginated `GET /v1/models`; 401/403 errors do not overwrite valid cache (#994)
+- `OpenAiProvider::list_models_remote()` via `GET {base_url}/v1/models` with Bearer auth; cache slug derived from sanitized hostname (#995)
+- `CompatibleProvider::list_models_remote()` delegates to inner `OpenAiProvider` (#995)
+- `AnyProvider::list_models_remote()` dispatches to active inner variant (#996)
+- `RouterProvider::list_models_remote()` aggregates models from all fallback providers, deduplicating by `id` (#996)
+- `ModelOrchestrator::list_models_remote()` aggregates across all registered sub-providers (#996)
+- `Agent::set_model(model_id)` validates input (non-empty, max 256 ASCII printable chars) and hot-swaps provider model (#997)
+- `/model` command lists all discovered models with display names and cache age indicator (#997)
+- `/model <id>` switches the active model and confirms in chat (#997)
+- `/model refresh` clears all provider caches in `~/.cache/zeph/models/` and re-fetches (#997)
+- ACP `AvailableCommandsUpdate` populated with model list on session start (#997)
+
+### Fixed
 - `SubAgentConfig` in `zeph-core` config with `enabled`, `max_concurrent` (default 1), `extra_dirs` fields; wired into bootstrap via `with_subagent_manager()` on `AgentBuilder` (#973, #964)
 - Sub-agent definition discovery from `.zeph/agents/` (project scope) and `~/.config/zeph/agents/` (user scope) with priority-based deduplication (#964)
 - Skill injection into sub-agent system prompt: filtered skills prepended as fenced `skills` block at spawn time (#967)
