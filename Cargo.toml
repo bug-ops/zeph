@@ -138,10 +138,11 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "acp-http", "daemon", "discord", "gateway", "index", "mock", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "acp-unstable", "daemon", "discord", "gateway", "index", "mock", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
+acp-unstable = ["acp", "zeph-acp/unstable-session-list", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 metal = ["zeph-llm/metal", "zeph-core/metal"]
 cuda = ["zeph-llm/cuda", "zeph-core/cuda"]

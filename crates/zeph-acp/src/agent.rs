@@ -274,25 +274,46 @@ impl acp::Agent for ZephAcpAgent {
             serde_json::json!("authentication required"),
         );
 
+        let caps = acp::AgentCapabilities::new()
+            .load_session(true)
+            .prompt_capabilities(
+                acp::PromptCapabilities::new()
+                    .image(true)
+                    .embedded_context(true),
+            )
+            .meta({
+                let mut cap_meta = serde_json::Map::new();
+                cap_meta.insert("config_options".to_owned(), serde_json::json!(true));
+                cap_meta.insert("ext_methods".to_owned(), serde_json::json!(true));
+                cap_meta
+            });
+        #[cfg(any(
+            feature = "unstable-session-list",
+            feature = "unstable-session-fork",
+            feature = "unstable-session-resume",
+        ))]
+        let caps = {
+            let mut session_caps = acp::SessionCapabilities::new();
+            #[cfg(feature = "unstable-session-list")]
+            {
+                session_caps = session_caps.list(acp::SessionListCapabilities::default());
+            }
+            #[cfg(feature = "unstable-session-fork")]
+            {
+                session_caps = session_caps.fork(acp::SessionForkCapabilities::default());
+            }
+            #[cfg(feature = "unstable-session-resume")]
+            {
+                session_caps = session_caps.resume(acp::SessionResumeCapabilities::default());
+            }
+            caps.session_capabilities(session_caps)
+        };
+
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::LATEST)
             .agent_info(
                 acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
             )
-            .agent_capabilities(
-                acp::AgentCapabilities::new()
-                    .load_session(true)
-                    .prompt_capabilities(
-                        acp::PromptCapabilities::new()
-                            .image(true)
-                            .embedded_context(true),
-                    )
-                    .meta({
-                        let mut cap_meta = serde_json::Map::new();
-                        cap_meta.insert("config_options".to_owned(), serde_json::json!(true));
-                        cap_meta.insert("ext_methods".to_owned(), serde_json::json!(true));
-                        cap_meta
-                    }),
-            )
+            .agent_capabilities(caps)
             .meta(meta))
     }
 
@@ -664,6 +685,172 @@ impl acp::Agent for ZephAcpAgent {
 
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
         Ok(acp::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id)))
+    }
+
+    #[cfg(feature = "unstable-session-list")]
+    async fn list_sessions(
+        &self,
+        args: acp::ListSessionsRequest,
+    ) -> acp::Result<acp::ListSessionsResponse> {
+        let sessions = self.sessions.borrow();
+        let mut result = Vec::with_capacity(sessions.len());
+        for (session_id, entry) in sessions.iter() {
+            let working_dir = entry.working_dir.borrow().clone().unwrap_or_default();
+            if let Some(ref filter) = args.cwd
+                && &working_dir != filter
+            {
+                continue;
+            }
+            let info = acp::SessionInfo::new(session_id.clone(), working_dir)
+                .updated_at(entry.created_at.to_rfc3339());
+            result.push(info);
+        }
+        Ok(acp::ListSessionsResponse::new(result))
+    }
+
+    #[cfg(feature = "unstable-session-fork")]
+    async fn fork_session(
+        &self,
+        args: acp::ForkSessionRequest,
+    ) -> acp::Result<acp::ForkSessionResponse> {
+        let in_memory = self.sessions.borrow().contains_key(&args.session_id);
+        let store = self.store.as_ref();
+
+        if !in_memory {
+            match store {
+                None => return Err(acp::Error::internal_error().data("session not found")),
+                Some(s) => {
+                    let exists = s
+                        .acp_session_exists(&args.session_id.to_string())
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(error = %e, "failed to check ACP session existence");
+                            acp::Error::internal_error().data("internal error")
+                        })?;
+                    if !exists {
+                        return Err(acp::Error::internal_error().data("session not found"));
+                    }
+                }
+            }
+        }
+
+        let new_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+
+        if let Some(s) = store {
+            let source_events = s
+                .load_acp_events(&args.session_id.to_string())
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "failed to load ACP session events for fork");
+                    acp::Error::internal_error().data("internal error")
+                })?;
+
+            let new_id_str = new_id.to_string();
+            let store_clone = s.clone();
+            let pairs: Vec<(String, String)> = source_events
+                .into_iter()
+                .map(|ev| (ev.event_type, ev.payload))
+                .collect();
+            tokio::task::spawn_local(async move {
+                if let Err(e) = store_clone.create_acp_session(&new_id_str).await {
+                    tracing::warn!(error = %e, "failed to create forked ACP session");
+                    return;
+                }
+                let refs: Vec<(&str, &str)> = pairs
+                    .iter()
+                    .map(|(t, p)| (t.as_str(), p.as_str()))
+                    .collect();
+                if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
+                    tracing::warn!(error = %e, "failed to import events for forked session");
+                }
+            });
+        }
+
+        let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
+        let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
+        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
+            Arc::new(std::sync::RwLock::new(None));
+        let provider_override_for_ctx = Arc::clone(&provider_override);
+        let entry = SessionEntry {
+            input_tx: handle.input_tx,
+            output_rx: RefCell::new(Some(handle.output_rx)),
+            cancel_signal: handle.cancel_signal,
+            last_active: std::cell::Cell::new(std::time::Instant::now()),
+            created_at: chrono::Utc::now(),
+            working_dir: RefCell::new(Some(args.cwd.clone())),
+            provider_override,
+            current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+        };
+        self.sessions.borrow_mut().insert(new_id.clone(), entry);
+
+        let acp_ctx = self.build_acp_context(&new_id, cancel_signal, provider_override_for_ctx);
+        let spawner = Arc::clone(&self.spawner);
+        tokio::task::spawn_local(async move {
+            (spawner)(channel, acp_ctx).await;
+        });
+
+        let config_options = build_model_config_options(&self.available_models, "");
+        let mut resp = acp::ForkSessionResponse::new(new_id);
+        if !config_options.is_empty() {
+            resp = resp.config_options(config_options);
+        }
+        Ok(resp)
+    }
+
+    #[cfg(feature = "unstable-session-resume")]
+    async fn resume_session(
+        &self,
+        args: acp::ResumeSessionRequest,
+    ) -> acp::Result<acp::ResumeSessionResponse> {
+        if self.sessions.borrow().contains_key(&args.session_id) {
+            return Ok(acp::ResumeSessionResponse::new());
+        }
+
+        let Some(ref store) = self.store else {
+            return Err(acp::Error::internal_error().data("session not found"));
+        };
+
+        let exists = store
+            .acp_session_exists(&args.session_id.to_string())
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, session_id = %args.session_id, "failed to check ACP session existence");
+                acp::Error::internal_error().data("internal error")
+            })?;
+
+        if !exists {
+            return Err(acp::Error::internal_error().data("session not found"));
+        }
+
+        let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
+        let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
+        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
+            Arc::new(std::sync::RwLock::new(None));
+        let provider_override_for_ctx = Arc::clone(&provider_override);
+        let entry = SessionEntry {
+            input_tx: handle.input_tx,
+            output_rx: RefCell::new(Some(handle.output_rx)),
+            cancel_signal: handle.cancel_signal,
+            last_active: std::cell::Cell::new(std::time::Instant::now()),
+            created_at: chrono::Utc::now(),
+            working_dir: RefCell::new(Some(args.cwd)),
+            provider_override,
+            current_model: RefCell::new(String::new()),
+            current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
+        };
+        self.sessions
+            .borrow_mut()
+            .insert(args.session_id.clone(), entry);
+
+        let acp_ctx =
+            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
+        let spawner = Arc::clone(&self.spawner);
+        tokio::task::spawn_local(async move {
+            (spawner)(channel, acp_ctx).await;
+        });
+
+        Ok(acp::ResumeSessionResponse::new())
     }
 
     async fn set_session_config_option(
@@ -1932,6 +2119,158 @@ mod tests {
                     ))
                     .await;
                 assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-list")]
+    #[tokio::test]
+    async fn list_sessions_returns_active_sessions() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let resp = agent
+                    .list_sessions(acp::ListSessionsRequest::new())
+                    .await
+                    .unwrap();
+                assert_eq!(resp.sessions.len(), 2);
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-list")]
+    #[tokio::test]
+    async fn list_sessions_filters_by_cwd() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp1 = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let resp2 = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                let dir_a = std::path::PathBuf::from("/tmp/dir-a");
+                let dir_b = std::path::PathBuf::from("/tmp/dir-b");
+
+                agent
+                    .sessions
+                    .borrow()
+                    .get(&resp1.session_id)
+                    .unwrap()
+                    .working_dir
+                    .replace(Some(dir_a.clone()));
+                agent
+                    .sessions
+                    .borrow()
+                    .get(&resp2.session_id)
+                    .unwrap()
+                    .working_dir
+                    .replace(Some(dir_b));
+
+                let resp = agent
+                    .list_sessions(acp::ListSessionsRequest::new().cwd(dir_a))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.sessions.len(), 1);
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-fork")]
+    #[tokio::test]
+    async fn fork_session_errors_for_unknown() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let unknown_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+                let result = agent
+                    .fork_session(acp::ForkSessionRequest::new(
+                        unknown_id,
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-resume")]
+    #[tokio::test]
+    async fn resume_session_returns_ok_for_active() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let result = agent
+                    .resume_session(acp::ResumeSessionRequest::new(
+                        resp.session_id,
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(result.is_ok());
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-resume")]
+    #[tokio::test]
+    async fn resume_session_errors_for_unknown() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let unknown_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+                let result = agent
+                    .resume_session(acp::ResumeSessionRequest::new(
+                        unknown_id,
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[cfg(feature = "unstable-session-list")]
+    #[tokio::test]
+    async fn initialize_advertises_session_capabilities() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                assert!(
+                    resp.agent_capabilities.session_capabilities.list.is_some(),
+                    "session_capabilities.list must be advertised"
+                );
             })
             .await;
     }
