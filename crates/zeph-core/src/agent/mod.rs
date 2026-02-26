@@ -461,6 +461,27 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
+            if trimmed == "/compact" {
+                if self.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
+                    match self.compact_context().await {
+                        Ok(()) => {
+                            let _ = self.channel.send("Context compacted successfully.").await;
+                        }
+                        Err(e) => {
+                            let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
+                        }
+                    }
+                } else {
+                    let _ = self.channel.send("Nothing to compact.").await;
+                }
+                continue;
+            }
+
+            if trimmed == "/clear" {
+                self.clear_history();
+                continue;
+            }
+
             self.process_user_message(text, image_parts).await?;
         }
 

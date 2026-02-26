@@ -779,6 +779,15 @@ impl<C: Channel> Agent<C> {
         result
     }
 
+    pub(super) fn clear_history(&mut self) {
+        let system_prompt = self.messages.first().cloned();
+        self.messages.clear();
+        if let Some(sp) = system_prompt {
+            self.messages.push(sp);
+        }
+        self.recompute_prompt_tokens();
+    }
+
     pub(super) fn remove_recall_messages(&mut self) {
         self.messages.retain(|m| {
             if m.role != Role::System {

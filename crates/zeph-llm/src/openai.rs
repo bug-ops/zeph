@@ -326,6 +326,10 @@ impl LlmProvider for OpenAiProvider {
         "openai"
     }
 
+    fn list_models(&self) -> Vec<String> {
+        vec![self.model.clone()]
+    }
+
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.last_cache.lock().ok().and_then(|g| *g)
     }

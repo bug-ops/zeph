@@ -527,9 +527,10 @@ impl acp::Agent for ZephAcpAgent {
             return Err(acp::Error::invalid_request().data("prompt too large"));
         }
 
-        if text.trim_start().starts_with('/') {
+        let trimmed_text = text.trim_start();
+        if trimmed_text.starts_with('/') && trimmed_text != "/compact" {
             return self
-                .handle_slash_command(&args.session_id, text.trim_start())
+                .handle_slash_command(&args.session_id, trimmed_text)
                 .await;
         }
 
@@ -1182,34 +1183,7 @@ impl ZephAcpAgent {
                  /clear — clear session history\n\
                  /compact — summarize and compact context"
                 .to_owned(),
-            "/model" => {
-                if arg.is_empty() {
-                    let models = self.available_models.join(", ");
-                    format!("Available models: {models}")
-                } else {
-                    let Some(ref factory) = self.provider_factory else {
-                        return Err(
-                            acp::Error::internal_error().data("model switching not configured")
-                        );
-                    };
-                    if !self.available_models.iter().any(|m| m == arg) {
-                        return Err(acp::Error::invalid_request().data("model not in allowed list"));
-                    }
-                    let Some(new_provider) = factory(arg) else {
-                        return Err(acp::Error::invalid_request().data("unknown model"));
-                    };
-                    let sessions = self.sessions.borrow();
-                    let entry = sessions
-                        .get(session_id)
-                        .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-                    *entry
-                        .provider_override
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
-                    arg.clone_into(&mut entry.current_model.borrow_mut());
-                    format!("Switched to model: {arg}")
-                }
-            }
+            "/model" => self.handle_model_command(session_id, arg)?,
             "/mode" => {
                 let valid_ids: &[&str] = &["code", "architect", "ask"];
                 if !valid_ids.contains(&arg) {
@@ -1244,9 +1218,16 @@ impl ZephAcpAgent {
                         }
                     });
                 }
+                // Send sentinel to clear in-memory agent context.
+                let sessions = self.sessions.borrow();
+                if let Some(entry) = sessions.get(session_id) {
+                    let _ = entry.input_tx.try_send(ChannelMessage {
+                        text: "/clear".to_owned(),
+                        attachments: vec![],
+                    });
+                }
                 "Session history cleared.".to_owned()
             }
-            "/compact" => "Context compaction is not yet implemented.".to_owned(),
             _ => {
                 return Err(acp::Error::invalid_request().data(format!("unknown command: {cmd}")));
             }
@@ -1260,6 +1241,62 @@ impl ZephAcpAgent {
         }
 
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
+    fn resolve_model_fuzzy<'a>(&'a self, query: &str) -> acp::Result<String> {
+        if self.available_models.iter().any(|m| m == query) {
+            return Ok(query.to_owned());
+        }
+        let tokens: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let candidates: Vec<&'a String> = self
+            .available_models
+            .iter()
+            .filter(|m| {
+                let lower = m.to_lowercase();
+                tokens.iter().all(|t| lower.contains(t.as_str()))
+            })
+            .collect();
+        match candidates.len() {
+            0 => {
+                let models = self.available_models.join(", ");
+                Err(acp::Error::invalid_request()
+                    .data(format!("no matching model found. Available: {models}")))
+            }
+            1 => Ok(candidates[0].clone()),
+            _ => {
+                let names: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+                Err(acp::Error::invalid_request()
+                    .data(format!("ambiguous model, candidates: {}", names.join(", "))))
+            }
+        }
+    }
+
+    fn handle_model_command(&self, session_id: &acp::SessionId, arg: &str) -> acp::Result<String> {
+        if arg.is_empty() {
+            let models = self.available_models.join(", ");
+            return Ok(format!("Available models: {models}"));
+        }
+        let Some(ref factory) = self.provider_factory else {
+            return Err(acp::Error::internal_error().data("model switching not configured"));
+        };
+        let resolved = self.resolve_model_fuzzy(arg)?;
+        let Some(new_provider) = factory(&resolved) else {
+            return Err(acp::Error::invalid_request().data("unknown model"));
+        };
+        let sessions = self.sessions.borrow();
+        let entry = sessions
+            .get(session_id)
+            .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+        *entry
+            .provider_override
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+        resolved.clone_into(&mut entry.current_model.borrow_mut());
+        Ok(format!("Switched to model: {resolved}"))
     }
 
     async fn ext_method_mcp(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {

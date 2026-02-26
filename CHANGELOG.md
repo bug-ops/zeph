@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Tests for `SubAgentConfig` deserialization, skill injection with and without skills, secret approval and deny flows (#973, #967, #969)
 - `zeph-acp`: LSP diagnostics content block (#962): `ContentBlock::Resource` with MIME `application/vnd.zed.diagnostics+json` formatted as `<diagnostics>file:line: [SEVERITY] message</diagnostics>` before the prompt; unknown MIME types logged and skipped
 - `zeph-acp`: `AvailableCommandsUpdate` (#961): emitted after `new_session` and `load_session`; slash commands (`/help`, `/model`, `/mode`, `/clear`, `/compact`) dispatched without entering agent loop
+- `zeph-acp`: `/compact` command (#979): triggers `AgentContext::compact_context()` via agent-loop sentinel; responds with compaction status or no-op message when history is below minimum threshold; emits `UsageUpdate` after compaction
+- `zeph-acp`: `/model` fuzzy matching (#980): case-insensitive multi-token substring match against `available_models` after exact match fails; returns error with candidate list on ambiguous input
+- `zeph-acp`: provider model auto-discovery (#983): `LlmProvider::list_models()` default method added; `discover_models_from_config()` auto-populates `available_models` at session start when the config list is empty; static config override takes precedence
+- `zeph-core`: `AgentContext::clear_history()` clears in-memory conversation window and deletes session events from SQLite via `memory.delete_conversation()`
 - `zeph-acp`: `UsageUpdate` via `unstable-session-usage` feature (#957): token usage emitted after each LLM turn via `LoopbackEvent::Usage`; `LlmProvider::last_usage()` added with `ClaudeProvider` implementation
 - `zeph-acp`: `SetSessionModel` via `unstable-session-model` feature (#958): `set_session_model` implemented; validates model against allowed list and swaps provider override
 - `zeph-acp`: `SessionInfoUpdate` via `unstable-session-info-update` feature (#959): title generated after first agent response; persisted to SQLite via migration `016_acp_session_title.sql`
@@ -30,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `tests/integration.rs`: added missing `llm_request_timeout_secs` field in `TimeoutConfig` initializer (#956)
 - `zeph-acp`: XML-escape `path`, `severity`, and `message` fields in diagnostics context block to prevent prompt injection (#962)
 - `zeph-acp`: trim leading whitespace before slash-command prefix check to prevent bypass via `\n/command` input (#961)
+- `zeph-acp`: `/clear` now sends a sentinel to the agent loop to also clear in-memory `AgentContext` state and reset the token counter (#981)
 
 ## [0.12.2] - 2026-02-26
 

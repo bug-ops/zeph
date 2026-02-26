@@ -123,6 +123,13 @@ impl LlmProvider for RouterProvider {
         self.providers.iter().any(LlmProvider::supports_tool_use)
     }
 
+    fn list_models(&self) -> Vec<String> {
+        self.providers
+            .iter()
+            .flat_map(super::provider::LlmProvider::list_models)
+            .collect()
+    }
+
     #[allow(async_fn_in_trait)]
     async fn chat_with_tools(
         &self,
