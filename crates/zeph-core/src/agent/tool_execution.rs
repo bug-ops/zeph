@@ -1094,8 +1094,8 @@ mod tests {
         });
         let schema: Schema = serde_json::from_value(raw).expect("valid schema");
         let def = ToolDef {
-            id: "bash",
-            description: "run a shell command",
+            id: "bash".into(),
+            description: "run a shell command".into(),
             schema,
             invocation: InvocationHint::ToolCall,
         };

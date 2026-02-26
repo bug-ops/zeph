@@ -80,8 +80,8 @@ impl ToolExecutor for WebScrapeExecutor {
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         use crate::registry::{InvocationHint, ToolDef};
         vec![ToolDef {
-            id: "web_scrape",
-            description: "Scrape data from a web page via CSS selectors",
+            id: "web_scrape".into(),
+            description: "Scrape data from a web page via CSS selectors".into(),
             schema: schemars::schema_for!(ScrapeInstruction),
             invocation: InvocationHint::FencedBlock("scrape"),
         }]

@@ -284,32 +284,32 @@ impl ToolExecutor for FileExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![
             ToolDef {
-                id: "read",
-                description: "Read file contents with optional offset/limit",
+                id: "read".into(),
+                description: "Read file contents with optional offset/limit".into(),
                 schema: schemars::schema_for!(ReadParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
-                id: "write",
-                description: "Write content to a file",
+                id: "write".into(),
+                description: "Write content to a file".into(),
                 schema: schemars::schema_for!(WriteParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
-                id: "edit",
-                description: "Replace a string in a file",
+                id: "edit".into(),
+                description: "Replace a string in a file".into(),
                 schema: schemars::schema_for!(EditParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
-                id: "glob",
-                description: "Find files matching a glob pattern",
+                id: "glob".into(),
+                description: "Find files matching a glob pattern".into(),
                 schema: schemars::schema_for!(GlobParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
-                id: "grep",
-                description: "Search file contents with regex",
+                id: "grep".into(),
+                description: "Search file contents with regex".into(),
                 schema: schemars::schema_for!(GrepParams),
                 invocation: InvocationHint::ToolCall,
             },
@@ -575,7 +575,7 @@ mod tests {
     fn tool_executor_tool_definitions_lists_all() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
-        let ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+        let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
         assert!(ids.contains(&"read"));
         assert!(ids.contains(&"write"));
         assert!(ids.contains(&"edit"));
@@ -601,7 +601,7 @@ mod tests {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 5);
-        let ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+        let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
         assert_eq!(ids, vec!["read", "write", "edit", "glob", "grep"]);
     }
 
@@ -617,7 +617,7 @@ mod tests {
     fn tool_definitions_read_schema_has_params() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
-        let read = defs.iter().find(|d| d.id == "read").unwrap();
+        let read = defs.iter().find(|d| d.id.as_ref() == "read").unwrap();
         let obj = read.schema.as_object().unwrap();
         let props = obj["properties"].as_object().unwrap();
         assert!(props.contains_key("path"));

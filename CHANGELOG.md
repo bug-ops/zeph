@@ -12,6 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Agent discovery manifest endpoint `GET /.well-known/acp.json`: returns agent name, version, supported transports, and authentication type; publicly accessible (exempt from bearer auth), controlled by `acp.discovery_enabled` (default `true`) / `ZEPH_ACP_DISCOVERY_ENABLED` env var (#936)
 - `AcpConfig` fields: `auth_bearer_token: Option<String>`, `discovery_enabled: bool` (#936)
 - `--acp-auth-token` CLI flag for runtime bearer token injection (#936)
+- `McpToolExecutor` now implements `tool_definitions()` and `execute_tool_call()` — MCP tools are exposed as native `ToolDefinition`s and dispatched via structured tool_use when provider supports it
+- `McpToolExecutor` accepts `Arc<RwLock<Vec<McpTool>>>` at construction; shared reference is kept in `McpState.shared_tools` and updated on `/mcp add`/`/mcp remove`
+- `append_mcp_prompt()` skips text-based MCP tool injection when `provider.supports_tool_use()` is true, preventing duplicate tool descriptions
+- `OllamaProvider` supports native tool calling via `chat_with_tools()` and `supports_tool_use()` when `llm.ollama.tool_use = true` in config
+- `OllamaConfig` struct with `tool_use: bool` field (default false) in `LlmConfig`
+- `AgentBuilder::with_mcp_shared_tools()` method to wire the shared tool list into the agent
+- ACP session modes support: `set_session_mode` method (ask/architect/code), `current_mode_update` notification emission on mode switch, and `availableModes` field in `new_session`/`load_session` responses (#920)
+
+### Changed
+- `ToolDef.id` and `ToolDef.description` changed from `&'static str` to `Cow<'static, str>` to support dynamic MCP tool names without memory leaks
+- `AgentCapabilities` in `initialize()` now advertises `PromptCapabilities` with `image=true` and `embedded_context=true`, reflecting actual Image and Resource content block support (#917)
 
 ### Security
 - `AcpConfig` now uses custom `impl std::fmt::Debug` that redacts `auth_token` as `[REDACTED]`, consistent with `A2aServerConfig` and `TelegramConfig` (#936)
