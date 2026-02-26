@@ -410,11 +410,24 @@ impl<C: Channel> Agent<C> {
             metadata: MessageMetadata::default(),
         }];
 
-        match self.summary_or_primary_provider().chat(&messages).await {
-            Ok(summary) => format!("[tool output summary]\n```\n{summary}\n```"),
-            Err(e) => {
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let result = tokio::time::timeout(
+            llm_timeout,
+            self.summary_or_primary_provider().chat(&messages),
+        )
+        .await;
+        match result {
+            Ok(Ok(summary)) => format!("[tool output summary]\n```\n{summary}\n```"),
+            Ok(Err(e)) => {
                 tracing::warn!(
                     "tool output summarization failed, falling back to truncation: {e:#}"
+                );
+                truncated
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_secs = self.runtime.timeouts.llm_seconds,
+                    "tool output summarization timed out, falling back to truncation"
                 );
                 truncated
             }

@@ -157,6 +157,7 @@ impl<C: Channel> Agent<C> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn try_summarize_with_llm(
         &self,
         messages: &[Message],
@@ -171,17 +172,22 @@ impl<C: Channel> Agent<C> {
             &self.token_counter,
         );
 
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+
         if chunks.len() <= 1 {
             let prompt = Self::build_chunk_prompt(messages);
-            return self
-                .summary_or_primary_provider()
-                .chat(&[Message {
-                    role: Role::User,
-                    content: prompt,
-                    parts: vec![],
-                    metadata: MessageMetadata::default(),
-                }])
-                .await;
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            return tokio::time::timeout(
+                llm_timeout,
+                self.summary_or_primary_provider().chat(&msgs),
+            )
+            .await
+            .map_err(|_| zeph_llm::LlmError::Timeout)?;
         }
 
         // Summarize chunks with bounded concurrency to prevent runaway API calls
@@ -190,13 +196,17 @@ impl<C: Channel> Agent<C> {
             let prompt = Self::build_chunk_prompt(chunk);
             let p = provider.clone();
             async move {
-                p.chat(&[Message {
-                    role: Role::User,
-                    content: prompt,
-                    parts: vec![],
-                    metadata: MessageMetadata::default(),
-                }])
+                tokio::time::timeout(
+                    llm_timeout,
+                    p.chat(&[Message {
+                        role: Role::User,
+                        content: prompt,
+                        parts: vec![],
+                        metadata: MessageMetadata::default(),
+                    }]),
+                )
                 .await
+                .map_err(|_| zeph_llm::LlmError::Timeout)?
             }
         }))
         .buffer_unordered(4)
@@ -214,15 +224,18 @@ impl<C: Channel> Agent<C> {
         if partial_summaries.is_empty() {
             // Fallback: single-pass on full messages
             let prompt = Self::build_chunk_prompt(messages);
-            return self
-                .summary_or_primary_provider()
-                .chat(&[Message {
-                    role: Role::User,
-                    content: prompt,
-                    parts: vec![],
-                    metadata: MessageMetadata::default(),
-                }])
-                .await;
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            return tokio::time::timeout(
+                llm_timeout,
+                self.summary_or_primary_provider().chat(&msgs),
+            )
+            .await
+            .map_err(|_| zeph_llm::LlmError::Timeout)?;
         }
 
         // Consolidate partial summaries
@@ -257,14 +270,18 @@ impl<C: Channel> Agent<C> {
              Partial summaries:\n{numbered}"
         );
 
-        self.summary_or_primary_provider()
-            .chat(&[Message {
-                role: Role::User,
-                content: consolidation_prompt,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            }])
-            .await
+        let consolidation_msgs = [Message {
+            role: Role::User,
+            content: consolidation_prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        tokio::time::timeout(
+            llm_timeout,
+            self.summary_or_primary_provider().chat(&consolidation_msgs),
+        )
+        .await
+        .map_err(|_| zeph_llm::LlmError::Timeout)?
     }
 
     /// Remove tool response parts from messages using middle-out order.
@@ -679,19 +696,26 @@ impl<C: Channel> Agent<C> {
         };
         let prompt =
             Self::build_tool_pair_summary_prompt(&self.messages[req_idx], &self.messages[resp_idx]);
-        let summary = match self
-            .summary_or_primary_provider()
-            .chat(&[Message {
-                role: Role::User,
-                content: prompt,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            }])
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
+        let llm_timeout =
+            std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let msgs = [Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let chat_fut = self.summary_or_primary_provider().chat(&msgs);
+        let summary = match tokio::time::timeout(llm_timeout, chat_fut).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 tracing::warn!(%e, "tool pair summarization failed, skipping");
+                return;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_secs = self.runtime.timeouts.llm_seconds,
+                    "tool pair summarization timed out, skipping"
+                );
                 return;
             }
         };

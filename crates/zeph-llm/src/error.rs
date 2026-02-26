@@ -49,6 +49,9 @@ pub enum LlmError {
     #[error("context length exceeded")]
     ContextLengthExceeded,
 
+    #[error("LLM request timed out")]
+    Timeout,
+
     #[error("{0}")]
     Other(String),
 }
