@@ -519,9 +519,22 @@ impl<C: Channel> Agent<C> {
                 } else {
                     processed.clone()
                 };
+                let filter_stats_inline = output.filter_stats.as_ref().and_then(|fs| {
+                    (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&output.tool_name))
+                });
                 let formatted_output = format_tool_output(&output.tool_name, &body);
                 let display = self.maybe_redact(&formatted_output);
-                self.channel.send(&display).await?;
+                self.channel
+                    .send_tool_output(
+                        &output.tool_name,
+                        &display,
+                        None,
+                        filter_stats_inline,
+                        None,
+                        "",
+                        false,
+                    )
+                    .await?;
 
                 self.push_message(Message::from_parts(
                     Role::User,
@@ -554,7 +567,9 @@ impl<C: Channel> Agent<C> {
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         let display = self.maybe_redact(&formatted);
-                        self.channel.send(&display).await?;
+                        self.channel
+                            .send_tool_output(&out.tool_name, &display, None, None, None, "", false)
+                            .await?;
                         self.push_message(Message::from_parts(
                             Role::User,
                             vec![MessagePart::ToolOutput {
