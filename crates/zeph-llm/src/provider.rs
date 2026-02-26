@@ -376,6 +376,12 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Return the list of model identifiers this provider can serve.
+    /// Default: empty (provider does not advertise models).
+    fn list_models(&self) -> Vec<String> {
+        vec![]
+    }
+
     /// Whether this provider supports native structured output.
     fn supports_structured_output(&self) -> bool {
         false

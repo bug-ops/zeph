@@ -192,7 +192,11 @@ async fn build_acp_deps(
         acp_max_sessions: config.acp.max_sessions,
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
         acp_permission_file: config.acp.permission_file.clone(),
-        acp_available_models: config.acp.available_models.clone(),
+        acp_available_models: if config.acp.available_models.is_empty() {
+            discover_models_from_config(config)
+        } else {
+            config.acp.available_models.clone()
+        },
         acp_auth_bearer_token: config.acp.auth_token.clone(),
         acp_discovery_enabled: config.acp.discovery_enabled,
         acp_provider_factory: Some(build_acp_provider_factory(config)),
@@ -321,6 +325,35 @@ async fn spawn_acp_agent(
     if let Err(e) = agent.run().await {
         tracing::error!("ACP agent loop error: {e:#}");
     }
+}
+
+/// Collect model keys from config when `acp.available_models` is not set.
+///
+/// Each key uses `"{provider_name}:{model}"` format matching the provider factory.
+#[cfg(feature = "acp")]
+fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String> {
+    let mut models: Vec<String> = Vec::new();
+    models.push(format!("ollama:{}", config.llm.model));
+    if config.secrets.claude_api_key.is_some() {
+        let model = config
+            .llm
+            .cloud
+            .as_ref()
+            .map_or("claude-sonnet-4-5", |c| c.model.as_str());
+        models.push(format!("claude:{model}"));
+    }
+    if let (Some(_), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai) {
+        models.push(format!("openai:{}", openai_cfg.model));
+    }
+    if let Some(ref entries) = config.llm.compatible {
+        for entry in entries {
+            if config.secrets.compatible_api_keys.contains_key(&entry.name) {
+                models.push(format!("{}:{}", entry.name, entry.model));
+            }
+        }
+    }
+    models.dedup();
+    models
 }
 
 /// Build a `ProviderFactory` from the known named providers in config.

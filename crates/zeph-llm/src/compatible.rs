@@ -78,6 +78,10 @@ impl LlmProvider for CompatibleProvider {
         &self.provider_name
     }
 
+    fn list_models(&self) -> Vec<String> {
+        self.inner.list_models()
+    }
+
     fn supports_structured_output(&self) -> bool {
         self.inner.supports_structured_output()
     }
