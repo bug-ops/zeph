@@ -331,6 +331,11 @@ impl Config {
         {
             self.timeouts.llm_seconds = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_TIMEOUT_LLM_REQUEST")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.timeouts.llm_request_timeout_secs = secs;
+        }
         if let Ok(v) = std::env::var("ZEPH_TIMEOUT_EMBEDDING")
             && let Ok(secs) = v.parse::<u64>()
         {

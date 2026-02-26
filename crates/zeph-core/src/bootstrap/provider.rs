@@ -5,6 +5,7 @@ use anyhow::{Context, bail};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::compatible::CompatibleProvider;
+use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
 
@@ -118,11 +119,10 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .context("ZEPH_CLAUDE_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
-            Ok(AnyProvider::Claude(ClaudeProvider::new(
-                api_key,
-                cloud.model.clone(),
-                cloud.max_tokens,
-            )))
+            Ok(AnyProvider::Claude(
+                ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
         }
         "openai" => {
             let openai_cfg = config
@@ -137,14 +137,17 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .context("ZEPH_OPENAI_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
-            Ok(AnyProvider::OpenAi(OpenAiProvider::new(
-                api_key,
-                openai_cfg.base_url.clone(),
-                openai_cfg.model.clone(),
-                openai_cfg.max_tokens,
-                openai_cfg.embedding_model.clone(),
-                openai_cfg.reasoning_effort.clone(),
-            )))
+            Ok(AnyProvider::OpenAi(
+                OpenAiProvider::new(
+                    api_key,
+                    openai_cfg.base_url.clone(),
+                    openai_cfg.model.clone(),
+                    openai_cfg.max_tokens,
+                    openai_cfg.embedding_model.clone(),
+                    openai_cfg.reasoning_effort.clone(),
+                )
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
         }
         other => {
             if let Some(entries) = &config.llm.compatible {
@@ -261,11 +264,10 @@ pub fn build_orchestrator(
                     .expose()
                     .to_owned();
                 let model = pcfg.model.as_deref().unwrap_or(&cloud.model);
-                SubProvider::Claude(ClaudeProvider::new(
-                    api_key,
-                    model.to_owned(),
-                    cloud.max_tokens,
-                ))
+                SubProvider::Claude(
+                    ClaudeProvider::new(api_key, model.to_owned(), cloud.max_tokens)
+                        .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+                )
             }
             "openai" => {
                 let openai_cfg = config
@@ -289,14 +291,17 @@ pub fn build_orchestrator(
                     .embedding_model
                     .clone()
                     .or_else(|| openai_cfg.embedding_model.clone());
-                SubProvider::OpenAi(OpenAiProvider::new(
-                    api_key,
-                    base_url,
-                    model.to_owned(),
-                    openai_cfg.max_tokens,
-                    embed,
-                    openai_cfg.reasoning_effort.clone(),
-                ))
+                SubProvider::OpenAi(
+                    OpenAiProvider::new(
+                        api_key,
+                        base_url,
+                        model.to_owned(),
+                        openai_cfg.max_tokens,
+                        embed,
+                        openai_cfg.reasoning_effort.clone(),
+                    )
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+                )
             }
             #[cfg(feature = "candle")]
             "candle" => {

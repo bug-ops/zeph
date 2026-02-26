@@ -7,16 +7,20 @@ use std::time::Duration;
 
 /// Create an HTTP client for LLM inference providers.
 ///
-/// Connect timeout: 30s.
-/// Request timeout: 600s — acts as a hard backstop only. The agent-level
-/// `TimeoutConfig.llm_seconds` (default 120s) fires first under normal
-/// operation; the 600s limit catches runaway requests if that layer is
-/// misconfigured or bypassed.
+/// Connect timeout is fixed at 30s. `request_timeout_secs` is a hard backstop
+/// for the full HTTP round-trip; it should be set larger than the agent-level
+/// `TimeoutConfig.llm_seconds` so the tokio-layer fires first in normal
+/// operation and this only catches runaway requests.
+///
+/// # Panics
+///
+/// Panics if the underlying TLS configuration cannot be initialized, which
+/// should never happen in a correctly compiled binary.
 #[must_use]
-pub fn llm_client() -> reqwest::Client {
+pub fn llm_client(request_timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(600))
+        .timeout(Duration::from_secs(request_timeout_secs))
         .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()

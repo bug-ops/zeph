@@ -13,7 +13,7 @@ pub mod compatible;
 pub mod error;
 #[cfg(feature = "schema")]
 pub mod extractor;
-pub(crate) mod http;
+pub mod http;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub mod ollama;

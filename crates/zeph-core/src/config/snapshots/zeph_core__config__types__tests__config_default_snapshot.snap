@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1304
 expression: toml_str
 ---
 [agent]
@@ -143,6 +142,7 @@ autonomy_level = "supervised"
 
 [timeouts]
 llm_seconds = 120
+llm_request_timeout_secs = 600
 embedding_seconds = 30
 a2a_seconds = 30
 max_parallel_tools = 8
