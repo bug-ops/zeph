@@ -158,7 +158,7 @@ pub(crate) async fn run_daemon(
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let registry = app.build_registry();
-    let memory = app.build_memory(&provider).await?;
+    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
     let all_meta = registry.all_meta();
     let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
     let skill_count = all_meta.len();
@@ -202,7 +202,16 @@ pub(crate) async fn run_daemon(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
     );
-    let tool_executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
+        std::sync::Arc::clone(&memory),
+        conversation_id,
+    );
+    let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
+        zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
+    );
+    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
+        zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base_tool)),
+    ));
 
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
 
@@ -234,7 +243,7 @@ pub(crate) async fn run_daemon(
     .with_skill_reload(skill_paths, reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
     .with_memory(
-        memory,
+        std::sync::Arc::clone(&memory),
         conversation_id,
         config.memory.history_limit,
         config.memory.semantic.recall_limit,

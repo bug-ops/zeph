@@ -138,6 +138,43 @@ response_cache_cleanup_interval_secs = 3600  # Interval for purging expired cach
 
 A periodic background task purges expired entries. The cleanup interval is configurable via `[memory] response_cache_cleanup_interval_secs` (default: 3600 seconds). Streaming responses bypass the cache entirely — only non-streaming completions are cached.
 
+## Native Memory Tools
+
+When a memory backend is configured, Zeph registers two native tools that the model can invoke explicitly during a conversation, in addition to automatic recall that runs at context-build time.
+
+### `memory_search`
+
+Searches long-term memory across three sources and returns a combined markdown result:
+
+- **Semantic recall** — vector similarity search against past messages (same as automatic recall)
+- **Key facts** — structured facts extracted and stored via `memory_save`
+- **Session summaries** — summaries from other conversations, excluding the current session
+
+The model invokes this tool when it needs to actively retrieve information rather than rely on what was injected automatically. Example: the user asks "what was the API key format we agreed on last week?" and the model has no relevant context in the current window.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | string (required) | Natural language search query |
+| `limit` | integer (optional, default 5) | Maximum number of results per source |
+
+### `memory_save`
+
+Persists content to long-term memory as a key fact, making it retrievable in future sessions.
+
+The model uses this when it identifies information worth preserving explicitly — decisions, preferences, or facts the user stated that should survive context compaction. Content is validated (non-empty, max 4096 characters) before being stored via `remember()`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `content` | string (required) | The information to persist (max 4096 characters) |
+
+### Registration
+
+`MemoryToolExecutor` is registered in the tool chain only when a memory backend is configured. If `[memory]` is absent or `[memory.semantic]` is disabled, neither tool appears in the model's tool list.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

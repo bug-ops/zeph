@@ -62,7 +62,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_memory(
         mut self,
-        memory: SemanticMemory,
+        memory: Arc<SemanticMemory>,
         conversation_id: zeph_memory::ConversationId,
         history_limit: u32,
         recall_limit: usize,

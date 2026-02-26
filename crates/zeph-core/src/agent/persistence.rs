@@ -202,8 +202,13 @@ mod tests {
             .await
             .unwrap();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 100);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
 
         let messages_before = agent.messages.len();
         agent.load_history().await.unwrap();
@@ -233,8 +238,13 @@ mod tests {
             .await
             .unwrap();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 100);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
 
         let messages_before = agent.messages.len();
         agent.load_history().await.unwrap();
@@ -252,8 +262,13 @@ mod tests {
         let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 100);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
 
         let messages_before = agent.messages.len();
         agent.load_history().await.unwrap();
@@ -287,7 +302,7 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(false, 20);
 
         agent
@@ -323,7 +338,7 @@ mod tests {
         // autosave_assistant=true but min_length=1000 — short content falls back to save_only
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(true, 1000);
 
         agent.persist_message(Role::Assistant, "too short").await;
@@ -357,7 +372,7 @@ mod tests {
         let min_length = 10usize;
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(true, min_length);
 
         // Exact boundary: len == min_length → embed path.
@@ -386,7 +401,7 @@ mod tests {
         let min_length = 10usize;
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(true, min_length);
 
         // One below boundary: len == min_length - 1 → save_only path, no embedding.
@@ -421,8 +436,13 @@ mod tests {
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
         // threshold=100 ensures no summarization is triggered
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 100);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
 
         assert_eq!(agent.memory_state.unsummarized_count, 0);
 
@@ -444,8 +464,13 @@ mod tests {
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
         // threshold=1 so the second persist triggers summarization check (count > threshold)
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 1);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            1,
+        );
 
         agent.persist_message(Role::User, "msg1").await;
         agent.persist_message(Role::User, "msg2").await;
@@ -484,7 +509,7 @@ mod tests {
         // autosave_assistant=false — but User role always takes embedding path
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(memory, cid, 50, 5, 100)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(false, 20);
 
         let long_user_msg = "A".repeat(100);

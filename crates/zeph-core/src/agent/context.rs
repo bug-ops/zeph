@@ -1908,8 +1908,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
         let msg_count = agent.messages.len();
 
         agent.inject_summaries(0).await.unwrap();
@@ -1925,8 +1930,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
         let msg_count = agent.messages.len();
 
         agent.inject_summaries(1000).await.unwrap();
@@ -1944,8 +1954,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
 
         agent.messages.push(Message {
             role: Role::User,
@@ -1977,8 +1992,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
 
         agent.messages.insert(
             1,
@@ -2026,8 +2046,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
 
         agent.messages.push(Message {
             role: Role::User,
@@ -2204,8 +2229,13 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
         let msg_count = agent.messages.len();
 
         agent.inject_cross_session_context("test", 0).await.unwrap();
@@ -2280,7 +2310,7 @@ mod tests {
         let (memory, cid) = create_memory_with_summaries(provider.clone(), &[]).await;
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory, cid, 50, 5, 50)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50)
             .with_context_budget(10000, 0.20, 0.80, 2, 0);
 
         for i in 0..10 {

@@ -897,7 +897,7 @@ mod tests {
         let config = learning_config_enabled(); // min_failures = 2
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_learning(config.clone())
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
         let allowed = agent
@@ -949,7 +949,7 @@ mod tests {
         let config = learning_config_enabled(); // improve_threshold = 0.7
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_learning(config.clone())
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
         let allowed = agent
@@ -999,7 +999,7 @@ mod tests {
         };
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_learning(config.clone())
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
         let allowed = agent
@@ -1025,7 +1025,7 @@ mod tests {
         let config = learning_config_enabled();
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_learning(config.clone())
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
         let allowed = agent
@@ -1104,7 +1104,7 @@ mod tests {
                 improve_threshold: 0.7,
                 ..learning_config_enabled()
             })
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let result = agent
             .generate_improved_skill("test-skill", "exit code 1", "response", None)
@@ -1147,7 +1147,7 @@ mod tests {
                 improve_threshold: 0.7,
                 ..learning_config_enabled()
             })
-            .with_memory(memory, cid, 50, 5, 50);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
         let result = agent
             .generate_improved_skill("test-skill", "exit code 1", "response", None)

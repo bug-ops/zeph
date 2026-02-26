@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `MemoryToolExecutor` in `zeph-core` exposes `memory_search` and `memory_save` as native tools the model can invoke explicitly
+- `memory_search` queries SemanticMemory recall, key facts, and session summaries; `memory_save` persists content to long-term memory
+- `MemoryToolExecutor` registered conditionally — only when memory backend is configured
+- `MemoryState.memory` refactored to `Option<Arc<SemanticMemory>>` for shared access
 - `McpToolExecutor` now implements `tool_definitions()` and `execute_tool_call()` — MCP tools are exposed as native `ToolDefinition`s and dispatched via structured tool_use when provider supports it
 - `McpToolExecutor` accepts `Arc<RwLock<Vec<McpTool>>>` at construction; shared reference is kept in `McpState.shared_tools` and updated on `/mcp add`/`/mcp remove`
 - `append_mcp_prompt()` skips text-based MCP tool injection when `provider.supports_tool_use()` is true, preventing duplicate tool descriptions

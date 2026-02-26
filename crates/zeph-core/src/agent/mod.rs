@@ -75,7 +75,7 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
 }
 
 pub(super) struct MemoryState {
-    pub(super) memory: Option<SemanticMemory>,
+    pub(super) memory: Option<Arc<SemanticMemory>>,
     pub(super) conversation_id: Option<zeph_memory::ConversationId>,
     pub(super) history_limit: u32,
     pub(super) recall_limit: usize,

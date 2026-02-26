@@ -134,7 +134,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let registry = app.build_registry();
-    let memory = app.build_memory(&provider).await?;
+    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
 
     let all_meta = registry.all_meta();
     let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
@@ -189,7 +189,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let tool_setup =
         agent_setup::build_tool_setup(config, permission_policy.clone(), with_tool_events).await;
-    let tool_executor = tool_setup.executor;
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
+        std::sync::Arc::clone(&memory),
+        conversation_id,
+    );
+    let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
+        std::sync::Arc::new(tool_setup.executor);
+    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
+        zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
+    ));
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
@@ -234,7 +242,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
     .with_memory(
-        memory,
+        std::sync::Arc::clone(&memory),
         conversation_id,
         config.memory.history_limit,
         config.memory.semantic.recall_limit,

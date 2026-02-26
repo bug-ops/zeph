@@ -21,6 +21,7 @@ pub mod vault;
 
 pub mod hash;
 pub mod http;
+pub mod memory_tools;
 pub mod subagent;
 
 pub use agent::Agent;
