@@ -67,6 +67,35 @@ impl ModelOrchestrator {
         self.status_tx = Some(tx);
     }
 
+    /// Aggregate model lists from all sub-providers, deduplicating by id.
+    ///
+    /// Individual sub-provider errors are logged as warnings and skipped.
+    ///
+    /// # Errors
+    ///
+    /// Always succeeds (errors per-provider are swallowed).
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        let mut seen = std::collections::HashSet::new();
+        let mut all = Vec::new();
+        for p in self.providers.values() {
+            match p.list_models_remote().await {
+                Ok(models) => {
+                    for m in models {
+                        if seen.insert(m.id.clone()) {
+                            all.push(m);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "orchestrator: list_models_remote sub-provider failed");
+                }
+            }
+        }
+        Ok(all)
+    }
+
     fn emit_status(&self, msg: impl Into<String>) {
         if let Some(ref tx) = self.status_tx {
             let _ = tx.send(msg.into());

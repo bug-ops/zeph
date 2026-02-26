@@ -34,6 +34,23 @@ impl SubProvider {
             Self::Candle(_) => {}
         }
     }
+
+    /// Fetch available models from the underlying provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote request fails.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        match self {
+            Self::Ollama(p) => p.list_models_remote().await,
+            Self::Claude(p) => p.list_models_remote().await,
+            Self::OpenAi(p) => p.list_models_remote().await,
+            #[cfg(feature = "candle")]
+            Self::Candle(_) => Ok(vec![]),
+        }
+    }
 }
 
 impl LlmProvider for SubProvider {

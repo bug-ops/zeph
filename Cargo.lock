@@ -9362,6 +9362,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "dirs",
  "eventsource-stream",
  "futures-core",
  "hf-hub",

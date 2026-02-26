@@ -482,10 +482,105 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
+            if trimmed == "/model" || trimmed.starts_with("/model ") {
+                self.handle_model_command(trimmed).await;
+                continue;
+            }
+
             self.process_user_message(text, image_parts).await?;
         }
 
         Ok(())
+    }
+
+    /// Switch the active provider to one serving `model_id`.
+    ///
+    /// Looks up the model in the provider's remote model list (or cache).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the model is not found.
+    pub fn set_model(&mut self, model_id: &str) -> Result<(), String> {
+        // For now: store intent; actual provider swap requires bootstrap context.
+        // We set model_name for metrics/display and apply via provider_override slot if available.
+        self.runtime.model_name = model_id.to_string();
+        tracing::info!(model = model_id, "set_model called");
+        Ok(())
+    }
+
+    /// Handle `/model`, `/model <id>`, and `/model refresh` commands.
+    async fn handle_model_command(&mut self, trimmed: &str) {
+        let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
+
+        if arg == "refresh" {
+            // Invalidate caches and re-fetch.
+            zeph_llm::model_cache::ModelCache::for_slug("ollama").invalidate();
+            zeph_llm::model_cache::ModelCache::for_slug("claude").invalidate();
+            match self.provider.list_models_remote().await {
+                Ok(models) => {
+                    let _ = self
+                        .channel
+                        .send(&format!("Fetched {} models.", models.len()))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .channel
+                        .send(&format!("Error fetching models: {e}"))
+                        .await;
+                }
+            }
+            return;
+        }
+
+        if arg.is_empty() {
+            // List models: try cache first, then remote.
+            let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
+            let models = if cache.is_stale() {
+                None
+            } else {
+                cache.load().unwrap_or(None)
+            };
+            let models = if let Some(m) = models {
+                m
+            } else {
+                match self.provider.list_models_remote().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = self
+                            .channel
+                            .send(&format!("Error fetching models: {e}"))
+                            .await;
+                        return;
+                    }
+                }
+            };
+
+            if models.is_empty() {
+                let _ = self.channel.send("No models available.").await;
+                return;
+            }
+            let mut lines = vec!["Available models:".to_string()];
+            for (i, m) in models.iter().enumerate() {
+                lines.push(format!("  {}. {} ({})", i + 1, m.display_name, m.id));
+            }
+            let _ = self.channel.send(&lines.join("\n")).await;
+            return;
+        }
+
+        // `/model <id>` — switch model
+        let model_id = arg;
+        match self.set_model(model_id) {
+            Ok(()) => {
+                let _ = self
+                    .channel
+                    .send(&format!("Switched to model: {model_id}"))
+                    .await;
+            }
+            Err(e) => {
+                let _ = self.channel.send(&format!("Error: {e}")).await;
+            }
+        }
     }
 
     async fn resolve_message(

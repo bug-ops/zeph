@@ -96,6 +96,72 @@ impl OpenAiProvider {
         self
     }
 
+    /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
+    #[must_use]
+    pub fn cache_slug(&self) -> String {
+        let host = self
+            .base_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("openai")
+            .split(':')
+            .next()
+            .unwrap_or("openai");
+        host.replace(['.', '-'], "_")
+    }
+
+    /// Fetch the list of available models from GET `{base_url}/v1/models` and cache them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        let url = format!("{}/v1/models", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Other(format!(
+                "OpenAI list models failed {status}: {body}"
+            )));
+        }
+
+        let page: serde_json::Value = resp.json().await?;
+        let models: Vec<crate::model_cache::RemoteModelInfo> = page
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let id = item.get("id")?.as_str()?.to_string();
+                        let created_at = item.get("created").and_then(serde_json::Value::as_i64);
+                        Some(crate::model_cache::RemoteModelInfo {
+                            display_name: id.clone(),
+                            id,
+                            context_window: None,
+                            created_at,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let slug = self.cache_slug();
+        let cache = crate::model_cache::ModelCache::for_slug(&slug);
+        cache.save(&models)?;
+        Ok(models)
+    }
+
     fn store_cache_usage(&self, usage: &OpenAiUsage) {
         let cached = usage
             .prompt_tokens_details

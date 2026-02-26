@@ -49,6 +49,25 @@ impl Clone for CompatibleProvider {
     }
 }
 
+impl CompatibleProvider {
+    /// Fetch models via the inner `OpenAiProvider`. Cache slug is derived from base URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        self.inner.list_models_remote().await
+    }
+}
+
+impl CompatibleProvider {
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        self.inner.status_tx = Some(tx);
+    }
+}
+
 impl LlmProvider for CompatibleProvider {
     fn context_window(&self) -> Option<usize> {
         None
@@ -109,12 +128,6 @@ impl LlmProvider for CompatibleProvider {
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.inner.last_cache_usage()
-    }
-}
-
-impl CompatibleProvider {
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
-        self.inner.status_tx = Some(tx);
     }
 }
 

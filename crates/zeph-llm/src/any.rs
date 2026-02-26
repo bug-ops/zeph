@@ -73,6 +73,49 @@ impl AnyProvider {
         delegate_provider!(self, |p| p.chat_typed::<T>(messages).await)
     }
 
+    /// Fetch available models from this provider and update the disk cache.
+    ///
+    /// Returns an empty list for providers that do not support remote model discovery
+    /// (Candle, Mock) without returning an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote request fails.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, crate::LlmError> {
+        match self {
+            AnyProvider::Ollama(p) => p.list_models_remote().await,
+            AnyProvider::Claude(p) => p.list_models_remote().await,
+            AnyProvider::OpenAi(p) => p.list_models_remote().await,
+            AnyProvider::Compatible(p) => p.list_models_remote().await,
+            AnyProvider::Router(p) => Ok(p
+                .list_models()
+                .into_iter()
+                .map(|id| crate::model_cache::RemoteModelInfo {
+                    display_name: id.clone(),
+                    id,
+                    context_window: None,
+                    created_at: None,
+                })
+                .collect()),
+            AnyProvider::Orchestrator(p) => Ok(p
+                .list_models()
+                .into_iter()
+                .map(|id| crate::model_cache::RemoteModelInfo {
+                    display_name: id.clone(),
+                    id,
+                    context_window: None,
+                    created_at: None,
+                })
+                .collect()),
+            #[cfg(feature = "candle")]
+            AnyProvider::Candle(_) => Ok(vec![]),
+            #[cfg(feature = "mock")]
+            AnyProvider::Mock(_) => Ok(vec![]),
+        }
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

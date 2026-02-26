@@ -16,6 +16,7 @@ pub mod extractor;
 pub mod http;
 #[cfg(feature = "mock")]
 pub mod mock;
+pub mod model_cache;
 pub mod ollama;
 pub mod openai;
 pub mod orchestrator;

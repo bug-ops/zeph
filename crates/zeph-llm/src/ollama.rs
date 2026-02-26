@@ -105,6 +105,37 @@ impl OllamaProvider {
         Ok(())
     }
 
+    /// Fetch the list of locally available models from Ollama and cache them on disk.
+    ///
+    /// On error the existing cache is preserved and the error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Ollama API request fails.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        let local_models = self
+            .client
+            .list_local_models()
+            .await
+            .map_err(|e| LlmError::Other(format!("ollama list_local_models: {e}")))?;
+
+        let models: Vec<crate::model_cache::RemoteModelInfo> = local_models
+            .into_iter()
+            .map(|m| crate::model_cache::RemoteModelInfo {
+                id: m.name.clone(),
+                display_name: m.name,
+                context_window: None,
+                created_at: None,
+            })
+            .collect();
+
+        let cache = crate::model_cache::ModelCache::for_slug("ollama");
+        cache.save(&models)?;
+        Ok(models)
+    }
+
     /// Send a minimal chat request to force Ollama to load the model into memory.
     ///
     /// # Errors
