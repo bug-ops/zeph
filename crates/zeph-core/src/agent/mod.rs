@@ -953,21 +953,11 @@ impl<C: Channel> Agent<C> {
                 if let Some((tid, req)) = mgr.try_recv_secret_request()
                     && tid == full_id
                 {
-                    // Fetch value from available secrets.
-                    let secret_val = self
-                        .skill_state
-                        .available_custom_secrets
-                        .get(&req.secret_key)
-                        .map(|s| s.expose().to_owned())
-                        .unwrap_or_default();
                     let key = req.secret_key.clone();
                     let ttl = std::time::Duration::from_secs(300);
                     if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
                         return Some(format!("Approve failed: {e}"));
                     }
-                    // secret_val is already stored in PermissionGrants by approve_secret();
-                    // deliver_secret only signals approval without re-sending the value.
-                    drop(secret_val);
                     if let Err(e) = mgr.deliver_secret(&full_id, key.clone()) {
                         return Some(format!("Secret delivery failed: {e}"));
                     }
