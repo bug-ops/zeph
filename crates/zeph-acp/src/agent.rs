@@ -528,7 +528,10 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         let trimmed_text = text.trim_start();
-        if trimmed_text.starts_with('/') && trimmed_text != "/compact" {
+        if trimmed_text.starts_with('/')
+            && trimmed_text != "/compact"
+            && trimmed_text != "/model refresh"
+        {
             return self
                 .handle_slash_command(&args.session_id, trimmed_text)
                 .await;
