@@ -35,6 +35,16 @@ struct TerminalRequest {
     reply: oneshot::Sender<Result<ShellResult, AcpError>>,
 }
 
+struct TerminalReleaseRequest {
+    session_id: acp::SessionId,
+    terminal_id: String,
+}
+
+enum TerminalMessage {
+    Execute(TerminalRequest),
+    Release(TerminalReleaseRequest),
+}
+
 /// IDE-proxied shell executor.
 ///
 /// Routes `bash` tool calls to the IDE terminal via ACP `terminal/*` methods.
@@ -42,7 +52,7 @@ struct TerminalRequest {
 #[derive(Clone)]
 pub struct AcpShellExecutor {
     session_id: acp::SessionId,
-    request_tx: mpsc::UnboundedSender<TerminalRequest>,
+    request_tx: mpsc::UnboundedSender<TerminalMessage>,
     permission_gate: Option<AcpPermissionGate>,
     timeout: Duration,
 }
@@ -76,7 +86,7 @@ impl AcpShellExecutor {
     where
         C: acp::Client + 'static,
     {
-        let (tx, rx) = mpsc::unbounded_channel::<TerminalRequest>();
+        let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
         let handler = async move { run_terminal_handler(conn, rx).await };
         (
             Self {
@@ -89,6 +99,20 @@ impl AcpShellExecutor {
         )
     }
 
+    /// Release a terminal by ID after the `tool_call_update` notification has been sent.
+    ///
+    /// This must be called after the ACP `tool_call_update` containing
+    /// `ToolCallContent::Terminal(terminal_id)` is emitted so that the IDE can
+    /// still display the terminal output when it processes the notification.
+    pub fn release_terminal(&self, terminal_id: String) {
+        self.request_tx
+            .send(TerminalMessage::Release(TerminalReleaseRequest {
+                session_id: self.session_id.clone(),
+                terminal_id,
+            }))
+            .ok();
+    }
+
     async fn execute_shell(
         &self,
         command: String,
@@ -97,14 +121,14 @@ impl AcpShellExecutor {
     ) -> Result<ShellResult, AcpError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(TerminalRequest {
+            .send(TerminalMessage::Execute(TerminalRequest {
                 session_id: self.session_id.clone(),
                 command,
                 args,
                 cwd,
                 timeout: self.timeout,
                 reply: reply_tx,
-            })
+            }))
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
     }
@@ -183,21 +207,36 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
     }
 }
 
-async fn run_terminal_handler<C>(conn: Rc<C>, mut rx: mpsc::UnboundedReceiver<TerminalRequest>)
+async fn run_terminal_handler<C>(conn: Rc<C>, mut rx: mpsc::UnboundedReceiver<TerminalMessage>)
 where
     C: acp::Client,
 {
-    while let Some(req) = rx.recv().await {
-        let result = execute_in_terminal(
-            &conn,
-            req.session_id,
-            req.command,
-            req.args,
-            req.cwd,
-            req.timeout,
-        )
-        .await;
-        req.reply.send(result).ok();
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            TerminalMessage::Execute(req) => {
+                let result = execute_in_terminal(
+                    &conn,
+                    req.session_id,
+                    req.command,
+                    req.args,
+                    req.cwd,
+                    req.timeout,
+                )
+                .await;
+                req.reply.send(result).ok();
+            }
+            TerminalMessage::Release(req) => {
+                let tid = req.terminal_id.clone();
+                let release_req = acp::ReleaseTerminalRequest::new(req.session_id, req.terminal_id);
+                if let Err(e) = conn.release_terminal(release_req).await {
+                    tracing::warn!(
+                        terminal_id = %tid,
+                        error = %e,
+                        "failed to release terminal"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -249,16 +288,12 @@ where
         }
     };
 
-    // 3. Get final output.
+    // 3. Get final output. Terminal is NOT released here — the caller releases it
+    //    after the ACP `tool_call_update` notification carrying `ToolCallContent::Terminal`
+    //    has been sent, so the IDE can still display the terminal output.
     let output_req = acp::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
     let output_resp = conn
         .terminal_output(output_req)
-        .await
-        .map_err(|e| AcpError::ClientError(e.to_string()))?;
-
-    // 4. Release terminal.
-    let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id.clone());
-    conn.release_terminal(release_req)
         .await
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
 
@@ -377,7 +412,7 @@ mod tests {
 
     #[test]
     fn tool_definitions_registers_bash() {
-        let (tx, _rx) = mpsc::unbounded_channel::<TerminalRequest>();
+        let (tx, _rx) = mpsc::unbounded_channel::<TerminalMessage>();
         let exec = AcpShellExecutor {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
