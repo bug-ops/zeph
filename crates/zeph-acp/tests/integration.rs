@@ -49,6 +49,9 @@ fn make_server_config() -> AcpServerConfig {
         discovery_enabled: true,
         terminal_timeout_secs: 120,
         project_rules: Vec::new(),
+        title_max_chars: 60,
+        max_history: 100,
+        sqlite_path: None,
     }
 }
 
