@@ -625,16 +625,25 @@ Use `resume_session` to continue a session after a Zeph process restart, or to o
 
 ### usage tracking (unstable-session-usage)
 
-`unstable-session-usage` is **enabled by default**. After each LLM response Zeph emits a `UsageUpdate` notification that IDEs render as a token usage badge (e.g. `4% · 5.6k / 144k` in Zed).
-
-Each `PromptResponse` carries a `UsageUpdate` block with token counts for the turn:
+`unstable-session-usage` is **enabled by default**. After each LLM response Zeph emits a `UsageUpdate` session notification with token counts for the turn.
 
 | Field | Description |
 |-------|-------------|
 | `used` | Total tokens currently in context (input + output) |
 | `size` | Provider context window size in tokens |
 
-IDEs use `UsageUpdate` to render the context percentage badge alongside each response. Fields not supported by the active provider are omitted.
+```jsonc
+// Zeph → IDE (SessionUpdate notification)
+{
+  "sessionUpdate": "usage_update",
+  "used": 5600,
+  "size": 144000
+}
+```
+
+IDEs that handle `UsageUpdate` can render a context percentage badge (e.g. `4% · 5.6k / 144k`). Fields not supported by the active provider are omitted.
+
+> **Note:** IDE support for `UsageUpdate` varies. As of early 2026, Zed does not yet wire up `UsageUpdate` from ACP agents to its context window UI. The notification is sent per protocol spec and will be rendered automatically once the IDE adds support.
 
 ### project rules
 
@@ -656,7 +665,9 @@ On `session/new` Zeph populates `_meta.projectRules` in the response with the ba
 }
 ```
 
-IDEs display this as a "N project rules" badge. The list is computed once at session start; hot-reload changes are not reflected until the session is re-opened (tracked in [#1003](#)).
+The list is computed once at session start; hot-reload changes are not reflected until the session is re-opened.
+
+> **Note:** The `_meta.projectRules` field is a Zeph extension. As of early 2026, Zed's "N project rules" badge is populated from its own local project context (`.zed/rules/` files) rather than from the ACP response. IDEs that implement `_meta.projectRules` parsing will display this data automatically.
 
 ### model picker (unstable-session-model)
 

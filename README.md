@@ -94,8 +94,8 @@ zeph acp --ws :8080         # WebSocket
 - `AgentCapabilities` advertises `session_capabilities`: `list`, `fork`, `resume`
 - MCP HTTP transport support in the MCP bridge
 - Unsupported content blocks (Audio, ResourceLink) produce structured log warnings instead of silent drops
-- **Usage reporting** — token counts (input, output, cache) streamed back to the IDE as `UsageUpdate` events after each turn; Zed renders this as a **Context N% · Xk / Yk** badge in the agent panel (`unstable-session-usage`, enabled by default)
-- **Loaded rules reporting** — skill paths and system rule files discovered at session start are sent to the IDE via `_meta.projectRules` in `NewSessionResponse`; Zed renders this as an **N project rules** badge
+- **Usage reporting** — token counts (input, output, cache) streamed back to the IDE as `UsageUpdate` session notifications after each turn; IDEs that support `UsageUpdate` render this as a context percentage badge (`unstable-session-usage`, enabled by default)
+- **Loaded rules reporting** — skill paths and system rule files discovered at session start are sent to the IDE via `_meta.projectRules` in `NewSessionResponse`; IDEs that implement this extension display an **N project rules** badge
 - **IDE model picker** — `SetSessionModel` lets the editor switch the active model via a native dropdown without a custom `session/configure` call (`unstable-session-model`)
 - **Auto session title** — `SessionInfoUpdate` notifies the IDE of an agent-generated session title after the first turn (`unstable-session-info-update`)
 - **Plan updates** — `SessionUpdate::Plan` events emitted during orchestrator runs so the editor can display intermediate planning steps
