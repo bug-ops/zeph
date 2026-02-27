@@ -227,7 +227,7 @@ Zeph advertises the following capabilities in the `initialize` response:
 
 ### list_sessions
 
-`list_sessions` returns all in-memory sessions with their working directory and last-active timestamp.
+`list_sessions` returns sessions merged from active in-memory state and the SQLite persistence store. The response includes `title` and `updated_at` from the persisted record when available.
 
 ```json
 // Request
@@ -239,7 +239,8 @@ Zeph advertises the following capabilities in the `initialize` response:
     {
       "session_id": "550e8400-e29b-41d4-a716-446655440000",
       "working_dir": "/home/user/project",
-      "updated_at": "42"
+      "title": "Refactor the authentication module",
+      "updated_at": "2026-02-27T01:45:00Z"
     }
   ]
 }
@@ -280,6 +281,109 @@ Event history is copied asynchronously from SQLite. If no store is configured, t
 ```
 
 If the session is already in memory, `resume_session` returns immediately without creating a duplicate.
+
+## Session history REST API
+
+When using the HTTP transport, Zeph exposes two endpoints that give ACP clients (and the CLI) access to the full persisted session history stored in SQLite. These endpoints allow IDEs to render a "Recent sessions" panel and let users resume any previous conversation.
+
+> [!IMPORTANT]
+> These endpoints are only available with the `--acp-http` HTTP transport. The stdio transport does not expose REST endpoints.
+
+> [!WARNING]
+> If `acp.auth_token` is not set, both endpoints are publicly accessible to any network client. Always configure a token in production deployments.
+
+### GET /sessions
+
+Returns a list of persisted sessions ordered by last-activity time descending.
+
+```bash
+curl http://localhost:3000/sessions \
+  -H "Authorization: Bearer <token>"
+```
+
+Response:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "title": "Refactor the authentication module",
+    "created_at": "2026-02-27T01:00:00Z",
+    "updated_at": "2026-02-27T01:45:00Z",
+    "message_count": 12
+  }
+]
+```
+
+The number of sessions returned is bounded by `memory.sessions.max_history` (default: 100). Set `max_history = 0` for unlimited results.
+
+### GET /sessions/{session_id}/messages
+
+Returns the full event log for a session in insertion order.
+
+```bash
+curl http://localhost:3000/sessions/550e8400-e29b-41d4-a716-446655440000/messages \
+  -H "Authorization: Bearer <token>"
+```
+
+Response:
+
+```json
+[
+  {
+    "event_type": "user_message",
+    "payload": "Refactor the authentication module to use JWT",
+    "created_at": "2026-02-27T01:00:00Z"
+  },
+  {
+    "event_type": "agent_message",
+    "payload": "I'll start by reviewing the current auth implementation...",
+    "created_at": "2026-02-27T01:00:05Z"
+  }
+]
+```
+
+Returns `404` if the session does not exist. Returns `400` if the `session_id` is not a valid UUID.
+
+### Resuming a session
+
+To resume a persisted session, send a `new_session` request (stdio or HTTP) with the existing `session_id`. Zeph loads the stored event log, reconstructs the conversation context, and continues from where the session left off:
+
+```json
+{
+  "method": "new_session",
+  "params": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "cwd": "/home/user/project"
+  }
+}
+```
+
+The first LLM turn in the resumed session sees the full conversation history from the previous run.
+
+### Session title inference
+
+Zeph automatically generates a short session title after the first assistant reply. The title is truncated to `memory.sessions.title_max_chars` characters (default: 60) from the first user message. The title is:
+
+1. Persisted to SQLite via `update_session_title`.
+2. Sent to the IDE as a `SessionInfoUpdate` notification (requires `unstable-session-info-update`).
+3. Returned in `GET /sessions` and in `list_sessions` responses.
+
+### Configuration
+
+```toml
+[memory.sessions]
+max_history = 100        # sessions returned by GET /sessions; 0 = unlimited
+title_max_chars = 60     # max characters in auto-generated title
+```
+
+### CLI
+
+```bash
+zeph sessions list             # print sessions table with ID, title, date
+zeph sessions resume <id>      # open existing session in interactive mode
+zeph sessions delete <id>      # delete session and its event log
+```
 
 ## Tool call lifecycle (detail)
 
@@ -580,7 +684,9 @@ Response fields per session entry:
 | `cwd` | Session working directory |
 | `updated_at` | RFC 3339 timestamp of session creation or last update |
 
-Sessions that are in memory but have no working directory set are included with an empty path. Persisted-only sessions (in SQLite but not active) are not enumerated by `list_sessions`.
+Sessions that are in memory but have no working directory set are included with an empty path. In-memory sessions are merged with SQLite-persisted sessions — in-memory entry wins on conflict.
+
+To browse all persisted sessions regardless of whether they are active, use the [Session history REST endpoints](#session-history-rest-api).
 
 ### fork_session
 

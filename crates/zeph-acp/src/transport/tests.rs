@@ -39,6 +39,9 @@ fn test_state() -> AcpHttpState {
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         },
     )
 }
@@ -59,6 +62,9 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         },
     )
 }
@@ -323,6 +329,9 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         },
     )
 }
@@ -462,6 +471,9 @@ async fn discovery_disabled_returns_404() {
             discovery_enabled: false,
             terminal_timeout_secs: 120,
             project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         },
     );
     let router = acp_router(state);
@@ -499,6 +511,9 @@ async fn reaper_removes_expired_connections() {
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         },
     );
 
@@ -530,4 +545,169 @@ async fn reaper_removes_expired_connections() {
         0,
         "reaper should have removed the expired connection"
     );
+}
+
+// ── GET /sessions tests ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_sessions_returns_503_when_store_is_none() {
+    let router = acp_router(test_state());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn list_sessions_returns_empty_array_when_no_sessions() {
+    use axum::body::to_bytes;
+
+    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    let state = test_state().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn list_sessions_returns_session_data() {
+    use axum::body::to_bytes;
+
+    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    store.create_acp_session("sess-1").await.unwrap();
+    store
+        .save_acp_event("sess-1", "user", "hello")
+        .await
+        .unwrap();
+    store
+        .update_session_title("sess-1", "Test Session")
+        .await
+        .unwrap();
+
+    let state = test_state().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], "sess-1");
+    assert_eq!(arr[0]["title"], "Test Session");
+    assert_eq!(arr[0]["message_count"], 1);
+}
+
+// ── GET /sessions/{id}/messages tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn session_messages_returns_503_when_store_is_none() {
+    let router = acp_router(test_state());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions/00000000-0000-0000-0000-000000000001/messages")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn session_messages_returns_400_for_non_uuid() {
+    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    let state = test_state().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions/not-a-uuid/messages")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn session_messages_returns_404_for_unknown_session() {
+    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    let state = test_state().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions/00000000-0000-0000-0000-000000000099/messages")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn session_messages_returns_events_for_known_session() {
+    use axum::body::to_bytes;
+
+    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    let session_id = "00000000-0000-0000-0000-000000000001";
+    store.create_acp_session(session_id).await.unwrap();
+    store
+        .save_acp_event(session_id, "user_message", "hello")
+        .await
+        .unwrap();
+
+    let state = test_state().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/sessions/{session_id}/messages"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["event_type"], "user_message");
+    assert_eq!(arr[0]["payload"], "hello");
+    assert!(arr[0]["created_at"].is_string());
 }

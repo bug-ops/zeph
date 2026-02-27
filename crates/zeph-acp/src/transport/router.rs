@@ -15,7 +15,9 @@ use crate::transport::auth::BearerAuthLayer;
 #[cfg(feature = "acp-http")]
 use crate::transport::discovery::discovery_handler;
 #[cfg(feature = "acp-http")]
-use crate::transport::http::{AcpHttpState, get_handler, post_handler};
+use crate::transport::http::{
+    AcpHttpState, get_handler, list_sessions_handler, post_handler, session_messages_handler,
+};
 #[cfg(feature = "acp-http")]
 use crate::transport::ws::ws_upgrade_handler;
 
@@ -40,12 +42,18 @@ pub fn acp_router(state: AcpHttpState) -> Router {
     let acp_routes = Router::new()
         .route("/acp", post(post_handler).get(get_handler))
         .route("/acp/ws", get(ws_upgrade_handler))
+        .route("/sessions", get(list_sessions_handler))
+        .route("/sessions/{id}/messages", get(session_messages_handler))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(CorsLayer::new());
 
     let acp_routes = if let Some(token) = state.server_config.auth_bearer_token.clone() {
         acp_routes.layer(BearerAuthLayer::new(token))
     } else {
+        tracing::warn!(
+            "ACP HTTP server started without bearer token authentication; \
+             session history endpoints are publicly accessible"
+        );
         acp_routes
     };
 

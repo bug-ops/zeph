@@ -17,6 +17,8 @@ pub enum TuiCommand {
     Help,
     NewSession,
     ToggleTheme,
+    // Session history browser (H keybind)
+    SessionBrowser,
     // Daemon / remote connection commands
     DaemonConnect,
     DaemonDisconnect,
@@ -91,6 +93,13 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "session",
             shortcut: None,
             command: TuiCommand::NewSession,
+        },
+        CommandEntry {
+            id: "session:history",
+            label: "Browse session history",
+            category: "session",
+            shortcut: Some("H"),
+            command: TuiCommand::SessionBrowser,
         },
         CommandEntry {
             id: "app:quit",
@@ -211,8 +220,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_eleven_commands() {
-        assert_eq!(command_registry().len(), 11);
+    fn registry_has_twelve_commands() {
+        assert_eq!(command_registry().len(), 12);
     }
 
     #[test]
@@ -284,6 +293,7 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "app:quit"));
         assert!(all.iter().any(|e| e.id == "app:help"));
         assert!(all.iter().any(|e| e.id == "session:new"));
+        assert!(all.iter().any(|e| e.id == "session:history"));
     }
 
     #[test]

@@ -10,6 +10,8 @@ use agent_client_protocol as acp;
 use tokio::sync::{mpsc, oneshot};
 use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
+#[cfg(feature = "unstable-session-info-update")]
+use zeph_core::text::truncate_to_chars;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 use zeph_mcp::McpManager;
@@ -123,6 +125,10 @@ pub struct ZephAcpAgent {
     mcp_manager: Option<Arc<McpManager>>,
     /// Project rule file paths advertised in `new_session` `_meta`.
     project_rules: Vec<std::path::PathBuf>,
+    /// Maximum characters for auto-generated session titles.
+    title_max_chars: usize,
+    /// Maximum number of sessions returned by `list_sessions` (0 = unlimited).
+    max_history: usize,
 }
 
 impl ZephAcpAgent {
@@ -150,6 +156,8 @@ impl ZephAcpAgent {
             available_models: Vec::new(),
             mcp_manager: None,
             project_rules: Vec::new(),
+            title_max_chars: 60,
+            max_history: 100,
         }
     }
 
@@ -186,6 +194,18 @@ impl ZephAcpAgent {
     #[must_use]
     pub fn with_project_rules(mut self, rules: Vec<std::path::PathBuf>) -> Self {
         self.project_rules = rules;
+        self
+    }
+
+    #[must_use]
+    pub fn with_title_max_chars(mut self, max_chars: usize) -> Self {
+        self.title_max_chars = max_chars;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_history(mut self, max_history: usize) -> Self {
+        self.max_history = max_history;
         self
     }
 
@@ -691,6 +711,7 @@ impl acp::Agent for ZephAcpAgent {
                     let sid = args.session_id.clone();
                     let store = self.store.clone();
                     let notify_tx = self.notify_tx.clone();
+                    let title_max_chars = self.title_max_chars;
                     tokio::task::spawn_local(async move {
                         let prompt = format!(
                             "Generate a concise 5-7 word title for a conversation that starts \
@@ -700,32 +721,33 @@ impl acp::Agent for ZephAcpAgent {
                             zeph_llm::provider::Role::User,
                             &prompt,
                         )];
-                        match tokio::time::timeout(
+
+                        let title = match tokio::time::timeout(
                             std::time::Duration::from_secs(15),
                             provider.chat(&messages),
                         )
                         .await
                         {
-                            Ok(Ok(title)) => {
-                                let title = title.trim().to_owned();
-                                if let Some(ref store) = store {
-                                    let _ =
-                                        store.update_session_title(&sid.to_string(), &title).await;
-                                }
-                                let update = acp::SessionUpdate::SessionInfoUpdate(
-                                    acp::SessionInfoUpdate::new().title(title),
-                                );
-                                let notification = acp::SessionNotification::new(sid, update);
-                                let (tx, _rx) = oneshot::channel();
-                                notify_tx.send((notification, tx)).ok();
-                            }
+                            Ok(Ok(t)) => truncate_to_chars(t.trim(), title_max_chars),
                             Ok(Err(e)) => {
                                 tracing::debug!(error = %e, "title generation LLM call failed");
+                                truncate_to_chars(&user_text, title_max_chars)
                             }
                             Err(_) => {
                                 tracing::debug!("title generation timed out");
+                                truncate_to_chars(&user_text, title_max_chars)
                             }
+                        };
+
+                        if let Some(ref store) = store {
+                            let _ = store.update_session_title(&sid.to_string(), &title).await;
                         }
+                        let update = acp::SessionUpdate::SessionInfoUpdate(
+                            acp::SessionInfoUpdate::new().title(title),
+                        );
+                        let notification = acp::SessionNotification::new(sid, update);
+                        let (tx, _rx) = oneshot::channel();
+                        notify_tx.send((notification, tx)).ok();
                     });
                 }
             }
@@ -867,20 +889,51 @@ impl acp::Agent for ZephAcpAgent {
         &self,
         args: acp::ListSessionsRequest,
     ) -> acp::Result<acp::ListSessionsResponse> {
-        let sessions = self.sessions.borrow();
-        let mut result = Vec::with_capacity(sessions.len());
-        for (session_id, entry) in sessions.iter() {
-            let working_dir = entry.working_dir.borrow().clone().unwrap_or_default();
-            if let Some(ref filter) = args.cwd
-                && &working_dir != filter
-            {
-                continue;
+        // Collect in-memory sessions, keyed by session_id string.
+        let mut result: std::collections::HashMap<String, acp::SessionInfo> = {
+            let sessions = self.sessions.borrow();
+            sessions
+                .iter()
+                .filter_map(|(session_id, entry)| {
+                    let working_dir = entry.working_dir.borrow().clone().unwrap_or_default();
+                    if let Some(ref filter) = args.cwd
+                        && &working_dir != filter
+                    {
+                        return None;
+                    }
+                    let info = acp::SessionInfo::new(session_id.clone(), working_dir)
+                        .updated_at(entry.created_at.to_rfc3339());
+                    Some((session_id.to_string(), info))
+                })
+                .collect()
+        };
+
+        // Merge persisted sessions from SQLite (in-memory entries take precedence).
+        if let Some(ref store) = self.store {
+            match store.list_acp_sessions(self.max_history).await {
+                Ok(persisted) => {
+                    for persisted_info in persisted {
+                        let sid = acp::SessionId::new(&*persisted_info.id);
+                        if result.contains_key(&persisted_info.id) {
+                            continue;
+                        }
+                        let info = acp::SessionInfo::new(sid, std::path::PathBuf::new())
+                            .title(persisted_info.title)
+                            .updated_at(persisted_info.updated_at);
+                        result.insert(persisted_info.id, info);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to list persisted ACP sessions");
+                }
             }
-            let info = acp::SessionInfo::new(session_id.clone(), working_dir)
-                .updated_at(entry.created_at.to_rfc3339());
-            result.push(info);
         }
-        Ok(acp::ListSessionsResponse::new(result))
+
+        let mut sessions_vec: Vec<acp::SessionInfo> = result.into_values().collect();
+        // Sort by updated_at descending so most-recent sessions come first.
+        sessions_vec.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+        Ok(acp::ListSessionsResponse::new(sessions_vec))
     }
 
     #[cfg(feature = "unstable-session-fork")]

@@ -101,6 +101,7 @@ zeph acp --ws :8080         # WebSocket
 - **Plan updates** — `SessionUpdate::Plan` events emitted during orchestrator runs so the editor can display intermediate planning steps
 - **Slash commands** — `AvailableCommandsUpdate` advertises built-in slash commands (`/help`, `/model`, `/mode`, `/clear`, `/compact`); user input starting with `/` is dispatched to the matching handler
 - **LSP diagnostics injection** — `@diagnostics` mention in a Zed prompt triggers LSP diagnostic context injection, providing the agent with current editor diagnostics
+- **Session history** — `GET /sessions` lists persisted sessions with title, timestamp, and message count; `GET /sessions/{id}/messages` returns the full event log; sending an existing `session_id` resumes the conversation from stored context; title auto-inferred from the first user message
 
 > [!NOTE]
 > `list_sessions`, `fork_session`, and `resume_session` are gated behind the `unstable` feature flag. `UsageUpdate`, `SetSessionModel`, and `SessionInfoUpdate` are gated behind their respective `unstable-session-usage`, `unstable-session-model`, and `unstable-session-info-update` flags.

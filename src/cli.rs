@@ -95,6 +95,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
+    /// Manage ACP session history
+    #[cfg(feature = "acp")]
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -146,6 +152,23 @@ pub(crate) enum SkillCommand {
     Unblock {
         /// Skill name
         name: String,
+    },
+}
+
+#[cfg(feature = "acp")]
+#[derive(Subcommand)]
+pub(crate) enum SessionsCommand {
+    /// List recent ACP sessions
+    List,
+    /// Resume a past session by ID (print events to stdout)
+    Resume {
+        /// Session ID
+        id: String,
+    },
+    /// Delete an ACP session and its events
+    Delete {
+        /// Session ID
+        id: String,
     },
 }
 

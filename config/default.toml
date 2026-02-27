@@ -207,6 +207,12 @@ cross_session_score_threshold = 0.35
 # Minimum character length for autosave (shorter responses skip embedding)
 # autosave_min_length = 20
 
+[memory.sessions]
+# Maximum number of sessions returned by list operations (0 = unlimited)
+max_history = 100
+# Maximum characters for auto-generated session titles
+title_max_chars = 60
+
 [memory.semantic]
 # Enable semantic memory with vector search
 enabled = true

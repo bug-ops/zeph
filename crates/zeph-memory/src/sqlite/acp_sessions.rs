@@ -7,11 +7,15 @@ use crate::sqlite::SqliteStore;
 pub struct AcpSessionEvent {
     pub event_type: String,
     pub payload: String,
+    pub created_at: String,
 }
 
 pub struct AcpSessionInfo {
     pub id: String,
+    pub title: Option<String>,
     pub created_at: String,
+    pub updated_at: String,
+    pub message_count: i64,
 }
 
 impl SqliteStore {
@@ -59,8 +63,8 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<AcpSessionEvent>, MemoryError> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT event_type, payload FROM acp_session_events WHERE session_id = ? ORDER BY id",
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT event_type, payload, created_at FROM acp_session_events WHERE session_id = ? ORDER BY id",
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -68,9 +72,10 @@ impl SqliteStore {
 
         Ok(rows
             .into_iter()
-            .map(|(event_type, payload)| AcpSessionEvent {
+            .map(|(event_type, payload, created_at)| AcpSessionEvent {
                 event_type,
                 payload,
+                created_at,
             })
             .collect())
     }
@@ -88,21 +93,76 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// List all ACP sessions ordered by creation time descending.
+    /// List ACP sessions ordered by last activity descending.
+    ///
+    /// Includes title, `updated_at`, and message count per session.
+    /// Pass `limit = 0` for unlimited results.
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    pub async fn list_acp_sessions(&self) -> Result<Vec<AcpSessionInfo>, MemoryError> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT id, created_at FROM acp_sessions ORDER BY created_at DESC",
+    pub async fn list_acp_sessions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AcpSessionInfo>, MemoryError> {
+        // LIMIT -1 in SQLite means no limit; cast limit=0 sentinel to -1.
+        #[allow(clippy::cast_possible_wrap)]
+        let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
+        let rows = sqlx::query_as::<_, (String, Option<String>, String, String, i64)>(
+            "SELECT s.id, s.title, s.created_at, s.updated_at, \
+             (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
+             FROM acp_sessions s \
+             ORDER BY s.updated_at DESC \
+             LIMIT ?",
         )
+        .bind(sql_limit)
         .fetch_all(&self.pool)
         .await?;
+
         Ok(rows
             .into_iter()
-            .map(|(id, created_at)| AcpSessionInfo { id, created_at })
+            .map(
+                |(id, title, created_at, updated_at, message_count)| AcpSessionInfo {
+                    id,
+                    title,
+                    created_at,
+                    updated_at,
+                    message_count,
+                },
+            )
             .collect())
+    }
+
+    /// Fetch metadata for a single ACP session.
+    ///
+    /// Returns `None` if the session does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn get_acp_session_info(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AcpSessionInfo>, MemoryError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, String, String, i64)>(
+            "SELECT s.id, s.title, s.created_at, s.updated_at, \
+             (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
+             FROM acp_sessions s \
+             WHERE s.id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, title, created_at, updated_at, message_count)| AcpSessionInfo {
+                id,
+                title,
+                created_at,
+                updated_at,
+                message_count,
+            },
+        ))
     }
 
     /// Insert multiple events for a session inside a single transaction.
@@ -224,5 +284,133 @@ mod tests {
         let store = make_store().await;
         let events = store.load_acp_events("no-such").await.unwrap();
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_includes_title_and_message_count() {
+        let store = make_store().await;
+        store.create_acp_session("sess-b").await.unwrap();
+
+        // Sleep so that sess-a's events land in a different second than sess-b's
+        // created_at, making the updated_at DESC ordering deterministic.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        store.create_acp_session("sess-a").await.unwrap();
+        store.save_acp_event("sess-a", "user", "hi").await.unwrap();
+        store
+            .save_acp_event("sess-a", "agent", "hello")
+            .await
+            .unwrap();
+        store
+            .update_session_title("sess-a", "My Chat")
+            .await
+            .unwrap();
+
+        let sessions = store.list_acp_sessions(100).await.unwrap();
+        // sess-a has events so updated_at is newer — should be first
+        assert_eq!(sessions[0].id, "sess-a");
+        assert_eq!(sessions[0].title.as_deref(), Some("My Chat"));
+        assert_eq!(sessions[0].message_count, 2);
+
+        // sess-b has no events
+        let b = sessions.iter().find(|s| s.id == "sess-b").unwrap();
+        assert!(b.title.is_none());
+        assert_eq!(b.message_count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_respects_limit() {
+        let store = make_store().await;
+        for i in 0..5u8 {
+            store
+                .create_acp_session(&format!("sess-{i}"))
+                .await
+                .unwrap();
+        }
+        let sessions = store.list_acp_sessions(3).await.unwrap();
+        assert_eq!(sessions.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_limit_one_boundary() {
+        let store = make_store().await;
+        for i in 0..3u8 {
+            store
+                .create_acp_session(&format!("sess-{i}"))
+                .await
+                .unwrap();
+        }
+        let sessions = store.list_acp_sessions(1).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_unlimited_when_zero() {
+        let store = make_store().await;
+        for i in 0..5u8 {
+            store
+                .create_acp_session(&format!("sess-{i}"))
+                .await
+                .unwrap();
+        }
+        let sessions = store.list_acp_sessions(0).await.unwrap();
+        assert_eq!(sessions.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn get_acp_session_info_returns_none_for_missing() {
+        let store = make_store().await;
+        let info = store.get_acp_session_info("no-such").await.unwrap();
+        assert!(info.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_acp_session_info_returns_data() {
+        let store = make_store().await;
+        store.create_acp_session("sess-x").await.unwrap();
+        store
+            .save_acp_event("sess-x", "user", "hello")
+            .await
+            .unwrap();
+        store.update_session_title("sess-x", "Test").await.unwrap();
+
+        let info = store.get_acp_session_info("sess-x").await.unwrap().unwrap();
+        assert_eq!(info.id, "sess-x");
+        assert_eq!(info.title.as_deref(), Some("Test"));
+        assert_eq!(info.message_count, 1);
+    }
+
+    #[tokio::test]
+    async fn updated_at_trigger_fires_on_event_insert() {
+        let store = make_store().await;
+        store.create_acp_session("sess-t").await.unwrap();
+
+        let before = store
+            .get_acp_session_info("sess-t")
+            .await
+            .unwrap()
+            .unwrap()
+            .updated_at
+            .clone();
+
+        // Small sleep so datetime('now') differs
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        store
+            .save_acp_event("sess-t", "user", "ping")
+            .await
+            .unwrap();
+
+        let after = store
+            .get_acp_session_info("sess-t")
+            .await
+            .unwrap()
+            .unwrap()
+            .updated_at;
+
+        assert!(
+            after > before,
+            "updated_at should increase after event insert: before={before} after={after}"
+        );
     }
 }
