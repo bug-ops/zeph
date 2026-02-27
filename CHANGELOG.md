@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-02-27
+
+### Fixed
+- Skill matching fallback: when `QdrantSkillMatcher` returns an empty result set (embed error or Qdrant unavailable), the agent now falls back to all registered skills instead of running with an empty active-skill list
+- Orchestrator context window detection: `build_provider` now calls `auto_detect_context_window` for `AnyProvider::Orchestrator` so that `auto_budget_tokens` returns a correct value and `prepare_context` injects semantic recall, summaries, and cross-session memories
+
 ### Added
 - `docs/src/guides/ide-integration.md` — IDE integration guide covering ACP stdio setup, Zed and VS Code configuration, and subagent visibility features (nesting, terminal streaming, agent following) (#1011)
 - ACP context window usage widget: `unstable-session-usage` feature enabled in `zeph-acp` by default; `UsageUpdate` (`used`/`size` tokens) now emitted after each LLM response, populating the Context badge in Zed IDE (#1002)
@@ -1427,7 +1433,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/bug-ops/zeph/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/bug-ops/zeph/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/bug-ops/zeph/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/bug-ops/zeph/compare/v0.11.6...v0.12.0
