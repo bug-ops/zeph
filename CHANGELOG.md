@@ -47,6 +47,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New `zeph-acp` feature flags: `unstable-session-usage`, `unstable-session-model`, `unstable-session-info-update`; all enabled by default
 
 ### Fixed
+- `zeph-acp`: tool output content now always appears in ACP tool call blocks (Zed IDE); removed `if !already_streamed` guard so `LoopbackEvent::ToolOutput` is emitted unconditionally for all channels including ACP (#1003)
+- `zeph-acp`: fenced-block tool execution path now generates a stable UUID `tool_call_id`, emits `ToolStart` before output, and passes the ID to `send_tool_output` — eliminating orphaned `ToolCallUpdate` events with empty ID (#1003)
 - `AcpShellExecutor`: `terminal_timeout_secs` config value was silently ignored; now correctly passed to `with_timeout` (#956)
 - `tests/integration.rs`: added missing `llm_request_timeout_secs` field in `TimeoutConfig` initializer (#956)
 - `zeph-acp`: XML-escape `path`, `severity`, and `message` fields in diagnostics context block to prevent prompt injection (#962)

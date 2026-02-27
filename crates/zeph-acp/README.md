@@ -79,7 +79,10 @@ The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE c
 1. **Before execution** — `SessionUpdate::ToolCall` with `status: InProgress` is sent as soon as tool invocation begins, enabling the IDE to display a running indicator.
 2. **After execution** — `SessionUpdate::ToolCallUpdate` with `status: Completed` (or `Failed` on error) carries the output content and optional file locations.
 
-Each tool call is identified by a UUID generated at the start of the turn. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement.
+Each tool call is identified by a UUID generated per invocation. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement. Both the fenced-block execution path (`handle_tool_result`) and the structured parallel tool-call path emit this full two-step sequence unconditionally — output content always appears inside a tool call block in the IDE regardless of which path handled the tool.
+
+> [!NOTE]
+> Prior to the fix for issue #1003, the fenced-block path did not generate a UUID or emit `ToolStart`, and `send_tool_output` was skipped when a tool had already streamed partial output. Both paths now always produce the complete lifecycle sequence.
 
 ### Terminal command timeout
 

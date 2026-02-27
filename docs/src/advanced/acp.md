@@ -153,9 +153,11 @@ The wizard will ask whether to enable ACP and which agent name/version to use.
 Zeph follows the ACP protocol specification for tool call notifications. Each tool invocation produces two session updates visible to the IDE:
 
 1. **`SessionUpdate::ToolCall` with `status: InProgress`** — emitted immediately before the tool executes. The IDE can display a running spinner or pending indicator.
-2. **`SessionUpdate::ToolCallUpdate` with `status: Completed` or `Failed`** — emitted after execution completes, carrying the output content and optional file locations for source navigation.
+2. **`SessionUpdate::ToolCallUpdate` with `status: Completed` or `Failed`** — emitted after execution completes, carrying the full output content as a `ContentBlock::Text` and optional file locations for source navigation.
 
 Both updates share the same UUID so the IDE can correlate them. Tools that finish successfully use `Completed`; tools that return an error (non-zero exit code, exception, or explicit failure) use `Failed`.
+
+> **Note:** Prior to the fix for issue #1003, tool output content was not forwarded from the agent loop to the ACP channel. The `ToolCallUpdate` now carries the complete tool output text, which is why tool blocks in Zed and other ACP-compatible IDEs display the full execution result.
 
 ### Terminal command timeout
 
@@ -279,14 +281,16 @@ Event history is copied asynchronously from SQLite. If no store is configured, t
 
 If the session is already in memory, `resume_session` returns immediately without creating a duplicate.
 
-## Tool call lifecycle
+## Tool call lifecycle (detail)
 
 Each tool invocation follows a two-step lifecycle:
 
-1. **`InProgress`** — emitted immediately when the agent starts executing a tool
-2. **`Completed`** — emitted after the tool returns its output
+1. **`InProgress`** — emitted immediately when the agent starts executing a tool.
+2. **`Completed`** — emitted after the tool returns its output. The update carries the full execution result as a text content block, making the output visible inside tool blocks in Zed and other ACP IDEs.
 
 The IDE can use the `InProgress` update to show a spinner or disable UI input while the tool runs. Zeph emits both updates in order for every tool output within a turn before streaming the next assistant token.
+
+The output text in the `Completed` update goes through the same redaction and output-filter pipeline as text sent to other channels. Secrets detected by the security pass are redacted before reaching the IDE.
 
 ### Terminal tool calls
 

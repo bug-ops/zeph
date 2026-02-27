@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- ACP: tool execution output is now correctly forwarded via `LoopbackEvent::ToolOutput` to the ACP channel and mapped to `SessionUpdate::ToolCallUpdate` with a `ContentBlock::Text`. Tool blocks in Zed and other ACP-compatible IDEs now display the full output content instead of an empty block (#1003).
+
 ## [0.12.1] - 2026-02-25
 
 ### Security

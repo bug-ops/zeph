@@ -120,9 +120,11 @@ Each tool invocation generates a UUID and sends two notifications:
 | Notification | When | Content |
 |-------------|------|---------|
 | `SessionUpdate::ToolCall(InProgress)` | Before execution starts | Tool name, kind, UUID |
-| `SessionUpdate::ToolCallUpdate(Completed\|Failed)` | After execution finishes | Output text, file locations, UUID |
+| `SessionUpdate::ToolCallUpdate(Completed\|Failed)` | After execution finishes | Full output text (`ContentBlock::Text`), file locations, UUID |
 
 The UUID links both notifications so the IDE can update the same UI element — replacing a spinner with the result rather than creating two separate entries.
+
+The output text in `ToolCallUpdate` is the `display` field from `LoopbackEvent::ToolOutput`, forwarded through `zeph-core`'s agent loop to the ACP channel. This is the same text that appears in the CLI output, after the output-filter pipeline and secret redaction have been applied.
 
 ### Tool kinds
 

@@ -511,6 +511,10 @@ impl<C: Channel> Agent<C> {
                     self.record_skill_outcomes("success", None).await;
                 }
 
+                let tool_call_id = uuid::Uuid::new_v4().to_string();
+                self.channel
+                    .send_tool_start(&output.tool_name, &tool_call_id, None)
+                    .await?;
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
                 let body = if let Some(ref fs) = output.filter_stats
                     && fs.filtered_chars < fs.raw_chars
@@ -531,7 +535,7 @@ impl<C: Channel> Agent<C> {
                         None,
                         filter_stats_inline,
                         None,
-                        "",
+                        &tool_call_id,
                         false,
                     )
                     .await?;
@@ -564,11 +568,23 @@ impl<C: Channel> Agent<C> {
                     if let Ok(Some(out)) =
                         self.tool_executor.execute_confirmed_erased(response).await
                     {
+                        let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
+                        self.channel
+                            .send_tool_start(&out.tool_name, &confirmed_tool_call_id, None)
+                            .await?;
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         let display = self.maybe_redact(&formatted);
                         self.channel
-                            .send_tool_output(&out.tool_name, &display, None, None, None, "", false)
+                            .send_tool_output(
+                                &out.tool_name,
+                                &display,
+                                None,
+                                None,
+                                None,
+                                &confirmed_tool_call_id,
+                                false,
+                            )
                             .await?;
                         self.push_message(Message::from_parts(
                             Role::User,
@@ -972,49 +988,49 @@ impl<C: Channel> Agent<C> {
             .zip(tool_results)
             .zip(tool_call_ids.iter())
         {
-            let (output, is_error, diff, inline_stats, already_streamed, kept_lines) =
-                match tool_result {
-                    Ok(Some(out)) => {
-                        if let Some(ref fs) = out.filter_stats {
-                            let saved = fs.estimated_tokens_saved() as u64;
-                            let raw = (fs.raw_chars / 4) as u64;
-                            let confidence = fs.confidence;
-                            let was_filtered = fs.filtered_chars < fs.raw_chars;
-                            self.update_metrics(|m| {
-                                m.filter_raw_tokens += raw;
-                                m.filter_saved_tokens += saved;
-                                m.filter_applications += 1;
-                                m.filter_total_commands += 1;
-                                if was_filtered {
-                                    m.filter_filtered_commands += 1;
-                                }
-                                if let Some(c) = confidence {
-                                    match c {
-                                        zeph_tools::FilterConfidence::Full => {
-                                            m.filter_confidence_full += 1;
-                                        }
-                                        zeph_tools::FilterConfidence::Partial => {
-                                            m.filter_confidence_partial += 1;
-                                        }
-                                        zeph_tools::FilterConfidence::Fallback => {
-                                            m.filter_confidence_fallback += 1;
-                                        }
+            let (output, is_error, diff, inline_stats, _, kept_lines) = match tool_result {
+                Ok(Some(out)) => {
+                    if let Some(ref fs) = out.filter_stats {
+                        let saved = fs.estimated_tokens_saved() as u64;
+                        let raw = (fs.raw_chars / 4) as u64;
+                        let confidence = fs.confidence;
+                        let was_filtered = fs.filtered_chars < fs.raw_chars;
+                        self.update_metrics(|m| {
+                            m.filter_raw_tokens += raw;
+                            m.filter_saved_tokens += saved;
+                            m.filter_applications += 1;
+                            m.filter_total_commands += 1;
+                            if was_filtered {
+                                m.filter_filtered_commands += 1;
+                            }
+                            if let Some(c) = confidence {
+                                match c {
+                                    zeph_tools::FilterConfidence::Full => {
+                                        m.filter_confidence_full += 1;
+                                    }
+                                    zeph_tools::FilterConfidence::Partial => {
+                                        m.filter_confidence_partial += 1;
+                                    }
+                                    zeph_tools::FilterConfidence::Fallback => {
+                                        m.filter_confidence_fallback += 1;
                                     }
                                 }
-                            });
-                        }
-                        let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
+                            }
                         });
-                        let kept = out.filter_stats.as_ref().and_then(|fs| {
-                            (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone())
-                        });
-                        let streamed = out.streamed;
-                        (out.summary, false, out.diff, inline_stats, streamed, kept)
                     }
-                    Ok(None) => ("(no output)".to_owned(), false, None, None, false, None),
-                    Err(e) => (format!("[error] {e}"), true, None, None, false, None),
-                };
+                    let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
+                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
+                    });
+                    let kept = out
+                        .filter_stats
+                        .as_ref()
+                        .and_then(|fs| (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone()));
+                    let streamed = out.streamed;
+                    (out.summary, false, out.diff, inline_stats, streamed, kept)
+                }
+                Ok(None) => ("(no output)".to_owned(), false, None, None, false, None),
+                Err(e) => (format!("[error] {e}"), true, None, None, false, None),
+            };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
             let body = if let Some(ref stats) = inline_stats {
@@ -1023,21 +1039,17 @@ impl<C: Channel> Agent<C> {
                 processed.clone()
             };
             let body_display = self.maybe_redact(&body);
-            // Tools that already streamed via ToolEvent channel (e.g. bash) have their
-            // output displayed by the TUI event forwarder; skip duplicate send.
-            if !already_streamed {
-                self.channel
-                    .send_tool_output(
-                        &tc.name,
-                        &body_display,
-                        diff,
-                        inline_stats,
-                        kept_lines,
-                        tool_call_id,
-                        is_error,
-                    )
-                    .await?;
-            }
+            self.channel
+                .send_tool_output(
+                    &tc.name,
+                    &body_display,
+                    diff,
+                    inline_stats,
+                    kept_lines,
+                    tool_call_id,
+                    is_error,
+                )
+                .await?;
 
             result_parts.push(MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
@@ -2194,5 +2206,117 @@ mod tests {
             assert!(result.is_err());
             assert!(result.unwrap_err().is_context_length_error());
         }
+    }
+
+    // Regression tests for issue #1003: tool output must reach all channel types
+    // regardless of whether the tool streamed its output.
+    #[tokio::test]
+    async fn handle_tool_result_sends_output_when_streamed_true() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_tools::executor::ToolOutput;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let output = ToolOutput {
+            tool_name: "bash".into(),
+            summary: "streamed content".into(),
+            blocks_executed: 1,
+            diff: None,
+            filter_stats: None,
+            streamed: true,
+            terminal_id: None,
+        };
+        agent
+            .handle_tool_result("response", Ok(Some(output)))
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("bash")),
+            "send_tool_output must be called even when streamed=true; got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
+        use super::super::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
+        use crate::channel::{LoopbackChannel, LoopbackEvent};
+        use zeph_tools::executor::ToolOutput;
+
+        let (loopback, mut handle) = LoopbackChannel::pair(32);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, loopback, registry, None, 5, executor);
+
+        let output = ToolOutput {
+            tool_name: "grep".into(),
+            summary: "match found".into(),
+            blocks_executed: 1,
+            diff: None,
+            filter_stats: None,
+            streamed: false,
+            terminal_id: None,
+        };
+        agent
+            .handle_tool_result("response", Ok(Some(output)))
+            .await
+            .unwrap();
+
+        drop(agent);
+
+        let mut events = Vec::new();
+        while let Ok(ev) = handle.output_rx.try_recv() {
+            events.push(ev);
+        }
+
+        let tool_start_pos = events.iter().position(|e| {
+            matches!(e, LoopbackEvent::ToolStart { tool_name, tool_call_id, .. }
+                if tool_name == "grep" && !tool_call_id.is_empty())
+        });
+        let tool_output_pos = events.iter().position(|e| {
+            matches!(e, LoopbackEvent::ToolOutput { tool_name, tool_call_id, .. }
+                if tool_name == "grep" && !tool_call_id.is_empty())
+        });
+
+        assert!(
+            tool_start_pos.is_some(),
+            "LoopbackEvent::ToolStart with non-empty tool_call_id must be emitted; events: {events:?}"
+        );
+        assert!(
+            tool_output_pos.is_some(),
+            "LoopbackEvent::ToolOutput with non-empty tool_call_id must be emitted; events: {events:?}"
+        );
+        assert!(
+            tool_start_pos < tool_output_pos,
+            "ToolStart must precede ToolOutput; start={tool_start_pos:?} output={tool_output_pos:?}"
+        );
+
+        // Verify both events share the same tool_call_id.
+        let start_id = events.iter().find_map(|e| {
+            if let LoopbackEvent::ToolStart { tool_call_id, .. } = e {
+                Some(tool_call_id.clone())
+            } else {
+                None
+            }
+        });
+        let output_id = events.iter().find_map(|e| {
+            if let LoopbackEvent::ToolOutput { tool_call_id, .. } = e {
+                Some(tool_call_id.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            start_id, output_id,
+            "ToolStart and ToolOutput must share the same tool_call_id"
+        );
     }
 }

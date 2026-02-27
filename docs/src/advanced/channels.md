@@ -82,7 +82,7 @@ zeph --tui
 Internal headless channel used by daemon mode and ACP sessions. `LoopbackChannel` bridges the caller with the agent loop via two linked tokio mpsc pairs. The handle side (`LoopbackHandle`) exposes:
 
 - `input_tx` — send user messages into the agent loop
-- `output_rx` — receive `LoopbackEvent` variants (`Chunk`, `Flush`, `FullMessage`, `Status`, `ToolOutput`). `ToolOutput` carries an optional `locations: Vec<ToolCallLocation>` field with file paths and line ranges for IDE navigation
+- `output_rx` — receive `LoopbackEvent` variants (`Chunk`, `Flush`, `FullMessage`, `Status`, `ToolOutput`). `ToolOutput` carries the full tool execution result (`display: String`), an optional `locations: Vec<ToolCallLocation>` field with file paths and line ranges for IDE navigation, and an optional `terminal_id` for terminal-proxied commands. The ACP layer converts this into `SessionUpdate::ToolCallUpdate` with a `ContentBlock::Text` carrying the output, making the content visible in tool blocks in Zed and other ACP-compatible IDEs.
 - `cancel_signal: Arc<Notify>` — fire `notify_one()` to interrupt the running agent turn; shared with `AcpContext` so an IDE `cancel` call propagates directly to the agent
 
 Confirmations are auto-approved.
