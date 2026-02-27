@@ -832,6 +832,15 @@ impl App {
             TuiCommand::ToggleTheme => {
                 self.push_system_message("Theme switching is not yet implemented.".to_owned());
             }
+            TuiCommand::SessionBrowser => {
+                if let Some(ref tx) = self.command_tx {
+                    let _ = tx.try_send(cmd);
+                } else {
+                    self.push_system_message(
+                        "Session browser not available (no command channel).".to_owned(),
+                    );
+                }
+            }
             TuiCommand::DaemonConnect | TuiCommand::DaemonDisconnect | TuiCommand::DaemonStatus => {
                 self.push_system_message(
                     "Daemon commands are not yet implemented in this mode.".to_owned(),
@@ -855,6 +864,7 @@ impl App {
                 }
             }
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('H') => self.execute_command(TuiCommand::SessionBrowser),
             KeyCode::Char('i') => self.input_mode = InputMode::Insert,
             KeyCode::Char(':') => {
                 self.command_palette = Some(CommandPaletteState::new());

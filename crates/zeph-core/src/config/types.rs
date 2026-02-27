@@ -524,10 +524,40 @@ pub struct MemoryConfig {
     pub tool_call_cutoff: usize,
     #[serde(default = "default_sqlite_pool_size")]
     pub sqlite_pool_size: u32,
+    #[serde(default)]
+    pub sessions: SessionsConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
     5
+}
+
+fn default_max_history() -> usize {
+    100
+}
+
+fn default_title_max_chars() -> usize {
+    60
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SessionsConfig {
+    /// Maximum number of sessions returned by list operations (0 = unlimited).
+    #[serde(default = "default_max_history")]
+    pub max_history: usize,
+    /// Maximum characters for auto-generated session titles.
+    #[serde(default = "default_title_max_chars")]
+    pub title_max_chars: usize,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            max_history: default_max_history(),
+            title_max_chars: default_title_max_chars(),
+        }
+    }
 }
 
 fn default_autosave_min_length() -> usize {
@@ -1320,6 +1350,7 @@ impl Default for Config {
                 autosave_min_length: default_autosave_min_length(),
                 tool_call_cutoff: default_tool_call_cutoff(),
                 sqlite_pool_size: default_sqlite_pool_size(),
+                sessions: SessionsConfig::default(),
             },
             telegram: None,
             discord: None,

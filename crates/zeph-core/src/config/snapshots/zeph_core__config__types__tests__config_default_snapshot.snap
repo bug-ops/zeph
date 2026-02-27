@@ -65,6 +65,10 @@ temporal_decay_half_life_days = 30
 mmr_enabled = false
 mmr_lambda = 0.7
 
+[memory.sessions]
+max_history = 100
+title_max_chars = 60
+
 [tools]
 enabled = true
 summarize_output = true

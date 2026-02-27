@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SlackConfig,
-    TelegramConfig, VaultConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SessionsConfig,
+    SlackConfig, TelegramConfig, VaultConfig,
 };
 
 #[derive(Default)]
@@ -22,6 +22,8 @@ pub(crate) struct WizardState {
     pub(crate) api_key: Option<String>,
     pub(crate) compatible_name: Option<String>,
     pub(crate) sqlite_path: Option<String>,
+    pub(crate) sessions_max_history: usize,
+    pub(crate) sessions_title_max_chars: usize,
     pub(crate) qdrant_url: Option<String>,
     pub(crate) semantic_enabled: bool,
     pub(crate) channel: ChannelChoice,
@@ -315,6 +317,16 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             .interact_text()?,
     );
 
+    state.sessions_max_history = Input::new()
+        .with_prompt("Maximum number of sessions to list (0 = unlimited)")
+        .default(100usize)
+        .interact_text()?;
+
+    state.sessions_title_max_chars = Input::new()
+        .with_prompt("Maximum characters for auto-generated session titles")
+        .default(60usize)
+        .interact_text()?;
+
     state.semantic_enabled = Confirm::new()
         .with_prompt("Enable semantic memory (requires Qdrant)?")
         .default(true)
@@ -480,6 +492,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         semantic: SemanticConfig {
             enabled: state.semantic_enabled,
             ..SemanticConfig::default()
+        },
+        sessions: SessionsConfig {
+            max_history: state.sessions_max_history,
+            title_max_chars: state.sessions_title_max_chars,
         },
         ..config.memory
     };

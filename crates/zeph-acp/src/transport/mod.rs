@@ -52,6 +52,13 @@ pub struct AcpServerConfig {
     pub terminal_timeout_secs: u64,
     /// Project rule file paths to advertise in session `_meta`.
     pub project_rules: Vec<std::path::PathBuf>,
+    /// Maximum characters for auto-generated session titles (0 = no limit).
+    pub title_max_chars: usize,
+    /// Maximum number of sessions returned by list endpoints (0 = unlimited).
+    pub max_history: usize,
+    /// Path to the `SQLite` database for ACP session persistence (optional).
+    /// When set, the agent persists and loads sessions from this database.
+    pub sqlite_path: Option<String>,
 }
 
 impl Clone for AcpServerConfig {
@@ -69,6 +76,9 @@ impl Clone for AcpServerConfig {
             discovery_enabled: self.discovery_enabled,
             terminal_timeout_secs: self.terminal_timeout_secs,
             project_rules: self.project_rules.clone(),
+            title_max_chars: self.title_max_chars,
+            max_history: self.max_history,
+            sqlite_path: self.sqlite_path.clone(),
         }
     }
 }
@@ -88,6 +98,9 @@ impl Default for AcpServerConfig {
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: Vec::new(),
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
         }
     }
 }

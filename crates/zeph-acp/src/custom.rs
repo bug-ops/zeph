@@ -200,7 +200,7 @@ async fn handle_session_list(
 
     // Load persisted sessions first (lower priority, overridden by in-memory).
     if let Some(ref store) = agent.store {
-        match store.list_acp_sessions().await {
+        match store.list_acp_sessions(0).await {
             Ok(rows) => {
                 sessions.reserve(rows.len());
                 for row in rows {

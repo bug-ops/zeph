@@ -31,6 +31,8 @@ use crate::acp::run_acp_http_server;
 use crate::acp::{print_acp_manifest, run_acp_server};
 use crate::cli::Command;
 use crate::commands::memory::handle_memory_command;
+#[cfg(feature = "acp")]
+use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
 use crate::commands::vault::handle_vault_command;
 #[cfg(all(feature = "daemon", feature = "a2a"))]
@@ -58,6 +60,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Memory { command: mem_cmd }) => {
             tracing_subscriber::fmt::init();
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
+        }
+        #[cfg(feature = "acp")]
+        Some(Command::Sessions { command: sess_cmd }) => {
+            tracing_subscriber::fmt::init();
+            return handle_sessions_command(sess_cmd, cli.config.as_deref()).await;
         }
         None => {}
     }

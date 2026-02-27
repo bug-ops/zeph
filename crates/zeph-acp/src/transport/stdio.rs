@@ -10,6 +10,8 @@ use futures::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use zeph_memory::sqlite::SqliteStore;
+
 use crate::agent::{AgentSpawner, ZephAcpAgent};
 use crate::error::AcpError;
 use crate::transport::{AcpServerConfig, ConnSlot};
@@ -61,7 +63,15 @@ where
                 server_config.session_idle_timeout_secs,
                 server_config.permission_file,
             )
-            .with_agent_info(server_config.agent_name, server_config.agent_version);
+            .with_agent_info(server_config.agent_name, server_config.agent_version)
+            .with_title_max_chars(server_config.title_max_chars)
+            .with_max_history(server_config.max_history);
+            if let Some(ref path) = server_config.sqlite_path {
+                match SqliteStore::new(path).await {
+                    Ok(store) => agent = agent.with_store(store),
+                    Err(e) => tracing::warn!(error = %e, "failed to open ACP SQLite store"),
+                }
+            }
             if let Some(factory) = server_config.provider_factory {
                 agent = agent.with_provider_factory(factory, server_config.available_models);
             }

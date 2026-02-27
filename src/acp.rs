@@ -68,6 +68,12 @@ struct AgentDeps {
     acp_available_models: Vec<String>,
     acp_auth_bearer_token: Option<String>,
     acp_discovery_enabled: bool,
+    /// Maximum characters for auto-generated session titles.
+    acp_title_max_chars: usize,
+    /// Maximum number of sessions returned by list endpoints.
+    acp_max_history: usize,
+    /// `SQLite` database path, passed to ACP transport for session persistence.
+    sqlite_path: String,
     /// Pre-built provider factory for ACP model switching.
     #[cfg(feature = "acp")]
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
@@ -202,6 +208,9 @@ async fn build_acp_deps(
         },
         acp_auth_bearer_token: config.acp.auth_token.clone(),
         acp_discovery_enabled: config.acp.discovery_enabled,
+        acp_title_max_chars: config.memory.sessions.title_max_chars,
+        acp_max_history: config.memory.sessions.max_history,
+        sqlite_path: config.memory.sqlite_path.clone(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
     };
@@ -680,6 +689,9 @@ pub(crate) async fn run_acp_server(
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: 120,
         project_rules: deps.acp_project_rules.clone(),
+        title_max_chars: deps.acp_title_max_chars,
+        max_history: deps.acp_max_history,
+        sqlite_path: Some(deps.sqlite_path.clone()),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -729,6 +741,7 @@ pub(crate) async fn run_acp_http_server(
     // CLI flag overrides config/env values for auth token.
     let auth_bearer_token = auth_token_override.or(deps.acp_auth_bearer_token.clone());
 
+    let deps_sqlite_path = deps.sqlite_path.clone();
     let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: deps.acp_agent_name.clone(),
@@ -743,6 +756,9 @@ pub(crate) async fn run_acp_http_server(
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: 120,
         project_rules: deps.acp_project_rules.clone(),
+        title_max_chars: deps.acp_title_max_chars,
+        max_history: deps.acp_max_history,
+        sqlite_path: Some(deps.sqlite_path.clone()),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -760,7 +776,11 @@ pub(crate) async fn run_acp_http_server(
         })
     });
 
-    let state = zeph_acp::AcpHttpState::new(spawner, server_config);
+    let mut state = zeph_acp::AcpHttpState::new(spawner, server_config);
+    match zeph_memory::sqlite::SqliteStore::new(&deps_sqlite_path).await {
+        Ok(store) => state = state.with_store(store),
+        Err(e) => tracing::warn!(error = %e, "failed to open SQLite for HTTP session endpoints"),
+    }
     state.start_reaper();
 
     let router = zeph_acp::acp_router(state);
@@ -791,6 +811,7 @@ pub(crate) fn print_acp_manifest() {
 #[cfg(all(test, feature = "acp"))]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -803,6 +824,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_empty_skill_paths_no_rules_dir() {
         let tmp = TempDir::new().unwrap();
         // No .claude/rules dir exists — function must return empty vec.
@@ -814,6 +836,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_picks_md_files_from_rules_dir() {
         let tmp = TempDir::new().unwrap();
         make_rules_dir(tmp.path(), &["rust-code.md", "testing.md", "notes.txt"]);
@@ -834,6 +857,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_includes_skill_files() {
         let tmp = TempDir::new().unwrap();
         let skill_file = tmp.path().join("my-skill.md");
@@ -851,6 +875,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_mixed_sources() {
         let tmp = TempDir::new().unwrap();
         make_rules_dir(tmp.path(), &["branching.md"]);

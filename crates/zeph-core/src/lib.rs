@@ -23,6 +23,7 @@ pub mod hash;
 pub mod http;
 pub mod memory_tools;
 pub mod subagent;
+pub mod text;
 
 pub use agent::Agent;
 pub use agent::error::AgentError;

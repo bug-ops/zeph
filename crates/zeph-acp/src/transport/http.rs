@@ -24,6 +24,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 use tokio::sync::{Mutex, broadcast};
 
 #[cfg(feature = "acp-http")]
+use axum::Json;
+#[cfg(feature = "acp-http")]
+use axum::extract::Path;
+#[cfg(feature = "acp-http")]
+use serde::Serialize;
+#[cfg(feature = "acp-http")]
+use zeph_memory::sqlite::{AcpSessionInfo, SqliteStore};
+
+#[cfg(feature = "acp-http")]
 use crate::agent::SendAgentSpawner;
 #[cfg(feature = "acp-http")]
 use crate::transport::{AcpServerConfig, bridge::spawn_acp_connection};
@@ -58,6 +67,39 @@ impl ConnectionHandle {
     }
 }
 
+/// Serializable session metadata for the REST session list endpoint.
+#[cfg(feature = "acp-http")]
+#[derive(Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: i64,
+}
+
+#[cfg(feature = "acp-http")]
+impl From<AcpSessionInfo> for SessionSummary {
+    fn from(info: AcpSessionInfo) -> Self {
+        Self {
+            id: info.id,
+            title: info.title,
+            created_at: info.created_at,
+            updated_at: info.updated_at,
+            message_count: info.message_count,
+        }
+    }
+}
+
+/// Serializable event for the REST session messages endpoint.
+#[cfg(feature = "acp-http")]
+#[derive(Serialize)]
+pub struct SessionEventDto {
+    pub event_type: String,
+    pub payload: String,
+    pub created_at: String,
+}
+
 /// Shared state for the HTTP+SSE transport, held in axum `State`.
 #[cfg(feature = "acp-http")]
 #[derive(Clone)]
@@ -69,6 +111,8 @@ pub struct AcpHttpState {
     /// Used to atomically reserve a slot before the upgrade handshake, eliminating TOCTOU
     /// between the capacity check and the actual `DashMap` insertion.
     pub(crate) active_ws: Arc<AtomicUsize>,
+    /// Optional `SQLite` store for session history REST endpoints.
+    pub store: Option<Arc<SqliteStore>>,
 }
 
 #[cfg(feature = "acp-http")]
@@ -79,7 +123,14 @@ impl AcpHttpState {
             spawner,
             server_config: Arc::new(server_config),
             active_ws: Arc::new(AtomicUsize::new(0)),
+            store: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_store(mut self, store: SqliteStore) -> Self {
+        self.store = Some(Arc::new(store));
+        self
     }
 
     /// Try to atomically reserve a WebSocket session slot.
@@ -274,4 +325,72 @@ pub async fn get_handler(
             .interval(Duration::from_secs(15))
             .text("ping"),
     ))
+}
+
+/// `GET /sessions` — list all persisted ACP sessions ordered by last activity.
+///
+/// # Errors
+///
+/// Returns `503 Service Unavailable` if no `SQLite` store is configured.
+/// Returns `500 Internal Server Error` if the database query fails.
+#[cfg(feature = "acp-http")]
+pub async fn list_sessions_handler(
+    State(state): State<AcpHttpState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let store = state
+        .store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let sessions = store
+        .list_acp_sessions(state.server_config.max_history)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to list ACP sessions");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let summaries: Vec<SessionSummary> = sessions.into_iter().map(SessionSummary::from).collect();
+    Ok(Json(summaries))
+}
+
+/// `GET /sessions/{id}/messages` — retrieve all events for a persisted ACP session.
+///
+/// # Errors
+///
+/// Returns `503 Service Unavailable` if no `SQLite` store is configured.
+/// Returns `404 Not Found` if the session does not exist.
+/// Returns `500 Internal Server Error` if the database query fails.
+#[cfg(feature = "acp-http")]
+pub async fn session_messages_handler(
+    State(state): State<AcpHttpState>,
+    Path(session_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    uuid::Uuid::parse_str(&session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let store = state
+        .store
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let exists = store.acp_session_exists(&session_id).await.map_err(|e| {
+        tracing::warn!(error = %e, "failed to check ACP session existence");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if !exists {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let events = store.load_acp_events(&session_id).await.map_err(|e| {
+        tracing::warn!(error = %e, "failed to load ACP session events");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let dtos: Vec<SessionEventDto> = events
+        .into_iter()
+        .map(|e| SessionEventDto {
+            event_type: e.event_type,
+            payload: e.payload,
+            created_at: e.created_at,
+        })
+        .collect();
+    Ok(Json(dtos))
 }

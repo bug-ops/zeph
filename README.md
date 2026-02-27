@@ -101,6 +101,7 @@ zeph acp --ws :8080         # WebSocket
 - **Plan updates** — `SessionUpdate::Plan` events emitted during orchestrator runs so the editor can display intermediate planning steps
 - **Slash commands** — `AvailableCommandsUpdate` advertises built-in slash commands (`/help`, `/model`, `/mode`, `/clear`, `/compact`); user input starting with `/` is dispatched to the matching handler
 - **LSP diagnostics injection** — `@diagnostics` mention in a Zed prompt triggers LSP diagnostic context injection, providing the agent with current editor diagnostics
+- **Session history** — `GET /sessions` lists persisted sessions with title, timestamp, and message count; `GET /sessions/{id}/messages` returns the full event log; sending an existing `session_id` resumes the conversation from stored context; title auto-inferred from the first user message
 - **Subagent nesting** — sub-agent output is nested under the parent tool call in the IDE via `_meta.claudeCode.parentToolUseId` carried on every `session_update`, so multi-agent runs appear as collapsible trees in Zed and VS Code ACP tool cards
 - **Terminal streaming** — `AcpShellExecutor` streams bash output in real time via `_meta.terminal_output` chunks with a final `_meta.terminal_exit` event; IDEs display live output inside the tool card as commands execute
 - **File following** — `ToolCall.location` carries `filePath` for file read/write operations; the IDE editor cursor tracks the agent across files automatically
