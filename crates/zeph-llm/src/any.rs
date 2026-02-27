@@ -105,20 +105,7 @@ impl AnyProvider {
                     })
                     .collect())
             }
-            AnyProvider::Orchestrator(p) => {
-                tracing::debug!(
-                    "list_models_remote: Orchestrator falling back to sync list_models (config-time data)"
-                );
-                Ok(p.list_models()
-                    .into_iter()
-                    .map(|id| crate::model_cache::RemoteModelInfo {
-                        display_name: id.clone(),
-                        id,
-                        context_window: None,
-                        created_at: None,
-                    })
-                    .collect())
-            }
+            AnyProvider::Orchestrator(p) => p.list_models_remote().await,
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
             #[cfg(feature = "mock")]

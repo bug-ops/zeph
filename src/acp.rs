@@ -406,14 +406,12 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 /// Populate model caches for all providers before the ACP server starts.
 ///
 /// Uses a 5-second timeout so that a slow or unavailable provider does not block startup.
-/// After a successful fetch, each entry in `acp_available_models` that matches the provider
-/// slug is replaced by the full set of models returned from the provider's cache.
+/// After a successful fetch, each unique provider slug present in `acp_available_models`
+/// is expanded from its on-disk cache, replacing the single config-time fallback entry.
 #[cfg(feature = "acp")]
 async fn warm_model_caches(deps: &mut AgentDeps) {
     use zeph_llm::model_cache::ModelCache;
-    use zeph_llm::provider::LlmProvider as _;
 
-    let slug = deps.provider.name().to_owned();
     let provider = deps.provider.clone();
     let fetch = async move {
         match provider.list_models_remote().await {
@@ -430,22 +428,31 @@ async fn warm_model_caches(deps: &mut AgentDeps) {
         return;
     }
 
-    // Replace entries for this provider slug with the full cached list.
-    let cache = ModelCache::for_slug(&slug);
-    if cache.is_stale() {
-        return;
+    // Collect unique provider slugs from the current available_models list.
+    let slugs: Vec<String> = deps
+        .acp_available_models
+        .iter()
+        .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    for slug in slugs {
+        let cache = ModelCache::for_slug(&slug);
+        if cache.is_stale() {
+            continue;
+        }
+        if let Ok(Some(entries)) = cache.load()
+            && !entries.is_empty()
+        {
+            let new_keys: Vec<String> =
+                entries.into_iter().map(|m| format!("{slug}:{}", m.id)).collect();
+            deps.acp_available_models
+                .retain(|k| !k.starts_with(&format!("{slug}:")));
+            deps.acp_available_models.extend(new_keys);
+        }
     }
-    if let Ok(Some(entries)) = cache.load()
-        && !entries.is_empty()
-    {
-        let new_keys: Vec<String> = entries.into_iter().map(|m| format!("{slug}:{}", m.id)).collect();
-        // Remove old single-model entries for this slug, then prepend the full list.
-        deps.acp_available_models.retain(|k| !k.starts_with(&format!("{slug}:")));
-        let tail = std::mem::take(&mut deps.acp_available_models);
-        deps.acp_available_models = new_keys;
-        deps.acp_available_models.extend(tail);
-        deps.acp_available_models.dedup();
-    }
+    deps.acp_available_models.dedup();
 }
 
 /// Build a `ProviderFactory` from the known named providers in config.
