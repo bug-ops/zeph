@@ -804,6 +804,7 @@ pub(crate) fn print_acp_manifest() {
 #[cfg(all(test, feature = "acp"))]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -816,6 +817,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_empty_skill_paths_no_rules_dir() {
         let tmp = TempDir::new().unwrap();
         // No .claude/rules dir exists — function must return empty vec.
@@ -827,6 +829,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_picks_md_files_from_rules_dir() {
         let tmp = TempDir::new().unwrap();
         make_rules_dir(tmp.path(), &["rust-code.md", "testing.md", "notes.txt"]);
@@ -847,6 +850,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_includes_skill_files() {
         let tmp = TempDir::new().unwrap();
         let skill_file = tmp.path().join("my-skill.md");
@@ -864,6 +868,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn collect_project_rules_mixed_sources() {
         let tmp = TempDir::new().unwrap();
         make_rules_dir(tmp.path(), &["branching.md"]);
