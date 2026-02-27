@@ -384,8 +384,7 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 
     // OpenAI — only when API key and config section are present (non-orchestrator).
     if config.llm.provider != zeph_core::config::ProviderKind::Orchestrator
-        && let (Some(_), Some(openai_cfg)) =
-            (&config.secrets.openai_api_key, &config.llm.openai)
+        && let (Some(_), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai)
     {
         models.extend(expand_from_cache("openai", &openai_cfg.model));
     }
@@ -445,8 +444,10 @@ async fn warm_model_caches(deps: &mut AgentDeps) {
         if let Ok(Some(entries)) = cache.load()
             && !entries.is_empty()
         {
-            let new_keys: Vec<String> =
-                entries.into_iter().map(|m| format!("{slug}:{}", m.id)).collect();
+            let new_keys: Vec<String> = entries
+                .into_iter()
+                .map(|m| format!("{slug}:{}", m.id))
+                .collect();
             deps.acp_available_models
                 .retain(|k| !k.starts_with(&format!("{slug}:")));
             deps.acp_available_models.extend(new_keys);
