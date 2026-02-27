@@ -458,6 +458,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send(&format!("Cleared {n} queued messages."))
                     .await?;
+                let _ = self.channel.flush_chunks().await;
                 continue;
             }
 
@@ -474,16 +475,19 @@ impl<C: Channel> Agent<C> {
                 } else {
                     let _ = self.channel.send("Nothing to compact.").await;
                 }
+                let _ = self.channel.flush_chunks().await;
                 continue;
             }
 
             if trimmed == "/clear" {
                 self.clear_history();
+                let _ = self.channel.flush_chunks().await;
                 continue;
             }
 
             if trimmed == "/model" || trimmed.starts_with("/model ") {
                 self.handle_model_command(trimmed).await;
+                let _ = self.channel.flush_chunks().await;
                 continue;
             }
 
