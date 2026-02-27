@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Unit tests: `loopback_tool_start_parent_tool_use_id_injected_into_meta`, `loopback_tool_output_parent_tool_use_id_injected_into_meta`, `streaming_mode_emits_terminal_exit_notification`, `read_file_returns_location`, `write_file_returns_location` (#1008, #1009, #1010)
 
 ### Fixed
+- ACP terminal release deferred until after `tool_call_update` notification: IDE now receives `ToolCallContent::Terminal` while the terminal is still alive, enabling tool output display in Zed ACP panel (#1013)
+- `TerminalMessage` enum (`Execute`/`Release`) decouples terminal lifecycle from execution in `zeph-acp`; `AcpShellExecutor::release_terminal()` signals the background handler instead of calling the ACP method inline (#1013)
+- `SessionEntry` retains a cloned `AcpShellExecutor` so the `prompt()` event loop can trigger deferred `terminal/release` after all `tool_call_update` notifications are dispatched (#1013)
 - `ModelInfo` struct (`id`, `display_name`, `context_window`, `created_at`) in `zeph-llm` for dynamic model discovery (#992)
 - `ModelCache` in `zeph-llm/src/model_cache.rs`: disk-backed per-provider model list with 24h TTL, atomic writes, `~/.cache/zeph/models/{slug}.json` (#992)
 - `LlmProvider::list_models_remote()` async trait method with default fallback to `list_models()` (#992)

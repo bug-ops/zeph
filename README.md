@@ -87,7 +87,7 @@ zeph acp --ws :8080         # WebSocket
 **ACP capabilities:**
 
 - Session modes: `ask`, `code`, `architect` — switch at runtime via `set_session_mode`; editors receive `current_mode_update` notifications
-- Tool call lifecycle: `InProgress` → `Completed` updates with `ToolCallContent::Terminal` for shell calls
+- Tool call lifecycle: `InProgress` → `Completed` updates with `ToolCallContent::Terminal` for shell calls; terminal release deferred until after the `tool_call_update` notification so IDE can display tool output
 - Terminal command timeout (default 120 s, configurable via `terminal_timeout_secs`) with `kill_terminal_command` support
 - `UserMessageChunk` echo notification after each user prompt
 - `ext_notification` passthrough to running sessions

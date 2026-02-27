@@ -157,7 +157,7 @@ Zeph follows the ACP protocol specification for tool call notifications. Each to
 
 Both updates share the same UUID so the IDE can correlate them. Tools that finish successfully use `Completed`; tools that return an error (non-zero exit code, exception, or explicit failure) use `Failed`.
 
-> **Note:** Prior to the fix for issue #1003, tool output content was not forwarded from the agent loop to the ACP channel. The `ToolCallUpdate` now carries the complete tool output text, which is why tool blocks in Zed and other ACP-compatible IDEs display the full execution result.
+> **Note:** Prior to #1003 tool output content was not forwarded from the agent loop to the ACP channel. Prior to #1013 the IDE terminal was released before `ToolCallUpdate` was sent, preventing IDEs from displaying shell output. Both issues are resolved: `ToolCallUpdate` carries the complete tool output text, and the terminal remains alive until after the notification is dispatched.
 
 ### Terminal command timeout
 
@@ -295,6 +295,8 @@ The output text in the `Completed` update goes through the same redaction and ou
 ### Terminal tool calls
 
 When a bash tool call is routed through the IDE terminal (rather than Zeph's internal shell executor), Zeph attaches a `ToolCallContent::Terminal` entry to the tool call update. This carries the terminal ID so the IDE can display the output in the correct terminal pane.
+
+The ACP specification requires the terminal to remain alive until the IDE processes the `ToolCallContent::Terminal` notification. Zeph defers `terminal/release` until after `ToolCallUpdate` is dispatched — the `SessionEntry` retains a handle to the shell executor for exactly this purpose.
 
 The terminal command timeout applies to these calls: if execution exceeds `terminal_timeout_secs` (default: 120 s), Zeph sends `kill_terminal_command` to the IDE and the tool call resolves with a timeout error.
 

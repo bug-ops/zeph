@@ -97,6 +97,10 @@ pub(crate) struct SessionEntry {
     current_mode: RefCell<acp::SessionModeId>,
     /// Set after the first successful prompt so title generation fires only once.
     first_prompt_done: std::cell::Cell<bool>,
+    /// Shell executor for this session, retained so the event loop can release terminals
+    /// after `tool_call_update` notifications are sent (ACP requires the terminal to
+    /// remain alive until after the notification that embeds it).
+    pub(crate) shell_executor: Option<AcpShellExecutor>,
 }
 
 type SessionMap = Rc<RefCell<std::collections::HashMap<acp::SessionId, SessionEntry>>>;
@@ -397,6 +401,8 @@ impl acp::Agent for ZephAcpAgent {
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
 
+        let acp_ctx = self.build_acp_context(&session_id, cancel_signal, provider_override_for_ctx);
+        let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -408,6 +414,7 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            shell_executor,
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
@@ -420,8 +427,6 @@ impl acp::Agent for ZephAcpAgent {
                 }
             });
         }
-
-        let acp_ctx = self.build_acp_context(&session_id, cancel_signal, provider_override_for_ctx);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
             (spawner)(channel, acp_ctx).await;
@@ -616,6 +621,18 @@ impl acp::Agent for ZephAcpAgent {
             };
             let Some(event) = event else { break };
             let is_flush = matches!(event, LoopbackEvent::Flush);
+            // Extract terminal_id from ToolOutput events before consuming the event.
+            // The terminal must remain alive until after the tool_call_update notification
+            // is delivered so the IDE can display the terminal output.
+            let pending_terminal_release = if let LoopbackEvent::ToolOutput {
+                ref terminal_id,
+                ..
+            } = event
+            {
+                terminal_id.clone()
+            } else {
+                None
+            };
             for update in loopback_event_to_updates(event) {
                 // Persist event before sending notification (best-effort).
                 if let Some(ref store) = self.store {
@@ -633,6 +650,14 @@ impl acp::Agent for ZephAcpAgent {
                     tracing::warn!(error = %e, "failed to send notification");
                     break;
                 }
+            }
+            // Release the terminal after tool_call_update has been sent so the IDE
+            // receives ToolCallContent::Terminal while the terminal is still alive.
+            if let Some(terminal_id) = pending_terminal_release
+                && let Some(entry) = self.sessions.borrow().get(&args.session_id)
+                && let Some(ref executor) = entry.shell_executor
+            {
+                executor.release_terminal(terminal_id);
             }
             if is_flush {
                 break;
@@ -764,6 +789,9 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let acp_ctx =
+            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
+        let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -775,13 +803,12 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            shell_executor,
         };
         self.sessions
             .borrow_mut()
             .insert(args.session_id.clone(), entry);
 
-        let acp_ctx =
-            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
             (spawner)(channel, acp_ctx).await;
@@ -951,6 +978,8 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let acp_ctx = self.build_acp_context(&new_id, cancel_signal, provider_override_for_ctx);
+        let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -962,10 +991,9 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            shell_executor,
         };
         self.sessions.borrow_mut().insert(new_id.clone(), entry);
-
-        let acp_ctx = self.build_acp_context(&new_id, cancel_signal, provider_override_for_ctx);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
             (spawner)(channel, acp_ctx).await;
@@ -1036,6 +1064,9 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let acp_ctx =
+            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
+        let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -1047,13 +1078,11 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            shell_executor,
         };
         self.sessions
             .borrow_mut()
             .insert(args.session_id.clone(), entry);
-
-        let acp_ctx =
-            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
             (spawner)(channel, acp_ctx).await;
