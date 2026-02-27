@@ -136,6 +136,15 @@ impl AppBuilder {
             tracing::info!(context_window = ctx, "detected Ollama model context window");
         }
 
+        if let AnyProvider::Orchestrator(ref mut orch) = provider {
+            orch.auto_detect_context_window().await;
+        }
+        if let Some(ctx) = provider.context_window()
+            && !matches!(provider, AnyProvider::Ollama(_))
+        {
+            tracing::info!(context_window = ctx, "detected orchestrator context window");
+        }
+
         Ok((provider, status_rx))
     }
 

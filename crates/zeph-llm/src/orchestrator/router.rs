@@ -21,6 +21,16 @@ pub enum SubProvider {
 }
 
 impl SubProvider {
+    /// Detect and set the context window size from the underlying provider where supported.
+    pub async fn auto_detect_context_window(&mut self) {
+        if let Self::Ollama(p) = self
+            && let Ok(info) = p.fetch_model_info().await
+            && let Some(ctx) = info.context_length
+        {
+            p.set_context_window(ctx);
+        }
+    }
+
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {
             Self::Claude(p) => {

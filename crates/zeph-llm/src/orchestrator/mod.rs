@@ -67,6 +67,16 @@ impl ModelOrchestrator {
         self.status_tx = Some(tx);
     }
 
+    /// Detect and apply the context window size from the default sub-provider.
+    ///
+    /// Currently supported for Ollama sub-providers via `show` API.
+    /// Other sub-providers are skipped silently.
+    pub async fn auto_detect_context_window(&mut self) {
+        if let Some(provider) = self.providers.get_mut(&self.default_provider) {
+            provider.auto_detect_context_window().await;
+        }
+    }
+
     /// Aggregate model lists from all sub-providers, deduplicating by id.
     ///
     /// Individual sub-provider errors are logged as warnings and skipped.

@@ -1256,7 +1256,12 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
 
-            let indices: Vec<usize> = if scored.len() >= 2
+            let indices: Vec<usize> = if scored.is_empty() {
+                // Embed or Qdrant failure: fall back to all skills so the agent
+                // remains functional rather than running with an empty skill set.
+                tracing::warn!("skill matcher returned no results, falling back to all skills");
+                (0..all_meta.len()).collect()
+            } else if scored.len() >= 2
                 && (scored[0].score - scored[1].score) < self.skill_state.disambiguation_threshold
             {
                 match self.disambiguate_skills(query, &all_meta, &scored).await {
