@@ -152,6 +152,7 @@ impl FileExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -176,6 +177,7 @@ impl FileExecutor {
             }),
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -205,6 +207,7 @@ impl FileExecutor {
             }),
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -236,6 +239,7 @@ impl FileExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -273,6 +277,7 @@ impl FileExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }

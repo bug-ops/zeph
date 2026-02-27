@@ -154,6 +154,7 @@ pub trait Channel: Send {
         _tool_name: &str,
         _tool_call_id: &str,
         _params: Option<serde_json::Value>,
+        _parent_tool_use_id: Option<String>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -176,8 +177,10 @@ pub trait Channel: Send {
         _diff: Option<crate::DiffData>,
         _filter_stats: Option<String>,
         _kept_lines: Option<Vec<usize>>,
+        _locations: Option<Vec<String>>,
         _tool_call_id: &str,
         _is_error: bool,
+        _parent_tool_use_id: Option<String>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         let formatted = crate::agent::format_tool_output(tool_name, body);
         async move { self.send(&formatted).await }
@@ -210,6 +213,8 @@ pub enum LoopbackEvent {
         tool_call_id: String,
         /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
         params: Option<serde_json::Value>,
+        /// Set when this tool call is made by a subagent; identifies the parent's `tool_call_id`.
+        parent_tool_use_id: Option<String>,
     },
     ToolOutput {
         tool_name: String,
@@ -222,6 +227,8 @@ pub enum LoopbackEvent {
         is_error: bool,
         /// Terminal ID for shell tool calls routed through the IDE terminal.
         terminal_id: Option<String>,
+        /// Set when this tool output belongs to a subagent; identifies the parent's `tool_call_id`.
+        parent_tool_use_id: Option<String>,
     },
     /// Token usage from the last LLM turn.
     Usage {
@@ -316,12 +323,14 @@ impl Channel for LoopbackChannel {
         tool_name: &str,
         tool_call_id: &str,
         params: Option<serde_json::Value>,
+        parent_tool_use_id: Option<String>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolStart {
                 tool_name: tool_name.to_owned(),
                 tool_call_id: tool_call_id.to_owned(),
                 params,
+                parent_tool_use_id,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -335,8 +344,10 @@ impl Channel for LoopbackChannel {
         diff: Option<crate::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        locations: Option<Vec<String>>,
         tool_call_id: &str,
         is_error: bool,
+        parent_tool_use_id: Option<String>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
@@ -345,10 +356,11 @@ impl Channel for LoopbackChannel {
                 diff,
                 filter_stats,
                 kept_lines,
-                locations: None,
+                locations,
                 tool_call_id: tool_call_id.to_owned(),
                 is_error,
                 terminal_id: None,
+                parent_tool_use_id,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -587,7 +599,7 @@ mod tests {
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_tool_output("bash", "exit 0", None, None, None, "", false)
+            .send_tool_output("bash", "exit 0", None, None, None, None, "", false, None)
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -602,6 +614,7 @@ mod tests {
                 tool_call_id,
                 is_error,
                 terminal_id,
+                parent_tool_use_id,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
@@ -612,6 +625,7 @@ mod tests {
                 assert_eq!(tool_call_id, "");
                 assert!(!is_error);
                 assert!(terminal_id.is_none());
+                assert!(parent_tool_use_id.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }

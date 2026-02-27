@@ -48,6 +48,9 @@ pub struct AcpContext {
     /// Shared slot for runtime model switching via `set_session_config_option`.
     /// When `Some`, the agent should swap its provider before the next turn.
     pub provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+    /// Tool call ID of the parent agent's tool call that spawned this subagent session.
+    /// `None` for top-level (non-subagent) sessions.
+    pub parent_tool_use_id: Option<String>,
 }
 
 /// Factory: receives a [`LoopbackChannel`] and optional [`AcpContext`], runs the agent loop.
@@ -254,6 +257,7 @@ impl ZephAcpAgent {
             permission_gate: Some(perm_gate),
             cancel_signal,
             provider_override,
+            parent_tool_use_id: None,
         })
     }
 
@@ -1582,6 +1586,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             tool_name,
             tool_call_id,
             params,
+            parent_tool_use_id,
         } => {
             // Derive a human-readable title from params when available.
             // For bash: use the command string (truncated). For others: fall back to tool_name.
@@ -1611,6 +1616,14 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             if let Some(p) = params {
                 tool_call = tool_call.raw_input(p);
             }
+            if let Some(parent_id) = parent_tool_use_id {
+                let mut meta = serde_json::Map::new();
+                meta.insert(
+                    "claudeCode".to_owned(),
+                    serde_json::json!({ "parentToolUseId": parent_id }),
+                );
+                tool_call = tool_call.meta(meta);
+            }
             vec![acp::SessionUpdate::ToolCall(tool_call)]
         }
         LoopbackEvent::ToolOutput {
@@ -1620,6 +1633,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             tool_call_id,
             is_error,
             terminal_id,
+            parent_tool_use_id,
             ..
         } => {
             let acp_locations: Vec<acp::ToolCallLocation> = locations
@@ -1645,9 +1659,16 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             if !acp_locations.is_empty() {
                 fields = fields.locations(acp_locations);
             }
-            vec![acp::SessionUpdate::ToolCallUpdate(
-                acp::ToolCallUpdate::new(tool_call_id, fields),
-            )]
+            let mut update = acp::ToolCallUpdate::new(tool_call_id, fields);
+            if let Some(parent_id) = parent_tool_use_id {
+                let mut meta = serde_json::Map::new();
+                meta.insert(
+                    "claudeCode".to_owned(),
+                    serde_json::json!({ "parentToolUseId": parent_id }),
+                );
+                update = update.meta(meta);
+            }
+            vec![acp::SessionUpdate::ToolCallUpdate(update)]
         }
         LoopbackEvent::Flush => vec![],
         #[cfg(feature = "unstable-session-usage")]
@@ -2047,11 +2068,72 @@ mod tests {
     }
 
     #[test]
+    fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "child-id".to_owned(),
+            params: None,
+            parent_tool_use_id: Some("parent-uuid".to_owned()),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let meta = tc.meta.as_ref().expect("meta must be present");
+                let claude_code = meta
+                    .get("claudeCode")
+                    .expect("claudeCode key missing")
+                    .as_object()
+                    .expect("claudeCode must be an object");
+                assert_eq!(
+                    claude_code.get("parentToolUseId").and_then(|v| v.as_str()),
+                    Some("parent-uuid")
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "done".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "child-id".to_owned(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: Some("parent-uuid".to_owned()),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.as_ref().expect("meta must be present");
+                let claude_code = meta
+                    .get("claudeCode")
+                    .expect("claudeCode key missing")
+                    .as_object()
+                    .expect("claudeCode must be an object");
+                assert_eq!(
+                    claude_code.get("parentToolUseId").and_then(|v| v.as_str()),
+                    Some("parent-uuid")
+                );
+            }
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn loopback_tool_start_maps_to_tool_call_in_progress() {
         let event = LoopbackEvent::ToolStart {
             tool_name: "bash".to_owned(),
             tool_call_id: "test-id".to_owned(),
             params: None,
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2072,6 +2154,7 @@ mod tests {
             tool_name: "bash".to_owned(),
             tool_call_id: "test-id-2".to_owned(),
             params: Some(params),
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2092,6 +2175,7 @@ mod tests {
             tool_name: "bash".to_owned(),
             tool_call_id: "test-id-3".to_owned(),
             params: Some(params),
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         match &updates[0] {
@@ -2116,6 +2200,7 @@ mod tests {
             tool_call_id: "test-id".to_owned(),
             is_error: false,
             terminal_id: None,
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2139,6 +2224,7 @@ mod tests {
             tool_call_id: "test-id".to_owned(),
             is_error: true,
             terminal_id: None,
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2443,6 +2529,7 @@ mod tests {
             tool_call_id: "test-id".to_owned(),
             is_error: false,
             terminal_id: None,
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2469,6 +2556,7 @@ mod tests {
             tool_call_id: "test-id".to_owned(),
             is_error: false,
             terminal_id: None,
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2506,6 +2594,7 @@ mod tests {
             tool_call_id: "tid-1".to_owned(),
             is_error: false,
             terminal_id: Some("term-42".to_owned()),
+            parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);

@@ -94,6 +94,7 @@ impl ToolExecutor for McpToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -151,6 +152,7 @@ impl ToolExecutor for McpToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }

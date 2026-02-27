@@ -33,6 +33,10 @@ struct TerminalRequest {
     cwd: Option<PathBuf>,
     timeout: Duration,
     reply: oneshot::Sender<Result<ShellResult, AcpError>>,
+    /// When `Some`, intermediate terminal output chunks are sent as `ToolCallUpdate`
+    /// notifications on this channel so the IDE can stream output live.
+    /// The `tool_call_id` is the ACP tool call ID to update.
+    stream_tx: Option<(mpsc::Sender<acp::SessionNotification>, String)>,
 }
 
 /// IDE-proxied shell executor.
@@ -94,6 +98,7 @@ impl AcpShellExecutor {
         command: String,
         args: Vec<String>,
         cwd: Option<PathBuf>,
+        stream_tx: Option<(mpsc::Sender<acp::SessionNotification>, String)>,
     ) -> Result<ShellResult, AcpError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
@@ -104,6 +109,7 @@ impl AcpShellExecutor {
                 cwd,
                 timeout: self.timeout,
                 reply: reply_tx,
+                stream_tx,
             })
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
@@ -160,7 +166,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
         }
 
         let result = self
-            .execute_shell(params.command, params.args, cwd)
+            .execute_shell(params.command, params.args, cwd, None)
             .await
             .map_err(|e| ToolError::InvalidParams {
                 message: e.to_string(),
@@ -179,6 +185,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             diff: None,
             streamed: false,
             terminal_id: Some(result.terminal_id),
+            locations: None,
         }))
     }
 }
@@ -195,9 +202,96 @@ where
             req.args,
             req.cwd,
             req.timeout,
+            req.stream_tx,
         )
         .await;
         req.reply.send(result).ok();
+    }
+}
+
+/// Polling interval for terminal output streaming.
+const STREAM_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Kill a terminal, then wait up to [`KILL_GRACE_TIMEOUT`] for it to exit.
+async fn kill_terminal<C>(
+    conn: &Rc<C>,
+    session_id: &acp::SessionId,
+    terminal_id: &acp::TerminalId,
+) -> Result<(), AcpError>
+where
+    C: acp::Client,
+{
+    tracing::warn!(%terminal_id, "terminal command timed out — sending kill");
+    let kill_req = acp::KillTerminalCommandRequest::new(session_id.clone(), terminal_id.clone());
+    conn.kill_terminal_command(kill_req)
+        .await
+        .map_err(|e| AcpError::ClientError(e.to_string()))?;
+    let wait_again = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+    let _ = tokio::time::timeout(KILL_GRACE_TIMEOUT, conn.wait_for_terminal_exit(wait_again)).await;
+    Ok(())
+}
+
+/// Stream terminal output chunks to `notify_tx` while polling for process exit.
+///
+/// Returns the exit code once the process terminates or the timeout is reached.
+async fn stream_until_exit<C>(
+    conn: &Rc<C>,
+    session_id: &acp::SessionId,
+    terminal_id: &acp::TerminalId,
+    timeout: Duration,
+    notify_tx: &mpsc::Sender<acp::SessionNotification>,
+    tool_call_id: &str,
+) -> Result<Option<u32>, AcpError>
+where
+    C: acp::Client,
+{
+    let wait_req = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+    let exit_future = conn.wait_for_terminal_exit(wait_req);
+    tokio::pin!(exit_future);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_output_len = 0usize;
+
+    loop {
+        tokio::select! {
+            result = &mut exit_future => {
+                return match result {
+                    Ok(resp) => Ok(resp.exit_status.exit_code),
+                    Err(e) => Err(AcpError::ClientError(e.to_string())),
+                };
+            }
+            () = tokio::time::sleep(STREAM_POLL_INTERVAL) => {
+                if tokio::time::Instant::now() >= deadline {
+                    kill_terminal(conn, session_id, terminal_id).await?;
+                    return Ok(Some(124u32));
+                }
+                let output_req =
+                    acp::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
+                if let Ok(resp) = conn.terminal_output(output_req).await {
+                    let new_data = resp.output.get(last_output_len..).unwrap_or("");
+                    if !new_data.is_empty() {
+                        last_output_len = resp.output.len();
+                        let mut meta = serde_json::Map::new();
+                        meta.insert(
+                            "terminal_output".to_owned(),
+                            serde_json::json!({
+                                "terminal_id": terminal_id.to_string(),
+                                "data": new_data,
+                            }),
+                        );
+                        let update = acp::ToolCallUpdate::new(
+                            tool_call_id.to_owned(),
+                            acp::ToolCallUpdateFields::new(),
+                        )
+                        .meta(meta);
+                        let notif = acp::SessionNotification::new(
+                            session_id.clone(),
+                            acp::SessionUpdate::ToolCallUpdate(update),
+                        );
+                        let _ = notify_tx.try_send(notif);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -208,6 +302,7 @@ async fn execute_in_terminal<C>(
     args: Vec<String>,
     cwd: Option<PathBuf>,
     timeout: Duration,
+    stream_tx: Option<(mpsc::Sender<acp::SessionNotification>, String)>,
 ) -> Result<ShellResult, AcpError>
 where
     C: acp::Client,
@@ -223,29 +318,26 @@ where
     let terminal_id = create_resp.terminal_id;
 
     // 2. Wait for exit with timeout; kill if exceeded.
-    let wait_req = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
-    let wait_result = tokio::time::timeout(timeout, conn.wait_for_terminal_exit(wait_req)).await;
-
-    let exit_code = match wait_result {
-        Ok(Ok(resp)) => resp.exit_status.exit_code,
-        Ok(Err(e)) => return Err(AcpError::ClientError(e.to_string())),
-        Err(_) => {
-            tracing::warn!(
-                terminal_id = %terminal_id,
-                "terminal command timed out — sending kill"
-            );
-            let kill_req =
-                acp::KillTerminalCommandRequest::new(session_id.clone(), terminal_id.clone());
-            conn.kill_terminal_command(kill_req)
-                .await
-                .map_err(|e| AcpError::ClientError(e.to_string()))?;
-            // Grace period: wait briefly for the process to exit after kill.
-            let wait_again =
-                acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
-            let _ =
-                tokio::time::timeout(KILL_GRACE_TIMEOUT, conn.wait_for_terminal_exit(wait_again))
-                    .await;
-            Some(124u32)
+    let exit_code = if let Some((ref notify_tx, ref tool_call_id)) = stream_tx {
+        stream_until_exit(
+            conn,
+            &session_id,
+            &terminal_id,
+            timeout,
+            notify_tx,
+            tool_call_id,
+        )
+        .await?
+    } else {
+        let wait_req =
+            acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+        match tokio::time::timeout(timeout, conn.wait_for_terminal_exit(wait_req)).await {
+            Ok(Ok(resp)) => resp.exit_status.exit_code,
+            Ok(Err(e)) => return Err(AcpError::ClientError(e.to_string())),
+            Err(_) => {
+                kill_terminal(conn, &session_id, &terminal_id).await?;
+                Some(124u32)
+            }
         }
     };
 
@@ -256,7 +348,24 @@ where
         .await
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
 
-    // 4. Release terminal.
+    // 4. Emit terminal_exit notification if streaming is active.
+    if let Some((ref notify_tx, ref tool_call_id)) = stream_tx {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "terminal_exit".to_owned(),
+            serde_json::json!({ "terminal_id": terminal_id.to_string(), "exit_code": exit_code }),
+        );
+        let update =
+            acp::ToolCallUpdate::new(tool_call_id.clone(), acp::ToolCallUpdateFields::new())
+                .meta(meta);
+        let notif = acp::SessionNotification::new(
+            session_id.clone(),
+            acp::SessionUpdate::ToolCallUpdate(update),
+        );
+        let _ = notify_tx.try_send(notif);
+    }
+
+    // 5. Release terminal.
     let release_req = acp::ReleaseTerminalRequest::new(session_id, terminal_id.clone());
     conn.release_terminal(release_req)
         .await
@@ -551,6 +660,49 @@ mod tests {
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn streaming_mode_emits_terminal_exit_notification() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeTerminalClient);
+                let sid = acp::SessionId::new("s1");
+                let (tx, rx) = mpsc::unbounded_channel::<TerminalRequest>();
+                let handler = async move { run_terminal_handler(conn, rx).await };
+                tokio::task::spawn_local(handler);
+
+                let (stream_tx, mut stream_rx) = mpsc::channel(8);
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(TerminalRequest {
+                    session_id: sid,
+                    command: "echo".to_owned(),
+                    args: vec!["hi".to_owned()],
+                    cwd: None,
+                    timeout: Duration::from_secs(5),
+                    reply: reply_tx,
+                    stream_tx: Some((stream_tx, "tool-1".to_owned())),
+                })
+                .unwrap();
+
+                let result = reply_rx.await.unwrap().unwrap();
+                assert_eq!(result.output, "hello\n");
+
+                // At least a terminal_exit notification must arrive.
+                let mut got_exit = false;
+                while let Ok(notif) = stream_rx.try_recv() {
+                    if let acp::SessionUpdate::ToolCallUpdate(update) = notif.update {
+                        if let Some(meta) = update.meta {
+                            if meta.contains_key("terminal_exit") {
+                                got_exit = true;
+                            }
+                        }
+                    }
+                }
+                assert!(got_exit, "expected terminal_exit notification");
             })
             .await;
     }

@@ -181,6 +181,7 @@ impl ToolExecutor for OutputToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }
@@ -197,6 +198,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }
@@ -213,6 +215,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }
@@ -245,6 +248,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }
@@ -282,6 +286,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }
@@ -2282,6 +2287,7 @@ mod self_learning {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
     }

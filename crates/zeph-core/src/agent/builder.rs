@@ -41,6 +41,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the parent tool call ID for subagent sessions.
+    ///
+    /// When set, every `LoopbackEvent::ToolStart` and `LoopbackEvent::ToolOutput` emitted
+    /// by this agent will carry the `parent_tool_use_id` so the IDE can build a subagent
+    /// hierarchy tree.
+    #[must_use]
+    pub fn with_parent_tool_use_id(mut self, id: impl Into<String>) -> Self {
+        self.parent_tool_use_id = Some(id.into());
+        self
+    }
+
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
         self.stt = Some(stt);

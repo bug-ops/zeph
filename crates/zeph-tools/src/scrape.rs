@@ -115,6 +115,7 @@ impl ToolExecutor for WebScrapeExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 
@@ -135,6 +136,7 @@ impl ToolExecutor for WebScrapeExecutor {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))
     }
 }

@@ -166,6 +166,10 @@ pub struct Agent<C: Channel> {
     /// forward-compatible multi-agent orchestration.
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
+    /// Parent tool call ID when this agent runs as a subagent inside another agent session.
+    /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
+    /// a subagent hierarchy.
+    pub(crate) parent_tool_use_id: Option<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -272,6 +276,7 @@ impl<C: Channel> Agent<C> {
             update_notify_rx: None,
             subagent_manager: None,
             response_cache: None,
+            parent_tool_use_id: None,
         }
     }
 
@@ -1595,6 +1600,7 @@ pub(super) mod agent_tests {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))]);
 
         let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
@@ -1796,6 +1802,7 @@ pub(super) mod agent_tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             })),
             Ok(None),
         ]);
@@ -1819,6 +1826,7 @@ pub(super) mod agent_tests {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         }))]);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -1914,6 +1922,7 @@ pub(super) mod agent_tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             })),
             Ok(None),
         ]);
@@ -1945,6 +1954,7 @@ pub(super) mod agent_tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             })));
         }
         let executor = MockToolExecutor::new(outputs);

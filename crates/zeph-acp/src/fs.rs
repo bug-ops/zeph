@@ -184,6 +184,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     diff: None,
                     streamed: false,
                     terminal_id: None,
+                    locations: Some(vec![params.path]),
                 }))
             }
             "write_file" if self.can_write => {
@@ -202,6 +203,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     diff: None,
                     streamed: false,
                     terminal_id: None,
+                    locations: Some(vec![params.path]),
                 }))
             }
             _ => Ok(None),
@@ -318,6 +320,10 @@ mod tests {
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert_eq!(result.summary, "hello world");
+                assert_eq!(
+                    result.locations.as_deref(),
+                    Some(&[test_path("test.txt")][..])
+                );
             })
             .await;
     }
@@ -344,6 +350,10 @@ mod tests {
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert!(result.summary.contains(&test_path("out.txt")));
+                assert_eq!(
+                    result.locations.as_deref(),
+                    Some(&[test_path("out.txt")][..])
+                );
             })
             .await;
     }

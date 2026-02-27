@@ -129,8 +129,10 @@ impl Channel for TuiChannel {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        _locations: Option<Vec<String>>,
         _tool_call_id: &str,
         is_error: bool,
+        _parent_tool_use_id: Option<String>,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
             %tool_name,
@@ -366,8 +368,10 @@ mod tests {
             Some(diff),
             None,
             None,
+            None,
             "",
             false,
+            None,
         )
         .await
         .unwrap();
@@ -388,8 +392,10 @@ mod tests {
             None,
             None,
             None,
+            None,
             "",
             false,
+            None,
         )
         .await
         .unwrap();

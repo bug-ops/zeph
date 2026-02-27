@@ -513,7 +513,12 @@ impl<C: Channel> Agent<C> {
 
                 let tool_call_id = uuid::Uuid::new_v4().to_string();
                 self.channel
-                    .send_tool_start(&output.tool_name, &tool_call_id, None)
+                    .send_tool_start(
+                        &output.tool_name,
+                        &tool_call_id,
+                        None,
+                        self.parent_tool_use_id.clone(),
+                    )
                     .await?;
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
                 let body = if let Some(ref fs) = output.filter_stats
@@ -535,8 +540,10 @@ impl<C: Channel> Agent<C> {
                         None,
                         filter_stats_inline,
                         None,
+                        output.locations,
                         &tool_call_id,
                         false,
+                        self.parent_tool_use_id.clone(),
                     )
                     .await?;
 
@@ -570,7 +577,12 @@ impl<C: Channel> Agent<C> {
                     {
                         let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
                         self.channel
-                            .send_tool_start(&out.tool_name, &confirmed_tool_call_id, None)
+                            .send_tool_start(
+                                &out.tool_name,
+                                &confirmed_tool_call_id,
+                                None,
+                                self.parent_tool_use_id.clone(),
+                            )
                             .await?;
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
@@ -582,8 +594,10 @@ impl<C: Channel> Agent<C> {
                                 None,
                                 None,
                                 None,
+                                out.locations,
                                 &confirmed_tool_call_id,
                                 false,
+                                self.parent_tool_use_id.clone(),
                             )
                             .await?;
                         self.push_message(Message::from_parts(
@@ -938,7 +952,12 @@ impl<C: Channel> Agent<C> {
         for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
             let raw_params = tc.input.clone();
             self.channel
-                .send_tool_start(&tc.name, tool_call_id, Some(raw_params))
+                .send_tool_start(
+                    &tc.name,
+                    tool_call_id,
+                    Some(raw_params),
+                    self.parent_tool_use_id.clone(),
+                )
                 .await?;
         }
 
@@ -988,49 +1007,66 @@ impl<C: Channel> Agent<C> {
             .zip(tool_results)
             .zip(tool_call_ids.iter())
         {
-            let (output, is_error, diff, inline_stats, _, kept_lines) = match tool_result {
-                Ok(Some(out)) => {
-                    if let Some(ref fs) = out.filter_stats {
-                        let saved = fs.estimated_tokens_saved() as u64;
-                        let raw = (fs.raw_chars / 4) as u64;
-                        let confidence = fs.confidence;
-                        let was_filtered = fs.filtered_chars < fs.raw_chars;
-                        self.update_metrics(|m| {
-                            m.filter_raw_tokens += raw;
-                            m.filter_saved_tokens += saved;
-                            m.filter_applications += 1;
-                            m.filter_total_commands += 1;
-                            if was_filtered {
-                                m.filter_filtered_commands += 1;
-                            }
-                            if let Some(c) = confidence {
-                                match c {
-                                    zeph_tools::FilterConfidence::Full => {
-                                        m.filter_confidence_full += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Partial => {
-                                        m.filter_confidence_partial += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Fallback => {
-                                        m.filter_confidence_fallback += 1;
+            let (output, is_error, diff, inline_stats, _, kept_lines, locations) =
+                match tool_result {
+                    Ok(Some(out)) => {
+                        if let Some(ref fs) = out.filter_stats {
+                            let saved = fs.estimated_tokens_saved() as u64;
+                            let raw = (fs.raw_chars / 4) as u64;
+                            let confidence = fs.confidence;
+                            let was_filtered = fs.filtered_chars < fs.raw_chars;
+                            self.update_metrics(|m| {
+                                m.filter_raw_tokens += raw;
+                                m.filter_saved_tokens += saved;
+                                m.filter_applications += 1;
+                                m.filter_total_commands += 1;
+                                if was_filtered {
+                                    m.filter_filtered_commands += 1;
+                                }
+                                if let Some(c) = confidence {
+                                    match c {
+                                        zeph_tools::FilterConfidence::Full => {
+                                            m.filter_confidence_full += 1;
+                                        }
+                                        zeph_tools::FilterConfidence::Partial => {
+                                            m.filter_confidence_partial += 1;
+                                        }
+                                        zeph_tools::FilterConfidence::Fallback => {
+                                            m.filter_confidence_fallback += 1;
+                                        }
                                     }
                                 }
-                            }
+                            });
+                        }
+                        let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
+                            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
                         });
+                        let kept = out.filter_stats.as_ref().and_then(|fs| {
+                            (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone())
+                        });
+                        let streamed = out.streamed;
+                        let locations = out.locations;
+                        (
+                            out.summary,
+                            false,
+                            out.diff,
+                            inline_stats,
+                            streamed,
+                            kept,
+                            locations,
+                        )
                     }
-                    let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
-                    });
-                    let kept = out
-                        .filter_stats
-                        .as_ref()
-                        .and_then(|fs| (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone()));
-                    let streamed = out.streamed;
-                    (out.summary, false, out.diff, inline_stats, streamed, kept)
-                }
-                Ok(None) => ("(no output)".to_owned(), false, None, None, false, None),
-                Err(e) => (format!("[error] {e}"), true, None, None, false, None),
-            };
+                    Ok(None) => (
+                        "(no output)".to_owned(),
+                        false,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                    ),
+                    Err(e) => (format!("[error] {e}"), true, None, None, false, None, None),
+                };
 
             let processed = self.maybe_summarize_tool_output(&output).await;
             let body = if let Some(ref stats) = inline_stats {
@@ -1046,8 +1082,10 @@ impl<C: Channel> Agent<C> {
                     diff,
                     inline_stats,
                     kept_lines,
+                    locations,
                     tool_call_id,
                     is_error,
+                    self.parent_tool_use_id.clone(),
                 )
                 .await?;
 
@@ -1312,6 +1350,7 @@ mod tests {
                     filter_stats: None,
                     streamed: false,
                     terminal_id: None,
+                    locations: None,
                 }))
             }
         }
@@ -1352,6 +1391,7 @@ mod tests {
                         filter_stats: None,
                         streamed: false,
                         terminal_id: None,
+                        locations: None,
                     }))
                 }
             }
@@ -1674,6 +1714,7 @@ mod tests {
             filter_stats: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1703,6 +1744,7 @@ mod tests {
             filter_stats: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1732,6 +1774,7 @@ mod tests {
             filter_stats: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         };
         // reflection_used = true so reflection path is skipped
         agent.learning_engine.mark_reflection_used();
@@ -2231,6 +2274,7 @@ mod tests {
             filter_stats: None,
             streamed: true,
             terminal_id: None,
+            locations: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -2264,6 +2308,7 @@ mod tests {
             filter_stats: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -2317,6 +2362,53 @@ mod tests {
         assert_eq!(
             start_id, output_id,
             "ToolStart and ToolOutput must share the same tool_call_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_locations_propagated_to_loopback_event() {
+        use super::super::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
+        use crate::channel::{LoopbackChannel, LoopbackEvent};
+        use zeph_tools::executor::ToolOutput;
+
+        let (loopback, mut handle) = LoopbackChannel::pair(32);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, loopback, registry, None, 5, executor);
+
+        let output = ToolOutput {
+            tool_name: "read_file".into(),
+            summary: "file content".into(),
+            blocks_executed: 1,
+            diff: None,
+            filter_stats: None,
+            streamed: false,
+            terminal_id: None,
+            locations: Some(vec!["/src/main.rs".to_owned()]),
+        };
+        agent
+            .handle_tool_result("response", Ok(Some(output)))
+            .await
+            .unwrap();
+        drop(agent);
+
+        let mut events = Vec::new();
+        while let Ok(ev) = handle.output_rx.try_recv() {
+            events.push(ev);
+        }
+
+        let locations = events.iter().find_map(|e| {
+            if let LoopbackEvent::ToolOutput { locations, .. } = e {
+                locations.clone()
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            locations,
+            Some(vec!["/src/main.rs".to_owned()]),
+            "locations from ToolOutput must be forwarded to LoopbackEvent::ToolOutput"
         );
     }
 }

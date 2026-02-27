@@ -733,6 +733,127 @@ As steps execute, subsequent `plan` updates carry revised `status` values (`in_p
 
 Plan updates are emitted by the orchestrator automatically — no configuration is required. They are only produced during multi-step turns; single-turn prompts produce no plan notifications.
 
+## Subagent IDE visibility
+
+When Zeph runs a [sub-agent](sub-agents.md) during an orchestrator turn, the IDE receives structured updates for every tool call made inside that subagent. Three mechanisms work together to give the IDE full visibility: subagent nesting via `parentToolUseId`, live terminal streaming, and file-follow via `ToolCallLocation`.
+
+### Subagent nesting (parentToolUseId)
+
+When the orchestrator spawns a subagent, it injects the parent tool call UUID into the subagent's `AcpContext`:
+
+```rust
+# // AcpContext field — set by the orchestrator before spawning the subagent session
+pub parent_tool_use_id: Option<String>,
+```
+
+Every `LoopbackEvent::ToolStart` and `LoopbackEvent::ToolOutput` emitted by the subagent carries this UUID. The `loopback_event_to_updates` function serializes it into `_meta.claudeCode.parentToolUseId` on both the `ToolCall` (InProgress) and `ToolCallUpdate` (Completed/Failed) notifications:
+
+```jsonc
+// ToolCall notification emitted when the subagent starts a tool call
+{
+  "method": "notifications/session",
+  "params": {
+    "session_id": "...",
+    "update": {
+      "type": "tool_call",
+      "tool_call_id": "child-uuid",
+      "title": "cargo test",
+      "status": "in_progress",
+      "_meta": {
+        "claudeCode": { "parentToolUseId": "parent-uuid" }
+      }
+    }
+  }
+}
+```
+
+IDEs that understand this field (Zed, VS Code with an ACP extension) nest the subagent's tool call card under the parent tool call card in the conversation view. Top-level (non-subagent) sessions leave `parent_tool_use_id` as `None` and the field is omitted.
+
+### Terminal streaming
+
+Shell commands routed through the IDE terminal emit incremental output chunks to the IDE rather than delivering the full output only when the process exits. The `stream_until_exit` helper polls `terminal_output` every 200 ms and sends a `ToolCallUpdate` for each new chunk:
+
+```jsonc
+// Incremental output chunk — arrives while the command is still running
+{
+  "method": "notifications/session",
+  "params": {
+    "session_id": "...",
+    "update": {
+      "type": "tool_call_update",
+      "tool_call_id": "abc123",
+      "_meta": {
+        "terminal_output": {
+          "terminal_id": "term-7",
+          "data": "running 42 tests...\n"
+        }
+      }
+    }
+  }
+}
+```
+
+When the process exits (or the timeout fires), a final `ToolCallUpdate` carries `_meta.terminal_exit`:
+
+```jsonc
+// Exit notification — arrives once after the process terminates
+{
+  "method": "notifications/session",
+  "params": {
+    "session_id": "...",
+    "update": {
+      "type": "tool_call_update",
+      "tool_call_id": "abc123",
+      "_meta": {
+        "terminal_exit": {
+          "terminal_id": "term-7",
+          "exit_code": 0
+        }
+      }
+    }
+  }
+}
+```
+
+Terminal streaming is automatic when the IDE advertises the `terminal` capability. No configuration is required. The existing `terminal_timeout_secs` setting still applies — if a command exceeds the timeout, `kill_terminal_command` is sent and the exit notification carries exit code `124`.
+
+> **Note:** Streaming is only active when a `stream_tx` channel is provided to `execute_in_terminal`. Commands that do not use the ACP terminal path (for example, those executed by Zeph's internal shell executor) do not produce streaming notifications.
+
+### File following (ToolCallLocation)
+
+When a tool call touches a file — for example, `read_file` or `write_file` — the `ToolOutput` struct carries the absolute path in its `locations` field:
+
+```rust
+pub struct ToolOutput {
+    // ... other fields ...
+    /// Absolute file paths touched by this tool call.
+    pub locations: Option<Vec<String>>,
+}
+```
+
+`AcpFileExecutor` populates `locations` with the absolute path of the file it reads or writes. The `loopback_event_to_updates` function maps each path to an `acp::ToolCallLocation` and attaches it to the `ToolCallUpdate`:
+
+```jsonc
+{
+  "method": "notifications/session",
+  "params": {
+    "session_id": "...",
+    "update": {
+      "type": "tool_call_update",
+      "tool_call_id": "xyz789",
+      "status": "completed",
+      "locations": [
+        { "filePath": "/home/user/project/src/auth.rs" }
+      ]
+    }
+  }
+}
+```
+
+IDEs use this to move the editor cursor to the relevant file as the agent works. In Zed, the editor pane scrolls to the file automatically. In VS Code, the ACP extension can open the file in a side panel.
+
+Multiple paths are supported when a single tool call touches more than one file (for example, a diff or rename operation). Empty or `None` `locations` fields are omitted from the notification — no empty array is sent.
+
 ## Slash commands
 
 Zeph advertises built-in slash commands to the IDE via `AvailableCommandsUpdate`. When the user types `/` in the IDE input, it can display the command list as autocomplete suggestions.

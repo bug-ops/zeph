@@ -124,6 +124,7 @@ mod tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
     }

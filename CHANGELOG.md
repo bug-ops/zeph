@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACP project rules widget: `project_rules` field on `AcpServerConfig` and `ZephAcpAgent`; session start sends `_meta.projectRules` with basenames of loaded `.claude/rules/*.md` and skill files, populating the "N project rules" badge in Zed IDE (#1002)
 - `collect_project_rules` helper in `src/acp.rs` aggregates rule file paths from `cwd/.claude/rules/*.md` and `AgentDeps::skill_paths` (#1002)
 - `ZephAcpAgent::with_project_rules()` builder method for supplying rules list to the ACP agent (#1002)
+- `zeph-acp`: `parent_tool_use_id` propagation through `LoopbackEvent::ToolStart/ToolOutput` → `AcpContext` → `loopback_event_to_updates`; subagent events carry `_meta.claudeCode.parentToolUseId` so IDEs can nest subagent output under the parent tool call card (#1008)
+- `zeph-core`: `Agent::with_parent_tool_use_id()` builder method; `AgentBuilder` injects the parent tool call UUID when spawning subagents via `SubAgentManager` (#1008)
+- `zeph-acp`: `AcpShellExecutor` terminal streaming — `stream_until_exit` helper polls output every 200 ms via `tokio::select!` and emits `ToolCallUpdate` with `_meta.terminal_output` per chunk and `_meta.terminal_exit` on completion; IDEs receive real-time bash output inside tool cards (#1009)
+- `zeph-tools`: `locations: Option<Vec<String>>` field on `ToolOutput`; `AcpFileExecutor` populates it with the absolute file path for `read_file`/`write_file` operations; `loopback_event_to_updates` forwards it as `ToolCall.location` for IDE file-following (#1010)
+- Unit tests: `loopback_tool_start_parent_tool_use_id_injected_into_meta`, `loopback_tool_output_parent_tool_use_id_injected_into_meta`, `streaming_mode_emits_terminal_exit_notification`, `read_file_returns_location`, `write_file_returns_location` (#1008, #1009, #1010)
 
 ### Fixed
 - `ModelInfo` struct (`id`, `display_name`, `context_window`, `created_at`) in `zeph-llm` for dynamic model discovery (#992)

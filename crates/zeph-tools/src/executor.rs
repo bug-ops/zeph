@@ -80,6 +80,8 @@ pub struct ToolOutput {
     pub streamed: bool,
     /// Terminal ID when the tool was executed via IDE terminal (ACP terminal/* protocol).
     pub terminal_id: Option<String>,
+    /// File paths touched by this tool call, for IDE follow-along (e.g. `ToolCallLocation`).
+    pub locations: Option<Vec<String>>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -348,6 +350,7 @@ mod tests {
             diff: None,
             streamed: false,
             terminal_id: None,
+            locations: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }
@@ -588,6 +591,7 @@ mod tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
 
@@ -607,6 +611,7 @@ mod tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
     }

@@ -72,6 +72,7 @@ mod tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
     }
@@ -106,6 +107,7 @@ mod tests {
                 diff: None,
                 streamed: false,
                 terminal_id: None,
+                locations: None,
             }))
         }
     }
@@ -185,6 +187,7 @@ mod tests {
                     diff: None,
                     streamed: false,
                     terminal_id: None,
+                    locations: None,
                 }))
             } else {
                 Ok(None)
@@ -211,6 +214,7 @@ mod tests {
                     diff: None,
                     streamed: false,
                     terminal_id: None,
+                    locations: None,
                 }))
             } else {
                 Ok(None)
