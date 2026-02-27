@@ -45,7 +45,7 @@ Some workspace crates expose their own feature flags for fine-grained control:
 | `zeph-acp` | `unstable-session-list` | on | `list_sessions` RPC handler — enumerate in-memory sessions (unstable, see [ACP guide](../advanced/acp.md#list_sessions)) |
 | `zeph-acp` | `unstable-session-fork` | on | `fork_session` RPC handler — clone session history into a new session (unstable, see [ACP guide](../advanced/acp.md#fork_session)) |
 | `zeph-acp` | `unstable-session-resume` | on | `resume_session` RPC handler — reattach to a persisted session without replaying events (unstable, see [ACP guide](../advanced/acp.md#resume_session)) |
-| `zeph-acp` | `unstable-session-usage` | on | `UsageUpdate` in `PromptResponse` — per-turn token consumption (input, output, cache read/write) for IDE cost display (unstable, see [ACP guide](../advanced/acp.md#usage-tracking-unstable-session-usage)) |
+| `zeph-acp` | `unstable-session-usage` | on | `UsageUpdate` session notification — per-turn token consumption (`used`/`size`) sent after each LLM response; IDEs that handle this event render a context window badge (unstable, see [ACP guide](../advanced/acp.md#usage-tracking-unstable-session-usage)) |
 | `zeph-acp` | `unstable-session-model` | on | `set_session_model` handler — IDE model picker support; emits `SetSessionModel` notification on switch (unstable, see [ACP guide](../advanced/acp.md#model-picker-unstable-session-model)) |
 | `zeph-acp` | `unstable-session-info-update` | on | `SessionInfoUpdate` notification — auto-generated session title emitted after the first exchange (unstable, see [ACP guide](../advanced/acp.md#session-title-unstable-session-info-update)) |
 
