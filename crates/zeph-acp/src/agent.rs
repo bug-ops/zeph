@@ -1692,18 +1692,33 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                         }
                     },
                 );
-            let mut tool_call = acp::ToolCall::new(tool_call_id, title)
-                .kind(tool_kind_from_name(&tool_name))
+            let kind = tool_kind_from_name(&tool_name);
+            let mut tool_call = acp::ToolCall::new(tool_call_id.clone(), title)
+                .kind(kind)
                 .status(acp::ToolCallStatus::InProgress);
             if let Some(p) = params {
                 tool_call = tool_call.raw_input(p);
             }
+            // For execute-kind tools, register a display-only terminal keyed by tool_call_id.
+            // This follows the Zed _meta extension pattern: terminal_info creates the terminal
+            // widget in the ACP thread panel, terminal_output/terminal_exit populate it later.
+            let mut meta = serde_json::Map::new();
+            if kind == acp::ToolKind::Execute {
+                meta.insert(
+                    "terminal_info".to_owned(),
+                    serde_json::json!({ "terminal_id": tool_call_id.clone() }),
+                );
+                tool_call = tool_call.content(vec![acp::ToolCallContent::Terminal(
+                    acp::Terminal::new(tool_call_id.clone()),
+                )]);
+            }
             if let Some(parent_id) = parent_tool_use_id {
-                let mut meta = serde_json::Map::new();
                 meta.insert(
                     "claudeCode".to_owned(),
                     serde_json::json!({ "parentToolUseId": parent_id }),
                 );
+            }
+            if !meta.is_empty() {
                 tool_call = tool_call.meta(meta);
             }
             vec![acp::SessionUpdate::ToolCall(tool_call)]
@@ -1729,28 +1744,75 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             } else {
                 acp::ToolCallStatus::Completed
             };
-            let mut content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
-                acp::TextContent::new(display),
-            ))];
-            if let Some(tid) = terminal_id {
-                content.push(acp::ToolCallContent::Terminal(acp::Terminal::new(tid)));
-            }
-            let mut fields = acp::ToolCallUpdateFields::new()
-                .status(status)
-                .content(content);
-            if !acp_locations.is_empty() {
-                fields = fields.locations(acp_locations);
-            }
-            let mut update = acp::ToolCallUpdate::new(tool_call_id, fields);
-            if let Some(parent_id) = parent_tool_use_id {
-                let mut meta = serde_json::Map::new();
-                meta.insert(
-                    "claudeCode".to_owned(),
-                    serde_json::json!({ "parentToolUseId": parent_id }),
+            if terminal_id.is_some() {
+                // Terminal tool: emit two updates matching the Zed _meta extension pattern.
+                // First: stream output to the display terminal registered in ToolStart.
+                // Second: finalize with terminal_exit and ToolCallContent::Terminal.
+                // The terminal_id is the tool_call_id (not the ACP terminal UUID), so Zed can
+                // look it up immediately without waiting for the _output_task race condition.
+                let mut output_meta = serde_json::Map::new();
+                output_meta.insert(
+                    "terminal_output".to_owned(),
+                    serde_json::json!({ "terminal_id": tool_call_id, "data": display }),
                 );
-                update = update.meta(meta);
+                let intermediate = acp::SessionUpdate::ToolCallUpdate(
+                    acp::ToolCallUpdate::new(
+                        tool_call_id.clone(),
+                        acp::ToolCallUpdateFields::new(),
+                    )
+                    .meta(output_meta),
+                );
+
+                let exit_code = u32::from(is_error);
+                let mut exit_meta = serde_json::Map::new();
+                exit_meta.insert(
+                    "terminal_exit".to_owned(),
+                    serde_json::json!({
+                        "terminal_id": tool_call_id,
+                        "exit_code": exit_code,
+                        "signal": null
+                    }),
+                );
+                if let Some(parent_id) = parent_tool_use_id {
+                    exit_meta.insert(
+                        "claudeCode".to_owned(),
+                        serde_json::json!({ "parentToolUseId": parent_id }),
+                    );
+                }
+                let mut final_fields = acp::ToolCallUpdateFields::new()
+                    .status(status)
+                    .content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
+                        tool_call_id.clone(),
+                    ))])
+                    .raw_output(serde_json::Value::String(display));
+                if !acp_locations.is_empty() {
+                    final_fields = final_fields.locations(acp_locations);
+                }
+                let final_update = acp::SessionUpdate::ToolCallUpdate(
+                    acp::ToolCallUpdate::new(tool_call_id, final_fields).meta(exit_meta),
+                );
+                vec![intermediate, final_update]
+            } else {
+                let content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                    acp::TextContent::new(display),
+                ))];
+                let mut fields = acp::ToolCallUpdateFields::new()
+                    .status(status)
+                    .content(content);
+                if !acp_locations.is_empty() {
+                    fields = fields.locations(acp_locations);
+                }
+                let mut update = acp::ToolCallUpdate::new(tool_call_id, fields);
+                if let Some(parent_id) = parent_tool_use_id {
+                    let mut meta = serde_json::Map::new();
+                    meta.insert(
+                        "claudeCode".to_owned(),
+                        serde_json::json!({ "parentToolUseId": parent_id }),
+                    );
+                    update = update.meta(meta);
+                }
+                vec![acp::SessionUpdate::ToolCallUpdate(update)]
             }
-            vec![acp::SessionUpdate::ToolCallUpdate(update)]
         }
         LoopbackEvent::Flush => vec![],
         #[cfg(feature = "unstable-session-usage")]
@@ -2679,8 +2741,23 @@ mod tests {
             parent_tool_use_id: None,
         };
         let updates = loopback_event_to_updates(event);
-        assert_eq!(updates.len(), 1);
+        // Expect 2 updates: intermediate with terminal_output meta, final with terminal_exit +
+        // Terminal content.
+        assert_eq!(updates.len(), 2, "expected intermediate + final update");
         match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.as_ref().expect("intermediate must have _meta");
+                assert!(
+                    meta.contains_key("terminal_output"),
+                    "intermediate must have terminal_output"
+                );
+                let output = &meta["terminal_output"];
+                assert_eq!(output["data"].as_str(), Some("ls output"));
+                assert_eq!(output["terminal_id"].as_str(), Some("tid-1"));
+            }
+            other => panic!("expected intermediate ToolCallUpdate, got {other:?}"),
+        }
+        match &updates[1] {
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
                 assert!(
                     tcu.fields
@@ -2688,10 +2765,52 @@ mod tests {
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
-                        .any(|c| matches!(c, acp::ToolCallContent::Terminal(_)))
+                        .any(|c| matches!(c, acp::ToolCallContent::Terminal(_))),
+                    "final update must have Terminal content"
+                );
+                let meta = tcu.meta.as_ref().expect("final update must have _meta");
+                assert!(
+                    meta.contains_key("terminal_exit"),
+                    "final update must have terminal_exit"
+                );
+                assert_eq!(
+                    tcu.fields.raw_output.as_ref().and_then(|v| v.as_str()),
+                    Some("ls output")
                 );
             }
-            other => panic!("expected ToolCallUpdate with Terminal content, got {other:?}"),
+            other => panic!("expected final ToolCallUpdate with Terminal content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_tool_start_execute_sets_terminal_info() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "tc-bash".to_owned(),
+            params: Some(serde_json::json!({ "command": "ls" })),
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert!(
+                    tc.content
+                        .iter()
+                        .any(|c| matches!(c, acp::ToolCallContent::Terminal(_))),
+                    "execute ToolCall must include Terminal content"
+                );
+                let meta = tc.meta.as_ref().expect("execute ToolCall must have _meta");
+                assert!(
+                    meta.contains_key("terminal_info"),
+                    "execute ToolCall must have terminal_info"
+                );
+                assert_eq!(
+                    meta["terminal_info"]["terminal_id"].as_str(),
+                    Some("tc-bash")
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 
