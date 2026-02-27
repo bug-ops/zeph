@@ -616,16 +616,16 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
 fn collect_project_rules(skill_paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut rules = Vec::new();
     let rules_dir = std::path::Path::new(".claude/rules");
-    if rules_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(rules_dir) {
-            let mut paths: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "md"))
-                .collect();
-            paths.sort();
-            rules.extend(paths);
-        }
+    if rules_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(rules_dir)
+    {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "md"))
+            .collect();
+        paths.sort();
+        rules.extend(paths);
     }
     for sp in skill_paths {
         if sp.is_file() {
