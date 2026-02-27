@@ -71,6 +71,8 @@ struct AgentDeps {
     /// Pre-built provider factory for ACP model switching.
     #[cfg(feature = "acp")]
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
+    /// Project rule file paths to advertise in session `_meta`.
+    acp_project_rules: Vec<PathBuf>,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -133,6 +135,7 @@ async fn build_acp_deps(
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
+    let acp_project_rules = collect_project_rules(&skill_paths);
     let zeph_core::bootstrap::WatcherBundle {
         skill_watcher,
         skill_reload_rx: reload_rx,
@@ -200,6 +203,7 @@ async fn build_acp_deps(
         acp_auth_bearer_token: config.acp.auth_token.clone(),
         acp_discovery_enabled: config.acp.discovery_enabled,
         acp_provider_factory: Some(build_acp_provider_factory(config)),
+        acp_project_rules,
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -604,6 +608,33 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
     })
 }
 
+/// Collect project rule file paths from `.claude/rules/*.md` and skill files.
+///
+/// Rule files are resolved relative to the current working directory.
+/// Skill paths that point to regular files (SKILL.md entries) are included as-is.
+#[cfg(feature = "acp")]
+fn collect_project_rules(skill_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut rules = Vec::new();
+    let rules_dir = std::path::Path::new(".claude/rules");
+    if rules_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(rules_dir) {
+            let mut paths: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "md"))
+                .collect();
+            paths.sort();
+            rules.extend(paths);
+        }
+    }
+    for sp in skill_paths {
+        if sp.is_file() {
+            rules.push(sp.clone());
+        }
+    }
+    rules
+}
+
 /// Run the ACP server over stdin/stdout.
 ///
 /// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
@@ -641,6 +672,7 @@ pub(crate) async fn run_acp_server(
         auth_bearer_token: deps.acp_auth_bearer_token.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: 120,
+        project_rules: deps.acp_project_rules.clone(),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -703,6 +735,7 @@ pub(crate) async fn run_acp_http_server(
         auth_bearer_token,
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: 120,
+        project_rules: deps.acp_project_rules.clone(),
     };
 
     let deps = Arc::new(Mutex::new(Some(deps)));
@@ -746,4 +779,88 @@ pub(crate) fn print_acp_manifest() {
         "{}",
         serde_json::to_string_pretty(&manifest).unwrap_or_default()
     );
+}
+
+#[cfg(all(test, feature = "acp"))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_rules_dir(dir: &std::path::Path, files: &[&str]) {
+        let rules = dir.join(".claude").join("rules");
+        fs::create_dir_all(&rules).unwrap();
+        for name in files {
+            fs::write(rules.join(name), b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn collect_project_rules_empty_skill_paths_no_rules_dir() {
+        let tmp = TempDir::new().unwrap();
+        // No .claude/rules dir exists — function must return empty vec.
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = collect_project_rules(&[]);
+        std::env::set_current_dir(orig).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collect_project_rules_picks_md_files_from_rules_dir() {
+        let tmp = TempDir::new().unwrap();
+        make_rules_dir(tmp.path(), &["rust-code.md", "testing.md", "notes.txt"]);
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = collect_project_rules(&[]);
+        std::env::set_current_dir(orig).unwrap();
+        // Only .md files should be returned.
+        assert_eq!(result.len(), 2);
+        let names: Vec<_> = result
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"rust-code.md".to_owned()));
+        assert!(names.contains(&"testing.md".to_owned()));
+        assert!(!names.contains(&"notes.txt".to_owned()));
+    }
+
+    #[test]
+    fn collect_project_rules_includes_skill_files() {
+        let tmp = TempDir::new().unwrap();
+        let skill_file = tmp.path().join("my-skill.md");
+        fs::write(&skill_file, b"").unwrap();
+        let skill_dir = tmp.path().join("skills-dir");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // skill_file is a file — included; skill_dir is a dir — excluded.
+        let result = collect_project_rules(&[skill_file.clone(), skill_dir]);
+        std::env::set_current_dir(orig).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], skill_file);
+    }
+
+    #[test]
+    fn collect_project_rules_mixed_sources() {
+        let tmp = TempDir::new().unwrap();
+        make_rules_dir(tmp.path(), &["branching.md"]);
+        let skill_file = tmp.path().join("SKILL.md");
+        fs::write(&skill_file, b"").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = collect_project_rules(&[skill_file.clone()]);
+        std::env::set_current_dir(orig).unwrap();
+        assert_eq!(result.len(), 2);
+        let names: Vec<_> = result
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"branching.md".to_owned()));
+        assert!(names.contains(&"SKILL.md".to_owned()));
+    }
 }

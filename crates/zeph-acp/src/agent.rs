@@ -117,6 +117,8 @@ pub struct ZephAcpAgent {
     available_models: Vec<String>,
     /// Shared MCP manager for `ext_method` add/remove/list.
     mcp_manager: Option<Arc<McpManager>>,
+    /// Project rule file paths advertised in `new_session` `_meta`.
+    project_rules: Vec<std::path::PathBuf>,
 }
 
 impl ZephAcpAgent {
@@ -143,6 +145,7 @@ impl ZephAcpAgent {
             provider_factory: None,
             available_models: Vec::new(),
             mcp_manager: None,
+            project_rules: Vec::new(),
         }
     }
 
@@ -173,6 +176,12 @@ impl ZephAcpAgent {
     #[must_use]
     pub fn with_mcp_manager(mut self, manager: Arc<McpManager>) -> Self {
         self.mcp_manager = Some(manager);
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_rules(mut self, rules: Vec<std::path::PathBuf>) -> Self {
+        self.project_rules = rules;
         self
     }
 
@@ -420,6 +429,17 @@ impl acp::Agent for ZephAcpAgent {
             .modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
+        }
+        if !self.project_rules.is_empty() {
+            let rules: Vec<serde_json::Value> = self
+                .project_rules
+                .iter()
+                .filter_map(|p| p.file_name())
+                .map(|n| serde_json::json!({"name": n.to_string_lossy()}))
+                .collect();
+            let mut meta = serde_json::Map::new();
+            meta.insert("projectRules".to_owned(), serde_json::Value::Array(rules));
+            resp = resp.meta(meta);
         }
 
         let cmds_update = acp::SessionUpdate::AvailableCommandsUpdate(
@@ -3326,6 +3346,57 @@ mod tests {
                     ))
                     .await;
                 assert!(result.is_err());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn new_session_meta_contains_project_rules() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                use acp::Agent as _;
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let rules = vec![
+                    std::path::PathBuf::from(".claude/rules/rust-code.md"),
+                    std::path::PathBuf::from(".claude/rules/testing.md"),
+                ];
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_project_rules(rules);
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let meta = resp
+                    .meta
+                    .expect("_meta should be present when rules are set");
+                let rules_val = meta
+                    .get("projectRules")
+                    .expect("projectRules key must exist");
+                let arr = rules_val.as_array().expect("projectRules must be an array");
+                assert_eq!(arr.len(), 2);
+                assert_eq!(arr[0]["name"], "rust-code.md");
+                assert_eq!(arr[1]["name"], "testing.md");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn new_session_meta_absent_when_no_rules() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                use acp::Agent as _;
+                let (agent, _rx) = make_agent();
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                assert!(
+                    resp.meta.is_none(),
+                    "_meta must be absent when no rules configured"
+                );
             })
             .await;
     }

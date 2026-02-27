@@ -68,6 +68,9 @@ where
             if let Some(manager) = server_config.mcp_manager {
                 agent = agent.with_mcp_manager(manager);
             }
+            if !server_config.project_rules.is_empty() {
+                agent = agent.with_project_rules(server_config.project_rules);
+            }
             agent.start_idle_reaper();
 
             let (conn, io_fut) = acp::AgentSideConnection::new(agent, writer, reader, |fut| {

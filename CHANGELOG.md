@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- ACP context window usage widget: `unstable-session-usage` feature enabled in `zeph-acp` by default; `UsageUpdate` (`used`/`size` tokens) now emitted after each LLM response, populating the Context badge in Zed IDE (#1002)
+- ACP project rules widget: `project_rules` field on `AcpServerConfig` and `ZephAcpAgent`; session start sends `_meta.projectRules` with basenames of loaded `.claude/rules/*.md` and skill files, populating the "N project rules" badge in Zed IDE (#1002)
+- `collect_project_rules` helper in `src/acp.rs` aggregates rule file paths from `cwd/.claude/rules/*.md` and `AgentDeps::skill_paths` (#1002)
+- `ZephAcpAgent::with_project_rules()` builder method for supplying rules list to the ACP agent (#1002)
+
+### Fixed
 - `ModelInfo` struct (`id`, `display_name`, `context_window`, `created_at`) in `zeph-llm` for dynamic model discovery (#992)
 - `ModelCache` in `zeph-llm/src/model_cache.rs`: disk-backed per-provider model list with 24h TTL, atomic writes, `~/.cache/zeph/models/{slug}.json` (#992)
 - `LlmProvider::list_models_remote()` async trait method with default fallback to `list_models()` (#992)

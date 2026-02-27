@@ -50,6 +50,8 @@ pub struct AcpServerConfig {
     pub discovery_enabled: bool,
     /// Timeout in seconds for terminal command execution before kill is sent.
     pub terminal_timeout_secs: u64,
+    /// Project rule file paths to advertise in session `_meta`.
+    pub project_rules: Vec<std::path::PathBuf>,
 }
 
 impl Clone for AcpServerConfig {
@@ -66,6 +68,7 @@ impl Clone for AcpServerConfig {
             auth_bearer_token: self.auth_bearer_token.clone(),
             discovery_enabled: self.discovery_enabled,
             terminal_timeout_secs: self.terminal_timeout_secs,
+            project_rules: self.project_rules.clone(),
         }
     }
 }
@@ -84,6 +87,7 @@ impl Default for AcpServerConfig {
             auth_bearer_token: None,
             discovery_enabled: true,
             terminal_timeout_secs: 120,
+            project_rules: Vec::new(),
         }
     }
 }
