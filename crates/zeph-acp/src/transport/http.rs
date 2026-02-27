@@ -111,7 +111,7 @@ pub struct AcpHttpState {
     /// Used to atomically reserve a slot before the upgrade handshake, eliminating TOCTOU
     /// between the capacity check and the actual `DashMap` insertion.
     pub(crate) active_ws: Arc<AtomicUsize>,
-    /// Optional SQLite store for session history REST endpoints.
+    /// Optional `SQLite` store for session history REST endpoints.
     pub store: Option<Arc<SqliteStore>>,
 }
 
@@ -331,7 +331,7 @@ pub async fn get_handler(
 ///
 /// # Errors
 ///
-/// Returns `503 Service Unavailable` if no SQLite store is configured.
+/// Returns `503 Service Unavailable` if no `SQLite` store is configured.
 /// Returns `500 Internal Server Error` if the database query fails.
 #[cfg(feature = "acp-http")]
 pub async fn list_sessions_handler(
@@ -356,7 +356,7 @@ pub async fn list_sessions_handler(
 ///
 /// # Errors
 ///
-/// Returns `503 Service Unavailable` if no SQLite store is configured.
+/// Returns `503 Service Unavailable` if no `SQLite` store is configured.
 /// Returns `404 Not Found` if the session does not exist.
 /// Returns `500 Internal Server Error` if the database query fails.
 #[cfg(feature = "acp-http")]
