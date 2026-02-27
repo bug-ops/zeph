@@ -72,7 +72,7 @@ struct AgentDeps {
     acp_title_max_chars: usize,
     /// Maximum number of sessions returned by list endpoints.
     acp_max_history: usize,
-    /// SQLite database path, passed to ACP transport for session persistence.
+    /// `SQLite` database path, passed to ACP transport for session persistence.
     sqlite_path: String,
     /// Pre-built provider factory for ACP model switching.
     #[cfg(feature = "acp")]
