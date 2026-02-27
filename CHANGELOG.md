@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `docs/src/guides/ide-integration.md` — IDE integration guide covering ACP stdio setup, Zed and VS Code configuration, and subagent visibility features (nesting, terminal streaming, agent following) (#1011)
 - ACP context window usage widget: `unstable-session-usage` feature enabled in `zeph-acp` by default; `UsageUpdate` (`used`/`size` tokens) now emitted after each LLM response, populating the Context badge in Zed IDE (#1002)
 - ACP project rules widget: `project_rules` field on `AcpServerConfig` and `ZephAcpAgent`; session start sends `_meta.projectRules` with basenames of loaded `.claude/rules/*.md` and skill files, populating the "N project rules" badge in Zed IDE (#1002)
 - `collect_project_rules` helper in `src/acp.rs` aggregates rule file paths from `cwd/.claude/rules/*.md` and `AgentDeps::skill_paths` (#1002)

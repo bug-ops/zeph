@@ -22,6 +22,7 @@
 - [Run via Telegram](guides/telegram.md)
 - [Add Custom Skills](guides/custom-skills.md)
 - [Connect MCP Servers](guides/mcp.md)
+- [IDE Integration](guides/ide-integration.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)
