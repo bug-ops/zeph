@@ -48,6 +48,7 @@ fn make_server_config() -> AcpServerConfig {
         auth_bearer_token: None,
         discovery_enabled: true,
         terminal_timeout_secs: 120,
+        project_rules: Vec::new(),
     }
 }
 
