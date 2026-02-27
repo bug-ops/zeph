@@ -47,7 +47,7 @@ zeph-acp = { version = "0.1", features = ["acp-http"] }
 | `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
 | `transport` | `serve_stdio` / `serve_connection` (stdio), HTTP+SSE handlers (`post_handler`, `get_handler`), WebSocket handler (`ws_upgrade_handler`), duplex bridge, axum router; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
-| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal_command` on expiry |
+| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal_command` on expiry; deferred `terminal/release` ensures terminal remains alive until IDE receives `ToolCallContent::Terminal` |
 | `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval; persists "always allow/deny" decisions to TOML file |
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers (Stdio, Http, Sse) into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum |
@@ -81,8 +81,10 @@ The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE c
 
 Each tool call is identified by a UUID generated per invocation. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement. Both the fenced-block execution path (`handle_tool_result`) and the structured parallel tool-call path emit this full two-step sequence unconditionally — output content always appears inside a tool call block in the IDE regardless of which path handled the tool.
 
+**Terminal release ordering** — when a shell tool call embeds a terminal via `ToolCallContent::Terminal`, the ACP spec requires the terminal to remain alive until the IDE has processed the `tool_call_update` notification. `ZephAcpAgent` defers `terminal/release` until after all notifications for that event are dispatched. The deferred release is triggered from the `prompt()` event loop via `AcpShellExecutor::release_terminal()`, which is retained in `SessionEntry` for exactly this purpose.
+
 > [!NOTE]
-> Prior to the fix for issue #1003, the fenced-block path did not generate a UUID or emit `ToolStart`, and `send_tool_output` was skipped when a tool had already streamed partial output. Both paths now always produce the complete lifecycle sequence.
+> Prior to #1003 the fenced-block path did not generate a UUID or emit `ToolStart`. Prior to #1013 the terminal was released inside `execute_in_terminal` before `tool_call_update` was sent, preventing IDEs from displaying terminal output. Both issues are now resolved.
 
 ### Terminal command timeout
 

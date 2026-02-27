@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- ACP: terminal release deferred until after `tool_call_update` notification is dispatched. The ACP spec requires the terminal to remain alive when the IDE processes `ToolCallContent::Terminal`; previously the terminal was released inside `execute_in_terminal` before the notification was sent, preventing IDEs from displaying tool output. `SessionEntry` now retains the shell executor and triggers deferred `terminal/release` from the `prompt()` event loop (#1013).
 - ACP: tool execution output is now correctly forwarded via `LoopbackEvent::ToolOutput` to the ACP channel and mapped to `SessionUpdate::ToolCallUpdate` with a `ContentBlock::Text`. Tool blocks in Zed and other ACP-compatible IDEs now display the full output content instead of an empty block (#1003).
 
 ## [0.12.1] - 2026-02-25
