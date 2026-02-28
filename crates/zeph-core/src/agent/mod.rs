@@ -926,6 +926,7 @@ impl<C: Channel> Agent<C> {
                 self.memory_state.conversation_id,
                 "user_rejection",
                 Some(feedback),
+                None,
             )
             .await?;
 

@@ -11,6 +11,7 @@ use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use tracing::Instrument;
+use zeph_skills::evolution::FailureKind;
 
 /// Hash message content for doom-loop detection, skipping volatile IDs in-place.
 /// Normalizes `[tool_result: <id>]` → `[tool_result]` and `[tool_use: <name>(<id>)]` → `[tool_use: <name>]`
@@ -164,7 +165,8 @@ impl<C: Channel> Agent<C> {
 
             if response.trim().is_empty() {
                 tracing::warn!("received empty response from LLM, skipping");
-                self.record_skill_outcomes("empty_response", None).await;
+                self.record_skill_outcomes("empty_response", None, None)
+                    .await;
 
                 if !self.learning_engine.was_reflection_used()
                     && self
@@ -492,13 +494,18 @@ impl<C: Channel> Agent<C> {
                 }
                 if output.summary.trim().is_empty() {
                     tracing::warn!("tool execution returned empty output");
-                    self.record_skill_outcomes("success", None).await;
+                    self.record_skill_outcomes("success", None, None).await;
                     return Ok(false);
                 }
 
                 if output.summary.contains("[error]") || output.summary.contains("[exit code") {
-                    self.record_skill_outcomes("tool_failure", Some(&output.summary))
-                        .await;
+                    let kind = FailureKind::from_error(&output.summary);
+                    self.record_skill_outcomes(
+                        "tool_failure",
+                        Some(&output.summary),
+                        Some(kind.as_str()),
+                    )
+                    .await;
 
                     if !self.learning_engine.was_reflection_used()
                         && self
@@ -508,7 +515,7 @@ impl<C: Channel> Agent<C> {
                         return Ok(false);
                     }
                 } else {
-                    self.record_skill_outcomes("success", None).await;
+                    self.record_skill_outcomes("success", None, None).await;
                 }
 
                 let tool_call_id = uuid::Uuid::new_v4().to_string();
@@ -559,7 +566,7 @@ impl<C: Channel> Agent<C> {
                 Ok(true)
             }
             Ok(None) => {
-                self.record_skill_outcomes("success", None).await;
+                self.record_skill_outcomes("success", None, None).await;
                 Ok(false)
             }
             Err(ToolError::Blocked { command }) => {
@@ -631,7 +638,8 @@ impl<C: Channel> Agent<C> {
             Err(e) => {
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
-                self.record_skill_outcomes("tool_failure", Some(&err_str))
+                let kind = FailureKind::from_error(&err_str);
+                self.record_skill_outcomes("tool_failure", Some(&err_str), Some(kind.as_str()))
                     .await;
 
                 if !self.learning_engine.was_reflection_used()

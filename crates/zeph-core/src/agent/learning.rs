@@ -24,7 +24,12 @@ impl<C: Channel> Agent<C> {
         matches!(row.trust_level.as_str(), "trusted" | "verified")
     }
 
-    pub(super) async fn record_skill_outcomes(&self, outcome: &str, error_context: Option<&str>) {
+    pub(super) async fn record_skill_outcomes(
+        &self,
+        outcome: &str,
+        error_context: Option<&str>,
+        outcome_detail: Option<&str>,
+    ) {
         if self.skill_state.active_skill_names.is_empty() {
             return;
         }
@@ -38,6 +43,7 @@ impl<C: Channel> Agent<C> {
                 self.memory_state.conversation_id,
                 outcome,
                 error_context,
+                outcome_detail,
             )
             .await
         {
@@ -446,13 +452,82 @@ impl<C: Channel> Agent<C> {
             Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
             Some("install") => self.handle_skill_install(parts.get(1).copied()).await,
             Some("remove") => self.handle_skill_remove(parts.get(1).copied()).await,
+            Some("reject") => {
+                let tail = if parts.len() > 2 { &parts[2..] } else { &[] };
+                self.handle_skill_reject(parts.get(1).copied(), tail).await
+            }
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject")
                     .await?;
                 Ok(())
             }
         }
+    }
+
+    async fn handle_skill_reject(
+        &mut self,
+        name: Option<&str>,
+        reason_parts: &[&str],
+    ) -> Result<(), super::error::AgentError> {
+        let Some(name) = name else {
+            self.channel
+                .send("Usage: /skill reject <name> <reason>")
+                .await?;
+            return Ok(());
+        };
+        // SEC-PH1-001: validate skill exists in registry before writing to DB
+        if self.skill_state.registry.get_skill(name).is_err() {
+            self.channel
+                .send(&format!("Unknown skill: \"{name}\"."))
+                .await?;
+            return Ok(());
+        }
+        let reason = reason_parts.join(" ");
+        if reason.is_empty() {
+            self.channel
+                .send("Usage: /skill reject <name> <reason>")
+                .await?;
+            return Ok(());
+        }
+        // SEC-PH1-002: cap reason length to prevent oversized LLM prompts
+        let reason = if reason.len() > 500 {
+            reason[..500].to_string()
+        } else {
+            reason
+        };
+        let Some(memory) = &self.memory_state.memory else {
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
+        };
+        // REV-001: resolve active version_id for consistency with batch path
+        let version_id = memory
+            .sqlite()
+            .active_skill_version(name)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.id);
+        memory
+            .sqlite()
+            .record_skill_outcome(
+                name,
+                version_id,
+                self.memory_state.conversation_id,
+                "user_rejection",
+                Some(&reason),
+                Some("user_rejection"), // REV-002: structured outcome_detail
+            )
+            .await?;
+        if self.is_learning_enabled() {
+            self.generate_improved_skill(name, &reason, "", Some(&reason))
+                .await
+                .ok();
+        }
+        self.channel
+            .send(&format!("Rejection recorded for \"{name}\"."))
+            .await?;
+        Ok(())
     }
 
     async fn handle_skill_stats(&mut self) -> Result<(), super::error::AgentError> {
@@ -890,6 +965,7 @@ mod tests {
                 Some(cid),
                 "tool_failure",
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -929,6 +1005,7 @@ mod tests {
                     Some(cid),
                     "success",
                     None,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -940,6 +1017,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -975,7 +1053,13 @@ mod tests {
         // 1 success, 3 failures (success rate = 0.25 < 0.7, failures = 3 >= min_failures = 2)
         memory
             .sqlite()
-            .record_skill_outcomes_batch(&["test-skill".to_string()], Some(cid), "success", None)
+            .record_skill_outcomes_batch(
+                &["test-skill".to_string()],
+                Some(cid),
+                "success",
+                None,
+                None,
+            )
             .await
             .unwrap();
         for _ in 0..3 {
@@ -985,6 +1069,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -1092,6 +1177,7 @@ mod tests {
                     Some(cid),
                     "tool_failure",
                     None,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1134,6 +1220,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -1344,9 +1431,9 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // No active skills and no memory → should return immediately without panic
-        agent.record_skill_outcomes("success", None).await;
+        agent.record_skill_outcomes("success", None, None).await;
         agent
-            .record_skill_outcomes("tool_failure", Some("error"))
+            .record_skill_outcomes("tool_failure", Some("error"), None)
             .await;
     }
 
@@ -1462,6 +1549,103 @@ mod tests {
         assert!(
             sent.iter().any(|s| s.contains("Remove failed")),
             "expected remove failure message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_records_outcome_and_replies() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
+
+        agent
+            .handle_skill_command("reject test-skill the output was wrong")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Rejection recorded")),
+            "expected rejection confirmation, got: {sent:?}"
+        );
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let metrics = mem.sqlite().skill_metrics("test-skill").await.unwrap();
+        assert!(metrics.is_some(), "outcome should be recorded in DB");
+        let m = metrics.unwrap();
+        assert_eq!(m.total, 1);
+        assert_eq!(m.successes, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_unknown_skill_returns_error_message() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("reject nonexistent-skill bad output")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Unknown skill")),
+            "expected unknown skill message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_missing_name_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("reject").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage")),
+            "expected usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_missing_reason_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("reject test-skill")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage")),
+            "expected usage message, got: {sent:?}"
         );
     }
 
