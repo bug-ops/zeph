@@ -22,7 +22,9 @@ use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::resolve_config_path;
-use zeph_core::bootstrap::{AppBuilder, create_mcp_registry, warmup_provider};
+#[cfg(not(feature = "tui"))]
+use zeph_core::bootstrap::warmup_provider;
+use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 use zeph_core::vault::Secret;
 
 #[cfg(feature = "acp-http")]
@@ -187,9 +189,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         create_channel_with_tui(app.config(), tui_active, cli_history).await?;
     #[cfg(not(feature = "tui"))]
     let channel = create_channel_inner(app.config(), cli_history).await?;
-
-    #[cfg(feature = "tui")]
-    let with_tool_events = tui_handle.is_some();
 
     #[cfg(feature = "tui")]
     let is_cli = matches!(channel, AppChannel::Standard(AnyChannel::Cli(_)));
