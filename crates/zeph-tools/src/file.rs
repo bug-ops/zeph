@@ -40,7 +40,7 @@ struct EditParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-struct GlobParams {
+struct FindPathParams {
     /// Glob pattern
     pattern: String,
 }
@@ -53,6 +53,43 @@ struct GrepParams {
     path: Option<String>,
     /// Case sensitive
     case_sensitive: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ListDirectoryParams {
+    /// Directory path
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CreateDirectoryParams {
+    /// Directory path to create (including parents)
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DeletePathParams {
+    /// Path to delete
+    path: String,
+    /// Delete non-empty directories recursively
+    #[serde(default)]
+    recursive: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct MovePathParams {
+    /// Source path
+    source: String,
+    /// Destination path
+    destination: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CopyPathParams {
+    /// Source path
+    source: String,
+    /// Destination path
+    destination: String,
 }
 
 /// File operations executor sandboxed to allowed paths.
@@ -117,13 +154,33 @@ impl FileExecutor {
                 let p: EditParams = deserialize_params(params)?;
                 self.handle_edit(&p)
             }
-            "glob" => {
-                let p: GlobParams = deserialize_params(params)?;
-                self.handle_glob(&p)
+            "find_path" => {
+                let p: FindPathParams = deserialize_params(params)?;
+                self.handle_find_path(&p)
             }
             "grep" => {
                 let p: GrepParams = deserialize_params(params)?;
                 self.handle_grep(&p)
+            }
+            "list_directory" => {
+                let p: ListDirectoryParams = deserialize_params(params)?;
+                self.handle_list_directory(&p)
+            }
+            "create_directory" => {
+                let p: CreateDirectoryParams = deserialize_params(params)?;
+                self.handle_create_directory(&p)
+            }
+            "delete_path" => {
+                let p: DeletePathParams = deserialize_params(params)?;
+                self.handle_delete_path(&p)
+            }
+            "move_path" => {
+                let p: MovePathParams = deserialize_params(params)?;
+                self.handle_move_path(&p)
+            }
+            "copy_path" => {
+                let p: CopyPathParams = deserialize_params(params)?;
+                self.handle_copy_path(&p)
             }
             _ => Ok(None),
         }
@@ -214,7 +271,7 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_glob(&self, params: &GlobParams) -> Result<Option<ToolOutput>, ToolError> {
+    fn handle_find_path(&self, params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
         let matches: Vec<String> = glob::glob(&params.pattern)
             .map_err(|e| {
                 ToolError::Execution(std::io::Error::new(
@@ -231,7 +288,7 @@ impl FileExecutor {
             .collect();
 
         Ok(Some(ToolOutput {
-            tool_name: "glob".to_owned(),
+            tool_name: "find_path".to_owned(),
             summary: if matches.is_empty() {
                 format!("No files matching: {}", params.pattern)
             } else {
@@ -285,6 +342,165 @@ impl FileExecutor {
             raw_response: None,
         }))
     }
+
+    fn handle_list_directory(
+        &self,
+        params: &ListDirectoryParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
+
+        if !path.is_dir() {
+            return Err(ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!("{} is not a directory", params.path),
+            )));
+        }
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        let mut symlinks = Vec::new();
+
+        for entry in std::fs::read_dir(&path)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Use symlink_metadata (lstat) to detect symlinks without following them.
+            let meta = std::fs::symlink_metadata(entry.path())?;
+            if meta.is_symlink() {
+                symlinks.push(format!("[symlink] {name}"));
+            } else if meta.is_dir() {
+                dirs.push(format!("[dir]  {name}"));
+            } else {
+                files.push(format!("[file] {name}"));
+            }
+        }
+
+        dirs.sort();
+        files.sort();
+        symlinks.sort();
+
+        let mut entries = dirs;
+        entries.extend(files);
+        entries.extend(symlinks);
+
+        Ok(Some(ToolOutput {
+            tool_name: "list_directory".to_owned(),
+            summary: if entries.is_empty() {
+                format!("Empty directory: {}", params.path)
+            } else {
+                entries.join("\n")
+            },
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
+    }
+
+    fn handle_create_directory(
+        &self,
+        params: &CreateDirectoryParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
+        std::fs::create_dir_all(&path)?;
+
+        Ok(Some(ToolOutput {
+            tool_name: "create_directory".to_owned(),
+            summary: format!("Created directory: {}", params.path),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
+    }
+
+    fn handle_delete_path(
+        &self,
+        params: &DeletePathParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        let path = self.validate_path(Path::new(&params.path))?;
+
+        // Refuse to delete the sandbox root itself
+        if self.allowed_paths.iter().any(|a| &path == a) {
+            return Err(ToolError::SandboxViolation {
+                path: path.display().to_string(),
+            });
+        }
+
+        if path.is_dir() {
+            if params.recursive {
+                // Accepted risk: remove_dir_all has no depth/size guard within the sandbox.
+                // Resource exhaustion is bounded by the filesystem and OS limits.
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                // remove_dir only succeeds on empty dirs
+                std::fs::remove_dir(&path)?;
+            }
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+
+        Ok(Some(ToolOutput {
+            tool_name: "delete_path".to_owned(),
+            summary: format!("Deleted: {}", params.path),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
+    }
+
+    fn handle_move_path(&self, params: &MovePathParams) -> Result<Option<ToolOutput>, ToolError> {
+        let src = self.validate_path(Path::new(&params.source))?;
+        let dst = self.validate_path(Path::new(&params.destination))?;
+        std::fs::rename(&src, &dst)?;
+
+        Ok(Some(ToolOutput {
+            tool_name: "move_path".to_owned(),
+            summary: format!("Moved: {} -> {}", params.source, params.destination),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
+    }
+
+    fn handle_copy_path(&self, params: &CopyPathParams) -> Result<Option<ToolOutput>, ToolError> {
+        let src = self.validate_path(Path::new(&params.source))?;
+        let dst = self.validate_path(Path::new(&params.destination))?;
+
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dst)?;
+        }
+
+        Ok(Some(ToolOutput {
+            tool_name: "copy_path".to_owned(),
+            summary: format!("Copied: {} -> {}", params.source, params.destination),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
+    }
 }
 
 impl ToolExecutor for FileExecutor {
@@ -317,9 +533,9 @@ impl ToolExecutor for FileExecutor {
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
-                id: "glob".into(),
+                id: "find_path".into(),
                 description: "Find files matching a glob pattern".into(),
-                schema: schemars::schema_for!(GlobParams),
+                schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
@@ -328,11 +544,46 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(GrepParams),
                 invocation: InvocationHint::ToolCall,
             },
+            ToolDef {
+                id: "list_directory".into(),
+                description: "List contents of a directory".into(),
+                schema: schemars::schema_for!(ListDirectoryParams),
+                invocation: InvocationHint::ToolCall,
+            },
+            ToolDef {
+                id: "create_directory".into(),
+                description: "Create a directory (and parents)".into(),
+                schema: schemars::schema_for!(CreateDirectoryParams),
+                invocation: InvocationHint::ToolCall,
+            },
+            ToolDef {
+                id: "delete_path".into(),
+                description: "Delete a file or directory".into(),
+                schema: schemars::schema_for!(DeletePathParams),
+                invocation: InvocationHint::ToolCall,
+            },
+            ToolDef {
+                id: "move_path".into(),
+                description: "Move or rename a file or directory".into(),
+                schema: schemars::schema_for!(MovePathParams),
+                invocation: InvocationHint::ToolCall,
+            },
+            ToolDef {
+                id: "copy_path".into(),
+                description: "Copy a file or directory".into(),
+                schema: schemars::schema_for!(CopyPathParams),
+                invocation: InvocationHint::ToolCall,
+            },
         ]
     }
 }
 
 /// Canonicalize a path by walking up to the nearest existing ancestor.
+///
+/// Walks up `path` until an existing ancestor is found, calls `canonicalize()` on it
+/// (which follows symlinks), then re-appends the non-existing suffix. The sandbox check
+/// in `validate_path` uses `starts_with` on the resulting canonical path, so symlinks
+/// that resolve outside `allowed_paths` are correctly rejected.
 fn resolve_via_ancestors(path: &Path) -> PathBuf {
     let mut existing = path;
     let mut suffix = PathBuf::new();
@@ -390,6 +641,26 @@ fn grep_recursive(
             }
             grep_recursive(&p, regex, results, limit)?;
         }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ToolError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        // Use symlink_metadata (lstat) so we classify symlinks without following them.
+        // Symlinks are skipped to prevent escaping the sandbox via a symlink pointing
+        // to a path outside allowed_paths.
+        let meta = std::fs::symlink_metadata(entry.path())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if meta.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if meta.is_file() {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+        // Symlinks are intentionally skipped.
     }
     Ok(())
 }
@@ -511,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn glob_finds_files() {
+    fn find_path_finds_files() {
         let dir = temp_dir();
         fs::write(dir.path().join("a.rs"), "").unwrap();
         fs::write(dir.path().join("b.rs"), "").unwrap();
@@ -519,7 +790,10 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let pattern = format!("{}/*.rs", dir.path().display());
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
-        let result = exec.execute_file_tool("glob", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("find_path", &params)
+            .unwrap()
+            .unwrap();
         assert!(result.summary.contains("a.rs"));
         assert!(result.summary.contains("b.rs"));
     }
@@ -558,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn glob_filters_outside_sandbox() {
+    fn find_path_filters_outside_sandbox() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         fs::write(outside.path().join("secret.rs"), "secret").unwrap();
@@ -566,7 +840,10 @@ mod tests {
         let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
         let pattern = format!("{}/*.rs", outside.path().display());
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
-        let result = exec.execute_file_tool("glob", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("find_path", &params)
+            .unwrap()
+            .unwrap();
         assert!(!result.summary.contains("secret.rs"));
     }
 
@@ -594,9 +871,14 @@ mod tests {
         assert!(ids.contains(&"read"));
         assert!(ids.contains(&"write"));
         assert!(ids.contains(&"edit"));
-        assert!(ids.contains(&"glob"));
+        assert!(ids.contains(&"find_path"));
         assert!(ids.contains(&"grep"));
-        assert_eq!(defs.len(), 5);
+        assert!(ids.contains(&"list_directory"));
+        assert!(ids.contains(&"create_directory"));
+        assert!(ids.contains(&"delete_path"));
+        assert!(ids.contains(&"move_path"));
+        assert!(ids.contains(&"copy_path"));
+        assert_eq!(defs.len(), 10);
     }
 
     #[test]
@@ -612,12 +894,26 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_returns_five_tools() {
+    fn tool_definitions_returns_ten_tools() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
-        assert_eq!(defs.len(), 5);
+        assert_eq!(defs.len(), 10);
         let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
-        assert_eq!(ids, vec!["read", "write", "edit", "glob", "grep"]);
+        assert_eq!(
+            ids,
+            vec![
+                "read",
+                "write",
+                "edit",
+                "find_path",
+                "grep",
+                "list_directory",
+                "create_directory",
+                "delete_path",
+                "move_path",
+                "copy_path",
+            ]
+        );
     }
 
     #[test]
@@ -647,5 +943,386 @@ mod tests {
         let params = serde_json::Map::new();
         let result = exec.execute_file_tool("read", &params);
         assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
+    }
+
+    // --- list_directory tests ---
+
+    #[test]
+    fn list_directory_returns_entries() {
+        let dir = temp_dir();
+        fs::write(dir.path().join("file.txt"), "").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]);
+        let result = exec
+            .execute_file_tool("list_directory", &params)
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("[dir]  subdir"));
+        assert!(result.summary.contains("[file] file.txt"));
+        // dirs listed before files
+        let dir_pos = result.summary.find("[dir]").unwrap();
+        let file_pos = result.summary.find("[file]").unwrap();
+        assert!(dir_pos < file_pos);
+    }
+
+    #[test]
+    fn list_directory_empty_dir() {
+        let dir = temp_dir();
+        let subdir = dir.path().join("empty");
+        fs::create_dir(&subdir).unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
+        let result = exec
+            .execute_file_tool("list_directory", &params)
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("Empty directory"));
+    }
+
+    #[test]
+    fn list_directory_sandbox_violation() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!("/etc"))]);
+        let result = exec.execute_file_tool("list_directory", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn list_directory_nonexistent_returns_error() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let missing = dir.path().join("nonexistent");
+        let params = make_params(&[("path", serde_json::json!(missing.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("list_directory", &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_directory_on_file_returns_error() {
+        let dir = temp_dir();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "content").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("list_directory", &params);
+        assert!(result.is_err());
+    }
+
+    // --- create_directory tests ---
+
+    #[test]
+    fn create_directory_creates_nested() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let nested = dir.path().join("a/b/c");
+        let params = make_params(&[("path", serde_json::json!(nested.to_str().unwrap()))]);
+        let result = exec
+            .execute_file_tool("create_directory", &params)
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("Created"));
+        assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn create_directory_sandbox_violation() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!("/tmp/evil_dir"))]);
+        let result = exec.execute_file_tool("create_directory", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // --- delete_path tests ---
+
+    #[test]
+    fn delete_path_file() {
+        let dir = temp_dir();
+        let file = dir.path().join("del.txt");
+        fs::write(&file, "bye").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
+        exec.execute_file_tool("delete_path", &params)
+            .unwrap()
+            .unwrap();
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn delete_path_empty_directory() {
+        let dir = temp_dir();
+        let subdir = dir.path().join("empty_sub");
+        fs::create_dir(&subdir).unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
+        exec.execute_file_tool("delete_path", &params)
+            .unwrap()
+            .unwrap();
+        assert!(!subdir.exists());
+    }
+
+    #[test]
+    fn delete_path_non_empty_dir_without_recursive_fails() {
+        let dir = temp_dir();
+        let subdir = dir.path().join("nonempty");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("file.txt"), "x").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("delete_path", &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_path_recursive() {
+        let dir = temp_dir();
+        let subdir = dir.path().join("recurse");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("f.txt"), "x").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("path", serde_json::json!(subdir.to_str().unwrap())),
+            ("recursive", serde_json::json!(true)),
+        ]);
+        exec.execute_file_tool("delete_path", &params)
+            .unwrap()
+            .unwrap();
+        assert!(!subdir.exists());
+    }
+
+    #[test]
+    fn delete_path_sandbox_violation() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!("/etc/hosts"))]);
+        let result = exec.execute_file_tool("delete_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn delete_path_refuses_sandbox_root() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("path", serde_json::json!(dir.path().to_str().unwrap())),
+            ("recursive", serde_json::json!(true)),
+        ]);
+        let result = exec.execute_file_tool("delete_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // --- move_path tests ---
+
+    #[test]
+    fn move_path_renames_file() {
+        let dir = temp_dir();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        fs::write(&src, "data").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        exec.execute_file_tool("move_path", &params)
+            .unwrap()
+            .unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "data");
+    }
+
+    #[test]
+    fn move_path_cross_sandbox_denied() {
+        let sandbox = temp_dir();
+        let outside = temp_dir();
+        let src = sandbox.path().join("src.txt");
+        fs::write(&src, "x").unwrap();
+
+        let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
+        let dst = outside.path().join("dst.txt");
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        let result = exec.execute_file_tool("move_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // --- copy_path tests ---
+
+    #[test]
+    fn copy_path_file() {
+        let dir = temp_dir();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        fs::write(&src, "hello").unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        exec.execute_file_tool("copy_path", &params)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read_to_string(&src).unwrap(), "hello");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_path_directory_recursive() {
+        let dir = temp_dir();
+        let src_dir = dir.path().join("src_dir");
+        fs::create_dir(&src_dir).unwrap();
+        fs::write(src_dir.join("a.txt"), "aaa").unwrap();
+
+        let dst_dir = dir.path().join("dst_dir");
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("source", serde_json::json!(src_dir.to_str().unwrap())),
+            ("destination", serde_json::json!(dst_dir.to_str().unwrap())),
+        ]);
+        exec.execute_file_tool("copy_path", &params)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read_to_string(dst_dir.join("a.txt")).unwrap(), "aaa");
+    }
+
+    #[test]
+    fn copy_path_sandbox_violation() {
+        let sandbox = temp_dir();
+        let outside = temp_dir();
+        let src = sandbox.path().join("src.txt");
+        fs::write(&src, "x").unwrap();
+
+        let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
+        let dst = outside.path().join("dst.txt");
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        let result = exec.execute_file_tool("copy_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // CR-11: invalid glob pattern returns error
+    #[test]
+    fn find_path_invalid_pattern_returns_error() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("pattern", serde_json::json!("[invalid"))]);
+        let result = exec.execute_file_tool("find_path", &params);
+        assert!(result.is_err());
+    }
+
+    // CR-12: create_directory is idempotent on existing dir
+    #[test]
+    fn create_directory_idempotent() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let target = dir.path().join("exists");
+        fs::create_dir(&target).unwrap();
+
+        let params = make_params(&[("path", serde_json::json!(target.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("create_directory", &params);
+        assert!(result.is_ok());
+        assert!(target.is_dir());
+    }
+
+    // CR-13: move_path source sandbox violation
+    #[test]
+    fn move_path_source_sandbox_violation() {
+        let sandbox = temp_dir();
+        let outside = temp_dir();
+        let src = outside.path().join("src.txt");
+        fs::write(&src, "x").unwrap();
+
+        let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
+        let dst = sandbox.path().join("dst.txt");
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        let result = exec.execute_file_tool("move_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // CR-13: copy_path source sandbox violation
+    #[test]
+    fn copy_path_source_sandbox_violation() {
+        let sandbox = temp_dir();
+        let outside = temp_dir();
+        let src = outside.path().join("src.txt");
+        fs::write(&src, "x").unwrap();
+
+        let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
+        let dst = sandbox.path().join("dst.txt");
+        let params = make_params(&[
+            ("source", serde_json::json!(src.to_str().unwrap())),
+            ("destination", serde_json::json!(dst.to_str().unwrap())),
+        ]);
+        let result = exec.execute_file_tool("copy_path", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    // CR-01: copy_dir_recursive skips symlinks
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_skips_symlinks() {
+        let dir = temp_dir();
+        let src_dir = dir.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        fs::write(src_dir.join("real.txt"), "real").unwrap();
+
+        // Create a symlink inside src pointing outside sandbox
+        let outside = temp_dir();
+        std::os::unix::fs::symlink(outside.path(), src_dir.join("link")).unwrap();
+
+        let dst_dir = dir.path().join("dst");
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[
+            ("source", serde_json::json!(src_dir.to_str().unwrap())),
+            ("destination", serde_json::json!(dst_dir.to_str().unwrap())),
+        ]);
+        exec.execute_file_tool("copy_path", &params)
+            .unwrap()
+            .unwrap();
+        // Real file copied
+        assert_eq!(
+            fs::read_to_string(dst_dir.join("real.txt")).unwrap(),
+            "real"
+        );
+        // Symlink not copied
+        assert!(!dst_dir.join("link").exists());
+    }
+
+    // CR-04: list_directory detects symlinks
+    #[cfg(unix)]
+    #[test]
+    fn list_directory_shows_symlinks() {
+        let dir = temp_dir();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "x").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("link")).unwrap();
+
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]);
+        let result = exec
+            .execute_file_tool("list_directory", &params)
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("[symlink] link"));
+        assert!(result.summary.contains("[file] target.txt"));
     }
 }

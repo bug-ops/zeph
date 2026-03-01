@@ -7,6 +7,7 @@ pub mod anomaly;
 pub mod audit;
 pub mod composite;
 pub mod config;
+pub mod diagnostics;
 pub mod executor;
 pub mod file;
 pub mod filter;
@@ -22,6 +23,7 @@ pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
 pub use config::{AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig};
+pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{
     DiffData, DynExecutor, ErasedToolExecutor, FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall,
     ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output,

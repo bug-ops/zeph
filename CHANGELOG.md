@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `list_directory` native tool in `FileExecutor`: returns sorted entries with `[dir]`/`[file]`/`[symlink]` labels, sandbox-validated (#1053)
+- `create_directory`, `delete_path`, `move_path`, `copy_path` tools in `FileExecutor`: structured file system mutation ops, all paths sandbox-validated; `copy_dir_recursive` uses lstat to prevent symlink escape (#1054)
+- `fetch` tool in `WebScrapeExecutor`: plain URL-to-text without CSS selector requirement, SSRF protection applied (#1055)
+- `DiagnosticsExecutor` with `diagnostics` tool: runs `cargo check --message-format=json` or `cargo clippy`, returns structured error/warning list (file, line, col, severity, message), capped output, graceful degradation if cargo absent (#1056)
+
+### Changed
+
+- Renamed `FileExecutor` tool id `glob` → `find_path` to align with Zed IDE native tool surface (#1052)
+- `READONLY_TOOLS` allowlist updated to current tool IDs: `read`, `find_path`, `grep`, `list_directory`, `web_scrape`, `fetch`; removed legacy `file_glob` (#1052)
+- `DiagnosticsExecutor` uses `tokio::process::Command` instead of blocking `std::process::Command`
+
 ### Changed
 
 - Migrate dependency automation from Dependabot to self-hosted Renovate: adds `renovate.json` with MSRV-aware `constraintsFiltering: strict`, grouped minor/patch automerge, and a dedicated workflow at `.github/workflows/renovate.yml`; removes `dependabot.yml` and the `dependabot-automerge.yml` workflow (which used the insecure `pull_request_target` trigger)
