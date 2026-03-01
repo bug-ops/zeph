@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Context compaction (tier-1 pruning) now emits `compacting context...` status in TUI; tier-2 compaction no longer clears status prematurely before the next phase overwrites it (#1101)
+- Context build status changed from `building context...` to `recalling context...` for better clarity (#1100)
+- Skill reload now emits `syncing skill index...` before Qdrant backend sync and `rebuilding search index...` before BM25 index rebuild (#1103)
+- Tool output summarization now shows `summarizing output...` status while the LLM compresses long tool outputs (#1105)
+- MCP and named tool calls now show `running {tool_name}...` instead of the generic `running tool...` (#1102)
+- `FileIndex::build` in file picker moved to `spawn_blocking`; TUI shows `indexing files...` status while repository is being indexed, preventing render loop stalls (#1104)
+
 - Block 1 of system prompt now includes skills prompt, tool catalog, and catalog prompt so its token count exceeds the model-aware minimum threshold (Sonnet 4.6: 2048 tokens, Opus/Haiku: 4096 tokens) — previously ~377 tokens caused caching to be silently skipped (#1083)
 - Removed outdated `anthropic-beta: prompt-caching-2024-07-31` request header; prompt caching is GA and no longer requires the beta header (#1085)
 - Model-aware `cache_min_tokens` check added to `split_system_into_blocks` to prevent `cache_control` from being attached to blocks below the minimum cacheable threshold (#1083)
