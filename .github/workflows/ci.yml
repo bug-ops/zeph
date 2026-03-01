@@ -159,7 +159,7 @@ jobs:
         with:
           name: nextest-archive-ubuntu-latest
       - name: Run tests without network
-        run: cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap . --lib --bins
+        run: cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap .
 
   doc-test:
     name: Doc Tests
