@@ -9194,6 +9194,7 @@ name = "zeph-a2a"
 version = "0.12.3"
 dependencies = [
  "axum 0.8.8",
+ "blake3",
  "eventsource-stream",
  "futures",
  "futures-core",
@@ -9221,6 +9222,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.8",
  "base64 0.22.1",
+ "blake3",
  "chrono",
  "dashmap",
  "dirs",
