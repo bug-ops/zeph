@@ -10,24 +10,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - ACP tool notifications: `raw_response` (file content for `read_file`, stdout for `bash`) is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline when content reaches the IDE (SEC-ACP-001)
 
-### Fixed
+### Added
+- `FailureKind` enum on `SkillOutcome::ToolFailure` with 7 variants and `from_error()` heuristic classifier
+  (`ExitNonzero`, `Timeout`, `PermissionDenied`, `WrongApproach`, `Partial`, `SyntaxError`, `Unknown`) (#1020)
+- `/skill reject <name> <reason>` command: records `user_rejection` outcome and immediately triggers
+  skill improvement with user feedback, bypassing cooldown/threshold gates (#1020)
+- `outcome_detail` column in `skill_outcomes` table (migration 018) for structured failure classification (#1020)
+- `FeedbackDetector`: classifies user messages as corrections using regex patterns
+  (`ExplicitRejection`, `AlternativeRequest`) and Jaccard token overlap (`Repetition`),
+  detects dissatisfaction without requiring explicit commands (#1021)
+- `UserCorrection` semantic memory: detected corrections stored in SQLite (`user_corrections` table,
+  migration 019) and `zeph_corrections` Qdrant collection; top-3 similar past corrections
+  (cosine ≥ 0.75) injected into system prompt for cross-session personalization (#1021)
+- `posterior_weight()` and `posterior_mean()` functions (Wilson score) for skill re-ranking:
+  final score = cosine × `cosine_weight` + posterior × (1 − `cosine_weight`) (#1022)
+- `check_trust_transition()`: auto-promotes skills to `trusted` (≥50 uses, posterior > 0.95)
+  and auto-demotes to `quarantined` (≥30 uses, posterior < 0.40); never overrides `blocked` status (#1022)
+- TUI skills widget confidence bars: `[████░░░░] 73% (42 uses)` with color coding
+  (green > 0.75 / yellow ≥ 0.40 / red < 0.40, aligned with auto-demote threshold) (#1022)
+- `Bm25Index` in `zeph-skills`: in-memory BM25 inverted index (k1=1.2, b=0.75) rebuilt on
+  skill hot-reload; `rrf_fuse()` Reciprocal Rank Fusion (k=60) combines BM25 and vector results;
+  enabled via `[skills] hybrid_search = true` (default: true) (#1023)
+- Skill health attributes in system prompt: matched skills with ≥5 recorded uses emit
+  `reliability="N%"` and `uses="N"` XML attributes on `<skill>` tags (#1023)
+- `EmaTracker` in `zeph-llm`: per-provider exponential moving average of success rate and latency;
+  `RouterProvider` reorders providers by EMA score every N calls;
+  enabled via `[llm] router_ema_enabled = true` (default: false), alpha default 0.1 (#1023)
 
+### Performance
+
+- Parallelize agent startup initialization: `build_memory` + `build_tool_setup` run concurrently via `tokio::join!` (est. 1-5s savings); `build_skill_matcher` + `build_cli_history` also parallelized; `warmup_provider` spawned as background task on CLI path overlapping with agent assembly (#1031)
+
+### Fixed
 - ACP tool notifications: `claudeCode.toolName` is now always included in `_meta.claudeCode` for every `tool_call` and `tool_call_update`, regardless of whether `parentToolUseId` is present (#1037)
 - ACP tool notifications: `locations` field is now populated on the initial `tool_call` for Read-kind tools by extracting the path from `params["file_path"]` or `params["path"]` at `ToolStart` time (#1040)
 - ACP tool notifications: an intermediate `tool_call_update` (without `status`) carrying `_meta.claudeCode.toolResponse` is now emitted before the final status update for non-terminal tools (`AcpFileExecutor`), allowing IDEs to display structured file content (#1038)
 - ACP tool notifications: an intermediate `tool_call_update` carrying `_meta.claudeCode.toolResponse` with `stdout`/`stderr`/`interrupted` fields is now emitted before `terminal_exit` for bash tools (`AcpShellExecutor`) (#1039)
+- `version_id` always `NULL` in `skill_outcomes`: `record_skill_outcomes_batch()` now resolves
+  the active version ID before insert, enabling per-version metrics and accurate rollback (#1020)
+- Panic on `/skill reject` without arguments: byte-slice guard replaced with safe path (#1020)
+- Skill auto-promote skipped skills with no prior trust record in DB (early `Ok(None)` return) (#1022)
+- XML injection: `skill.name()` and `skill.description()` are now escaped (`&`, `<`, `>`, `"`)
+  before interpolation into XML system prompt in all 4 prompt functions (pre-existing vulnerability,
+  fixed in scope of this epic) (#1023)
 
 ### Changed
-
 - `tool_kind_from_name`: `"glob"` now maps to `ToolKind::Search` (was `ToolKind::Other`) — consistent with other search-oriented tools (GAP-02)
 - `ToolOutput` struct: added `raw_response: Option<serde_json::Value>` field for structured ACP intermediate notification payloads; all existing construction sites default to `None`
 - `LoopbackEvent::ToolOutput` variant: added `raw_response: Option<serde_json::Value>` field; propagated through `Channel::send_tool_output` trait and all implementations
 - `Channel::send_tool_output` signature extended with `raw_response: Option<serde_json::Value>` parameter (`AnyChannel`, `TuiChannel`, `LoopbackChannel` all updated)
 - `zeph-tui`: added `serde_json` as explicit dependency (required by updated `Channel` trait signature)
-
-### Performance
-
-- Parallelize agent startup initialization: `build_memory` + `build_tool_setup` run concurrently via `tokio::join!` (est. 1-5s savings); `build_skill_matcher` + `build_cli_history` also parallelized; `warmup_provider` spawned as background task on CLI path overlapping with agent assembly (#1031)
+- `cosine_weight` (default 0.7) and `hybrid_search` (default true) added to `[skills]` config section (#1022, #1023)
+- `router_ema_alpha` and `router_reorder_interval` added to `[llm]` config section (#1023)
+- `correction_detection`, `correction_confidence_threshold`, `correction_recall_limit`,
+  `correction_min_similarity` added to `[agent.learning]` config section (#1021)
 
 ## [0.12.3] - 2026-02-27
 
