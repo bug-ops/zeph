@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- TUI Skills panel now shows Wilson score confidence bars immediately after skill match, not only after the first LLM outcome is recorded (`context.rs`: call `update_skill_confidence_metrics()` at skill resolution time) (#1077)
+- TUI event loop redraws on every tick unconditionally; previously the dirty-flag was never set by the tick arm, causing confidence bars to stay stale between user keypresses (#1077)
+
+### Tests
+
+- Added `skill_confidence_populated_before_first_outcome` regression test (`zeph-core`) to guard against confidence data being absent at skill match time (#1077)
+- Added `tick_arm_sets_dirty` regression test (`zeph-tui`) to verify `poll_metrics()` is called on each loop iteration (#1077)
+
 ## [0.12.4] - 2026-03-01
 
 ### Added
