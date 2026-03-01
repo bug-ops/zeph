@@ -160,10 +160,24 @@ pub struct LlmConfig {
     pub response_cache_enabled: bool,
     #[serde(default = "default_response_cache_ttl_secs")]
     pub response_cache_ttl_secs: u64,
+    #[serde(default)]
+    pub router_ema_enabled: bool,
+    #[serde(default = "default_router_ema_alpha")]
+    pub router_ema_alpha: f64,
+    #[serde(default = "default_router_reorder_interval")]
+    pub router_reorder_interval: u64,
 }
 
 fn default_response_cache_ttl_secs() -> u64 {
     3600
+}
+
+fn default_router_ema_alpha() -> f64 {
+    0.1
+}
+
+fn default_router_reorder_interval() -> u64 {
+    10
 }
 
 fn default_embedding_model() -> String {
@@ -367,6 +381,10 @@ pub struct SkillsConfig {
     pub max_active_skills: usize,
     #[serde(default = "default_disambiguation_threshold")]
     pub disambiguation_threshold: f32,
+    #[serde(default = "default_cosine_weight")]
+    pub cosine_weight: f32,
+    #[serde(default = "default_hybrid_search")]
+    pub hybrid_search: bool,
     #[serde(default)]
     pub learning: LearningConfig,
     #[serde(default)]
@@ -377,6 +395,13 @@ pub struct SkillsConfig {
 
 fn default_disambiguation_threshold() -> f32 {
     0.05
+}
+fn default_cosine_weight() -> f32 {
+    0.7
+}
+
+fn default_hybrid_search() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -433,6 +458,22 @@ pub struct LearningConfig {
     pub max_versions: u32,
     #[serde(default = "default_cooldown_minutes")]
     pub cooldown_minutes: u64,
+    #[serde(default = "default_correction_detection")]
+    pub correction_detection: bool,
+    #[serde(default = "default_correction_confidence_threshold")]
+    pub correction_confidence_threshold: f32,
+    #[serde(default = "default_correction_recall_limit")]
+    pub correction_recall_limit: u32,
+    #[serde(default = "default_correction_min_similarity")]
+    pub correction_min_similarity: f32,
+    #[serde(default = "default_auto_promote_min_uses")]
+    pub auto_promote_min_uses: u32,
+    #[serde(default = "default_auto_promote_threshold")]
+    pub auto_promote_threshold: f64,
+    #[serde(default = "default_auto_demote_min_uses")]
+    pub auto_demote_min_uses: u32,
+    #[serde(default = "default_auto_demote_threshold")]
+    pub auto_demote_threshold: f64,
 }
 
 impl Default for LearningConfig {
@@ -446,6 +487,14 @@ impl Default for LearningConfig {
             min_evaluations: default_min_evaluations(),
             max_versions: default_max_versions(),
             cooldown_minutes: default_cooldown_minutes(),
+            correction_detection: default_correction_detection(),
+            correction_confidence_threshold: default_correction_confidence_threshold(),
+            correction_recall_limit: default_correction_recall_limit(),
+            correction_min_similarity: default_correction_min_similarity(),
+            auto_promote_min_uses: default_auto_promote_min_uses(),
+            auto_promote_threshold: default_auto_promote_threshold(),
+            auto_demote_min_uses: default_auto_demote_min_uses(),
+            auto_demote_threshold: default_auto_demote_threshold(),
         }
     }
 }
@@ -467,6 +516,30 @@ fn default_max_versions() -> u32 {
 }
 fn default_cooldown_minutes() -> u64 {
     60
+}
+fn default_correction_detection() -> bool {
+    true
+}
+fn default_correction_confidence_threshold() -> f32 {
+    0.6
+}
+fn default_correction_recall_limit() -> u32 {
+    3
+}
+fn default_correction_min_similarity() -> f32 {
+    0.75
+}
+fn default_auto_promote_min_uses() -> u32 {
+    50
+}
+fn default_auto_promote_threshold() -> f64 {
+    0.95
+}
+fn default_auto_demote_min_uses() -> u32 {
+    30
+}
+fn default_auto_demote_threshold() -> f64 {
+    0.40
 }
 
 /// Vector backend selector for embedding storage.
@@ -1369,11 +1442,16 @@ impl Default for Config {
                 vision_model: None,
                 response_cache_enabled: false,
                 response_cache_ttl_secs: default_response_cache_ttl_secs(),
+                router_ema_enabled: false,
+                router_ema_alpha: default_router_ema_alpha(),
+                router_reorder_interval: default_router_reorder_interval(),
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
+                cosine_weight: default_cosine_weight(),
+                hybrid_search: default_hybrid_search(),
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,

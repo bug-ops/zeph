@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::{Arc, Mutex};
+
 use crate::any::AnyProvider;
+use crate::ema::EmaTracker;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
@@ -9,14 +12,63 @@ use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, 
 pub struct RouterProvider {
     providers: Vec<AnyProvider>,
     status_tx: Option<StatusTx>,
+    ema: Option<EmaTracker>,
+    provider_order: Arc<Mutex<Vec<usize>>>,
 }
 
 impl RouterProvider {
     #[must_use]
     pub fn new(providers: Vec<AnyProvider>) -> Self {
+        let n = providers.len();
         Self {
             providers,
             status_tx: None,
+            ema: None,
+            provider_order: Arc::new(Mutex::new((0..n).collect())),
+        }
+    }
+
+    /// Enable EMA-based adaptive provider ordering.
+    #[must_use]
+    pub fn with_ema(mut self, alpha: f64, reorder_interval: u64) -> Self {
+        self.ema = Some(EmaTracker::new(alpha, reorder_interval));
+        self
+    }
+
+    fn ordered_providers(&self) -> Vec<AnyProvider> {
+        let order = self
+            .provider_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        order
+            .iter()
+            .filter_map(|&i| self.providers.get(i).cloned())
+            .collect()
+    }
+
+    fn record_and_maybe_reorder(&self, provider_name: &str, success: bool, latency_ms: u64) {
+        let Some(ref ema) = self.ema else {
+            return;
+        };
+        ema.record(provider_name, success, latency_ms);
+        let current_names: Vec<String> =
+            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        if let Some(new_order_names) = ema.maybe_reorder(&current_names) {
+            let name_to_idx: std::collections::HashMap<&str, usize> = self
+                .providers
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.name(), i))
+                .collect();
+            let new_order: Vec<usize> = new_order_names
+                .iter()
+                .filter_map(|n| name_to_idx.get(n.as_str()).copied())
+                .collect();
+            let mut order = self
+                .provider_order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *order = new_order;
         }
     }
 
@@ -66,14 +118,28 @@ impl LlmProvider for RouterProvider {
         &self,
         messages: &[Message],
     ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
-        let providers = self.providers.clone();
+        let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
+        let router = self.clone();
         Box::pin(async move {
             for p in &providers {
+                let start = std::time::Instant::now();
                 match p.chat(&messages).await {
-                    Ok(r) => return Ok(r),
+                    Ok(r) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            true,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        return Ok(r);
+                    }
                     Err(e) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            false,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!("router: {} failed, falling back", p.name()));
                         }
@@ -89,14 +155,28 @@ impl LlmProvider for RouterProvider {
         &self,
         messages: &[Message],
     ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send {
-        let providers = self.providers.clone();
+        let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
+        let router = self.clone();
         Box::pin(async move {
             for p in &providers {
+                let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
-                    Ok(r) => return Ok(r),
+                    Ok(r) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            true,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        return Ok(r);
+                    }
                     Err(e) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            false,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!("router: {} failed, falling back", p.name()));
                         }
@@ -116,17 +196,31 @@ impl LlmProvider for RouterProvider {
         &self,
         text: &str,
     ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
-        let providers = self.providers.clone();
+        let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
         let text = text.to_owned();
+        let router = self.clone();
         Box::pin(async move {
             for p in &providers {
                 if !p.supports_embeddings() {
                     continue;
                 }
+                let start = std::time::Instant::now();
                 match p.embed(&text).await {
-                    Ok(r) => return Ok(r),
+                    Ok(r) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            true,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        return Ok(r);
+                    }
                     Err(e) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            false,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
                         if let Some(ref tx) = status_tx {
                             let _ =
                                 tx.send(format!("router: {} embed failed, falling back", p.name()));
@@ -165,18 +259,32 @@ impl LlmProvider for RouterProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let providers = self.providers.clone();
+        let providers = self.ordered_providers();
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         let status_tx = self.status_tx.clone();
+        let router = self.clone();
         Box::pin(async move {
             for p in &providers {
                 if !p.supports_tool_use() {
                     continue;
                 }
+                let start = std::time::Instant::now();
                 match p.chat_with_tools(&messages, &tools).await {
-                    Ok(r) => return Ok(r),
+                    Ok(r) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            true,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        return Ok(r);
+                    }
                     Err(e) => {
+                        router.record_and_maybe_reorder(
+                            p.name(),
+                            false,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!(
                                 "router: {} tool call failed, falling back",

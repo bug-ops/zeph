@@ -62,6 +62,12 @@ name = "Zeph"
 max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
 auto_update_check = true  # Query GitHub Releases API for newer versions (default: true)
 
+[agent.learning]
+correction_detection = true           # Enable implicit correction detection (default: true)
+correction_confidence_threshold = 0.7 # Jaccard token overlap threshold for correction candidates (default: 0.7)
+correction_recall_limit = 3           # Max corrections injected into system prompt (default: 3)
+correction_min_similarity = 0.75      # Min cosine similarity for correction recall from Qdrant (default: 0.75)
+
 [llm]
 provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator, router
 base_url = "http://localhost:11434"
@@ -86,6 +92,10 @@ max_tokens = 4096
 # tool_use = false  # Enable Ollama native tool calling (default: false)
 #                   # Requires a model with function-calling support (e.g. qwen3:8b, llama3.1)
 
+router_ema_enabled = false         # EMA-based provider latency routing (default: false)
+router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
+router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
+
 [llm.stt]
 provider = "whisper"
 model = "whisper-1"
@@ -99,6 +109,8 @@ paths = ["./skills"]
 max_active_skills = 5              # Top-K skills per query via embedding similarity
 disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
 prompt_mode = "auto"               # Skill prompt format: "full", "compact", or "auto" (default: "auto")
+cosine_weight = 0.7                # Cosine signal weight in BM25+cosine fusion (default: 0.7)
+hybrid_search = false              # Enable BM25+cosine hybrid skill matching (default: false)
 
 [memory]
 sqlite_path = "./data/zeph.db"

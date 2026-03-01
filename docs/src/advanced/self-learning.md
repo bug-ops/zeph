@@ -1,41 +1,226 @@
 # Self-Learning Skills
 
-Automatically improve skills based on execution outcomes. When a skill fails repeatedly, Zeph uses self-reflection and LLM-generated improvements to create better skill versions.
+Zeph continuously improves its skills based on execution outcomes, user corrections, and provider performance. The self-learning system operates across four layers: failure classification, implicit feedback detection, Bayesian re-ranking, and hybrid search with EMA-based routing.
 
-## Configuration
+## Overview
 
-```toml
-[skills.learning]
-enabled = true
-auto_activate = false     # require manual approval for new versions
-min_failures = 3          # failures before triggering improvement
-improve_threshold = 0.7   # success rate below which improvement starts
-rollback_threshold = 0.5  # auto-rollback when success rate drops below this
-min_evaluations = 5       # minimum evaluations before rollback decision
-max_versions = 10         # max auto-generated versions per skill
-cooldown_minutes = 60     # cooldown between improvements for same skill
+When a skill fails or a user implicitly corrects the agent, Zeph records the signal, re-ranks affected skills, and — when failures cross a threshold — generates an improved skill version via LLM reflection.
+
+```
+User message
+     │
+     ▼
+Skill matching (BM25 + cosine → RRF fusion)
+     │
+     ▼
+Skill execution → SkillOutcome recorded
+     │
+     ├─ Success → Wilson score updated, EMA updated
+     │
+     └─ Failure → FailureKind classified
+                       │
+                       ├─ FeedbackDetector checks next user turn
+                       │        └─ UserCorrection stored in SQLite + Qdrant
+                       │
+                       └─ repeated failures → LLM generates improved version
 ```
 
-## How It Works
+## Phase 1 — Failure Classification
 
-1. Each skill invocation is tracked as success or failure
-2. When a skill's success rate drops below `improve_threshold`, Zeph triggers self-reflection
-3. The agent retries with adjusted context (1 retry per message)
-4. If failures persist beyond `min_failures`, the LLM generates an improved skill version
-5. New versions can be auto-activated or held for manual approval
-6. If an activated version performs worse than `rollback_threshold`, automatic rollback occurs
+Every skill invocation records a `SkillOutcome`. Tool failures now carry a `FailureKind` that distinguishes seven root causes:
+
+| Variant | Meaning |
+|---------|---------|
+| `ExitNonzero` | The tool process exited with a non-zero exit code |
+| `Timeout` | The tool call exceeded the configured timeout |
+| `PermissionDenied` | Tool execution was blocked by the permission policy |
+| `WrongApproach` | The skill used a command or method inappropriate for the task |
+| `Partial` | The tool completed but produced incomplete or truncated output |
+| `SyntaxError` | The generated command or script contained a syntax error |
+| `Unknown` | Failure cause could not be classified from the error message |
+
+The raw reason string is stored in the `outcome_detail` column (migration 018, `skill_outcomes` table) for later inspection and LLM-based improvement prompts.
+
+### Rejecting a Skill
+
+Use `/skill reject` to record an explicit user rejection and immediately trigger the improvement pipeline:
+
+```
+/skill reject <name> <reason>
+```
+
+Example:
+
+```
+/skill reject web-search "always uses the wrong search engine"
+```
+
+This is equivalent to `min_failures` consecutive failures — the improvement loop starts on the next agent cycle.
+
+## Phase 2 — Implicit Feedback Detection
+
+`FeedbackDetector` inspects each user turn for implicit corrections without requiring an explicit `/feedback` command.
+
+**Detection strategy:**
+
+1. **Regex patterns** — phrases like "that's wrong", "try again", "actually you should", "no, I meant" trigger immediate correction recording.
+2. **Jaccard token overlap** — if the user's message shares fewer than 30% tokens with the agent's previous response, the turn is treated as a correction candidate and passed to Wilson scoring.
+
+Detected corrections are stored as `UserCorrection` records in:
+- SQLite (`zeph_corrections` table) — persistent, queryable
+- Qdrant (`zeph_corrections` collection) — vector-indexed for similarity recall
+
+On each subsequent query, the top-3 most similar corrections (cosine similarity ≥ 0.75) are injected into the system prompt to steer the agent away from repeating the same mistake.
+
+### Configuration
+
+```toml
+[agent.learning]
+correction_detection = true           # Enable FeedbackDetector (default: true)
+correction_confidence_threshold = 0.7 # Jaccard threshold to accept a candidate (default: 0.7)
+correction_recall_limit = 3           # Max corrections injected into system prompt (default: 3)
+correction_min_similarity = 0.75      # Minimum cosine similarity for correction recall (default: 0.75)
+```
+
+## Phase 3 — Bayesian Re-Ranking and Trust Transitions
+
+### Wilson Score Confidence Interval
+
+Skill success/failure outcomes feed a Wilson score calculator that produces a lower-bound confidence interval. This replaces the raw success-rate sort used previously:
+
+```
+wilson_lower = (successes + z²/2) / (n + z²) - z * sqrt(n * p*(1-p) + z²/4) / (n + z²)
+```
+
+where `z = 1.96` (95% CI). Skills with few observations are naturally ranked lower until they accumulate evidence.
+
+### Auto Promote / Demote
+
+`check_trust_transition()` runs after each outcome and applies automatic trust level changes:
+
+| Condition | Action |
+|-----------|--------|
+| Wilson score ≥ 0.85 and ≥ 10 evaluations | Promote to `trusted` |
+| Wilson score < 0.40 and ≥ 5 evaluations | Demote to `quarantined` |
+| Quarantined skill improves above 0.70 | Promote back to `verified` |
+
+Trust transitions are logged via `tracing` and reflected immediately in `/skill stats` output.
+
+### TUI Confidence Bars
+
+The TUI dashboard (`--tui`) shows a per-skill confidence bar in the Skills panel:
+
+- **Green** — Wilson score ≥ 0.75 (high confidence)
+- **Yellow** — Wilson score 0.40–0.74 (moderate)
+- **Red** — Wilson score < 0.40 (low confidence, at risk of demotion)
+
+The bar width is proportional to the score and updates in real time as outcomes are recorded.
+
+## Phase 4 — Hybrid Search and EMA Routing
+
+### BM25 + Cosine Hybrid Search
+
+Skill matching now combines two signals via Reciprocal Rank Fusion (RRF):
+
+| Signal | Description |
+|--------|-------------|
+| BM25 | Term-frequency keyword match against skill names, descriptions, and trigger phrases |
+| Cosine | Embedding similarity of the query against skill body vectors |
+
+```
+rrf_score(d) = 1/(k + rank_bm25(d)) + 1/(k + rank_cosine(d))     k = 60
+```
+
+The `cosine_weight` parameter scales the cosine component relative to BM25 before RRF:
+
+```toml
+[skills]
+cosine_weight = 0.7    # Weight for cosine signal in fusion (default: 0.7)
+hybrid_search = true   # Enable BM25+cosine fusion (default: true)
+```
+
+When `hybrid_search = false`, the previous cosine-only matching is used.
+
+### EMA-Based Provider Routing
+
+`EmaTracker` maintains an exponential moving average of response latency per provider. When `router_ema_enabled = true`, the router re-orders providers by EMA score every `router_reorder_interval` requests, preferring providers with consistently lower latency.
+
+```toml
+[llm]
+router_ema_enabled = false      # Enable EMA-based provider reordering (default: false)
+router_ema_alpha = 0.1          # EMA smoothing factor, 0.0–1.0 (default: 0.1)
+router_reorder_interval = 10    # Re-order every N requests (default: 10)
+```
+
+A lower `router_ema_alpha` gives more weight to historical latency; a higher value tracks recent performance more aggressively.
+
+### Skill Health in System Prompt
+
+When `hybrid_search = true`, active skills include XML health attributes in the injected system prompt block:
+
+```xml
+<skill name="git" trust="trusted" reliability="91%" uses="47">
+  ...skill body...
+</skill>
+```
+
+These attributes let the LLM factor in skill reliability when choosing between overlapping skills.
+
+## Complete Configuration Reference
+
+```toml
+[skills]
+cosine_weight = 0.7    # Cosine signal weight in BM25+cosine fusion (default: 0.7)
+hybrid_search = true   # Enable hybrid BM25+cosine skill matching (default: true)
+
+[llm]
+router_ema_enabled = false      # EMA-based provider latency routing (default: false)
+router_ema_alpha = 0.1          # EMA smoothing factor (default: 0.1)
+router_reorder_interval = 10    # Provider re-order interval in requests (default: 10)
+
+[agent.learning]
+correction_detection = true           # Implicit correction detection (default: true)
+correction_confidence_threshold = 0.7 # Jaccard overlap threshold (default: 0.7)
+correction_recall_limit = 3           # Corrections injected into system prompt (default: 3)
+correction_min_similarity = 0.75      # Min cosine similarity for correction recall (default: 0.75)
+
+[skills.learning]
+enabled = true
+auto_activate = false     # Require manual approval for new versions (default: false)
+min_failures = 3          # Failures before triggering improvement
+improve_threshold = 0.7   # Success rate below which improvement starts
+rollback_threshold = 0.5  # Auto-rollback when success rate drops below this
+min_evaluations = 5       # Minimum evaluations before rollback decision
+max_versions = 10         # Max auto-generated versions per skill
+cooldown_minutes = 60     # Cooldown between improvements for same skill
+```
 
 ## Chat Commands
 
 | Command | Description |
 |---------|-------------|
-| `/skill stats` | View execution metrics per skill |
+| `/skill stats` | View execution metrics, Wilson scores, and trust levels per skill |
 | `/skill versions` | List auto-generated versions |
 | `/skill activate <id>` | Activate a specific version |
 | `/skill approve <id>` | Approve a pending version |
 | `/skill reset <name>` | Revert to original version |
+| `/skill reject <name> <reason>` | Record user rejection and trigger improvement |
 | `/feedback` | Provide explicit quality feedback |
 
-> Set `auto_activate = false` (default) to review and manually approve LLM-generated skill improvements before they go live.
+## Storage
 
-Skill versions and outcomes are stored in SQLite (`skill_versions` and `skill_outcomes` tables).
+| Store | Table / Collection | Contents |
+|-------|--------------------|----------|
+| SQLite | `skill_outcomes` | Per-invocation outcomes with `outcome_detail` (migration 018) |
+| SQLite | `skill_versions` | LLM-generated skill versions |
+| SQLite | `zeph_corrections` | Detected user corrections with metadata |
+| Qdrant | `zeph_corrections` | Vector-indexed corrections for similarity recall |
+
+## How Improvement Works
+
+1. Failures accumulate against a skill, each tagged with a `FailureKind` and stored in `outcome_detail`.
+2. When the failure count reaches `min_failures` and success rate drops below `improve_threshold`, Zeph prompts the LLM with the skill body, recent failure details, and any recalled corrections.
+3. The LLM generates a new SKILL.md body. The new version is stored in `skill_versions` and either auto-activated or held pending approval depending on `auto_activate`.
+4. The Wilson score and EMA metrics continue to accumulate on the new version. If performance drops below `rollback_threshold`, automatic rollback restores the previous version.
+
+> Set `auto_activate = false` (default) to review LLM-generated improvements before they go live. Use `/skill versions` and `/skill approve <id>` to inspect and promote candidates manually.

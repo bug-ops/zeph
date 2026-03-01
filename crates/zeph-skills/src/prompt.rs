@@ -51,10 +51,29 @@ pub fn sanitize_skill_body(body: &str) -> String {
     out
 }
 
+/// Escape XML special characters in attribute values and text content.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Minimum uses threshold before emitting reliability/uses attributes on `<skill>` tag.
+const HEALTH_MIN_USES: u32 = 5;
+
 #[must_use]
-pub fn format_skills_prompt<S: std::hash::BuildHasher>(
+pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     skills: &[Skill],
     trust_levels: &HashMap<String, TrustLevel, S>,
+    health_map: &HashMap<String, (f64, u32), S2>,
 ) -> String {
     if skills.is_empty() {
         return String::new();
@@ -77,12 +96,21 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher>(
         } else {
             raw_body
         };
+        let health_attrs = health_map.get(skill.name()).and_then(|&(posterior, uses)| {
+            if uses >= HEALTH_MIN_USES {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pct = (posterior * 100.0).round() as u32;
+                Some(format!(" reliability=\"{pct}%\" uses=\"{uses}\""))
+            } else {
+                None
+            }
+        });
+        let attrs = health_attrs.as_deref().unwrap_or("");
         let _ = write!(
             out,
-            "  <skill name=\"{}\">\n    <description>{}</description>\n    <instructions>\n{}",
-            skill.name(),
-            skill.description(),
-            body,
+            "  <skill name=\"{name}\"{attrs}>\n    <description>{desc}</description>\n    <instructions>\n{body}",
+            name = xml_escape(skill.name()),
+            desc = xml_escape(skill.description()),
         );
 
         let resources = discover_resources(&skill.meta.skill_dir);
@@ -125,8 +153,9 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher>(
 #[must_use]
 pub fn wrap_quarantined(skill_name: &str, body: &str) -> String {
     format!(
-        "[QUARANTINED SKILL: {skill_name}] The following skill is quarantined. \
-         It has restricted tool access (no bash, file_write, web_scrape).\n\n{body}"
+        "[QUARANTINED SKILL: {}] The following skill is quarantined. \
+         It has restricted tool access (no bash, file_write, web_scrape).\n\n{body}",
+        xml_escape(skill_name),
     )
 }
 
@@ -144,8 +173,8 @@ pub fn format_skills_prompt_compact(skills: &[Skill]) -> String {
         let _ = writeln!(
             out,
             "  <skill name=\"{}\" description=\"{}\" />",
-            skill.name(),
-            skill.description(),
+            xml_escape(skill.name()),
+            xml_escape(skill.description()),
         );
     }
     out.push_str("</available_skills>");
@@ -163,8 +192,8 @@ pub fn format_skills_catalog(skills: &[Skill]) -> String {
         let _ = writeln!(
             out,
             "  <skill name=\"{}\" description=\"{}\" />",
-            skill.name(),
-            skill.description(),
+            xml_escape(skill.name()),
+            xml_escape(skill.description()),
         );
     }
     out.push_str("</other_skills>");
@@ -213,14 +242,17 @@ mod tests {
     #[test]
     fn empty_skills_returns_empty_string() {
         let empty: &[Skill] = &[];
-        assert_eq!(format_skills_prompt(empty, &HashMap::new()), "");
+        assert_eq!(
+            format_skills_prompt(empty, &HashMap::new(), &HashMap::new()),
+            ""
+        );
     }
 
     #[test]
     fn single_skill_format() {
         let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.starts_with("<available_skills>"));
         assert!(output.ends_with("</available_skills>"));
         assert!(output.contains("<skill name=\"test\">"));
@@ -235,7 +267,7 @@ mod tests {
             make_skill("b", "desc b", "body b"),
         ];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("<skill name=\"a\">"));
         assert!(output.contains("<skill name=\"b\">"));
     }
@@ -255,7 +287,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         // filenames listed
         assert!(output.contains("Available references:"));
         assert!(output.contains("api-guide.md"));
@@ -280,7 +312,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("Available scripts: extract.py"));
         assert!(!output.contains("print('hi')"));
     }
@@ -299,7 +331,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("Available assets: logo.png"));
     }
 
@@ -313,7 +345,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("skill body"));
         assert!(!output.contains("Available references"));
         assert!(!output.contains("Available scripts"));
@@ -325,7 +357,7 @@ mod tests {
         let skills = vec![make_skill("untrusted", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("untrusted".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("[QUARANTINED SKILL: untrusted]"));
         assert!(output.contains("restricted tool access"));
     }
@@ -335,7 +367,7 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(!output.contains("QUARANTINED"));
         assert!(output.contains("do stuff"));
     }
@@ -378,7 +410,7 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("Some </skill> content."));
     }
 
@@ -388,7 +420,7 @@ mod tests {
         let skills = vec![make_skill("ver", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("ver".into(), TrustLevel::Verified);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("&lt;/skill&gt;"));
         assert!(!output.contains("Inject </skill> here."));
     }
@@ -399,7 +431,7 @@ mod tests {
         let skills = vec![make_skill("evil", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("evil".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("[QUARANTINED SKILL: evil]"));
         assert!(output.contains("&lt;/instructions&gt;"));
         assert!(output.contains("&lt;/skill&gt;"));
@@ -457,5 +489,108 @@ mod tests {
         assert!(output.contains("name=\"test\""));
         assert!(output.contains("description=\"A test skill.\""));
         assert!(!output.contains("body"));
+    }
+
+    #[test]
+    fn health_attrs_emitted_when_uses_at_threshold() {
+        let skills = vec![make_skill("git", "Git helper.", "body")];
+        let mut health_map = HashMap::new();
+        // uses=5 → exactly at HEALTH_MIN_USES threshold → should emit attrs
+        health_map.insert("git".to_string(), (0.85_f64, 5_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            output.contains("reliability=\"85%\""),
+            "expected reliability attr, got:\n{output}"
+        );
+        assert!(
+            output.contains("uses=\"5\""),
+            "expected uses attr, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn health_attrs_not_emitted_when_uses_below_threshold() {
+        let skills = vec![make_skill("git", "Git helper.", "body")];
+        let mut health_map = HashMap::new();
+        // uses=4 → below HEALTH_MIN_USES → no attrs
+        health_map.insert("git".to_string(), (0.85_f64, 4_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            !output.contains("reliability="),
+            "should not emit reliability attr below threshold, got:\n{output}"
+        );
+        assert!(
+            !output.contains("uses="),
+            "should not emit uses attr below threshold, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn health_attrs_not_emitted_when_skill_not_in_health_map() {
+        let skills = vec![make_skill("docker", "Docker helper.", "body")];
+        // health_map has a different skill → docker gets no attrs
+        let mut health_map = HashMap::new();
+        health_map.insert("git".to_string(), (0.9_f64, 10_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            !output.contains("reliability="),
+            "skill not in health_map should not get reliability attr"
+        );
+    }
+
+    #[test]
+    fn xml_special_chars_in_name_and_description_are_escaped() {
+        let skills = vec![make_skill(
+            "a&b<c>d\"e",
+            "desc & <special> \"quoted\"",
+            "body",
+        )];
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
+        assert!(
+            output.contains("a&amp;b&lt;c&gt;d&quot;e"),
+            "name not escaped"
+        );
+        assert!(
+            output.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
+            "description not escaped"
+        );
+        assert!(!output.contains("a&b"), "raw & in name must not appear");
+        assert!(
+            !output.contains("<special>"),
+            "raw < in description must not appear"
+        );
+
+        let compact = format_skills_prompt_compact(&skills);
+        assert!(
+            compact.contains("a&amp;b&lt;c&gt;d&quot;e"),
+            "compact: name not escaped"
+        );
+        assert!(
+            compact.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
+            "compact: description not escaped"
+        );
+
+        let catalog = format_skills_catalog(&skills);
+        assert!(
+            catalog.contains("a&amp;b&lt;c&gt;d&quot;e"),
+            "catalog: name not escaped"
+        );
+        assert!(
+            catalog.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
+            "catalog: description not escaped"
+        );
+    }
+
+    #[test]
+    fn wrap_quarantined_escapes_name() {
+        let output = wrap_quarantined("evil<script>", "body");
+        assert!(
+            output.contains("evil&lt;script&gt;"),
+            "wrap_quarantined: name not escaped"
+        );
+        assert!(
+            !output.contains("<script>"),
+            "raw < in name must not appear"
+        );
     }
 }

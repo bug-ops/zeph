@@ -22,7 +22,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `compatible` | Generic OpenAI-compatible endpoint backend |
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
-| `router` | Model selection and routing logic |
+| `router` | Model selection and routing logic; `EmaTracker` maintains per-provider exponential moving average latency; when `router_ema_enabled = true`, providers are periodically reordered by EMA score |
 | `vision` | Image input support — base64-encoded images in LLM requests; optional dedicated `vision_model` per provider |
 | `extractor` | `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
 | `sse` | Shared `sse_to_chat_stream()` helpers for Claude and OpenAI SSE parsing |
@@ -32,6 +32,20 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `error` | `LlmError` — unified error type; `ContextLengthExceeded` variant with `is_context_length_error()` heuristic matching across provider error formats (Claude, OpenAI, Ollama) |
 
 **Re-exports:** `LlmProvider`, `LlmError`
+
+## EMA routing
+
+When `router_ema_enabled = true`, `EmaTracker` records per-provider call latency after each successful response. Providers are reordered by EMA score every `router_reorder_interval` seconds, so the fastest reliable provider is tried first.
+
+```toml
+[llm]
+router_ema_enabled      = true
+router_ema_alpha        = 0.1   # smoothing factor; lower = slower to adapt
+router_reorder_interval = 60    # seconds between reordering
+```
+
+> [!NOTE]
+> EMA routing is disabled by default. It is most useful in multi-provider setups where provider latencies differ significantly or change over time.
 
 ## Features
 

@@ -5,6 +5,7 @@ mod builder;
 mod context;
 pub(crate) mod context_manager;
 pub mod error;
+pub(super) mod feedback_detector;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
@@ -58,6 +59,7 @@ pub(crate) const RECALL_PREFIX: &str = "[semantic recall]\n";
 pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
+pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
@@ -103,6 +105,9 @@ pub(super) struct SkillState {
     pub(super) prompt_mode: SkillPromptMode,
     /// Custom secrets available at runtime: key=hyphenated name, value=secret.
     pub(super) available_custom_secrets: HashMap<String, Secret>,
+    pub(super) cosine_weight: f32,
+    pub(super) hybrid_search: bool,
+    pub(super) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
 }
 
 pub(super) struct McpState {
@@ -141,6 +146,7 @@ pub struct Agent<C: Channel> {
     pub(super) context_manager: context_manager::ContextManager,
     pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
     pub(super) learning_engine: learning_engine::LearningEngine,
+    pub(super) feedback_detector: feedback_detector::FeedbackDetector,
     config_path: Option<PathBuf>,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
@@ -177,6 +183,7 @@ pub struct Agent<C: Channel> {
 
 impl<C: Channel> Agent<C> {
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         provider: AnyProvider,
         channel: C,
@@ -191,7 +198,8 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let empty_trust = HashMap::new();
-        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust);
+        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
+        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust, &empty_health);
         let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
@@ -235,10 +243,14 @@ impl<C: Channel> Agent<C> {
                 last_skills_prompt: skills_prompt,
                 prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
+                cosine_weight: 0.7,
+                hybrid_search: false,
+                bm25_index: None,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
+            feedback_detector: feedback_detector::FeedbackDetector::new(0.6),
             config_path: None,
             config_reload_rx: None,
             shutdown: rx,
@@ -706,6 +718,7 @@ impl<C: Channel> Agent<C> {
         (text, image_parts)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_user_message(
         &mut self,
         text: String,
@@ -771,7 +784,73 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        self.check_pending_rollbacks().await;
+        // Extract before rebuild_system_prompt so the value is not tainted
+        // by the secrets-bearing system prompt (ConversationId is just an i64).
+        let conv_id = self.memory_state.conversation_id;
         self.rebuild_system_prompt(&text).await;
+
+        let correction_detection_enabled = self
+            .learning_engine
+            .config
+            .as_ref()
+            .is_none_or(|c| c.correction_detection);
+        if self.is_learning_enabled() && correction_detection_enabled {
+            let previous_user_messages: Vec<&str> = self
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| m.content.as_str())
+                .collect();
+            if let Some(signal) = self
+                .feedback_detector
+                .detect(trimmed, &previous_user_messages)
+            {
+                tracing::info!(
+                    kind = signal.kind.as_str(),
+                    confidence = signal.confidence,
+                    "implicit correction detected"
+                );
+                // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
+                let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
+                self.record_skill_outcomes(
+                    "user_rejection",
+                    Some(&feedback_text),
+                    Some(signal.kind.as_str()),
+                )
+                .await;
+                if let Some(memory) = &self.memory_state.memory {
+                    // Use `trimmed` (raw user input, untainted by secrets) instead of
+                    // `feedback_text` (derived from previous_user_messages → self.messages)
+                    // to avoid the CodeQL cleartext-logging taint path.
+                    let correction_text = context::truncate_chars(trimmed, 500);
+                    match memory
+                        .sqlite()
+                        .store_user_correction(
+                            conv_id.map(|c| c.0),
+                            "",
+                            &correction_text,
+                            self.skill_state
+                                .active_skill_names
+                                .first()
+                                .map(String::as_str),
+                            signal.kind.as_str(),
+                        )
+                        .await
+                    {
+                        Ok(correction_id) => {
+                            if let Err(e) = memory
+                                .store_correction_embedding(correction_id, &correction_text)
+                                .await
+                            {
+                                tracing::warn!("failed to store correction embedding: {e:#}");
+                            }
+                        }
+                        Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
+                    }
+                }
+            }
+        }
 
         if let Err(e) = self.maybe_compact().await {
             tracing::warn!("context compaction failed: {e:#}");
@@ -931,6 +1010,7 @@ impl<C: Channel> Agent<C> {
                 self.memory_state.conversation_id,
                 "user_rejection",
                 Some(feedback),
+                None,
             )
             .await?;
 
@@ -1195,6 +1275,11 @@ impl<C: Channel> Agent<C> {
             tracing::warn!("failed to sync skill embeddings: {e:#}");
         }
 
+        if self.skill_state.hybrid_search {
+            let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
+            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+        }
+
         let all_skills: Vec<Skill> = self
             .skill_state
             .registry
@@ -1203,7 +1288,8 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
         let trust_map = self.build_skill_trust_map().await;
-        let skills_prompt = format_skills_prompt(&all_skills, &trust_map);
+        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
+        let skills_prompt = format_skills_prompt(&all_skills, &trust_map, &empty_health);
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
@@ -1239,6 +1325,8 @@ impl<C: Channel> Agent<C> {
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
         self.skill_state.max_active_skills = config.skills.max_active_skills;
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
+        self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
+        self.skill_state.hybrid_search = config.skills.hybrid_search;
 
         if config.memory.context_budget_tokens > 0 {
             self.context_manager.budget = Some(ContextBudget::new(

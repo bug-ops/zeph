@@ -121,19 +121,21 @@ impl SqliteStore {
         conversation_id: Option<crate::types::ConversationId>,
         outcome: &str,
         error_context: Option<&str>,
+        outcome_detail: Option<&str>,
     ) -> Result<(), MemoryError> {
         sqlx::query(
-            "INSERT INTO skill_outcomes (skill_name, version_id, conversation_id, outcome, error_context) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO skill_outcomes \
+             (skill_name, version_id, conversation_id, outcome, error_context, outcome_detail) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(skill_name)
         .bind(version_id)
         .bind(conversation_id)
         .bind(outcome)
         .bind(error_context)
+        .bind(outcome_detail)
         .execute(&self.pool)
-        .await
-        ?;
+        .await?;
         Ok(())
     }
 
@@ -148,19 +150,35 @@ impl SqliteStore {
         conversation_id: Option<crate::types::ConversationId>,
         outcome: &str,
         error_context: Option<&str>,
+        outcome_detail: Option<&str>,
     ) -> Result<(), MemoryError> {
         let mut tx = self.pool.begin().await?;
+
+        let mut version_map: std::collections::HashMap<String, Option<i64>> =
+            std::collections::HashMap::new();
         for name in skill_names {
-            sqlx::query(
-                "INSERT INTO skill_outcomes \
-                 (skill_name, version_id, conversation_id, outcome, error_context) \
-                 VALUES (?, ?, ?, ?, ?)",
+            let vid: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM skill_versions WHERE skill_name = ? AND is_active = 1",
             )
             .bind(name)
-            .bind(None::<i64>)
+            .fetch_optional(&mut *tx)
+            .await?;
+            version_map.insert(name.clone(), vid.map(|r| r.0));
+        }
+
+        for name in skill_names {
+            let version_id = version_map.get(name.as_str()).copied().flatten();
+            sqlx::query(
+                "INSERT INTO skill_outcomes \
+                 (skill_name, version_id, conversation_id, outcome, error_context, outcome_detail) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(name)
+            .bind(version_id)
             .bind(conversation_id)
             .bind(outcome)
             .bind(error_context)
+            .bind(outcome_detail)
             .execute(&mut *tx)
             .await?;
         }
@@ -470,6 +488,21 @@ impl SqliteStore {
 
         Ok(row.map(skill_version_from_tuple))
     }
+
+    /// Return the skill names for all currently active auto-generated versions.
+    ///
+    /// Used to check rollback eligibility at the start of each agent turn.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on `SQLite` query failure.
+    pub async fn list_active_auto_versions(&self) -> Result<Vec<String>, MemoryError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
 }
 
 #[cfg(test)]
@@ -541,6 +574,7 @@ mod tests {
                 Some(crate::types::ConversationId(1)),
                 "success",
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -551,6 +585,7 @@ mod tests {
                 Some(crate::types::ConversationId(1)),
                 "tool_failure",
                 Some("exit code 1"),
+                None,
             )
             .await
             .unwrap();
@@ -573,15 +608,15 @@ mod tests {
         let store = test_store().await;
 
         store
-            .record_skill_outcome("git", None, None, "success", None)
+            .record_skill_outcome("git", None, None, "success", None, None)
             .await
             .unwrap();
         store
-            .record_skill_outcome("git", None, None, "tool_failure", None)
+            .record_skill_outcome("git", None, None, "tool_failure", None, None)
             .await
             .unwrap();
         store
-            .record_skill_outcome("docker", None, None, "success", None)
+            .record_skill_outcome("docker", None, None, "success", None, None)
             .await
             .unwrap();
 
@@ -836,6 +871,7 @@ mod tests {
                 Some(crate::types::ConversationId(1)),
                 "tool_failure",
                 Some("container not found"),
+                None,
             )
             .await
             .unwrap();
@@ -862,5 +898,59 @@ mod tests {
             .await
             .unwrap();
         assert!(id > 0);
+    }
+
+    #[tokio::test]
+    async fn record_skill_outcomes_batch_resolves_version_id() {
+        let store = test_store().await;
+
+        let vid = store
+            .save_skill_version("git", 1, "body", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        store.activate_skill_version("git", vid).await.unwrap();
+
+        store
+            .record_skill_outcomes_batch(
+                &["git".to_string()],
+                None,
+                "tool_failure",
+                Some("exit code 1"),
+                Some("exit_nonzero"),
+            )
+            .await
+            .unwrap();
+
+        let pool = store.pool();
+        let row: (Option<i64>, Option<String>) =
+            sqlx::query_as("SELECT version_id, outcome_detail FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            row.0,
+            Some(vid),
+            "version_id should be resolved to active version"
+        );
+        assert_eq!(row.1.as_deref(), Some("exit_nonzero"));
+    }
+
+    #[tokio::test]
+    async fn record_skill_outcome_stores_outcome_detail() {
+        let store = test_store().await;
+
+        store
+            .record_skill_outcome("docker", None, None, "tool_failure", None, Some("timeout"))
+            .await
+            .unwrap();
+
+        let pool = store.pool();
+        let row: (Option<String>,) = sqlx::query_as(
+            "SELECT outcome_detail FROM skill_outcomes WHERE skill_name = 'docker' LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some("timeout"));
     }
 }

@@ -63,9 +63,9 @@ zeph --tui         # run with TUI dashboard
 
 | | |
 |---|---|
-| **Hybrid inference** | Ollama, Claude, OpenAI, Candle (GGUF), any OpenAI-compatible API. Multi-model orchestrator with fallback chains. Response cache with blake3 hashing and TTL. Ollama native tool calling via `llm.ollama.tool_use = true` |
-| **Skills-first architecture** | YAML+Markdown skill files with semantic matching, self-learning evolution, 4-tier trust model, and compact prompt mode for small-context models |
-| **Semantic memory** | SQLite + Qdrant (or embedded SQLite vector search) with MMR re-ranking, temporal decay scoring, resilient compaction (reactive retry, middle-out tool response removal, 9-section structured prompt, LLM-free fallback), durable compaction with message visibility control, tool-pair summarization (LLM-based, configurable cutoff), credential scrubbing, cross-session recall, vector retrieval, autosave assistant responses, snapshot export/import, configurable SQLite pool, background response-cache cleanup, and native `memory_search`/`memory_save` tools the model can invoke explicitly |
+| **Hybrid inference** | Ollama, Claude, OpenAI, Candle (GGUF), any OpenAI-compatible API. Multi-model orchestrator with fallback chains. Response cache with blake3 hashing and TTL. Ollama native tool calling via `llm.ollama.tool_use = true`. EMA-based per-provider latency routing (`router_ema_enabled`) with configurable alpha and reorder interval |
+| **Skills-first architecture** | YAML+Markdown skill files with semantic matching, self-learning evolution, 4-tier trust model, and compact prompt mode for small-context models. Wilson score Bayesian re-ranking with `posterior_weight`/`posterior_mean`. Auto-promote/demote via `check_trust_transition()`. BM25 hybrid search with RRF fusion (`hybrid_search = true`). Skill health XML attributes (`reliability="N%"`, `uses="N"`) injected into the system prompt. `/skill reject <name> <reason>` command for immediate user-driven feedback |
+| **Semantic memory** | SQLite + Qdrant (or embedded SQLite vector search) with MMR re-ranking, temporal decay scoring, resilient compaction (reactive retry, middle-out tool response removal, 9-section structured prompt, LLM-free fallback), durable compaction with message visibility control, tool-pair summarization (LLM-based, configurable cutoff), credential scrubbing, cross-session recall, vector retrieval, autosave assistant responses, snapshot export/import, configurable SQLite pool, background response-cache cleanup, and native `memory_search`/`memory_save` tools the model can invoke explicitly. Implicit correction detection (`FeedbackDetector`) stores `UserCorrection` records in SQLite and Qdrant (`zeph_corrections` collection) for cross-session personalization |
 | **Multi-channel I/O** | CLI, Telegram, Discord, Slack, TUI — all with streaming. Vision and speech-to-text input |
 | **Protocols** | MCP client (stdio + HTTP), A2A agent-to-agent communication, ACP server for IDE integration (stdio + HTTP+SSE + WebSocket, multi-session with LRU eviction, persistence, idle reaper, permission persistence, multi-modal prompts, runtime model switching, session modes (ask/architect/code), MCP server management via `ext_method`, session export/import, tool call lifecycle notifications, terminal command timeout with kill support, `UserMessageChunk` echo, `ext_notification` passthrough, `list`/`fork`/`resume` sessions behind unstable flags), sub-agent orchestration with zero-trust secret delegation. MCP tools exposed as native `ToolDefinition`s — used via structured tool_use with Claude and OpenAI |
 | **Defense-in-depth** | Shell sandbox (blocklist + confirmation patterns for process substitution, here-strings, eval), tool permissions, secret redaction, SSRF protection (HTTPS-only, DNS validation, address pinning, redirect chain re-validation), skill trust quarantine, audit logging. Secrets held in memory as `Zeroizing<String>` — wiped on drop |
@@ -217,6 +217,63 @@ extra_dirs = ["/path/to/shared/agents"]
 
 > [!NOTE]
 > Sub-agents are disabled by default. Set `agents.enabled = true` to activate. Each sub-agent receives only explicitly granted tools, skills, and secrets via zero-trust `PermissionGrants`.
+
+## Self-Learning
+
+Zeph continuously improves skill selection and routing based on real usage, without requiring explicit training or model retraining.
+
+### How it works
+
+| Phase | Mechanism | Effect |
+|-------|-----------|--------|
+| **Feedback capture** | `FailureKind` enum records rejection type; `/skill reject <name> <reason>` triggers immediate skill improvement | Negative signal persisted in `outcome_detail` column (migration 018) |
+| **Implicit correction** | `FeedbackDetector` recognizes correction patterns ("actually", "that's wrong", "try again") in user messages | `UserCorrection` stored in SQLite + Qdrant `zeph_corrections` collection |
+| **Cross-session recall** | Corrections are retrieved by embedding similarity at context-build time | Agent adapts to user preferences across sessions without user re-stating preferences |
+| **Bayesian re-ranking** | Wilson score lower-bound updates `posterior_weight` and `posterior_mean` per skill | Proven skills surface higher; underperforming skills demoted automatically |
+| **Trust transitions** | `check_trust_transition()` runs after each outcome | Skills auto-promoted to `Trusted` or demoted to `Quarantined` based on accumulated evidence |
+| **Hybrid search** | BM25 keyword score fused with cosine similarity via Reciprocal Rank Fusion | Better recall for exact-match queries; `cosine_weight` controls blend ratio |
+| **EMA routing** | `EmaTracker` tracks per-provider exponential moving average latency | Fastest reliable provider gets priority; reordering interval is configurable |
+
+### Configuration
+
+```toml
+[skills]
+cosine_weight   = 0.7   # weight of cosine similarity vs BM25 in hybrid search (default: 0.7)
+hybrid_search   = true  # enable BM25 + cosine RRF fusion (default: true)
+
+[agent.learning]
+correction_detection              = true   # implicit correction detection
+correction_confidence_threshold   = 0.7    # minimum confidence to record a correction
+correction_recall_limit           = 5      # max corrections injected into context per turn
+correction_min_similarity         = 0.75   # minimum vector similarity for correction recall
+
+[llm]
+router_ema_enabled       = false  # enable EMA-based provider routing (default: false)
+router_ema_alpha         = 0.1    # EMA smoothing factor (default: 0.1)
+router_reorder_interval  = 60     # seconds between provider reordering (default: 60)
+```
+
+### TUI confidence bars
+
+When running with `--tui`, the skills panel shows live confidence bars derived from the Wilson score posterior:
+
+```
+web-search    [████████░░] 82% (117 uses)
+git-commit    [███████░░░] 73% (42 uses)
+code-review   [████░░░░░░] 41% (8 uses)
+```
+
+### CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `/skill reject <name> <reason>` | Record a rejection and trigger immediate skill improvement cycle |
+
+> [!TIP]
+> Use `/skill reject` whenever a skill produces a wrong result. The rejection is stored with a typed `FailureKind` and immediately feeds the Bayesian re-ranker — no manual config required.
+
+> [!NOTE]
+> Implicit corrections are detected automatically from natural language ("actually, ...", "that's not right"). Explicit `/skill reject` provides stronger signal and is preferred when the failure is clear-cut.
 
 ## TUI Demo
 

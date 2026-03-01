@@ -2,7 +2,7 @@
 
 Skills give Zeph specialized knowledge for specific tasks. Each skill is a markdown file (`SKILL.md`) containing instructions and examples that are injected into the LLM prompt when relevant.
 
-Instead of loading all skills into every prompt, Zeph selects only the top-K most relevant (default: 5) via embedding similarity. This keeps prompt size constant regardless of how many skills are installed.
+Instead of loading all skills into every prompt, Zeph selects only the top-K most relevant (default: 5) using a combination of BM25 keyword matching and embedding cosine similarity fused via Reciprocal Rank Fusion. This keeps prompt size constant regardless of how many skills are installed.
 
 ## How Matching Works
 
@@ -36,7 +36,7 @@ Use `/skills` in chat to see active skills and their usage statistics.
 
 - **Progressive loading**: only metadata (~100 tokens per skill) is loaded at startup. Full body is loaded on first activation and cached
 - **Hot-reload**: edit a `SKILL.md` file, changes apply without restart
-- **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash)
+- **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash). Both support BM25+cosine hybrid search via Reciprocal Rank Fusion (enabled by default, disable with `hybrid_search = false`)
 - **Secret gating**: skills that declare `x-requires-secrets` in their frontmatter are excluded from the prompt if the required secrets are not present in the vault. This prevents the agent from attempting to use a skill that would fail due to missing credentials
 - **Compact prompt mode**: when context budget is tight, `skills.prompt_mode = "auto"` (default) switches to a condensed XML format that includes only name, description, and triggers — ~80% smaller than full bodies. Force with `"compact"` or disable with `"full"`. See [Context Engineering — Skill Prompt Modes](../advanced/context.md#skill-prompt-modes)
 

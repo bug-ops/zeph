@@ -14,11 +14,16 @@ model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
 response_cache_enabled = false
 response_cache_ttl_secs = 3600
+router_ema_enabled = false
+router_ema_alpha = 0.1
+router_reorder_interval = 10
 
 [skills]
 paths = ["./skills"]
 max_active_skills = 5
 disambiguation_threshold = 0.05
+cosine_weight = 0.7
+hybrid_search = true
 prompt_mode = "auto"
 
 [skills.learning]
@@ -30,6 +35,14 @@ rollback_threshold = 0.5
 min_evaluations = 5
 max_versions = 10
 cooldown_minutes = 60
+correction_detection = true
+correction_confidence_threshold = 0.6
+correction_recall_limit = 3
+correction_min_similarity = 0.75
+auto_promote_min_uses = 50
+auto_promote_threshold = 0.95
+auto_demote_min_uses = 30
+auto_demote_threshold = 0.4
 
 [skills.trust]
 default_level = "quarantined"

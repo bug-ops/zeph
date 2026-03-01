@@ -24,7 +24,12 @@ impl<C: Channel> Agent<C> {
         matches!(row.trust_level.as_str(), "trusted" | "verified")
     }
 
-    pub(super) async fn record_skill_outcomes(&self, outcome: &str, error_context: Option<&str>) {
+    pub(super) async fn record_skill_outcomes(
+        &self,
+        outcome: &str,
+        error_context: Option<&str>,
+        outcome_detail: Option<&str>,
+    ) {
         if self.skill_state.active_skill_names.is_empty() {
             return;
         }
@@ -38,6 +43,7 @@ impl<C: Channel> Agent<C> {
                 self.memory_state.conversation_id,
                 outcome,
                 error_context,
+                outcome_detail,
             )
             .await
         {
@@ -47,6 +53,108 @@ impl<C: Channel> Agent<C> {
         if outcome != "success" {
             for name in &self.skill_state.active_skill_names {
                 self.check_rollback(name).await;
+            }
+        }
+
+        let names: Vec<String> = self.skill_state.active_skill_names.clone();
+        for name in &names {
+            self.check_trust_transition(name).await;
+        }
+        self.update_skill_confidence_metrics().await;
+    }
+
+    async fn update_skill_confidence_metrics(&self) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Ok(stats) = memory.sqlite().load_skill_outcome_stats().await else {
+            return;
+        };
+        let confidences: Vec<crate::metrics::SkillConfidence> = stats
+            .iter()
+            .map(|s| {
+                let suc = u32::try_from(s.successes).unwrap_or(0);
+                let fail = u32::try_from(s.failures).unwrap_or(0);
+                crate::metrics::SkillConfidence {
+                    name: s.skill_name.clone(),
+                    posterior: zeph_skills::trust_score::posterior_mean(suc, fail),
+                    total_uses: u32::try_from(s.total).unwrap_or(0),
+                }
+            })
+            .collect();
+        self.update_metrics(|m| m.skill_confidence = confidences);
+    }
+
+    async fn check_trust_transition(&self, skill_name: &str) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Some(config) = &self.learning_engine.config else {
+            return;
+        };
+        let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
+            return;
+        };
+        let successes = u32::try_from(metrics.successes).unwrap_or(0);
+        let failures = u32::try_from(metrics.failures).unwrap_or(0);
+        let total = u32::try_from(metrics.total).unwrap_or(0);
+        let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+
+        if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
+            let trust_level = memory
+                .sqlite()
+                .load_skill_trust(skill_name)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.trust_level);
+            // Skip promotion only if explicitly blocked; promote even if no record exists.
+            if trust_level.as_deref() != Some("trusted")
+                && trust_level.as_deref() != Some("blocked")
+            {
+                tracing::info!(
+                    skill = skill_name,
+                    posterior = format!("{posterior:.3}"),
+                    total,
+                    "auto-promoting skill to trusted"
+                );
+                if trust_level.is_none() {
+                    // No existing record — create one via upsert.
+                    let _ = memory
+                        .sqlite()
+                        .upsert_skill_trust(
+                            skill_name,
+                            "trusted",
+                            zeph_memory::sqlite::SourceKind::Local,
+                            None,
+                            None,
+                            "",
+                        )
+                        .await;
+                } else {
+                    let _ = memory
+                        .sqlite()
+                        .set_skill_trust_level(skill_name, "trusted")
+                        .await;
+                }
+            }
+        }
+
+        if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
+            let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
+                return;
+            };
+            if trust_row.trust_level == "trusted" || trust_row.trust_level == "verified" {
+                tracing::warn!(
+                    skill = skill_name,
+                    posterior = format!("{posterior:.3}"),
+                    total,
+                    "auto-demoting skill to quarantined"
+                );
+                let _ = memory
+                    .sqlite()
+                    .set_skill_trust_level(skill_name, "quarantined")
+                    .await;
             }
         }
     }
@@ -366,6 +474,25 @@ impl<C: Channel> Agent<C> {
     }
 
     #[allow(clippy::cast_precision_loss)]
+    /// Check rollback eligibility for all skills that have an active auto-generated version.
+    /// Called once per turn before processing the user message so that accumulated outcome
+    /// data can trigger rollback even when no new tool executions occur in the current turn.
+    pub(super) async fn check_pending_rollbacks(&self) {
+        if !self.is_learning_enabled() {
+            return;
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Ok(versions) = memory.sqlite().list_active_auto_versions().await else {
+            return;
+        };
+        for skill_name in versions {
+            self.check_rollback(&skill_name).await;
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
     async fn check_rollback(&self, skill_name: &str) {
         if !self.is_learning_enabled() {
             return;
@@ -446,13 +573,82 @@ impl<C: Channel> Agent<C> {
             Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
             Some("install") => self.handle_skill_install(parts.get(1).copied()).await,
             Some("remove") => self.handle_skill_remove(parts.get(1).copied()).await,
+            Some("reject") => {
+                let tail = if parts.len() > 2 { &parts[2..] } else { &[] };
+                self.handle_skill_reject(parts.get(1).copied(), tail).await
+            }
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject")
                     .await?;
                 Ok(())
             }
         }
+    }
+
+    async fn handle_skill_reject(
+        &mut self,
+        name: Option<&str>,
+        reason_parts: &[&str],
+    ) -> Result<(), super::error::AgentError> {
+        let Some(name) = name else {
+            self.channel
+                .send("Usage: /skill reject <name> <reason>")
+                .await?;
+            return Ok(());
+        };
+        // SEC-PH1-001: validate skill exists in registry before writing to DB
+        if self.skill_state.registry.get_skill(name).is_err() {
+            self.channel
+                .send(&format!("Unknown skill: \"{name}\"."))
+                .await?;
+            return Ok(());
+        }
+        let reason = reason_parts.join(" ");
+        if reason.is_empty() {
+            self.channel
+                .send("Usage: /skill reject <name> <reason>")
+                .await?;
+            return Ok(());
+        }
+        // SEC-PH1-002: cap reason length to prevent oversized LLM prompts
+        let reason = if reason.len() > 500 {
+            reason[..500].to_string()
+        } else {
+            reason
+        };
+        let Some(memory) = &self.memory_state.memory else {
+            self.channel.send("Memory not available.").await?;
+            return Ok(());
+        };
+        // REV-001: resolve active version_id for consistency with batch path
+        let version_id = memory
+            .sqlite()
+            .active_skill_version(name)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.id);
+        memory
+            .sqlite()
+            .record_skill_outcome(
+                name,
+                version_id,
+                self.memory_state.conversation_id,
+                "user_rejection",
+                Some(&reason),
+                Some("user_rejection"), // REV-002: structured outcome_detail
+            )
+            .await?;
+        if self.is_learning_enabled() {
+            self.generate_improved_skill(name, &reason, "", Some(&reason))
+                .await
+                .ok();
+        }
+        self.channel
+            .send(&format!("Rejection recorded for \"{name}\"."))
+            .await?;
+        Ok(())
     }
 
     async fn handle_skill_stats(&mut self) -> Result<(), super::error::AgentError> {
@@ -748,7 +944,15 @@ mod tests {
             rollback_threshold: 0.3,
             min_evaluations: 3,
             max_versions: 5,
-            cooldown_minutes: 0, // no cooldown in tests
+            cooldown_minutes: 0,
+            correction_detection: true,
+            correction_confidence_threshold: 0.6,
+            correction_recall_limit: 3,
+            correction_min_similarity: 0.75,
+            auto_promote_min_uses: 50,
+            auto_promote_threshold: 0.95,
+            auto_demote_min_uses: 30,
+            auto_demote_threshold: 0.40,
         }
     }
 
@@ -890,6 +1094,7 @@ mod tests {
                 Some(cid),
                 "tool_failure",
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -929,6 +1134,7 @@ mod tests {
                     Some(cid),
                     "success",
                     None,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -940,6 +1146,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -975,7 +1182,13 @@ mod tests {
         // 1 success, 3 failures (success rate = 0.25 < 0.7, failures = 3 >= min_failures = 2)
         memory
             .sqlite()
-            .record_skill_outcomes_batch(&["test-skill".to_string()], Some(cid), "success", None)
+            .record_skill_outcomes_batch(
+                &["test-skill".to_string()],
+                Some(cid),
+                "success",
+                None,
+                None,
+            )
             .await
             .unwrap();
         for _ in 0..3 {
@@ -985,6 +1198,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -1092,6 +1306,7 @@ mod tests {
                     Some(cid),
                     "tool_failure",
                     None,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1134,6 +1349,7 @@ mod tests {
                     &["test-skill".to_string()],
                     Some(cid),
                     "tool_failure",
+                    None,
                     None,
                 )
                 .await
@@ -1344,9 +1560,9 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // No active skills and no memory → should return immediately without panic
-        agent.record_skill_outcomes("success", None).await;
+        agent.record_skill_outcomes("success", None, None).await;
         agent
-            .record_skill_outcomes("tool_failure", Some("error"))
+            .record_skill_outcomes("tool_failure", Some("error"), None)
             .await;
     }
 
@@ -1462,6 +1678,252 @@ mod tests {
         assert!(
             sent.iter().any(|s| s.contains("Remove failed")),
             "expected remove failure message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_records_outcome_and_replies() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            50,
+        );
+
+        agent
+            .handle_skill_command("reject test-skill the output was wrong")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Rejection recorded")),
+            "expected rejection confirmation, got: {sent:?}"
+        );
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        let metrics = mem.sqlite().skill_metrics("test-skill").await.unwrap();
+        assert!(metrics.is_some(), "outcome should be recorded in DB");
+        let m = metrics.unwrap();
+        assert_eq!(m.total, 1);
+        assert_eq!(m.successes, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_unknown_skill_returns_error_message() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("reject nonexistent-skill bad output")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Unknown skill")),
+            "expected unknown skill message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_missing_name_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_skill_command("reject").await.unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage")),
+            "expected usage message, got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_skill_reject_missing_reason_shows_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let (registry, _tempdir) = create_registry_with_tempdir();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent
+            .handle_skill_command("reject test-skill")
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s.contains("Usage")),
+            "expected usage message, got: {sent:?}"
+        );
+    }
+
+    // check_trust_transition: auto-promote and auto-demote
+
+    async fn setup_skill_with_outcomes(
+        memory: &SemanticMemory,
+        skill_name: &str,
+        successes: u32,
+        failures: u32,
+        initial_trust: &str,
+    ) {
+        use zeph_memory::sqlite::SourceKind;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                skill_name,
+                initial_trust,
+                SourceKind::Local,
+                None,
+                None,
+                "hash",
+            )
+            .await
+            .unwrap();
+        for _ in 0..successes {
+            memory
+                .sqlite()
+                .record_skill_outcome(skill_name, None, None, "success", None, None)
+                .await
+                .unwrap();
+        }
+        for _ in 0..failures {
+            memory
+                .sqlite()
+                .record_skill_outcome(skill_name, None, None, "tool_failure", None, None)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_auto_promotes_to_trusted() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // 50 successes, 0 failures → posterior > 0.95 threshold
+        setup_skill_with_outcomes(&memory, "test-skill", 50, 0, "local").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_promote_min_uses = 50;
+        config.auto_promote_threshold = 0.95;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "trusted",
+            "should auto-promote to trusted, got: {}",
+            row.trust_level
+        );
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_auto_demotes_to_quarantined() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // 5 successes, 30 failures → posterior < 0.40 threshold, starting as "trusted"
+        setup_skill_with_outcomes(&memory, "test-skill", 5, 30, "trusted").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_demote_min_uses = 30;
+        config.auto_demote_threshold = 0.40;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "quarantined",
+            "should auto-demote to quarantined, got: {}",
+            row.trust_level
+        );
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_does_not_promote_blocked() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // High success rate but "blocked" — should NOT be promoted
+        setup_skill_with_outcomes(&memory, "test-skill", 100, 0, "blocked").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_promote_min_uses = 50;
+        config.auto_promote_threshold = 0.95;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "blocked",
+            "blocked skill should never be auto-promoted, got: {}",
+            row.trust_level
         );
     }
 

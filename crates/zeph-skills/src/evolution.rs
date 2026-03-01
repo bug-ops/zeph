@@ -3,6 +3,48 @@
 
 //! Self-learning skill evolution types and prompt templates.
 
+/// Structured failure classification for tool execution errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    ExitNonzero,
+    Timeout,
+    PermissionDenied,
+    WrongApproach,
+    Partial,
+    SyntaxError,
+    Unknown,
+}
+
+impl FailureKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExitNonzero => "exit_nonzero",
+            Self::Timeout => "timeout",
+            Self::PermissionDenied => "permission_denied",
+            Self::WrongApproach => "wrong_approach",
+            Self::Partial => "partial",
+            Self::SyntaxError => "syntax_error",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Classify a failure kind from an error string heuristic.
+    #[must_use]
+    pub fn from_error(error: &str) -> Self {
+        let lower = error.to_lowercase();
+        if lower.contains("timed out") || lower.contains("timeout") {
+            Self::Timeout
+        } else if lower.contains("permission denied") {
+            Self::PermissionDenied
+        } else if lower.contains("exit code") {
+            Self::ExitNonzero
+        } else {
+            Self::Unknown
+        }
+    }
+}
+
 /// Outcome classification for skill-attributed events.
 #[derive(Debug, Clone)]
 pub enum SkillOutcome {
@@ -11,6 +53,7 @@ pub enum SkillOutcome {
         skill_name: String,
         error_context: String,
         tool_output: String,
+        kind: FailureKind,
     },
     EmptyResponse {
         skill_name: String,
@@ -196,6 +239,7 @@ mod tests {
                 skill_name: "git".into(),
                 error_context: "err".into(),
                 tool_output: "out".into(),
+                kind: FailureKind::Unknown,
             }
             .outcome_str(),
             "tool_failure"
@@ -225,6 +269,7 @@ mod tests {
                 skill_name: "docker".into(),
                 error_context: String::new(),
                 tool_output: String::new(),
+                kind: FailureKind::Unknown,
             }
             .skill_name(),
             Some("docker")
@@ -419,6 +464,58 @@ mod tests {
     // Priority 3: Proptest
 
     use proptest::prelude::*;
+
+    #[test]
+    fn failure_kind_from_error_timeout() {
+        assert_eq!(
+            FailureKind::from_error("operation timed out"),
+            FailureKind::Timeout
+        );
+        assert_eq!(
+            FailureKind::from_error("timeout after 30s"),
+            FailureKind::Timeout
+        );
+    }
+
+    #[test]
+    fn failure_kind_from_error_permission_denied() {
+        assert_eq!(
+            FailureKind::from_error("error: permission denied"),
+            FailureKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn failure_kind_from_error_exit_nonzero() {
+        assert_eq!(
+            FailureKind::from_error("command failed [exit code 1]"),
+            FailureKind::ExitNonzero
+        );
+        assert_eq!(
+            FailureKind::from_error("exit code 128"),
+            FailureKind::ExitNonzero
+        );
+    }
+
+    #[test]
+    fn failure_kind_from_error_unknown() {
+        assert_eq!(
+            FailureKind::from_error("something went wrong"),
+            FailureKind::Unknown
+        );
+        assert_eq!(FailureKind::from_error(""), FailureKind::Unknown);
+    }
+
+    #[test]
+    fn failure_kind_as_str_roundtrip() {
+        assert_eq!(FailureKind::ExitNonzero.as_str(), "exit_nonzero");
+        assert_eq!(FailureKind::Timeout.as_str(), "timeout");
+        assert_eq!(FailureKind::PermissionDenied.as_str(), "permission_denied");
+        assert_eq!(FailureKind::WrongApproach.as_str(), "wrong_approach");
+        assert_eq!(FailureKind::Partial.as_str(), "partial");
+        assert_eq!(FailureKind::SyntaxError.as_str(), "syntax_error");
+        assert_eq!(FailureKind::Unknown.as_str(), "unknown");
+    }
 
     proptest! {
         #[test]

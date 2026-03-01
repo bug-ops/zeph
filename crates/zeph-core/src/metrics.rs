@@ -3,6 +3,14 @@
 
 use tokio::sync::watch;
 
+/// Bayesian confidence data for a single skill, used by TUI confidence bar.
+#[derive(Debug, Clone, Default)]
+pub struct SkillConfidence {
+    pub name: String,
+    pub posterior: f64,
+    pub total_uses: u32,
+}
+
 /// Snapshot of a single sub-agent's runtime status.
 #[derive(Debug, Clone, Default)]
 pub struct SubAgentMetrics {
@@ -53,6 +61,7 @@ pub struct MetricsSnapshot {
     pub filter_confidence_fallback: u64,
     pub cancellations: u64,
     pub sub_agents: Vec<SubAgentMetrics>,
+    pub skill_confidence: Vec<SkillConfidence>,
 }
 
 pub struct MetricsCollector {

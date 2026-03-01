@@ -3,6 +3,7 @@
 
 //! SKILL.md loader, skill registry, and prompt formatter.
 
+pub mod bm25;
 pub mod error;
 pub mod evolution;
 pub mod loader;
@@ -13,6 +14,7 @@ pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;
 pub mod trust;
+pub mod trust_score;
 pub mod watcher;
 
 pub use error::SkillError;

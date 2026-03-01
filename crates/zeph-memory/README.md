@@ -19,7 +19,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 | Module | Description |
 |--------|-------------|
-| `sqlite` | SQLite storage for conversations and messages; visibility-aware queries (`load_history_filtered` via CTE, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()`; composite covering index `(conversation_id, id)` on messages for efficient history reads |
+| `sqlite` | SQLite storage for conversations, messages, and user corrections (`zeph_corrections` table, migration 018 adds `outcome_detail` column); visibility-aware queries (`load_history_filtered` via CTE, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()`; composite covering index `(conversation_id, id)` on messages for efficient history reads |
 | `sqlite::history` | Input history persistence for CLI channel |
 | `sqlite::acp_sessions` | ACP session and event persistence for session resume and lifecycle tracking |
 | `qdrant` | Qdrant client for vector upsert and search |
@@ -39,7 +39,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
 
 ## Snapshot export/import
 
@@ -69,6 +69,22 @@ zeph memory import backup.json
 | MMR lambda | `semantic.mmr_lambda` | `0.7` | Balance between relevance (1.0) and diversity (0.0) |
 | Temporal decay | `semantic.temporal_decay_enabled` | `false` | Time-based score attenuation favoring recent memories |
 | Decay half-life | `semantic.temporal_decay_half_life_days` | `30` | Days until a memory's score drops to 50% |
+
+## User corrections and cross-session personalization
+
+`FeedbackDetector` analyzes each user message for implicit correction signals ("actually", "that's wrong", "no, I meant") and extracts a `UserCorrection` when confidence meets `correction_confidence_threshold`. Corrections are stored in both the `zeph_corrections` SQLite table and the `zeph_corrections` Qdrant collection.
+
+At context-build time, the top-K most similar corrections are retrieved by embedding and injected into the agent context, enabling cross-session personalization without explicit user re-stating preferences.
+
+| Config field | Type | Default | Description |
+|---|---|---|---|
+| `correction_detection` | bool | `true` | Enable implicit correction detection |
+| `correction_confidence_threshold` | f64 | `0.7` | Minimum detector confidence to store a correction |
+| `correction_recall_limit` | usize | `5` | Max corrections injected per context-build turn |
+| `correction_min_similarity` | f64 | `0.75` | Minimum vector similarity for correction recall |
+
+> [!NOTE]
+> Corrections are stored in the `zeph_corrections` Qdrant collection. If you use the `sqlite` vector backend, corrections are stored in the `zeph_corrections` SQLite virtual table instead.
 
 ## ACP session storage
 
