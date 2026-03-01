@@ -15,6 +15,7 @@
 - [Memory & Context](concepts/memory.md)
 - [LLM Providers](concepts/providers.md)
 - [Tools](concepts/tools.md)
+- [Instruction Files](concepts/instruction-files.md)
 
 # Guides
 

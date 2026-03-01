@@ -62,6 +62,13 @@ name = "Zeph"
 max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
 auto_update_check = true  # Query GitHub Releases API for newer versions (default: true)
 
+[agent.instructions]
+auto_detect    = true    # Auto-detect provider-specific files: CLAUDE.md, AGENTS.md, GEMINI.md (default: true)
+extra_files    = []      # Additional instruction files (absolute or relative to cwd)
+max_size_bytes = 262144  # Per-file size cap in bytes (default: 256 KiB)
+# zeph.md and .zeph/zeph.md are always loaded regardless of auto_detect.
+# Use --instruction-file <path> at the CLI to supply extra files at startup.
+
 [agent.learning]
 correction_detection = true           # Enable implicit correction detection (default: true)
 correction_confidence_threshold = 0.7 # Jaccard token overlap threshold for correction candidates (default: 0.7)

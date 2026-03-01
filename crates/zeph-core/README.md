@@ -34,6 +34,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `project` | Project-level context detection |
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); secrets stored as `BTreeMap` for deterministic JSON serialization on every `vault.save()` call; scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
+| `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap |
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` TOML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking |
@@ -50,6 +51,17 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 | `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
 | `summary_model` | string? | `null` | — | Model used for context summarization |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
+
+Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_detect` | bool | `true` | Auto-detect provider-specific files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) |
+| `extra_files` | `Vec<PathBuf>` | `[]` | Additional instruction files (absolute or relative to cwd) |
+| `max_size_bytes` | u64 | `262144` | Per-file size cap (256 KiB); files exceeding this are skipped |
+
+> [!NOTE]
+> `zeph.md` and `.zeph/zeph.md` are always loaded regardless of `auto_detect`. Use `--instruction-file <path>` at the CLI to supply extra files at startup without modifying the config file.
 
 Key `DocumentConfig` fields (TOML section `[memory.documents]`):
 
