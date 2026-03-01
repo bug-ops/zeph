@@ -63,7 +63,7 @@ impl<C: Channel> Agent<C> {
         self.update_skill_confidence_metrics().await;
     }
 
-    async fn update_skill_confidence_metrics(&self) {
+    pub(super) async fn update_skill_confidence_metrics(&self) {
         let Some(memory) = &self.memory_state.memory else {
             return;
         };
@@ -907,6 +907,7 @@ mod tests {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::config::LearningConfig;
+    use tokio::sync::watch;
     use zeph_llm::any::AnyProvider;
     use zeph_memory::semantic::SemanticMemory;
     use zeph_skills::registry::SkillRegistry;
@@ -1936,5 +1937,53 @@ mod tests {
         fn chrono_parse_never_panics(s in ".*") {
             let _ = chrono_parse_sqlite(&s);
         }
+    }
+
+    #[tokio::test]
+    async fn skill_confidence_populated_before_first_outcome() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Record one success so load_skill_outcome_stats returns data.
+        memory
+            .sqlite()
+            .record_skill_outcomes_batch(
+                &["test-skill".to_string()],
+                Some(cid),
+                "success",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        // update_skill_confidence_metrics is called inside rebuild_system_prompt after
+        // active_skills is set. Invoke directly to test the fix in isolation.
+        agent.update_skill_confidence_metrics().await;
+
+        let snapshot = rx.borrow().clone();
+        assert!(
+            !snapshot.skill_confidence.is_empty(),
+            "skill_confidence must be populated after update_skill_confidence_metrics"
+        );
+        let entry = snapshot
+            .skill_confidence
+            .iter()
+            .find(|c| c.name == "test-skill")
+            .expect("test-skill confidence entry must exist");
+        assert!(
+            entry.total_uses > 0,
+            "total_uses must reflect recorded outcome"
+        );
     }
 }
