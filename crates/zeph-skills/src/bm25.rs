@@ -264,4 +264,63 @@ mod tests {
         let fused = rrf_fuse(&emb, &[], 2);
         assert_eq!(fused.len(), 2);
     }
+
+    #[test]
+    fn search_limit_zero_returns_empty() {
+        let idx = Bm25Index::build(&["run git commands"]);
+        let results = idx.search("git", 0);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_single_doc_hit() {
+        let idx = Bm25Index::build(&["run git commands"]);
+        let results = idx.search("git", 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+        assert!(results[0].1 > 0.0);
+    }
+
+    #[test]
+    fn rrf_fuse_both_empty_returns_empty() {
+        let fused = rrf_fuse(&[], &[], 5);
+        assert!(fused.is_empty());
+    }
+
+    #[test]
+    fn tokenize_all_short_returns_empty() {
+        let tokens = super::tokenize("a bb cc");
+        assert!(
+            tokens.is_empty(),
+            "all tokens shorter than 3 chars should be filtered"
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_rank_matters_first_beats_second() {
+        // Both lists have same two items; item at rank 0 scores higher than rank 1
+        let emb = vec![
+            ScoredMatch {
+                index: 0,
+                score: 0.9,
+            },
+            ScoredMatch {
+                index: 1,
+                score: 0.8,
+            },
+        ];
+        let bm25 = vec![(0, 2.0_f32), (1, 1.0_f32)];
+        let fused = rrf_fuse(&emb, &bm25, 5);
+        // index 0 is rank-1 in both lists → higher RRF score than index 1
+        assert_eq!(fused[0].index, 0);
+        assert!(fused[0].score > fused[1].score);
+    }
+
+    #[test]
+    fn search_scores_positive_for_matching_term() {
+        let idx = Bm25Index::build(&["database query optimization", "network protocol handling"]);
+        let results = idx.search("database", 5);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1 > 0.0, "BM25 score should be positive");
+    }
 }

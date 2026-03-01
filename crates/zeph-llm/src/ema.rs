@@ -198,4 +198,58 @@ mod tests {
             .unwrap();
         assert_eq!(result[result.len() - 1], "p1");
     }
+
+    #[test]
+    fn maybe_reorder_interval_zero_always_none() {
+        let t = EmaTracker::new(0.3, 0);
+        let order = vec!["p1".to_string()];
+        for _ in 0..100 {
+            assert!(
+                t.maybe_reorder(&order).is_none(),
+                "interval=0 should never trigger reorder"
+            );
+        }
+    }
+
+    #[test]
+    fn record_multiple_providers_independent() {
+        let t = EmaTracker::new(0.5, 100);
+        t.record("p1", true, 100);
+        t.record("p2", false, 200);
+
+        let snap = t.snapshot();
+        let p1 = snap.get("p1").unwrap();
+        let p2 = snap.get("p2").unwrap();
+
+        assert!(
+            p1.success_ema > p2.success_ema,
+            "p1 success should be higher than p2"
+        );
+        assert_eq!(p1.total_calls, 1);
+        assert_eq!(p2.total_calls, 1);
+    }
+
+    #[test]
+    fn maybe_reorder_empty_order_returns_empty() {
+        let t = EmaTracker::new(0.3, 1);
+        // interval=1 → triggers on first call
+        let result = t.maybe_reorder(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn record_many_failures_drives_success_ema_toward_zero() {
+        let t = EmaTracker::new(0.5, 100);
+        // After many failures with alpha=0.5, EMA converges toward 0.0
+        for _ in 0..20 {
+            t.record("p1", false, 100);
+        }
+        let snap = t.snapshot();
+        let s = snap.get("p1").unwrap();
+        assert!(
+            s.success_ema < 0.01,
+            "success EMA should be near 0 after many failures, got {}",
+            s.success_ema
+        );
+    }
 }
