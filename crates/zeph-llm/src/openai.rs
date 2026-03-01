@@ -1820,4 +1820,136 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("500"));
     }
+
+    // ------------------------------------------------------------------
+    // Wiremock HTTP-level tests using fixture helpers from testing module
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn chat_happy_path_wiremock() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::openai_chat_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(openai_chat_response("hello from mock"))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "sk-test".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let result = p.chat(&messages).await.unwrap();
+        assert_eq!(result, "hello from mock");
+    }
+
+    #[tokio::test]
+    async fn chat_429_rate_limit_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::openai_rate_limit_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(openai_rate_limit_response())
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "sk-test".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let result = p.chat(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_401_auth_error_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::openai_auth_error_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(openai_auth_error_response())
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "bad-key".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let result = p.chat(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_500_server_error_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::openai_server_error_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(openai_server_error_response())
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "sk-test".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let result = p.chat(&messages).await;
+        assert!(result.is_err());
+    }
 }
