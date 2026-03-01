@@ -1276,11 +1276,11 @@ impl<C: Channel> Agent<C> {
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg);
+            self.messages.insert(1, msg); // lgtm[rust/cleartext-logging] — document chunks from Qdrant, no secrets
             tracing::debug!("injected document RAG context");
         }
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg);
+            self.messages.insert(1, msg); // lgtm[rust/cleartext-logging] — user correction text from Qdrant, no secrets
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
