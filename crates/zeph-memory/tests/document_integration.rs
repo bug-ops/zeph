@@ -18,6 +18,7 @@ const VECTOR_SIZE: u64 = 4;
 fn qdrant_image() -> GenericImage {
     GenericImage::new("qdrant/qdrant", "v1.16.0")
         .with_wait_for(WaitFor::message_on_stdout("gRPC listening"))
+        .with_wait_for(WaitFor::seconds(1))
         .with_exposed_port(QDRANT_GRPC_PORT)
 }
 
