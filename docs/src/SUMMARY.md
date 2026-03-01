@@ -24,6 +24,7 @@
 - [Connect MCP Servers](guides/mcp.md)
 - [IDE Integration](guides/ide-integration.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
+- [Enable Self-Learning Skills](guides/self-learning.md)
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)
 

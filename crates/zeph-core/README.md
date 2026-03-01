@@ -22,7 +22,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `agent::tool_execution` | Tool call handling, redaction, result processing; both the fenced-block path (`handle_tool_result`) and the structured tool-call path unconditionally emit `LoopbackEvent::ToolStart` (UUID generated per call) before execution and `LoopbackEvent::ToolOutput` (matching UUID, `is_error` flag) after; `call_llm_with_retry()` / `call_chat_with_tools_retry()` — auto-detect `ContextLengthExceeded`, compact context, and retry (max 2 attempts); `prune_stale_tool_outputs` invokes `count_tokens` once per `ToolResult` part |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
-| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install` and `/skill remove`, sub-agent management via `/agent`, etc.) |
+| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install`, `/skill remove`, `/skill reject <name> <reason>`, sub-agent management via `/agent`, etc.) |
 | `agent::utils` | Shared agent utilities |
 | `bootstrap` | `AppBuilder` — fluent builder for application startup; split into submodules: `config` (config resolution, vault arg parsing), `health` (health check, provider warmup), `mcp` (MCP manager and registry), `provider` (provider factory functions), `skills` (skill matcher, embedding model helpers) |
 | `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` carry per-tool UUIDs and `is_error` flag for ACP lifecycle notifications; `Attachment` / `AttachmentKind` for multimodal inputs |
@@ -70,6 +70,37 @@ auto_update_check = true   # set to false to disable update notifications
 ```
 
 Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable without changing the config file.
+
+## Skill commands
+
+| Command | Description |
+|---------|-------------|
+| `/skill list` | List loaded skills with trust level and match count |
+| `/skill install <url>` | Install a skill from a remote URL |
+| `/skill remove <name>` | Remove an installed skill |
+| `/skill reject <name> <reason>` | Record a typed rejection and trigger immediate skill improvement |
+
+> [!TIP]
+> `/skill reject` provides the strongest feedback signal. The rejection is persisted with a `FailureKind` discriminant to the `outcome_detail` column and immediately updates the Wilson score posterior for Bayesian re-ranking.
+
+## Self-learning configuration
+
+Key `AgentConfig.learning` fields (TOML section `[agent.learning]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `correction_detection` | bool | `true` | Enable `FeedbackDetector` implicit correction capture |
+| `correction_confidence_threshold` | f64 | `0.7` | Minimum detector confidence to persist a `UserCorrection` |
+| `correction_recall_limit` | usize | `5` | Max corrections retrieved per context-build turn |
+| `correction_min_similarity` | f64 | `0.75` | Minimum embedding similarity for correction recall |
+
+Key `LlmConfig` fields for EMA routing (TOML section `[llm]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `router_ema_enabled` | bool | `false` | Enable per-provider EMA latency tracking and reordering |
+| `router_ema_alpha` | f64 | `0.1` | EMA smoothing factor (lower = slower adaptation) |
+| `router_reorder_interval` | u64 | `60` | Seconds between provider list reordering |
 
 ## Sub-agent Commands
 

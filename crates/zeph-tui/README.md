@@ -9,7 +9,7 @@ Ratatui-based TUI dashboard with real-time metrics for Zeph.
 
 ## Overview
 
-Provides a terminal UI for monitoring the Zeph agent in real time. Built on ratatui and crossterm, it renders live token usage, latency histograms, conversation history, and skill activity. Feature-gated behind `tui`.
+Provides a terminal UI for monitoring the Zeph agent in real time. Built on ratatui and crossterm, it renders live token usage, latency histograms, conversation history, and skill activity. The skills panel includes Wilson score confidence bars showing each skill's posterior reliability estimate. Feature-gated behind `tui`.
 
 ## Key Modules
 
@@ -21,7 +21,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **highlight** — syntax highlighting for code blocks
 - **hyperlink** — OSC 8 clickable hyperlinks for bare URLs and markdown links
 - **layout** — panel arrangement and responsive grid
-- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry
+- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry
 - **theme** — color palette and style definitions
 - **widgets** — reusable ratatui widget components
 - **error** — `TuiError` typed error enum (Io, Channel)
