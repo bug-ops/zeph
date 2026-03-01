@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACP P1.3: `send_tool_start` captures `Instant::now()`; `send_tool_output` propagates `started_at` through loopback channel; `tool_call_update` metadata now emits `startedAt` (ISO 8601) and `elapsedMs` (u64 ms) (#1065)
 - `Channel::send_tool_output` trait extended with `started_at: Option<Instant>` parameter; all implementations updated (#1065)
 - Filed #1099: replace raw user text fallback in ACP session title generation
+- ACP P2.1: `StreamChunk` enum (`Content` / `Thinking`) replaces `String` in `ChatStream`; Claude `thinking_delta` and OpenAI `reasoning_content` SSE events now flow as `LoopbackEvent::ThinkingChunk` → `acp::SessionUpdate::AgentThoughtChunk` (#1065)
+- ACP P2.2: `LoopbackEvent::ToolOutput` `diff` field now maps to `ToolCallContent::Diff` in `loopback_event_to_updates`, providing structured diff content in ACP tool call updates (#1065)
+- ACP P2.4: `/review [path]` slash command added to ACP agent; injects read-only constrained prompt; arg sanitized against `^[a-zA-Z0-9_./ -]{0,512}$` allowlist (SEC-P24-1); appears in `/help` and `build_available_commands` (#1065)
 
 ### Fixed
 
