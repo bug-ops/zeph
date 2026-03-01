@@ -40,10 +40,6 @@ pub fn load_instructions(
     explicit_files: &[PathBuf],
     auto_detect: bool,
 ) -> Vec<InstructionBlock> {
-    if !auto_detect && explicit_files.is_empty() {
-        return Vec::new();
-    }
-
     let canonical_base = match std::fs::canonicalize(base_dir) {
         Ok(c) => c,
         Err(e) => {
@@ -54,7 +50,7 @@ pub fn load_instructions(
 
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    // Always-checked zeph-specific files.
+    // zeph.md is always checked regardless of provider or auto_detect setting.
     candidates.push(base_dir.join("zeph.md"));
     candidates.push(base_dir.join(".zeph").join("zeph.md"));
 
@@ -204,9 +200,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_when_no_auto_detect_and_no_explicit() {
+    fn zeph_md_loaded_even_when_auto_detect_disabled() {
         let dir = TempDir::new().unwrap();
         make_file(dir.path(), "zeph.md", "some content");
+        let blocks = load_instructions(dir.path(), &[], &[], false);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].content, "some content");
+    }
+
+    #[test]
+    fn empty_when_no_auto_detect_and_no_explicit_and_no_zeph_md() {
+        let dir = TempDir::new().unwrap();
         let blocks = load_instructions(dir.path(), &[], &[], false);
         assert!(blocks.is_empty());
     }
