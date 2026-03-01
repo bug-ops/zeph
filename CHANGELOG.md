@@ -24,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACP P1.2: `set_session_config_option` handles `thinking` (on/off) and `auto_approve` (suggest/auto-edit/full-auto) config keys; `build_config_options` returns all third option groups (#1065)
 - ACP P1.3: `send_tool_start` captures `Instant::now()`; `send_tool_output` propagates `started_at` through loopback channel; `tool_call_update` metadata now emits `startedAt` (ISO 8601) and `elapsedMs` (u64 ms) (#1065)
 - `Channel::send_tool_output` trait extended with `started_at: Option<Instant>` parameter; all implementations updated (#1065)
-- Filed #1099: replace raw user text fallback in ACP session title generation
+- ACP session title fallback now uses `Session <8-char session ID prefix>` instead of raw truncated user text, eliminating exposure of unvalidated input as a visible session identifier (#1099)
 
 ### Fixed
 
