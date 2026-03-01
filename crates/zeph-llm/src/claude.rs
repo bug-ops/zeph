@@ -70,10 +70,12 @@ pub struct ClaudeProvider {
     max_tokens: u32,
     thinking: Option<ThinkingConfig>,
     pub(crate) status_tx: Option<StatusTx>,
+    /// Whether to attach `cache_control` to user messages in multi-turn conversations.
+    cache_user_messages: bool,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
-    /// Cached pre-serialized tool definitions. Keyed by tool names; invalidated when the set changes.
-    tool_cache: std::sync::Mutex<Option<(Vec<String>, Vec<serde_json::Value>)>>,
+    /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
+    tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -85,6 +87,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("max_tokens", &self.max_tokens)
             .field("thinking", &self.thinking)
             .field("status_tx", &self.status_tx.is_some())
+            .field("cache_user_messages", &self.cache_user_messages)
             .field("last_usage", &self.last_usage.lock().ok())
             .field("last_cache", &self.last_cache.lock().ok())
             .field(
@@ -93,7 +96,7 @@ impl fmt::Debug for ClaudeProvider {
                     .tool_cache
                     .lock()
                     .ok()
-                    .and_then(|g| g.as_ref().map(|(k, _)| k.len())),
+                    .and_then(|g| g.as_ref().map(|(hash, _)| *hash)),
             )
             .finish()
     }
@@ -108,6 +111,7 @@ impl Clone for ClaudeProvider {
             max_tokens: self.max_tokens,
             thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
+            cache_user_messages: self.cache_user_messages,
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
@@ -125,6 +129,7 @@ impl ClaudeProvider {
             max_tokens,
             thinking: None,
             status_tx: None,
+            cache_user_messages: true,
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
@@ -140,6 +145,12 @@ impl ClaudeProvider {
     #[must_use]
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cache_user_messages(mut self, enabled: bool) -> Self {
+        self.cache_user_messages = enabled;
         self
     }
 
@@ -324,13 +335,13 @@ impl ClaudeProvider {
     }
 
     fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
-        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let key = tool_cache_key(tools);
         let mut guard = self
             .tool_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((ref cached_names, ref cached_values)) = *guard
-            && cached_names == &names
+        if let Some((cached_key, ref cached_values)) = *guard
+            && cached_key == key
         {
             return cached_values.clone();
         }
@@ -350,7 +361,7 @@ impl ClaudeProvider {
                 serde_json::json!({"type": "ephemeral"}),
             );
         }
-        *guard = Some((names, serialized.clone()));
+        *guard = Some((key, serialized.clone()));
         serialized
     }
 
@@ -375,6 +386,10 @@ impl ClaudeProvider {
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (thinking_param, temperature) = self.build_thinking_param();
         let auto_cache = if messages.len() > 1 {
+            tracing::debug!(
+                message_count = messages.len(),
+                "multi-turn session: system cache eligible"
+            );
             Some(CacheControl {
                 cache_type: CacheType::Ephemeral,
             })
@@ -383,7 +398,8 @@ impl ClaudeProvider {
         };
 
         if Self::has_image_parts(messages) {
-            let (system, chat_messages) = split_messages_structured(messages);
+            let (system, chat_messages) =
+                split_messages_structured(messages, self.cache_user_messages);
             let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
@@ -567,7 +583,7 @@ impl LlmProvider for ClaudeProvider {
             parameters: schema_value,
         };
 
-        let (system, chat_messages) = split_messages_structured(messages);
+        let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
         let api_tool = AnthropicTool {
             name: &tool.name,
             description: &tool.description,
@@ -577,6 +593,10 @@ impl LlmProvider for ClaudeProvider {
         let (thinking_param, temperature) = self.build_thinking_param();
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
+            tracing::debug!(
+                message_count = messages.len(),
+                "multi-turn session: system cache eligible"
+            );
             Some(CacheControl {
                 cache_type: CacheType::Ephemeral,
             })
@@ -657,12 +677,16 @@ impl LlmProvider for ClaudeProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let (system, chat_messages) = split_messages_structured(messages);
+        let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
         let (thinking_param, temperature) = self.build_thinking_param();
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
+            tracing::debug!(
+                message_count = messages.len(),
+                "multi-turn session: system cache eligible"
+            );
             Some(CacheControl {
                 cache_type: CacheType::Ephemeral,
             })
@@ -792,6 +816,16 @@ fn cache_min_tokens(model: &str) -> usize {
     if model.contains("sonnet") { 2048 } else { 4096 }
 }
 
+fn tool_cache_key(tools: &[ToolDefinition]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for t in tools {
+        t.name.hash(&mut hasher);
+        t.parameters.to_string().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemContentBlock> {
     // Split on volatile marker first: everything before is cacheable
     let (cacheable_part, volatile_part) = if let Some(pos) = system.find(CACHE_MARKER_VOLATILE) {
@@ -838,12 +872,28 @@ fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemContentBlock
 
     let remaining = remaining.trim();
     if !remaining.is_empty() {
+        // When markers were present, the trailing segment is always cached (it's the
+        // last explicit cacheable block). When no markers exist, `remaining` equals the
+        // full system prompt — apply the same min-token threshold as the fallback path.
+        let had_markers = remaining.len() < cacheable_part.trim().len();
+        let estimated_tokens = remaining.chars().count() / 4;
+        let cc = if had_markers || estimated_tokens >= min_tokens {
+            Some(CacheControl {
+                cache_type: CacheType::Ephemeral,
+            })
+        } else {
+            tracing::debug!(
+                estimated_tokens,
+                min_tokens,
+                model,
+                "fallback system block below cache threshold, skipping cache_control"
+            );
+            None
+        };
         blocks.push(SystemContentBlock {
             block_type: "text",
             text: remaining.to_owned(),
-            cache_control: Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            }),
+            cache_control: cc,
         });
     }
 
@@ -856,17 +906,6 @@ fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemContentBlock
                 cache_control: None,
             });
         }
-    }
-
-    // No markers at all: cache the entire prompt as one block
-    if blocks.is_empty() {
-        blocks.push(SystemContentBlock {
-            block_type: "text",
-            text: system.to_owned(),
-            cache_control: Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            }),
-        });
     }
 
     blocks
@@ -1057,7 +1096,10 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
 }
 
 #[allow(clippy::too_many_lines)]
-fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<StructuredApiMessage>) {
+fn split_messages_structured(
+    messages: &[Message],
+    cache_user_messages: bool,
+) -> (Option<String>, Vec<StructuredApiMessage>) {
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
@@ -1189,7 +1231,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
 
     // Place 1 message-level cache breakpoint at the user message closest to position
     // (total - 20) to maximize the 20-block lookback window coverage.
-    if chat.len() > 1 {
+    if cache_user_messages && chat.len() > 1 {
         let target = chat.len().saturating_sub(20);
         let breakpoint_idx = (target..chat.len())
             .find(|&i| chat[i].role == "user")
@@ -1691,11 +1733,47 @@ mod tests {
 
     #[test]
     fn split_system_no_markers_caches_entire_block() {
-        let blocks =
-            split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6");
+        // Text must meet the 2048-token threshold for sonnet (≈ 8192 chars).
+        let long_text = format!("You are Zeph, an AI assistant. {}", "x".repeat(8200));
+        let blocks = split_system_into_blocks(&long_text, "claude-sonnet-4-6");
         assert_eq!(blocks.len(), 1);
         assert!(blocks[0].cache_control.is_some());
         assert!(blocks[0].text.contains("Zeph"));
+    }
+
+    #[test]
+    fn split_system_no_markers_short_text_skips_cache() {
+        let blocks =
+            split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_none());
+    }
+
+    #[test]
+    fn split_system_no_markers_exact_threshold_sonnet_caches() {
+        // Exactly 8192 chars => 8192 / 4 = 2048 tokens == sonnet threshold: should cache.
+        let exact_text = "A".repeat(8192);
+        let blocks = split_system_into_blocks(&exact_text, "claude-sonnet-4-6");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_some());
+    }
+
+    #[test]
+    fn split_system_no_markers_opus_skips_short_text() {
+        // 8192 chars = 2048 tokens < 4096 opus minimum — no cache.
+        let medium_text = "A".repeat(8192);
+        let blocks = split_system_into_blocks(&medium_text, "claude-opus-4-6");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_none());
+    }
+
+    #[test]
+    fn split_system_no_markers_opus_caches_long_text() {
+        // 16384 chars = 4096 tokens >= 4096 opus minimum — should cache.
+        let long_text = "A".repeat(16384);
+        let blocks = split_system_into_blocks(&long_text, "claude-opus-4-6");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_some());
     }
 
     #[test]
@@ -1965,7 +2043,7 @@ mod tests {
                 }],
             ),
         ];
-        let (system, chat) = split_messages_structured(&messages);
+        let (system, chat) = split_messages_structured(&messages, true);
         assert!(system.is_none());
         assert_eq!(chat.len(), 2);
 
@@ -2017,7 +2095,7 @@ mod tests {
                 })),
             ],
         );
-        let (system, chat) = split_messages_structured(&[msg]);
+        let (system, chat) = split_messages_structured(&[msg], true);
         assert!(system.is_none());
         assert_eq!(chat.len(), 1);
         assert_eq!(chat[0].role, "user");
@@ -2225,8 +2303,8 @@ mod tests {
 
         // Verify cache is populated
         let guard = provider.tool_cache.lock().unwrap();
-        let (names, values) = guard.as_ref().unwrap();
-        assert_eq!(names, &["tool_a", "tool_b"]);
+        let (hash, values) = guard.as_ref().unwrap();
+        assert_ne!(*hash, 0);
         assert_eq!(values.len(), 2);
     }
 
@@ -2262,8 +2340,9 @@ mod tests {
 
         // Cache now reflects v2
         let guard = provider.tool_cache.lock().unwrap();
-        let (names, _) = guard.as_ref().unwrap();
-        assert_eq!(names.len(), 2);
+        let (hash, values) = guard.as_ref().unwrap();
+        assert_ne!(*hash, 0);
+        assert_eq!(values.len(), 2);
     }
 
     #[test]
@@ -2767,7 +2846,7 @@ mod tests {
                 },
             ],
         );
-        let (_, chat) = split_messages_structured(&[msg]);
+        let (_, chat) = split_messages_structured(&[msg], true);
         assert_eq!(chat.len(), 1);
         let json = serde_json::to_value(&chat[0]).unwrap();
         let blocks = json["content"].as_array().unwrap();
@@ -2785,7 +2864,7 @@ mod tests {
                 data: "secret".into(),
             }],
         );
-        let (_, chat) = split_messages_structured(&[msg]);
+        let (_, chat) = split_messages_structured(&[msg], true);
         let json = serde_json::to_value(&chat[0]).unwrap();
         let blocks = json["content"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "redacted_thinking");
@@ -3003,7 +3082,7 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
-        let (_, chat) = split_messages_structured(&messages);
+        let (_, chat) = split_messages_structured(&messages, true);
         assert_eq!(chat.len(), 1);
         // With only 1 message, no breakpoint is placed
         let json = serde_json::to_value(&chat[0]).unwrap();
@@ -3030,7 +3109,7 @@ mod tests {
                 metadata: MessageMetadata::default(),
             },
         ];
-        let (_, chat) = split_messages_structured(&messages);
+        let (_, chat) = split_messages_structured(&messages, true);
         assert_eq!(chat.len(), 2);
         // Breakpoint must be on the user message at index 0 (only user in range)
         let user_json = serde_json::to_value(&chat[0]).unwrap();
@@ -3063,7 +3142,7 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
         }
-        let (_, chat) = split_messages_structured(&messages);
+        let (_, chat) = split_messages_structured(&messages, true);
         assert_eq!(chat.len(), 25);
         // target = 25 - 20 = 5; first user at or after index 5 is index 6 (even indices are user)
         // Actually index 5 is assistant (odd), so search finds index 6 (user)
@@ -3082,5 +3161,124 @@ mod tests {
         );
         // Breakpoint index must be >= max(0, total-20) = 5
         assert!(idx >= 5, "breakpoint must be at or after position total-20");
+    }
+
+    // --- #1094: tool schema hash in cache key ---
+
+    #[test]
+    fn tool_cache_invalidates_on_schema_change() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools_v1 = vec![ToolDefinition {
+            name: "tool".into(),
+            description: "desc".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}),
+        }];
+        let tools_v2 = vec![ToolDefinition {
+            name: "tool".into(),
+            description: "desc".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"b": {"type": "number"}}}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools_v1);
+        let second = provider.get_or_build_api_tools(&tools_v2);
+        // Same names but different schemas — must return different serialized tools.
+        assert_eq!(
+            first[0]["input_schema"]["properties"]["a"]["type"],
+            "string"
+        );
+        assert_eq!(
+            second[0]["input_schema"]["properties"]["b"]["type"],
+            "number"
+        );
+        // Hash-based invalidation contract: different schemas must produce different keys.
+        assert_ne!(tool_cache_key(&tools_v1), tool_cache_key(&tools_v2));
+    }
+
+    #[test]
+    fn tool_cache_hits_on_same_tools() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let first = provider.get_or_build_api_tools(&tools);
+        let second = provider.get_or_build_api_tools(&tools);
+        assert_eq!(first, second);
+        let expected = tool_cache_key(&tools);
+        let cached_hash = provider
+            .tool_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(h, _)| *h);
+        assert_eq!(cached_hash, Some(expected));
+    }
+
+    // --- #1093: cache_user_messages toggle ---
+
+    #[test]
+    fn split_messages_structured_cache_enabled_adds_cache_control() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "first"),
+            Message::from_legacy(Role::Assistant, "answer"),
+            Message::from_legacy(Role::User, "second"),
+        ];
+        let (_, chat) = split_messages_structured(&messages, true);
+        assert_eq!(chat.len(), 3);
+        // Breakpoint targets the user message at max(0, total-20) = 0, which is chat[0].
+        let has_cache = chat.iter().any(|m| {
+            m.role == "user"
+                && match &m.content {
+                    StructuredContent::Blocks(blocks) => blocks.iter().any(|b| {
+                        matches!(
+                            b,
+                            AnthropicContentBlock::Text {
+                                cache_control: Some(_),
+                                ..
+                            }
+                        )
+                    }),
+                    StructuredContent::Text(_) => false,
+                }
+        });
+        assert!(
+            has_cache,
+            "at least one user message must have cache_control when enabled"
+        );
+    }
+
+    #[test]
+    fn split_messages_structured_cache_disabled_no_cache_control() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "first"),
+            Message::from_legacy(Role::Assistant, "answer"),
+            Message::from_legacy(Role::User, "second"),
+        ];
+        let (_, chat) = split_messages_structured(&messages, false);
+        assert_eq!(chat.len(), 3);
+        // With cache disabled, last user message stays as plain Text.
+        assert!(
+            matches!(&chat[2].content, StructuredContent::Text(_)),
+            "last user message must remain Text when cache disabled"
+        );
+    }
+
+    #[test]
+    fn with_cache_user_messages_builder() {
+        let provider =
+            ClaudeProvider::new("k".into(), "m".into(), 256).with_cache_user_messages(false);
+        assert!(!provider.cache_user_messages);
+        let provider2 = ClaudeProvider::new("k".into(), "m".into(), 256);
+        assert!(provider2.cache_user_messages);
+    }
+
+    #[test]
+    fn clone_preserves_cache_user_messages() {
+        let provider =
+            ClaudeProvider::new("k".into(), "m".into(), 256).with_cache_user_messages(false);
+        let cloned = provider.clone();
+        assert!(!cloned.cache_user_messages);
     }
 }
