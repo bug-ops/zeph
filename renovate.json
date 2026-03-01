@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "repositories": ["bug-ops/zeph"],
+  "gitAuthor": "Andrei G <andrei.g@my.com>",
   "schedule": ["before 9am on monday"],
   "timezone": "UTC",
   "prHourlyLimit": 5,
