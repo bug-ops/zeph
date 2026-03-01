@@ -12,6 +12,12 @@ use crate::config::ScrapeConfig;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct FetchParams {
+    /// HTTPS URL to fetch
+    url: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ScrapeInstruction {
     /// HTTPS URL to scrape
     url: String,
@@ -79,12 +85,20 @@ impl WebScrapeExecutor {
 impl ToolExecutor for WebScrapeExecutor {
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         use crate::registry::{InvocationHint, ToolDef};
-        vec![ToolDef {
-            id: "web_scrape".into(),
-            description: "Scrape data from a web page via CSS selectors".into(),
-            schema: schemars::schema_for!(ScrapeInstruction),
-            invocation: InvocationHint::FencedBlock("scrape"),
-        }]
+        vec![
+            ToolDef {
+                id: "web_scrape".into(),
+                description: "Scrape data from a web page via CSS selectors".into(),
+                schema: schemars::schema_for!(ScrapeInstruction),
+                invocation: InvocationHint::FencedBlock("scrape"),
+            },
+            ToolDef {
+                id: "fetch".into(),
+                description: "Fetch a URL and return content as plain text".into(),
+                schema: schemars::schema_for!(FetchParams),
+                invocation: InvocationHint::ToolCall,
+            },
+        ]
     }
 
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -121,29 +135,49 @@ impl ToolExecutor for WebScrapeExecutor {
     }
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        if call.tool_id != "web_scrape" {
-            return Ok(None);
+        match call.tool_id.as_str() {
+            "web_scrape" => {
+                let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
+                let result = self.scrape_instruction(&instruction).await?;
+                Ok(Some(ToolOutput {
+                    tool_name: "web-scrape".to_owned(),
+                    summary: result,
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                }))
+            }
+            "fetch" => {
+                let p: FetchParams = deserialize_params(&call.params)?;
+                let result = self.handle_fetch(&p).await?;
+                Ok(Some(ToolOutput {
+                    tool_name: "fetch".to_owned(),
+                    summary: result,
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                }))
+            }
+            _ => Ok(None),
         }
-
-        let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
-
-        let result = self.scrape_instruction(&instruction).await?;
-
-        Ok(Some(ToolOutput {
-            tool_name: "web-scrape".to_owned(),
-            summary: result,
-            blocks_executed: 1,
-            filter_stats: None,
-            diff: None,
-            streamed: false,
-            terminal_id: None,
-            locations: None,
-            raw_response: None,
-        }))
     }
 }
 
 impl WebScrapeExecutor {
+    async fn handle_fetch(&self, params: &FetchParams) -> Result<String, ToolError> {
+        let parsed = validate_url(&params.url)?;
+        let (host, addrs) = resolve_and_validate(&parsed).await?;
+        self.fetch_html(&params.url, &host, &addrs).await
+    }
+
     async fn scrape_instruction(
         &self,
         instruction: &ScrapeInstruction,
@@ -1405,16 +1439,108 @@ mod tests {
         assert!(validate_url("https://[::ffff:93.184.216.34]/path").is_ok());
     }
 
+    // --- fetch tool ---
+
+    #[tokio::test]
+    async fn fetch_http_scheme_blocked() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let call = crate::executor::ToolCall {
+            tool_id: "fetch".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert("url".to_owned(), serde_json::json!("http://example.com"));
+                m
+            },
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn fetch_private_ip_blocked() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let call = crate::executor::ToolCall {
+            tool_id: "fetch".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "url".to_owned(),
+                    serde_json::json!("https://192.168.1.1/secret"),
+                );
+                m
+            },
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn fetch_localhost_blocked() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let call = crate::executor::ToolCall {
+            tool_id: "fetch".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "url".to_owned(),
+                    serde_json::json!("https://localhost/page"),
+                );
+                m
+            },
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn fetch_unknown_tool_returns_none() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        let call = crate::executor::ToolCall {
+            tool_id: "unknown_tool".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_returns_body_via_mock() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        Mock::given(method("GET"))
+            .and(path("/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("plain text content"))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        let url = format!("{}/content", server.uri());
+        let result = executor.fetch_html(&url, &host, &addrs).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "plain text content");
+    }
+
     #[test]
-    fn tool_definitions_returns_web_scrape() {
+    fn tool_definitions_returns_web_scrape_and_fetch() {
         let config = ScrapeConfig::default();
         let executor = WebScrapeExecutor::new(&config);
         let defs = executor.tool_definitions();
-        assert_eq!(defs.len(), 1);
+        assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].id, "web_scrape");
         assert_eq!(
             defs[0].invocation,
             crate::registry::InvocationHint::FencedBlock("scrape")
+        );
+        assert_eq!(defs[1].id, "fetch");
+        assert_eq!(
+            defs[1].invocation,
+            crate::registry::InvocationHint::ToolCall
         );
     }
 
@@ -1524,5 +1650,27 @@ mod tests {
         assert!(addrs.is_empty());
         drop(url);
         drop(url_no_host);
+    }
+
+    // CR-10: fetch end-to-end via execute_tool_call -> handle_fetch -> fetch_html
+    #[tokio::test]
+    async fn fetch_execute_tool_call_end_to_end() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let (executor, server) = mock_server_executor().await;
+        Mock::given(method("GET"))
+            .and(path("/e2e"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<h1>end-to-end</h1>"))
+            .mount(&server)
+            .await;
+
+        let (host, addrs) = server_host_and_addr(&server);
+        // Call fetch_html directly (bypassing SSRF guard for loopback mock server)
+        let result = executor
+            .fetch_html(&format!("{}/e2e", server.uri()), &host, &addrs)
+            .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("end-to-end"));
     }
 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutonomyLevel {
-    /// Read-only tools: `file_read`, `file_glob`, `file_grep`, `web_scrape`
+    /// Read-only tools: `read`, `find_path`, `grep`, `list_directory`, `web_scrape`, `fetch`
     ReadOnly,
     /// Default: rule-based permissions with confirmations
     #[default]
@@ -36,7 +36,14 @@ pub struct PermissionRule {
 }
 
 /// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
-const READONLY_TOOLS: &[&str] = &["file_read", "file_glob", "file_grep", "web_scrape"];
+const READONLY_TOOLS: &[&str] = &[
+    "read",
+    "find_path",
+    "grep",
+    "list_directory",
+    "web_scrape",
+    "fetch",
+];
 
 /// Tool permission policy: maps `tool_id` → ordered list of rules.
 /// First matching rule wins; default is `Ask`.
@@ -319,22 +326,20 @@ mod tests {
     #[test]
     fn readonly_allows_readonly_tools() {
         let policy = PermissionPolicy::default().with_autonomy(AutonomyLevel::ReadOnly);
-        assert_eq!(
-            policy.check("file_read", "any input"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            policy.check("file_glob", "any input"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            policy.check("file_grep", "any input"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            policy.check("web_scrape", "any input"),
-            PermissionAction::Allow
-        );
+        for tool in &[
+            "read",
+            "find_path",
+            "grep",
+            "list_directory",
+            "web_scrape",
+            "fetch",
+        ] {
+            assert_eq!(
+                policy.check(tool, "any input"),
+                PermissionAction::Allow,
+                "expected Allow for read-only tool {tool}"
+            );
+        }
     }
 
     #[test]
