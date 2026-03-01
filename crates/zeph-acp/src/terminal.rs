@@ -20,6 +20,40 @@ use crate::{error::AcpError, permission::AcpPermissionGate};
 
 const KILL_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Transparent prefixes that wrap another command without changing its semantics.
+const TRANSPARENT_PREFIXES: &[&str] = &["env", "command", "exec", "nice", "nohup", "time"];
+
+/// Extract the effective command binary name from a shell command string.
+///
+/// Iteratively skips transparent prefixes (`env`, `command`, `exec`, etc.) and
+/// env-var assignments (`FOO=bar`) to reach the real binary. Falls back to `"bash"`
+/// if the command is empty.
+fn extract_command_binary(command: &str) -> &str {
+    // Split into tokens and skip leading env-var assignments and transparent prefixes.
+    let mut tokens = command.split_whitespace().peekable();
+    loop {
+        match tokens.peek() {
+            None => return "bash",
+            Some(tok) => {
+                // Skip env-var assignments.
+                if tok.contains('=') {
+                    tokens.next();
+                    continue;
+                }
+                // Skip transparent prefix commands.
+                let base = tok.rsplit('/').next().unwrap_or(tok);
+                if TRANSPARENT_PREFIXES.contains(&base) {
+                    tokens.next();
+                    continue;
+                }
+                // First non-prefix, non-assignment token is the binary.
+                let binary = tok.rsplit('/').next().unwrap_or(tok);
+                return binary;
+            }
+        }
+    }
+}
+
 struct ShellResult {
     output: String,
     exit_code: Option<u32>,
@@ -171,11 +205,38 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
         let params: BashParams = deserialize_params(&call.params)?;
         let cwd = params.cwd.map(PathBuf::from);
 
+        let blocklist: Vec<String> = zeph_tools::DEFAULT_BLOCKED_COMMANDS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+
+        // Blocklist check — reject dangerous commands before hitting the permission gate.
+        if let Some(pattern) = zeph_tools::check_blocklist(&params.command, &blocklist) {
+            return Err(ToolError::Blocked { command: pattern });
+        }
+        // Also check args when the command is a shell interpreter (e.g. bash -c "rm -rf /").
+        // This prevents args-field bypass: { command: "bash", args: ["-c", "blocked cmd"] }.
+        if let Some(script) = zeph_tools::effective_shell_command(&params.command, &params.args)
+            && let Some(pattern) = zeph_tools::check_blocklist(script, &blocklist)
+        {
+            return Err(ToolError::Blocked { command: pattern });
+        }
+
+        if self.permission_gate.is_none() {
+            tracing::warn!(
+                "AcpShellExecutor has no permission gate — only blocklist applies. \
+                 Do not use in production without a permission gate."
+            );
+        }
+
         if let Some(gate) = &self.permission_gate {
+            // Use the command binary as the cache key, not the tool_id ("bash").
+            // This makes "Allow always" apply per binary (git, cargo, etc.).
+            let cmd_binary = extract_command_binary(&params.command);
             let fields = acp::ToolCallUpdateFields::new()
-                .title(call.tool_id.clone())
+                .title(cmd_binary.to_owned())
                 .raw_input(serde_json::json!({ "command": params.command }));
-            let tool_call = acp::ToolCallUpdate::new(call.tool_id.clone(), fields);
+            let tool_call = acp::ToolCallUpdate::new(cmd_binary.to_owned(), fields);
             let allowed = gate
                 .check_permission(self.session_id.clone(), tool_call)
                 .await
@@ -755,5 +816,162 @@ mod tests {
                 assert!(got_exit, "expected terminal_exit notification");
             })
             .await;
+    }
+
+    #[test]
+    fn extract_command_binary_bare() {
+        assert_eq!(extract_command_binary("git status"), "git");
+        assert_eq!(extract_command_binary("cargo build --release"), "cargo");
+        assert_eq!(extract_command_binary("  cat file.txt  "), "cat");
+    }
+
+    #[test]
+    fn extract_command_binary_env_prefix() {
+        assert_eq!(extract_command_binary("env FOO=bar git status"), "git");
+        assert_eq!(extract_command_binary("command git push"), "git");
+        assert_eq!(extract_command_binary("exec cargo test"), "cargo");
+    }
+
+    #[test]
+    fn extract_command_binary_env_var_assignments() {
+        assert_eq!(extract_command_binary("FOO=bar BAZ=qux git log"), "git");
+    }
+
+    #[test]
+    fn extract_command_binary_path() {
+        assert_eq!(extract_command_binary("/usr/bin/git status"), "git");
+        assert_eq!(
+            extract_command_binary("/usr/local/bin/cargo build"),
+            "cargo"
+        );
+    }
+
+    #[test]
+    fn extract_command_binary_empty_fallback() {
+        assert_eq!(extract_command_binary(""), "bash");
+        assert_eq!(extract_command_binary("   "), "bash");
+    }
+
+    #[tokio::test]
+    async fn blocklist_blocked_before_permission_gate() {
+        // rm -rf / must be blocked before the permission gate is consulted.
+        // FakeTerminalClient panics if create_terminal is called — so if
+        // we reach the terminal, the test fails.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeTerminalClient);
+                let sid = acp::SessionId::new("s1");
+                // No permission gate — blocklist runs independently.
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("command".to_owned(), serde_json::json!("rm -rf /"));
+                let call = ToolCall {
+                    tool_id: "bash".to_owned(),
+                    params,
+                };
+
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn blocklist_sudo_blocked() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeTerminalClient);
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "command".to_owned(),
+                    serde_json::json!("sudo apt install vim"),
+                );
+                let call = ToolCall {
+                    tool_id: "bash".to_owned(),
+                    params,
+                };
+
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn args_field_bypass_blocked_for_shell_interpreter() {
+        // SEC-ACP-C2: { command: "bash", args: ["-c", "rm -rf /"] } must be blocked.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeTerminalClient);
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("command".to_owned(), serde_json::json!("bash"));
+                params.insert(
+                    "args".to_owned(),
+                    serde_json::json!(["-c", "sudo rm -rf /"]),
+                );
+                let call = ToolCall {
+                    tool_id: "bash".to_owned(),
+                    params,
+                };
+
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn args_field_bypass_sh_minus_c_blocked() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeTerminalClient);
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("command".to_owned(), serde_json::json!("sh"));
+                params.insert(
+                    "args".to_owned(),
+                    serde_json::json!(["-c", "shutdown -h now"]),
+                );
+                let call = ToolCall {
+                    tool_id: "bash".to_owned(),
+                    params,
+                };
+
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[test]
+    fn extract_command_binary_chained_transparent_prefixes() {
+        // SEC-ACP-I1: "env command exec sudo rm" -> "sudo", not "command"
+        assert_eq!(
+            extract_command_binary("env command exec sudo rm -rf /"),
+            "sudo"
+        );
+        assert_eq!(extract_command_binary("nice nohup time git status"), "git");
+    }
+
+    #[test]
+    fn extract_command_binary_env_var_then_prefix_then_binary() {
+        assert_eq!(extract_command_binary("FOO=bar env BAZ=qux git log"), "git");
     }
 }
