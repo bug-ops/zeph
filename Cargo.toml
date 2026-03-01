@@ -64,7 +64,7 @@ qdrant-client = { version = "1.17", default-features = false }
 ratatui = "0.30"
 regex = "1.12"
 reqwest = { version = "0.13", default-features = false }
-rmcp = "0.16"
+rmcp = "0.17"
 rubato = "1.0"
 schemars = "1.2"
 scrape-core = "0.2"
