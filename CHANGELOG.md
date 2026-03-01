@@ -6,8 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `CacheType` enum (`Ephemeral` variant) replaces bare `String` in `CacheControl` — compile-time safety for cache type construction (#1082, #1088)
+- Tool definitions now carry `cache_control: ephemeral` on the last tool entry, enabling tools to be cached independently of the system prompt (#1084)
+- Top-level `cache_control` added to all Claude request body structs; activated automatically for multi-turn sessions (`messages.len() > 1`) (#1086)
+- Message-level `cache_control` breakpoint placed on user message at position `max(0, total - 20)` to cover the 20-block lookback window (#1087)
+
 ### Fixed
 
+- Block 1 of system prompt now includes skills prompt, tool catalog, and catalog prompt so its token count exceeds the model-aware minimum threshold (Sonnet 4.6: 2048 tokens, Opus/Haiku: 4096 tokens) — previously ~377 tokens caused caching to be silently skipped (#1083)
+- Removed outdated `anthropic-beta: prompt-caching-2024-07-31` request header; prompt caching is GA and no longer requires the beta header (#1085)
+- Model-aware `cache_min_tokens` check added to `split_system_into_blocks` to prevent `cache_control` from being attached to blocks below the minimum cacheable threshold (#1083)
 - Restructured `rebuild_system_prompt` block ordering so cache markers align with content stability: Block 1 (base prompt) is stable across all turns, Block 2 (skill catalog, MCP, project context) is semi-stable per session, Block 3 (env, tools, active skills) is volatile per turn — fixes near-zero cache hit rate in multi-turn Claude sessions (#1079)
 - TUI Skills panel now shows Wilson score confidence bars immediately after skill match, not only after the first LLM outcome is recorded (`context.rs`: call `update_skill_confidence_metrics()` at skill resolution time) (#1077)
 - TUI event loop redraws on every tick unconditionally; previously the dirty-flag was never set by the tick arm, causing confidence bars to stay stale between user keypresses (#1077)
