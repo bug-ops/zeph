@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "gateway")]
+use crate::gateway_spawn::spawn_gateway_server;
 use tokio::sync::watch;
 use zeph_core::agent::Agent;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
@@ -287,7 +289,7 @@ pub(crate) async fn run_daemon(
         agent
     };
 
-    let mut agent = if config.cost.enabled {
+    let agent = if config.cost.enabled {
         let tracker =
             zeph_core::cost::CostTracker::new(true, f64::from(config.cost.max_daily_cents));
         agent.with_cost_tracker(tracker)
@@ -295,12 +297,29 @@ pub(crate) async fn run_daemon(
         agent
     };
 
+    let agent = if config.tools.anomaly.enabled {
+        agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
+            config.tools.anomaly.window_size,
+            config.tools.anomaly.error_threshold,
+            config.tools.anomaly.critical_threshold,
+        ))
+    } else {
+        agent
+    };
+
+    let mut agent = agent.with_document_config(config.memory.documents.clone());
+
     agent.load_history().await?;
     agent
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
 
     spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle);
+
+    #[cfg(feature = "gateway")]
+    if config.gateway.enabled {
+        spawn_gateway_server(config, shutdown_rx.clone());
+    }
 
     let pid_file = config.daemon.pid_file.clone();
     let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());

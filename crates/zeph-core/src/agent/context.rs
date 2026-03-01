@@ -16,8 +16,8 @@ use crate::redact::scrub_content;
 
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget,
-    LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill, build_system_prompt,
-    format_skills_prompt,
+    DOCUMENT_RAG_PREFIX, LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill,
+    build_system_prompt, format_skills_prompt,
 };
 
 fn chunk_messages(
@@ -956,6 +956,66 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    fn remove_document_rag_messages(&mut self) {
+        self.messages
+            .retain(|m| m.role != Role::System || !m.content.starts_with(DOCUMENT_RAG_PREFIX));
+    }
+
+    async fn fetch_document_rag(
+        memory_state: &super::MemoryState,
+        query: &str,
+        token_budget: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        if !memory_state.document_config.rag_enabled || token_budget == 0 {
+            return Ok(None);
+        }
+        let Some(memory) = &memory_state.memory else {
+            return Ok(None);
+        };
+
+        let collection = &memory_state.document_config.collection;
+        let top_k = memory_state.document_config.top_k;
+        let points = memory
+            .search_document_collection(collection, query, top_k)
+            .await?;
+        if points.is_empty() {
+            return Ok(None);
+        }
+
+        let mut text = String::from(DOCUMENT_RAG_PREFIX);
+        let mut tokens_used = tc.count_tokens(&text);
+
+        for point in &points {
+            let chunk = point
+                .payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if chunk.is_empty() {
+                continue;
+            }
+            let entry = format!("{chunk}\n");
+            let cost = tc.count_tokens(&entry);
+            if tokens_used + cost > token_budget {
+                break;
+            }
+            text.push_str(&entry);
+            tokens_used += cost;
+        }
+
+        if tokens_used > tc.count_tokens(DOCUMENT_RAG_PREFIX) {
+            Ok(Some(Message {
+                role: Role::System,
+                content: text,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     #[cfg(test)]
     async fn inject_cross_session_context(
         &mut self,
@@ -1125,6 +1185,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn prepare_context(
         &mut self,
         query: &str,
@@ -1145,6 +1206,7 @@ impl<C: Channel> Agent<C> {
         self.remove_summary_messages();
         self.remove_cross_session_messages();
         self.remove_recall_messages();
+        self.remove_document_rag_messages();
         self.remove_correction_messages();
         #[cfg(feature = "index")]
         self.remove_code_context_messages();
@@ -1167,12 +1229,13 @@ impl<C: Channel> Agent<C> {
         // Fetch all context sources concurrently
         let tc = self.token_counter.clone();
         #[cfg(not(feature = "index"))]
-        let (summaries_msg, cross_session_msg, recall_msg, corrections_msg) = {
+        let (summaries_msg, cross_session_msg, recall_msg, doc_rag_msg, corrections_msg) = {
             let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
             let result = tokio::try_join!(
                 Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
                 Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
                 Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
+                Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
                 Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
             );
             match result {
@@ -1185,12 +1248,20 @@ impl<C: Channel> Agent<C> {
         };
 
         #[cfg(feature = "index")]
-        let (summaries_msg, cross_session_msg, recall_msg, code_rag_text, corrections_msg) = {
+        let (
+            summaries_msg,
+            cross_session_msg,
+            recall_msg,
+            doc_rag_msg,
+            code_rag_text,
+            corrections_msg,
+        ) = {
             let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
             let result = tokio::try_join!(
                 Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
                 Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
                 Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
+                Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
                 Self::fetch_code_rag(&self.index, &query, alloc.code_context),
                 Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
             );
@@ -1203,9 +1274,13 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        // Insert fetched messages (order: corrections, recall, cross-session, summaries at position 1)
+        // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
+        if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
+            self.messages.insert(1, msg); // codeql[rust/cleartext-logging] false positive: document chunks from Qdrant, no secrets
+            tracing::debug!("injected document RAG context");
+        }
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg); // lgtm[rust/cleartext-logging]
+            self.messages.insert(1, msg); // codeql[rust/cleartext-logging] false positive: user correction text from Qdrant, no secrets
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {

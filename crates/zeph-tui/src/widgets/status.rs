@@ -34,8 +34,23 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         String::new()
     };
 
+    #[allow(clippy::cast_precision_loss)]
+    let filter_segment = if metrics.filter_applications > 0 {
+        let savings = if metrics.filter_raw_tokens > 0 {
+            metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
+        } else {
+            0.0
+        };
+        format!(
+            " | Filters: {}/{} ({savings:.0}% saved)",
+            metrics.filter_filtered_commands, metrics.filter_total_commands,
+        )
+    } else {
+        String::new()
+    };
+
     let text = format!(
-        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment} | API: {api} | {uptime}{cancel_hint}",
+        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment} | API: {api} | {uptime}{cancel_hint}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),

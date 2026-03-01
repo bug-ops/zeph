@@ -23,6 +23,12 @@ pub enum TuiCommand {
     DaemonConnect,
     DaemonDisconnect,
     DaemonStatus,
+    // Filter inspection
+    ViewFilters,
+    // Document ingestion
+    Ingest,
+    // Gateway
+    GatewayStatus,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -155,6 +161,35 @@ pub fn daemon_command_registry() -> &'static [CommandEntry] {
     DAEMON_COMMANDS
 }
 
+/// Extended command registry: filter/ingest/gateway entries.
+#[must_use]
+pub fn extra_command_registry() -> &'static [CommandEntry] {
+    static EXTRA: &[CommandEntry] = &[
+        CommandEntry {
+            id: "view:filters",
+            label: "Show output filter statistics",
+            category: "view",
+            shortcut: None,
+            command: TuiCommand::ViewFilters,
+        },
+        CommandEntry {
+            id: "ingest",
+            label: "Ingest document into memory (/ingest <path>)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::Ingest,
+        },
+        CommandEntry {
+            id: "gateway:status",
+            label: "Show gateway server status",
+            category: "gateway",
+            shortcut: None,
+            command: TuiCommand::GatewayStatus,
+        },
+    ];
+    EXTRA
+}
+
 /// Fuzzy score: count of matched characters in order, with penalty for gaps.
 /// Returns `None` if not all query chars are found in target.
 fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
@@ -191,6 +226,7 @@ fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
 pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
     let mut all: Vec<&'static CommandEntry> = command_registry().iter().collect();
     all.extend(daemon_command_registry());
+    all.extend(extra_command_registry());
 
     if query.is_empty() {
         return all;
@@ -225,11 +261,26 @@ mod tests {
     }
 
     #[test]
+    fn extra_registry_has_three_commands() {
+        assert_eq!(extra_command_registry().len(), 3);
+    }
+
+    #[test]
+    fn filter_commands_includes_extra() {
+        let all = filter_commands("");
+        assert!(all.iter().any(|e| e.id == "view:filters"));
+        assert!(all.iter().any(|e| e.id == "ingest"));
+        assert!(all.iter().any(|e| e.id == "gateway:status"));
+    }
+
+    #[test]
     fn filter_empty_query_returns_all() {
         let results = filter_commands("");
         assert_eq!(
             results.len(),
-            command_registry().len() + daemon_command_registry().len()
+            command_registry().len()
+                + daemon_command_registry().len()
+                + extra_command_registry().len()
         );
     }
 
@@ -243,8 +294,8 @@ mod tests {
     #[test]
     fn filter_by_label_substring() {
         let results = filter_commands("memory");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "memory:stats");
+        assert!(results.len() >= 1);
+        assert!(results.iter().any(|e| e.id == "memory:stats"));
     }
 
     #[test]

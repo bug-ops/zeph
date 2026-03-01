@@ -71,28 +71,50 @@ impl JobStore {
         Ok(())
     }
 
-    /// Record a job execution timestamp.
+    /// Record a job execution and persist the next scheduled run time.
     ///
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
-    pub async fn record_run(&self, name: &str, timestamp: &str) -> Result<(), SchedulerError> {
-        sqlx::query("UPDATE scheduled_jobs SET last_run = ?, status = 'completed' WHERE name = ?")
-            .bind(timestamp)
+    pub async fn record_run(
+        &self,
+        name: &str,
+        timestamp: &str,
+        next_run: &str,
+    ) -> Result<(), SchedulerError> {
+        sqlx::query(
+            "UPDATE scheduled_jobs SET last_run = ?, next_run = ?, status = 'completed' WHERE name = ?",
+        )
+        .bind(timestamp)
+        .bind(next_run)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist the next scheduled run time for a job (used during init).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    pub async fn set_next_run(&self, name: &str, next_run: &str) -> Result<(), SchedulerError> {
+        sqlx::query("UPDATE scheduled_jobs SET next_run = ? WHERE name = ?")
+            .bind(next_run)
             .bind(name)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    /// Get the last run timestamp for a job.
+    /// Get the persisted next run timestamp for a job.
     ///
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
-    pub async fn last_run(&self, name: &str) -> Result<Option<String>, SchedulerError> {
+    pub async fn get_next_run(&self, name: &str) -> Result<Option<String>, SchedulerError> {
         let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT last_run FROM scheduled_jobs WHERE name = ?")
+            sqlx::query_as("SELECT next_run FROM scheduled_jobs WHERE name = ?")
                 .bind(name)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -125,15 +147,15 @@ mod tests {
             .upsert_job("test_job", "0 * * * * *", "health_check")
             .await
             .unwrap();
-        assert!(store.last_run("test_job").await.unwrap().is_none());
+        assert!(store.get_next_run("test_job").await.unwrap().is_none());
 
         store
-            .record_run("test_job", "2026-01-01T00:00:00Z")
+            .record_run("test_job", "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z")
             .await
             .unwrap();
         assert_eq!(
-            store.last_run("test_job").await.unwrap().as_deref(),
-            Some("2026-01-01T00:00:00Z")
+            store.get_next_run("test_job").await.unwrap().as_deref(),
+            Some("2026-01-01T00:01:00Z")
         );
     }
 
@@ -160,11 +182,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_run_nonexistent_job() {
+    async fn next_run_nonexistent_job() {
         let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
-        assert!(store.last_run("no_such_job").await.unwrap().is_none());
+        assert!(store.get_next_run("no_such_job").await.unwrap().is_none());
     }
 }
 

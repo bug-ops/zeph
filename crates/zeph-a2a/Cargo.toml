@@ -13,10 +13,11 @@ description = "A2A protocol client and server with agent discovery for Zeph"
 readme = "README.md"
 
 [features]
-server = ["dep:axum", "dep:subtle", "dep:tower", "dep:tower-http"]
+server = ["dep:axum", "dep:blake3", "dep:subtle", "dep:tower", "dep:tower-http"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 eventsource-stream.workspace = true
 futures.workspace = true
 futures-core.workspace = true

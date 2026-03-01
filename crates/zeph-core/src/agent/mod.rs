@@ -53,6 +53,7 @@ use crate::vault::Secret;
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
+pub(crate) const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
 const TOOL_LOOP_KEEP_RECENT: usize = 4;
 pub(crate) const RECALL_PREFIX: &str = "[semantic recall]\n";
 pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
@@ -87,6 +88,7 @@ pub(super) struct MemoryState {
     pub(super) autosave_min_length: usize,
     pub(super) tool_call_cutoff: usize,
     pub(super) unsummarized_count: usize,
+    pub(super) document_config: crate::config::DocumentConfig,
 }
 
 pub(super) struct SkillState {
@@ -176,10 +178,12 @@ pub struct Agent<C: Channel> {
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
     /// a subagent hierarchy.
     pub(crate) parent_tool_use_id: Option<String>,
+    pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
 }
 
 impl<C: Channel> Agent<C> {
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         provider: AnyProvider,
         channel: C,
@@ -224,6 +228,7 @@ impl<C: Channel> Agent<C> {
                 autosave_min_length: 20,
                 tool_call_cutoff: 6,
                 unsummarized_count: 0,
+                document_config: crate::config::DocumentConfig::default(),
             },
             skill_state: SkillState {
                 registry,
@@ -288,6 +293,7 @@ impl<C: Channel> Agent<C> {
             subagent_manager: None,
             response_cache: None,
             parent_tool_use_id: None,
+            anomaly_detector: None,
         }
     }
 

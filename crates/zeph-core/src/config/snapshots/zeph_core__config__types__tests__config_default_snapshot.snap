@@ -82,6 +82,13 @@ mmr_lambda = 0.7
 max_history = 100
 title_max_chars = 60
 
+[memory.documents]
+collection = "zeph_documents"
+chunk_size = 1000
+chunk_overlap = 100
+top_k = 3
+rag_enabled = false
+
 [tools]
 enabled = true
 summarize_output = true
@@ -125,6 +132,12 @@ extra_patterns = []
 [tools.overflow]
 threshold = 50000
 retention_days = 7
+
+[tools.anomaly]
+enabled = false
+window_size = 10
+error_threshold = 0.5
+critical_threshold = 0.8
 
 [a2a]
 enabled = false

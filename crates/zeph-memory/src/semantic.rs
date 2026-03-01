@@ -1046,6 +1046,36 @@ impl SemanticMemory {
         Ok(facts)
     }
 
+    /// Search a named document collection by semantic similarity.
+    ///
+    /// Returns up to `limit` scored vector points whose payloads contain ingested document chunks.
+    /// Returns an empty vec when Qdrant is unavailable, the collection does not exist,
+    /// or the provider does not support embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding generation or Qdrant search fails.
+    pub async fn search_document_collection(
+        &self,
+        collection: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::ScoredVectorPoint>, MemoryError> {
+        let Some(qdrant) = &self.qdrant else {
+            return Ok(Vec::new());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(Vec::new());
+        }
+        if !qdrant.collection_exists(collection).await? {
+            return Ok(Vec::new());
+        }
+        let vector = self.provider.embed(query).await?;
+        qdrant
+            .search_collection(collection, &vector, limit, None)
+            .await
+    }
+
     /// Store an embedding for a user correction in the vector store.
     ///
     /// Silently skips if no vector store is configured or embeddings are unsupported.

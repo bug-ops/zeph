@@ -23,7 +23,9 @@ pub mod trust_level;
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
-pub use config::{AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig};
+pub use config::{
+    AnomalyConfig, AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig,
+};
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{
     DiffData, DynExecutor, ErasedToolExecutor, FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall,

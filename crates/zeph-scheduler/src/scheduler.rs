@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::watch;
 
 use crate::error::SchedulerError;
@@ -36,17 +37,26 @@ impl Scheduler {
         self.handlers.insert(kind.as_str().to_owned(), handler);
     }
 
-    /// Initialize the store and sync task definitions.
+    /// Initialize the store, sync task definitions, and compute initial `next_run` for each task.
     ///
     /// # Errors
     ///
-    /// Returns an error if DB init or upsert fails.
+    /// Returns an error if DB init, upsert, or `next_run` persistence fails.
     pub async fn init(&self) -> Result<(), SchedulerError> {
         self.store.init().await?;
+        let now = Utc::now();
         for task in &self.tasks {
             self.store
                 .upsert_job(&task.name, &task.schedule.to_string(), task.kind.as_str())
                 .await?;
+            // Only set next_run if not already persisted (preserves across restarts).
+            if self.store.get_next_run(&task.name).await?.is_none()
+                && let Some(next) = task.schedule.after(&now).next()
+            {
+                self.store
+                    .set_next_run(&task.name, &next.to_rfc3339())
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -70,12 +80,13 @@ impl Scheduler {
     }
 
     async fn tick(&self) {
-        let now_utc = chrono_now_utc();
+        let now = Utc::now();
         for task in &self.tasks {
-            let should_run = match self.store.last_run(&task.name).await {
-                Ok(last_run) => is_task_due(&task.schedule, last_run.as_deref()),
+            let should_run = match self.store.get_next_run(&task.name).await {
+                Ok(Some(ref s)) => s.parse::<chrono::DateTime<Utc>>().is_ok_and(|dt| dt <= now),
+                Ok(None) => true,
                 Err(e) => {
-                    tracing::warn!(task = %task.name, "failed to check last_run: {e}");
+                    tracing::warn!(task = %task.name, "failed to check next_run: {e}");
                     false
                 }
             };
@@ -85,7 +96,17 @@ impl Scheduler {
                     tracing::info!(task = %task.name, kind = task.kind.as_str(), "executing task");
                     match handler.execute(&task.config).await {
                         Ok(()) => {
-                            if let Err(e) = self.store.record_run(&task.name, &now_utc).await {
+                            let next = task
+                                .schedule
+                                .after(&now)
+                                .next()
+                                .map(|dt| dt.to_rfc3339())
+                                .unwrap_or_default();
+                            if let Err(e) = self
+                                .store
+                                .record_run(&task.name, &now.to_rfc3339(), &next)
+                                .await
+                            {
                                 tracing::warn!(task = %task.name, "failed to record run: {e}");
                             }
                         }
@@ -99,66 +120,6 @@ impl Scheduler {
             }
         }
     }
-}
-
-/// Check if a task is due by finding the first cron occurrence after `last_run`
-/// and verifying it is <= `now`.
-fn is_task_due(schedule: &cron::Schedule, last_run: Option<&str>) -> bool {
-    let now_chrono = chrono::Utc::now();
-    let after = match last_run {
-        Some(s) => match s.parse::<chrono::DateTime<chrono::Utc>>() {
-            Ok(dt) => dt,
-            Err(_) => return true,
-        },
-        None => return true,
-    };
-    // First scheduled time after the last run
-    schedule.after(&after).take(1).any(|dt| dt <= now_chrono)
-}
-
-fn chrono_now_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let month_days: [u64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 0;
-    for (i, &md) in month_days.iter().enumerate() {
-        if days < md {
-            month = i as u64 + 1;
-            break;
-        }
-        days -= md;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(y: u64) -> bool {
-    y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
 }
 
 #[cfg(test)]
@@ -196,13 +157,13 @@ mod tests {
     #[tokio::test]
     async fn scheduler_init_and_tick() {
         let pool = test_pool().await;
-        let store = JobStore::new(pool);
+        let store = JobStore::new(pool.clone());
         let (_tx, rx) = watch::channel(false);
         let mut scheduler = Scheduler::new(store, rx);
 
         let task = ScheduledTask::new(
             "test",
-            "0 * * * * *",
+            "* * * * * *",
             TaskKind::HealthCheck,
             serde_json::Value::Null,
         )
@@ -218,8 +179,103 @@ mod tests {
         );
 
         scheduler.init().await.unwrap();
+
+        // Backdate next_run to simulate a due task.
+        sqlx::query(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
         scheduler.tick().await;
         assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    /// A task whose next_run is in the future must not fire.
+    #[tokio::test]
+    async fn task_does_not_fire_before_next_run() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let mut scheduler = Scheduler::new(store, rx);
+
+        let task = ScheduledTask::new(
+            "future",
+            "0 0 1 1 * *", // once a year
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        scheduler.add_task(task);
+
+        let count = Arc::new(AtomicU32::new(0));
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: count.clone(),
+            }),
+        );
+
+        scheduler.init().await.unwrap();
+
+        // Manually set next_run to far future to prevent firing.
+        let far_future = "2099-01-01T00:00:00+00:00";
+        sqlx::query("UPDATE scheduled_jobs SET next_run = ? WHERE name = 'future'")
+            .bind(far_future)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            0,
+            "should not fire before next_run"
+        );
+    }
+
+    /// After a task fires, next_run is advanced to the following occurrence.
+    #[tokio::test]
+    async fn next_run_advances_after_execution() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let mut scheduler = Scheduler::new(store, rx);
+
+        let task = ScheduledTask::new(
+            "adv",
+            "* * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        scheduler.add_task(task);
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: Arc::new(AtomicU32::new(0)),
+            }),
+        );
+
+        scheduler.init().await.unwrap();
+        scheduler.tick().await; // fires once (no next_run yet)
+
+        // next_run must now be in the future.
+        let next: Option<String> =
+            sqlx::query_scalar("SELECT next_run FROM scheduled_jobs WHERE name = 'adv'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+        let next_str = next.expect("next_run should be set after execution");
+        let next_dt = next_str
+            .parse::<chrono::DateTime<Utc>>()
+            .expect("should parse as RFC3339");
+        assert!(
+            next_dt > Utc::now(),
+            "next_run must be in the future after firing"
+        );
     }
 
     #[tokio::test]
@@ -237,13 +293,5 @@ mod tests {
             .await
             .expect("scheduler should stop")
             .expect("task should complete");
-    }
-
-    #[test]
-    fn chrono_now_format() {
-        let ts = chrono_now_utc();
-        assert!(ts.ends_with('Z'));
-        assert!(ts.contains('T'));
-        assert_eq!(ts.len(), 20);
     }
 }

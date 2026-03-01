@@ -846,6 +846,21 @@ impl App {
                     "Daemon commands are not yet implemented in this mode.".to_owned(),
                 );
             }
+            TuiCommand::ViewFilters => {
+                self.push_system_message(
+                    "Filter statistics are displayed in the Resources panel.".to_owned(),
+                );
+            }
+            TuiCommand::Ingest => {
+                self.push_system_message(
+                    "Use: zeph ingest <path> [--chunk-size N] [--collection NAME]".to_owned(),
+                );
+            }
+            TuiCommand::GatewayStatus => {
+                self.push_system_message(
+                    "Gateway status is not yet available in TUI mode.".to_owned(),
+                );
+            }
         }
     }
 

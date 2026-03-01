@@ -599,6 +599,8 @@ pub struct MemoryConfig {
     pub sqlite_pool_size: u32,
     #[serde(default)]
     pub sessions: SessionsConfig,
+    #[serde(default)]
+    pub documents: DocumentConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
@@ -629,6 +631,51 @@ impl Default for SessionsConfig {
         Self {
             max_history: default_max_history(),
             title_max_chars: default_title_max_chars(),
+        }
+    }
+}
+
+fn default_document_collection() -> String {
+    "zeph_documents".into()
+}
+
+fn default_document_chunk_size() -> usize {
+    1000
+}
+
+fn default_document_chunk_overlap() -> usize {
+    100
+}
+
+fn default_document_top_k() -> usize {
+    3
+}
+
+/// Configuration for the document ingestion and RAG retrieval pipeline.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DocumentConfig {
+    #[serde(default = "default_document_collection")]
+    pub collection: String,
+    #[serde(default = "default_document_chunk_size")]
+    pub chunk_size: usize,
+    #[serde(default = "default_document_chunk_overlap")]
+    pub chunk_overlap: usize,
+    /// Number of document chunks to inject into agent context per turn.
+    #[serde(default = "default_document_top_k")]
+    pub top_k: usize,
+    /// Enable document RAG injection into agent context.
+    #[serde(default)]
+    pub rag_enabled: bool,
+}
+
+impl Default for DocumentConfig {
+    fn default() -> Self {
+        Self {
+            collection: default_document_collection(),
+            chunk_size: default_document_chunk_size(),
+            chunk_overlap: default_document_chunk_overlap(),
+            top_k: default_document_top_k(),
+            rag_enabled: false,
         }
     }
 }
@@ -1429,6 +1476,7 @@ impl Default for Config {
                 tool_call_cutoff: default_tool_call_cutoff(),
                 sqlite_pool_size: default_sqlite_pool_size(),
                 sessions: SessionsConfig::default(),
+                documents: DocumentConfig::default(),
             },
             telegram: None,
             discord: None,

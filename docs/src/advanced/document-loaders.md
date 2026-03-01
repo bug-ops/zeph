@@ -80,3 +80,41 @@ let chunk_count = pipeline.load_and_ingest(&TextLoader::default(), path).await?;
 ```
 
 Each chunk is stored as a Qdrant point with payload fields: `source`, `content_type`, `chunk_index`, `content`.
+
+## CLI ingestion
+
+Documents are ingested from the command line with the `zeph ingest` subcommand:
+
+```bash
+zeph ingest ./docs/                          # ingest directory recursively
+zeph ingest README.md --chunk-size 256       # custom chunk size
+zeph ingest ./knowledge --collection my_kb  # custom Qdrant collection
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--chunk-size <N>` | `512` | Target character count per chunk |
+| `--chunk-overlap <N>` | `64` | Overlap between consecutive chunks |
+| `--collection <NAME>` | `zeph_documents` | Qdrant collection to store chunks |
+
+TUI users can trigger ingestion via the command palette: `/ingest <path>`.
+
+## RAG context injection
+
+When `memory.documents.rag_enabled = true`, the agent automatically queries the `zeph_documents` Qdrant collection on each turn and prepends the top-K most relevant chunks to the context window under a `## Relevant documents` heading.
+
+```toml
+[memory.documents]
+rag_enabled = true
+collection = "zeph_documents"
+chunk_size = 512
+chunk_overlap = 64
+top_k = 3
+```
+
+RAG injection is a no-op when the collection is empty — no error is raised, the agent simply skips the retrieval step.
+
+> [!TIP]
+> Run `zeph ingest ./docs/` once to populate the knowledge base. Subsequent agent sessions will automatically retrieve and inject relevant chunks without any additional setup.

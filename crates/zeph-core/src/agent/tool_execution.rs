@@ -13,6 +13,12 @@ use crate::redact::redact_secrets;
 use tracing::Instrument;
 use zeph_skills::evolution::FailureKind;
 
+enum AnomalyOutcome {
+    Success,
+    Error,
+    Blocked,
+}
+
 /// Hash message content for doom-loop detection, skipping volatile IDs in-place.
 /// Normalizes `[tool_result: <id>]` → `[tool_result]` and `[tool_use: <name>(<id>)]` → `[tool_use: <name>]`
 /// by feeding only stable segments into the hasher without materializing the normalized string.
@@ -455,6 +461,27 @@ impl<C: Channel> Agent<C> {
         format!("{truncated}{overflow_notice}")
     }
 
+    async fn record_anomaly_outcome(
+        &mut self,
+        outcome: AnomalyOutcome,
+    ) -> Result<(), super::error::AgentError> {
+        let Some(ref mut det) = self.anomaly_detector else {
+            return Ok(());
+        };
+        match outcome {
+            AnomalyOutcome::Success => det.record_success(),
+            AnomalyOutcome::Error => det.record_error(),
+            AnomalyOutcome::Blocked => det.record_blocked(),
+        }
+        if let Some(anomaly) = det.check() {
+            tracing::warn!(severity = ?anomaly.severity, "{}", anomaly.description);
+            self.channel
+                .send(&format!("[anomaly] {}", anomaly.description))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Returns `true` if the tool loop should continue.
     #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_tool_result(
@@ -563,10 +590,19 @@ impl<C: Channel> Agent<C> {
                     }],
                 ));
                 self.persist_message(Role::User, &formatted_output).await;
+                let outcome = if output.summary.contains("[error]")
+                    || output.summary.contains("[exit code")
+                {
+                    AnomalyOutcome::Error
+                } else {
+                    AnomalyOutcome::Success
+                };
+                self.record_anomaly_outcome(outcome).await?;
                 Ok(true)
             }
             Ok(None) => {
                 self.record_skill_outcomes("success", None, None).await;
+                self.record_anomaly_outcome(AnomalyOutcome::Success).await?;
                 Ok(false)
             }
             Err(ToolError::Blocked { command }) => {
@@ -574,6 +610,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send("This command is blocked by security policy.")
                     .await?;
+                self.record_anomaly_outcome(AnomalyOutcome::Blocked).await?;
                 Ok(false)
             }
             Err(ToolError::ConfirmationRequired { command }) => {
@@ -633,6 +670,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send("Command targets a path outside the sandbox.")
                     .await?;
+                self.record_anomaly_outcome(AnomalyOutcome::Error).await?;
                 Ok(false)
             }
             Err(e) => {
@@ -641,6 +679,7 @@ impl<C: Channel> Agent<C> {
                 let kind = FailureKind::from_error(&err_str);
                 self.record_skill_outcomes("tool_failure", Some(&err_str), Some(kind.as_str()))
                     .await;
+                self.record_anomaly_outcome(AnomalyOutcome::Error).await?;
 
                 if !self.learning_engine.was_reflection_used()
                     && self.attempt_self_reflection(&err_str, "").await?
@@ -2595,6 +2634,36 @@ mod tests {
         assert!(
             display.contains("line1") && display.contains("line2") && display.contains("line3"),
             "display must contain all lines from raw body; got: {display:?}"
+        );
+    }
+
+    // Validate AnomalyDetector wiring: record_anomaly_outcome paths produce correct severity.
+    #[test]
+    fn anomaly_detector_15_of_20_errors_produces_critical() {
+        let mut det = zeph_tools::AnomalyDetector::new(20, 0.5, 0.7);
+        for _ in 0..5 {
+            det.record_success();
+        }
+        for _ in 0..15 {
+            det.record_error();
+        }
+        let anomaly = det.check().expect("expected anomaly");
+        assert_eq!(anomaly.severity, zeph_tools::AnomalySeverity::Critical);
+    }
+
+    #[test]
+    fn anomaly_detector_5_of_20_errors_no_critical_alert() {
+        let mut det = zeph_tools::AnomalyDetector::new(20, 0.5, 0.7);
+        for _ in 0..15 {
+            det.record_success();
+        }
+        for _ in 0..5 {
+            det.record_error();
+        }
+        let result = det.check();
+        assert!(
+            result.is_none(),
+            "5/20 errors must not trigger any alert, got: {result:?}"
         );
     }
 }

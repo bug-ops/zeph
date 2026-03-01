@@ -66,8 +66,13 @@ where
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            // Constant-time comparison to prevent timing attacks.
-            .is_some_and(|provided| provided.as_bytes().ct_eq(expected.as_bytes()).into());
+            // Hash both sides first so ct_eq operates on fixed-length digests,
+            // eliminating the length side-channel present in direct byte comparison.
+            .is_some_and(|provided| {
+                let h_provided = blake3::hash(provided.as_bytes());
+                let h_expected = blake3::hash(expected.as_bytes());
+                h_provided.as_bytes().ct_eq(h_expected.as_bytes()).into()
+            });
 
         if authorized {
             let fut = self.inner.call(req);
@@ -75,5 +80,59 @@ where
         } else {
             Box::pin(async move { Ok(StatusCode::UNAUTHORIZED.into_response()) })
         }
+    }
+}
+
+#[cfg(all(test, feature = "acp-http"))]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    fn ok_handler() -> axum::Router {
+        axum::Router::new().route("/", get(|| async { StatusCode::OK }))
+    }
+
+    fn app_with_token(token: &str) -> axum::Router {
+        ok_handler().layer(BearerAuthLayer::new(token))
+    }
+
+    async fn send(app: axum::Router, auth: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().method("GET").uri("/");
+        if let Some(v) = auth {
+            builder = builder.header("authorization", v);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn correct_token_accepted() {
+        let app = app_with_token("my-secret");
+        assert_eq!(send(app, Some("Bearer my-secret")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn wrong_token_rejected() {
+        let app = app_with_token("my-secret");
+        assert_eq!(
+            send(app, Some("Bearer wrong")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_token_rejected() {
+        let app = app_with_token("my-secret");
+        assert_eq!(send(app, Some("Bearer ")).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn missing_header_rejected() {
+        let app = app_with_token("my-secret");
+        assert_eq!(send(app, None).await, StatusCode::UNAUTHORIZED);
     }
 }

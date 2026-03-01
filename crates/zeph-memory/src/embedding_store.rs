@@ -247,6 +247,15 @@ impl EmbeddingStore {
         Ok(search_results)
     }
 
+    /// Check whether a named collection exists in the vector store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store backend cannot be reached.
+    pub async fn collection_exists(&self, name: &str) -> Result<bool, MemoryError> {
+        self.ops.collection_exists(name).await.map_err(Into::into)
+    }
+
     /// Ensure a named collection exists in Qdrant with the given vector size.
     ///
     /// # Errors

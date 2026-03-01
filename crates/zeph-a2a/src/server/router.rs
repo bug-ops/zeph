@@ -107,8 +107,11 @@ async fn auth_middleware(
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
 
-        if token.len() != expected.len() || !bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
-        {
+        // Hash both sides so ct_eq compares fixed-length digests, avoiding the
+        // length side-channel that an explicit len() check or direct ct_eq would expose.
+        let h_token = blake3::hash(token.as_bytes());
+        let h_expected = blake3::hash(expected.as_bytes());
+        if !bool::from(h_token.as_bytes().ct_eq(h_expected.as_bytes())) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
     }

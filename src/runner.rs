@@ -63,6 +63,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             tracing_subscriber::fmt::init();
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
         }
+        Some(Command::Ingest {
+            path,
+            chunk_size,
+            chunk_overlap,
+            collection,
+        }) => {
+            tracing_subscriber::fmt::init();
+            return crate::commands::ingest::handle_ingest(
+                path,
+                chunk_size,
+                chunk_overlap,
+                collection,
+                cli.config.as_deref(),
+            )
+            .await;
+        }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {
             tracing_subscriber::fmt::init();
@@ -323,6 +339,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_learning(config.skills.learning.clone());
 
+    let agent = if config.tools.anomaly.enabled {
+        agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
+            config.tools.anomaly.window_size,
+            config.tools.anomaly.error_threshold,
+            config.tools.anomaly.critical_threshold,
+        ))
+    } else {
+        agent
+    };
+
+    let agent = agent.with_document_config(config.memory.documents.clone());
+
     let agent = {
         let mut mgr = zeph_core::subagent::SubAgentManager::new(config.agents.max_concurrent);
         let mut agent_dirs: Vec<std::path::PathBuf> =
@@ -339,6 +367,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "scheduler")]
     let agent = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
+
+    #[cfg(feature = "gateway")]
+    if config.gateway.enabled {
+        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
+    }
 
     #[cfg(feature = "candle")]
     let agent = agent_setup::apply_candle_stt(agent, config.llm.stt.as_ref());
