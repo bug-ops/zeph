@@ -51,6 +51,21 @@ pub fn sanitize_skill_body(body: &str) -> String {
     out
 }
 
+/// Escape XML special characters in attribute values and text content.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Minimum uses threshold before emitting reliability/uses attributes on `<skill>` tag.
 const HEALTH_MIN_USES: u32 = 5;
 
@@ -94,8 +109,8 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
         let _ = write!(
             out,
             "  <skill name=\"{name}\"{attrs}>\n    <description>{desc}</description>\n    <instructions>\n{body}",
-            name = skill.name(),
-            desc = skill.description(),
+            name = xml_escape(skill.name()),
+            desc = xml_escape(skill.description()),
         );
 
         let resources = discover_resources(&skill.meta.skill_dir);
@@ -138,8 +153,9 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
 #[must_use]
 pub fn wrap_quarantined(skill_name: &str, body: &str) -> String {
     format!(
-        "[QUARANTINED SKILL: {skill_name}] The following skill is quarantined. \
-         It has restricted tool access (no bash, file_write, web_scrape).\n\n{body}"
+        "[QUARANTINED SKILL: {}] The following skill is quarantined. \
+         It has restricted tool access (no bash, file_write, web_scrape).\n\n{body}",
+        xml_escape(skill_name),
     )
 }
 
@@ -157,8 +173,8 @@ pub fn format_skills_prompt_compact(skills: &[Skill]) -> String {
         let _ = writeln!(
             out,
             "  <skill name=\"{}\" description=\"{}\" />",
-            skill.name(),
-            skill.description(),
+            xml_escape(skill.name()),
+            xml_escape(skill.description()),
         );
     }
     out.push_str("</available_skills>");
@@ -176,8 +192,8 @@ pub fn format_skills_catalog(skills: &[Skill]) -> String {
         let _ = writeln!(
             out,
             "  <skill name=\"{}\" description=\"{}\" />",
-            skill.name(),
-            skill.description(),
+            xml_escape(skill.name()),
+            xml_escape(skill.description()),
         );
     }
     out.push_str("</other_skills>");
@@ -473,5 +489,52 @@ mod tests {
         assert!(output.contains("name=\"test\""));
         assert!(output.contains("description=\"A test skill.\""));
         assert!(!output.contains("body"));
+    }
+
+    #[test]
+    fn health_attrs_emitted_when_uses_at_threshold() {
+        let skills = vec![make_skill("git", "Git helper.", "body")];
+        let mut health_map = HashMap::new();
+        // uses=5 → exactly at HEALTH_MIN_USES threshold → should emit attrs
+        health_map.insert("git".to_string(), (0.85_f64, 5_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            output.contains("reliability=\"85%\""),
+            "expected reliability attr, got:\n{output}"
+        );
+        assert!(
+            output.contains("uses=\"5\""),
+            "expected uses attr, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn health_attrs_not_emitted_when_uses_below_threshold() {
+        let skills = vec![make_skill("git", "Git helper.", "body")];
+        let mut health_map = HashMap::new();
+        // uses=4 → below HEALTH_MIN_USES → no attrs
+        health_map.insert("git".to_string(), (0.85_f64, 4_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            !output.contains("reliability="),
+            "should not emit reliability attr below threshold, got:\n{output}"
+        );
+        assert!(
+            !output.contains("uses="),
+            "should not emit uses attr below threshold, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn health_attrs_not_emitted_when_skill_not_in_health_map() {
+        let skills = vec![make_skill("docker", "Docker helper.", "body")];
+        // health_map has a different skill → docker gets no attrs
+        let mut health_map = HashMap::new();
+        health_map.insert("git".to_string(), (0.9_f64, 10_u32));
+        let output = format_skills_prompt(&skills, &HashMap::new(), &health_map);
+        assert!(
+            !output.contains("reliability="),
+            "skill not in health_map should not get reliability attr"
+        );
     }
 }

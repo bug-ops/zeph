@@ -82,10 +82,16 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                 bail!("router chain is empty");
             }
             let router = if config.llm.router_ema_enabled {
-                RouterProvider::new(providers).with_ema(
-                    config.llm.router_ema_alpha,
-                    config.llm.router_reorder_interval,
-                )
+                let raw_alpha = config.llm.router_ema_alpha;
+                let alpha = raw_alpha.clamp(f64::MIN_POSITIVE, 1.0);
+                if (alpha - raw_alpha).abs() > f64::EPSILON {
+                    tracing::warn!(
+                        raw_alpha,
+                        clamped = alpha,
+                        "router_ema_alpha out of range [MIN_POSITIVE, 1.0], clamped"
+                    );
+                }
+                RouterProvider::new(providers).with_ema(alpha, config.llm.router_reorder_interval)
             } else {
                 RouterProvider::new(providers)
             };
