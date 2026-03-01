@@ -15,7 +15,7 @@ embedding_model = "qwen3-embedding"
 response_cache_enabled = false
 response_cache_ttl_secs = 3600
 router_ema_enabled = false
-router_ema_alpha = 0.3
+router_ema_alpha = 0.1
 router_reorder_interval = 10
 
 [skills]
@@ -23,7 +23,7 @@ paths = ["./skills"]
 max_active_skills = 5
 disambiguation_threshold = 0.05
 cosine_weight = 0.7
-hybrid_search = false
+hybrid_search = true
 prompt_mode = "auto"
 
 [skills.learning]

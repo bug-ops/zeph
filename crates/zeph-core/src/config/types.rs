@@ -173,7 +173,7 @@ fn default_response_cache_ttl_secs() -> u64 {
 }
 
 fn default_router_ema_alpha() -> f64 {
-    0.3
+    0.1
 }
 
 fn default_router_reorder_interval() -> u64 {
@@ -383,7 +383,7 @@ pub struct SkillsConfig {
     pub disambiguation_threshold: f32,
     #[serde(default = "default_cosine_weight")]
     pub cosine_weight: f32,
-    #[serde(default)]
+    #[serde(default = "default_hybrid_search")]
     pub hybrid_search: bool,
     #[serde(default)]
     pub learning: LearningConfig,
@@ -398,6 +398,10 @@ fn default_disambiguation_threshold() -> f32 {
 }
 fn default_cosine_weight() -> f32 {
     0.7
+}
+
+fn default_hybrid_search() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1400,7 +1404,7 @@ impl Default for Config {
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
                 cosine_weight: default_cosine_weight(),
-                hybrid_search: false,
+                hybrid_search: default_hybrid_search(),
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,

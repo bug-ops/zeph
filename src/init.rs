@@ -479,7 +479,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         response_cache_enabled: false,
         response_cache_ttl_secs: 3600,
         router_ema_enabled: false,
-        router_ema_alpha: 0.3,
+        router_ema_alpha: 0.1,
         router_reorder_interval: 10,
     };
 
