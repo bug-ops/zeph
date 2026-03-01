@@ -704,11 +704,13 @@ impl<C: Channel> Agent<C> {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
+        let _ = self.channel.send_status("summarizing output...").await;
         let chat_fut = self.summary_or_primary_provider().chat(&msgs);
         let summary = match tokio::time::timeout(llm_timeout, chat_fut).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 tracing::warn!(%e, "tool pair summarization failed, skipping");
+                let _ = self.channel.send_status("").await;
                 return;
             }
             Err(_elapsed) => {
@@ -716,6 +718,7 @@ impl<C: Channel> Agent<C> {
                     timeout_secs = self.runtime.timeouts.llm_seconds,
                     "tool pair summarization timed out, skipping"
                 );
+                let _ = self.channel.send_status("").await;
                 return;
             }
         };
@@ -730,6 +733,7 @@ impl<C: Channel> Agent<C> {
             metadata: MessageMetadata::agent_only(),
         };
         self.messages.insert(resp_idx + 1, summary_msg);
+        let _ = self.channel.send_status("").await;
         tracing::debug!(
             pair_count,
             cutoff = self.memory_state.tool_call_cutoff,
@@ -763,6 +767,7 @@ impl<C: Channel> Agent<C> {
         let threshold = (budget as f32 * self.context_manager.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
 
+        let _ = self.channel.send_status("compacting context...").await;
         let freed = self.prune_tool_outputs(min_to_free);
         if freed >= min_to_free {
             tracing::info!(freed, "tier-1 pruning sufficient");
@@ -774,10 +779,7 @@ impl<C: Channel> Agent<C> {
             min_to_free,
             "tier-1 insufficient, falling back to tier-2 compaction"
         );
-        let _ = self.channel.send_status("compacting context...").await;
-        let result = self.compact_context().await;
-        let _ = self.channel.send_status("").await;
-        result
+        self.compact_context().await
     }
 
     pub(super) fn clear_history(&mut self) {
@@ -1193,7 +1195,7 @@ impl<C: Channel> Agent<C> {
         let Some(ref budget) = self.context_manager.budget else {
             return Ok(());
         };
-        let _ = self.channel.send_status("building context...").await;
+        let _ = self.channel.send_status("recalling context...").await;
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
         let alloc = budget.allocate(
@@ -4021,5 +4023,59 @@ mod tests {
                 panic!("expected ToolOutput part");
             }
         }
+    }
+
+    // --- Status emission tests ---
+
+    #[tokio::test]
+    async fn tier1_compaction_emits_compacting_status() {
+        use std::sync::Arc;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let statuses = Arc::clone(&channel.statuses);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0);
+
+        // Push enough messages to exceed the compaction threshold (budget=100, threshold=20)
+        for i in 0..5 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding to exceed budget threshold padding padding"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_compact().await.unwrap();
+
+        let emitted = statuses.lock().unwrap().clone();
+        assert!(
+            emitted.iter().any(|s| s == "compacting context..."),
+            "expected 'compacting context...' in statuses, got: {emitted:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_context_emits_recalling_status() {
+        use std::sync::Arc;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let statuses = Arc::clone(&channel.statuses);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(10_000, 0.80, 0.75, 2, 0);
+
+        agent.prepare_context("test query").await.unwrap();
+
+        let emitted = statuses.lock().unwrap().clone();
+        assert!(
+            emitted.iter().any(|s| s == "recalling context..."),
+            "expected 'recalling context...' in statuses, got: {emitted:?}"
+        );
     }
 }

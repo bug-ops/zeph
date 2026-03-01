@@ -25,6 +25,9 @@ pub mod memory_tools;
 pub mod subagent;
 pub mod text;
 
+#[cfg(any(test, feature = "mock"))]
+pub mod testing;
+
 pub use agent::Agent;
 pub use agent::error::AgentError;
 pub use channel::{

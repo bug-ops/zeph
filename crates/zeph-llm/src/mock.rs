@@ -3,13 +3,14 @@
 
 //! Test-only mock LLM provider.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::provider::{ChatStream, LlmProvider, Message};
 
 #[derive(Debug, Clone)]
 pub struct MockProvider {
-    responses: Arc<Mutex<Vec<String>>>,
+    responses: Arc<Mutex<VecDeque<String>>>,
     pub default_response: String,
     pub embedding: Vec<f32>,
     pub supports_embeddings: bool,
@@ -19,7 +20,7 @@ pub struct MockProvider {
     pub delay_ms: u64,
     /// Sequence of errors to return before switching to normal responses.
     /// Each call pops from the front; when empty, falls through to `responses`.
-    errors: Arc<Mutex<Vec<crate::LlmError>>>,
+    errors: Arc<Mutex<VecDeque<crate::LlmError>>>,
     /// When set, every `chat()` call appends a clone of the messages slice here.
     recorded: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
 }
@@ -27,14 +28,14 @@ pub struct MockProvider {
 impl Default for MockProvider {
     fn default() -> Self {
         Self {
-            responses: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(VecDeque::new())),
             default_response: "mock response".into(),
             embedding: vec![0.0; 384],
             supports_embeddings: false,
             streaming: false,
             fail_chat: false,
             delay_ms: 0,
-            errors: Arc::new(Mutex::new(Vec::new())),
+            errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
         }
     }
@@ -44,7 +45,7 @@ impl MockProvider {
     #[must_use]
     pub fn with_responses(responses: Vec<String>) -> Self {
         Self {
-            responses: Arc::new(Mutex::new(responses)),
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             ..Self::default()
         }
     }
@@ -60,7 +61,7 @@ impl MockProvider {
     /// Prepend a sequence of errors returned before normal responses.
     #[must_use]
     pub fn with_errors(mut self, errors: Vec<crate::LlmError>) -> Self {
-        self.errors = Arc::new(Mutex::new(errors));
+        self.errors = Arc::new(Mutex::new(VecDeque::from(errors)));
         self
     }
 
@@ -108,13 +109,13 @@ impl LlmProvider for MockProvider {
         if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()
         {
-            return Err(errors.remove(0));
+            return Err(errors.pop_front().expect("non-empty"));
         }
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(self.default_response.clone())
         } else {
-            Ok(responses.remove(0))
+            Ok(responses.pop_front().expect("non-empty"))
         }
     }
 

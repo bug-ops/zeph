@@ -26,6 +26,8 @@ pub(crate) mod retry;
 pub mod router;
 pub(crate) mod sse;
 pub mod stt;
+#[cfg(test)]
+pub mod testing;
 #[cfg(feature = "stt")]
 pub mod whisper;
 

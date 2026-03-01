@@ -162,7 +162,7 @@ daemon = ["zeph-core/daemon"]
 scheduler = ["dep:zeph-scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
-mock = ["zeph-llm/mock", "zeph-memory/mock"]
+mock = ["zeph-llm/mock", "zeph-memory/mock", "zeph-core/mock"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
 
 [dependencies]
