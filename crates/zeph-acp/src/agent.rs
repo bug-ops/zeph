@@ -100,6 +100,12 @@ pub(crate) struct SessionEntry {
     current_mode: RefCell<acp::SessionModeId>,
     /// Set after the first successful prompt so title generation fires only once.
     first_prompt_done: std::cell::Cell<bool>,
+    /// Auto-generated session title; populated after first prompt via `SessionTitle` event.
+    title: RefCell<Option<String>>,
+    /// Whether extended thinking is enabled for this session.
+    thinking_enabled: std::cell::Cell<bool>,
+    /// Auto-approve level for this session ("suggest" | "auto-edit" | "full-auto").
+    auto_approve_level: RefCell<String>,
     /// Shell executor for this session, retained so the event loop can release terminals
     /// after `tool_call_update` notifications are sent (ACP requires the terminal to
     /// remain alive until after the notification that embeds it).
@@ -448,6 +454,9 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            title: RefCell::new(None),
+            thinking_enabled: std::cell::Cell::new(false),
+            auto_approve_level: RefCell::new("suggest".to_owned()),
             shell_executor,
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
@@ -466,7 +475,7 @@ impl acp::Agent for ZephAcpAgent {
             (spawner)(channel, acp_ctx).await;
         });
 
-        let config_options = build_model_config_options(&self.available_models, "");
+        let config_options = build_config_options(&self.available_models, "", false, "suggest");
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp = acp::NewSessionResponse::new(session_id.clone())
             .modes(build_mode_state(&default_mode_id));
@@ -730,6 +739,7 @@ impl acp::Agent for ZephAcpAgent {
                     let store = self.store.clone();
                     let notify_tx = self.notify_tx.clone();
                     let title_max_chars = self.title_max_chars;
+                    let sessions_for_title = Rc::clone(&self.sessions);
                     tokio::task::spawn_local(async move {
                         let prompt = format!(
                             "Generate a concise 5-7 word title for a conversation that starts \
@@ -759,6 +769,12 @@ impl acp::Agent for ZephAcpAgent {
 
                         if let Some(ref store) = store {
                             let _ = store.update_session_title(&sid.to_string(), &title).await;
+                        }
+                        // Also cache the title in the in-memory SessionEntry so list_sessions
+                        // can return it without a round-trip to SQLite.
+                        // sessions_for_title is captured via Rc::clone before the spawn.
+                        if let Some(e) = sessions_for_title.borrow().get(&sid) {
+                            *e.title.borrow_mut() = Some(title.clone());
                         }
                         let update = acp::SessionUpdate::SessionInfoUpdate(
                             acp::SessionInfoUpdate::new().title(title),
@@ -844,6 +860,9 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            title: RefCell::new(None),
+            thinking_enabled: std::cell::Cell::new(false),
+            auto_approve_level: RefCell::new("suggest".to_owned()),
             shell_executor,
         };
         self.sessions
@@ -924,8 +943,11 @@ impl acp::Agent for ZephAcpAgent {
                     {
                         return None;
                     }
-                    let info = acp::SessionInfo::new(session_id.clone(), working_dir)
+                    let mut info = acp::SessionInfo::new(session_id.clone(), working_dir)
                         .updated_at(entry.created_at.to_rfc3339());
+                    if let Some(ref t) = *entry.title.borrow() {
+                        info = info.title(t.clone());
+                    }
                     Some((session_id.to_string(), info))
                 })
                 .collect()
@@ -1068,6 +1090,9 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            title: RefCell::new(None),
+            thinking_enabled: std::cell::Cell::new(false),
+            auto_approve_level: RefCell::new("suggest".to_owned()),
             shell_executor,
         };
         self.sessions.borrow_mut().insert(new_id.clone(), entry);
@@ -1076,7 +1101,7 @@ impl acp::Agent for ZephAcpAgent {
             (spawner)(channel, acp_ctx).await;
         });
 
-        let config_options = build_model_config_options(&self.available_models, "");
+        let config_options = build_config_options(&self.available_models, "", false, "suggest");
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp =
             acp::ForkSessionResponse::new(new_id).modes(build_mode_state(&default_mode_id));
@@ -1159,6 +1184,9 @@ impl acp::Agent for ZephAcpAgent {
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
+            title: RefCell::new(None),
+            thinking_enabled: std::cell::Cell::new(false),
+            auto_approve_level: RefCell::new("suggest".to_owned()),
             shell_executor,
         };
         self.sessions
@@ -1177,43 +1205,84 @@ impl acp::Agent for ZephAcpAgent {
         args: acp::SetSessionConfigOptionRequest,
     ) -> acp::Result<acp::SetSessionConfigOptionResponse> {
         let config_id: &str = &args.config_id.0;
-        if config_id != "model" {
-            return Err(acp::Error::invalid_request().data("unknown config_id"));
-        }
-
         let value: &str = &args.value.0;
-        let Some(ref factory) = self.provider_factory else {
-            return Err(acp::Error::internal_error().data("model switching not configured"));
-        };
-
-        if !self.available_models.iter().any(|m| m == value) {
-            return Err(acp::Error::invalid_request().data("model not in allowed list"));
-        }
-
-        let Some(new_provider) = factory(value) else {
-            return Err(acp::Error::invalid_request().data("unknown model"));
-        };
 
         let sessions = self.sessions.borrow();
         let entry = sessions
             .get(&args.session_id)
-            .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+            .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
 
-        *entry
-            .provider_override
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
-        value.clone_into(&mut entry.current_model.borrow_mut());
-        let current = entry.current_model.borrow().clone();
+        match config_id {
+            "model" => {
+                let Some(ref factory) = self.provider_factory else {
+                    return Err(acp::Error::internal_error().data("model switching not configured"));
+                };
+
+                if !self.available_models.iter().any(|m| m == value) {
+                    return Err(acp::Error::invalid_request().data("model not in allowed list"));
+                }
+
+                let Some(new_provider) = factory(value) else {
+                    return Err(acp::Error::invalid_request().data("unknown model"));
+                };
+
+                *entry
+                    .provider_override
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+                value.clone_into(&mut entry.current_model.borrow_mut());
+
+                tracing::debug!(
+                    session_id = %args.session_id,
+                    model = %value,
+                    "ACP model switched"
+                );
+            }
+            "thinking" => {
+                let enabled = match value {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(
+                            acp::Error::invalid_request().data("thinking value must be on or off")
+                        );
+                    }
+                };
+                entry.thinking_enabled.set(enabled);
+                tracing::debug!(
+                    session_id = %args.session_id,
+                    thinking = %enabled,
+                    "ACP thinking toggled"
+                );
+            }
+            "auto_approve" => {
+                if !["suggest", "auto-edit", "full-auto"].contains(&value) {
+                    return Err(acp::Error::invalid_request()
+                        .data("auto_approve must be suggest, auto-edit, or full-auto"));
+                }
+                value.clone_into(&mut entry.auto_approve_level.borrow_mut());
+                tracing::debug!(
+                    session_id = %args.session_id,
+                    auto_approve = %value,
+                    "ACP auto-approve level changed"
+                );
+            }
+            _ => {
+                return Err(acp::Error::invalid_request().data("unknown config_id"));
+            }
+        }
+
+        let current_model = entry.current_model.borrow().clone();
+        let thinking = entry.thinking_enabled.get();
+        let auto_approve = entry.auto_approve_level.borrow().clone();
         drop(sessions);
 
-        tracing::debug!(
-            session_id = %args.session_id,
-            model = %value,
-            "ACP model switched"
+        let config_options = build_config_options(
+            &self.available_models,
+            &current_model,
+            thinking,
+            &auto_approve,
         );
-
-        let config_options = build_model_config_options(&self.available_models, &current);
         Ok(acp::SetSessionConfigOptionResponse::new(config_options))
     }
 
@@ -1647,29 +1716,62 @@ fn build_mode_state(current_mode_id: &acp::SessionModeId) -> acp::SessionModeSta
     acp::SessionModeState::new(current_mode_id.clone(), available_session_modes())
 }
 
-/// Build the `model` config option selector from the list of available model keys.
+/// Build all session config options: model selector, thinking toggle, and auto-approve level.
 ///
-/// `current` is the currently selected model key; empty string means no selection yet.
-fn build_model_config_options(
+/// `current_model` is the currently selected model key; empty string means use the first.
+/// `thinking_enabled` and `auto_approve` reflect the current per-session values.
+fn build_config_options(
     available_models: &[String],
-    current: &str,
+    current_model: &str,
+    thinking_enabled: bool,
+    auto_approve: &str,
 ) -> Vec<acp::SessionConfigOption> {
-    if available_models.is_empty() {
-        return Vec::new();
+    let mut opts = Vec::new();
+
+    if !available_models.is_empty() {
+        let current_value = if current_model.is_empty() {
+            available_models[0].clone()
+        } else {
+            current_model.to_owned()
+        };
+        let model_options: Vec<acp::SessionConfigSelectOption> = available_models
+            .iter()
+            .map(|m| acp::SessionConfigSelectOption::new(m.clone(), m.clone()))
+            .collect();
+        opts.push(
+            acp::SessionConfigOption::select("model", "Model", current_value, model_options)
+                .category(acp::SessionConfigOptionCategory::Model),
+        );
     }
-    let current_value = if current.is_empty() {
-        available_models[0].clone()
+
+    let thinking_value = if thinking_enabled { "on" } else { "off" };
+    opts.push(acp::SessionConfigOption::select(
+        "thinking",
+        "Extended Thinking",
+        thinking_value.to_owned(),
+        vec![
+            acp::SessionConfigSelectOption::new("off".to_owned(), "Off".to_owned()),
+            acp::SessionConfigSelectOption::new("on".to_owned(), "On".to_owned()),
+        ],
+    ));
+
+    let approve_value = if ["suggest", "auto-edit", "full-auto"].contains(&auto_approve) {
+        auto_approve.to_owned()
     } else {
-        current.to_owned()
+        "suggest".to_owned()
     };
-    let options: Vec<acp::SessionConfigSelectOption> = available_models
-        .iter()
-        .map(|m| acp::SessionConfigSelectOption::new(m.clone(), m.clone()))
-        .collect();
-    vec![
-        acp::SessionConfigOption::select("model", "Model", current_value, options)
-            .category(acp::SessionConfigOptionCategory::Model),
-    ]
+    opts.push(acp::SessionConfigOption::select(
+        "auto_approve",
+        "Auto-Approve",
+        approve_value,
+        vec![
+            acp::SessionConfigSelectOption::new("suggest".to_owned(), "Suggest".to_owned()),
+            acp::SessionConfigSelectOption::new("auto-edit".to_owned(), "Auto-Edit".to_owned()),
+            acp::SessionConfigSelectOption::new("full-auto".to_owned(), "Full Auto".to_owned()),
+        ],
+    ));
+
+    opts
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1699,6 +1801,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             tool_call_id,
             params,
             parent_tool_use_id,
+            started_at,
         } => {
             // Derive a human-readable title from params when available.
             // For bash: use the command string (truncated). For others: fall back to tool_name.
@@ -1758,6 +1861,17 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 "toolName".to_owned(),
                 serde_json::Value::String(tool_name.clone()),
             );
+            // Record ISO 8601 start time so clients can compute elapsed duration.
+            let started_at_iso = {
+                let elapsed = started_at.elapsed();
+                let now = std::time::SystemTime::now();
+                let ts = now.checked_sub(elapsed).unwrap_or(now);
+                chrono::DateTime::<chrono::Utc>::from(ts).to_rfc3339()
+            };
+            claude_code.insert(
+                "startedAt".to_owned(),
+                serde_json::Value::String(started_at_iso),
+            );
             if let Some(parent_id) = parent_tool_use_id {
                 claude_code.insert(
                     "parentToolUseId".to_owned(),
@@ -1780,8 +1894,11 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             terminal_id,
             parent_tool_use_id,
             raw_response,
+            started_at,
             ..
         } => {
+            let elapsed_ms: Option<u64> =
+                started_at.map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
             let acp_locations: Vec<acp::ToolCallLocation> = locations
                 .unwrap_or_default()
                 .into_iter()
@@ -1854,6 +1971,9 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                     "toolName".to_owned(),
                     serde_json::Value::String(tool_name.clone()),
                 );
+                if let Some(ms) = elapsed_ms {
+                    cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
+                }
                 if let Some(parent_id) = parent_tool_use_id {
                     cc.insert(
                         "parentToolUseId".to_owned(),
@@ -1890,6 +2010,9 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                     "toolName".to_owned(),
                     serde_json::Value::String(tool_name.clone()),
                 );
+                if let Some(ms) = elapsed_ms {
+                    cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
+                }
                 if let Some(parent_id) = parent_tool_use_id {
                     cc.insert(
                         "parentToolUseId".to_owned(),
@@ -2312,6 +2435,7 @@ mod tests {
             tool_call_id: "child-id".to_owned(),
             params: None,
             parent_tool_use_id: Some("parent-uuid".to_owned()),
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2346,6 +2470,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: Some("parent-uuid".to_owned()),
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2378,6 +2503,7 @@ mod tests {
             tool_call_id: "test-id".to_owned(),
             params: None,
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2399,6 +2525,7 @@ mod tests {
             tool_call_id: "test-id-2".to_owned(),
             params: Some(params),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2420,6 +2547,7 @@ mod tests {
             tool_call_id: "test-id-3".to_owned(),
             params: Some(params),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         match &updates[0] {
@@ -2446,6 +2574,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2471,6 +2600,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2490,6 +2620,7 @@ mod tests {
             tool_call_id: "tc-1".to_owned(),
             params: None,
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2518,6 +2649,7 @@ mod tests {
             tool_call_id: "tc-2".to_owned(),
             params: None,
             parent_tool_use_id: Some("parent-abc".to_owned()),
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2559,6 +2691,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2587,6 +2720,7 @@ mod tests {
             tool_call_id: "tc-read".to_owned(),
             params: Some(params),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2608,6 +2742,7 @@ mod tests {
             tool_call_id: "tc-read2".to_owned(),
             params: Some(params),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2629,6 +2764,7 @@ mod tests {
             tool_call_id: "tc-bash".to_owned(),
             params: Some(params),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2659,6 +2795,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: Some(raw_resp),
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 2, "expected intermediate + final");
@@ -2712,6 +2849,7 @@ mod tests {
             terminal_id: Some("term-x".to_owned()),
             parent_tool_use_id: None,
             raw_response: Some(raw_resp),
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         // toolResponse intermediate + terminal_output intermediate + terminal_exit final
@@ -3035,6 +3173,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -3063,6 +3202,7 @@ mod tests {
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -3102,6 +3242,7 @@ mod tests {
             terminal_id: Some("term-42".to_owned()),
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         // Expect 2 updates: intermediate with terminal_output meta, final with terminal_exit +
@@ -3152,6 +3293,7 @@ mod tests {
             tool_call_id: "tc-bash".to_owned(),
             params: Some(serde_json::json!({ "command": "ls" })),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -3178,31 +3320,37 @@ mod tests {
     }
 
     #[test]
-    fn build_model_config_options_empty() {
-        let opts = build_model_config_options(&[], "");
-        assert!(opts.is_empty());
+    fn build_config_options_empty() {
+        // With empty model list, thinking and auto_approve are still returned.
+        let opts = build_config_options(&[], "", false, "suggest");
+        let ids: Vec<&str> = opts.iter().map(|o| o.id.0.as_ref()).collect();
+        assert!(
+            !ids.contains(&"model"),
+            "model must be absent for empty list"
+        );
+        assert!(ids.contains(&"thinking"));
+        assert!(ids.contains(&"auto_approve"));
     }
 
     #[test]
-    fn build_model_config_options_defaults_to_first() {
+    fn build_config_options_defaults_to_first() {
         let models = vec![
             "claude:claude-sonnet-4-5".to_owned(),
             "ollama:llama3".to_owned(),
         ];
-        let opts = build_model_config_options(&models, "");
-        assert_eq!(opts.len(), 1);
-        let opt = &opts[0];
-        assert_eq!(opt.id.0.as_ref(), "model");
+        let opts = build_config_options(&models, "", false, "suggest");
+        let model_opt = opts.iter().find(|o| o.id.0.as_ref() == "model");
+        assert!(model_opt.is_some(), "model option must be present");
     }
 
     #[test]
-    fn build_model_config_options_uses_current() {
+    fn build_config_options_uses_current() {
         let models = vec![
             "claude:claude-sonnet-4-5".to_owned(),
             "ollama:llama3".to_owned(),
         ];
-        let opts = build_model_config_options(&models, "ollama:llama3");
-        assert_eq!(opts.len(), 1);
+        let opts = build_config_options(&models, "ollama:llama3", false, "suggest");
+        assert!(opts.iter().any(|o| o.id.0.as_ref() == "model"));
     }
 
     #[tokio::test]
@@ -3381,7 +3529,13 @@ mod tests {
                 let result = agent.set_session_config_option(req).await;
                 assert!(result.is_ok());
                 let response = result.unwrap();
-                assert_eq!(response.config_options.len(), 1);
+                // model + thinking + auto_approve options are all returned
+                assert!(
+                    response
+                        .config_options
+                        .iter()
+                        .any(|o| o.id.0.as_ref() == "model")
+                );
                 // current_model should be updated in the session entry.
                 let sessions = agent.sessions.borrow();
                 let entry = sessions.get(&resp.session_id).unwrap();
@@ -3966,6 +4120,7 @@ mod tests {
             terminal_id: Some("term-multi".to_owned()),
             parent_tool_use_id: None,
             raw_response: None,
+            started_at: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 2, "expected intermediate + final update");
@@ -4119,5 +4274,365 @@ mod tests {
                 );
             })
             .await;
+    }
+
+    // --- P1.3: tool event elapsed time ---
+
+    #[test]
+    fn tool_start_includes_started_at_in_meta() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "tc-elapsed".to_owned(),
+            params: None,
+            parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let cc = tc
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert!(
+                    cc.get("startedAt").is_some(),
+                    "startedAt must be present in ToolStart meta"
+                );
+                let started_at = cc["startedAt"].as_str().expect("startedAt is a string");
+                // Should be a valid RFC 3339 timestamp
+                assert!(
+                    started_at.contains('T'),
+                    "startedAt should be ISO 8601: {started_at}"
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_output_includes_elapsed_ms_in_meta() {
+        let started_at = std::time::Instant::now();
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "ok".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-elapsed".to_owned(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: Some(started_at),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let cc = tcu
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert!(
+                    cc.get("elapsedMs").is_some(),
+                    "elapsedMs must be present when started_at is set"
+                );
+                let ms = cc["elapsedMs"].as_u64().expect("elapsedMs is u64");
+                // elapsed must be a non-negative number (0 is valid for very fast tools)
+                let _ = ms;
+            }
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_output_no_elapsed_ms_when_started_at_absent() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "ok".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-no-elapsed".to_owned(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let cc = tcu
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert!(
+                    cc.get("elapsedMs").is_none(),
+                    "elapsedMs must be absent when started_at is None"
+                );
+            }
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    // --- P1.2: config options expansion ---
+
+    #[test]
+    fn build_config_options_includes_all_categories() {
+        let models = vec!["claude:sonnet".to_owned(), "ollama:llama3".to_owned()];
+        let opts = build_config_options(&models, "", false, "suggest");
+        let ids: Vec<&str> = opts.iter().map(|o| o.id.0.as_ref()).collect();
+        assert!(ids.contains(&"model"), "model must be present");
+        assert!(ids.contains(&"thinking"), "thinking must be present");
+        assert!(
+            ids.contains(&"auto_approve"),
+            "auto_approve must be present"
+        );
+        assert_eq!(opts.len(), 3);
+    }
+
+    #[test]
+    fn build_config_options_no_model_when_empty_list() {
+        let opts = build_config_options(&[], "", false, "suggest");
+        let ids: Vec<&str> = opts.iter().map(|o| o.id.0.as_ref()).collect();
+        assert!(
+            !ids.contains(&"model"),
+            "model must be absent when no models configured"
+        );
+        assert!(ids.contains(&"thinking"));
+        assert!(ids.contains(&"auto_approve"));
+    }
+
+    #[tokio::test]
+    async fn set_session_config_option_thinking_toggle() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let req = acp::SetSessionConfigOptionRequest::new(
+                    sess.session_id.clone(),
+                    "thinking",
+                    "on",
+                );
+                let resp = agent.set_session_config_option(req).await.unwrap();
+                let thinking_opt = resp
+                    .config_options
+                    .iter()
+                    .find(|o| o.id.0.as_ref() == "thinking");
+                assert!(thinking_opt.is_some(), "thinking option must be returned");
+                // Verify the session entry was updated
+                let sessions = agent.sessions.borrow();
+                let entry = sessions.get(&sess.session_id).unwrap();
+                assert!(
+                    entry.thinking_enabled.get(),
+                    "thinking_enabled must be true"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_config_option_auto_approve_levels() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                for level in &["suggest", "auto-edit", "full-auto"] {
+                    let req = acp::SetSessionConfigOptionRequest::new(
+                        sess.session_id.clone(),
+                        "auto_approve",
+                        *level,
+                    );
+                    agent.set_session_config_option(req).await.unwrap();
+                    let sessions = agent.sessions.borrow();
+                    let entry = sessions.get(&sess.session_id).unwrap();
+                    assert_eq!(entry.auto_approve_level.borrow().as_str(), *level);
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn set_session_config_option_rejects_invalid_auto_approve() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let req = acp::SetSessionConfigOptionRequest::new(
+                    sess.session_id.clone(),
+                    "auto_approve",
+                    "nuclear",
+                );
+                let result = agent.set_session_config_option(req).await;
+                assert!(
+                    result.is_err(),
+                    "invalid auto_approve value must be rejected"
+                );
+            })
+            .await;
+    }
+
+    // --- P1.1: list_sessions with title ---
+
+    #[cfg(feature = "unstable-session-list")]
+    #[tokio::test]
+    async fn list_sessions_includes_title_for_in_memory_session() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // Manually set the title on the session entry (simulating post-generation state)
+                {
+                    let sessions = agent.sessions.borrow();
+                    let entry = sessions.get(&sess.session_id).unwrap();
+                    *entry.title.borrow_mut() = Some("Test Session Title".to_owned());
+                }
+                let list = agent
+                    .list_sessions(acp::ListSessionsRequest::new())
+                    .await
+                    .unwrap();
+                let found = list
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == sess.session_id);
+                assert!(found.is_some(), "session must appear in list");
+                assert_eq!(
+                    found.unwrap().title.as_deref(),
+                    Some("Test Session Title"),
+                    "title must be propagated from in-memory entry"
+                );
+            })
+            .await;
+    }
+
+    // T#1: list_sessions returns SessionInfo with title=None for a new session.
+    #[tokio::test]
+    async fn list_sessions_title_none_for_new_session() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let list = agent
+                    .list_sessions(acp::ListSessionsRequest::new())
+                    .await
+                    .unwrap();
+                let found = list
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == sess.session_id)
+                    .expect("session must appear in list");
+                assert!(
+                    found.title.is_none(),
+                    "title must be None before first prompt"
+                );
+            })
+            .await;
+    }
+
+    // T#2: set_session_config_option for unknown session returns error.
+    #[tokio::test]
+    async fn set_session_config_option_auto_approve_unknown_session_errors() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let req = acp::SetSessionConfigOptionRequest::new(
+                    "nonexistent-session",
+                    "auto_approve",
+                    "full-auto",
+                );
+                let result = agent.set_session_config_option(req).await;
+                assert!(result.is_err(), "unknown session must return error");
+            })
+            .await;
+    }
+
+    // T#3: set_session_config_option reflects updated auto_approve in response.
+    #[tokio::test]
+    async fn set_session_config_option_auto_approve_reflected_in_response() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let req = acp::SetSessionConfigOptionRequest::new(
+                    sess.session_id.clone(),
+                    "auto_approve",
+                    "full-auto",
+                );
+                let resp = agent.set_session_config_option(req).await.unwrap();
+                let approve_opt = resp
+                    .config_options
+                    .iter()
+                    .find(|o| o.id.0.as_ref() == "auto_approve")
+                    .expect("auto_approve must appear in response");
+                let current_value = match &approve_opt.kind {
+                    acp::SessionConfigKind::Select(sel) => sel.current_value.0.as_ref(),
+                    _ => panic!("expected Select kind"),
+                };
+                assert_eq!(
+                    current_value, "full-auto",
+                    "current_value must reflect updated auto_approve"
+                );
+            })
+            .await;
+    }
+
+    // T#4: startedAt computation falls back to `now` when checked_sub underflows.
+    #[test]
+    fn started_at_checked_sub_fallback() {
+        // Simulate elapsed > SystemTime (e.g. clock skew): checked_sub returns None → use now.
+        let now = std::time::SystemTime::now();
+        let large_duration = std::time::Duration::from_secs(u64::MAX / 2);
+        let ts = now.checked_sub(large_duration).unwrap_or(now);
+        // The result must be at most `now` (could equal now in the fallback branch).
+        assert!(ts <= now, "fallback must produce a timestamp <= now");
     }
 }

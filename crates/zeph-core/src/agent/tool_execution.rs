@@ -546,6 +546,7 @@ impl<C: Channel> Agent<C> {
                 }
 
                 let tool_call_id = uuid::Uuid::new_v4().to_string();
+                let tool_started_at = std::time::Instant::now();
                 self.channel
                     .send_tool_start(
                         &output.tool_name,
@@ -578,6 +579,7 @@ impl<C: Channel> Agent<C> {
                         false,
                         self.parent_tool_use_id.clone(),
                         output.raw_response.map(|r| self.redact_json(r)),
+                        Some(tool_started_at),
                     )
                     .await?;
 
@@ -620,6 +622,7 @@ impl<C: Channel> Agent<C> {
                         self.tool_executor.execute_confirmed_erased(response).await
                     {
                         let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
+                        let confirmed_started_at = std::time::Instant::now();
                         self.channel
                             .send_tool_start(
                                 &out.tool_name,
@@ -642,6 +645,7 @@ impl<C: Channel> Agent<C> {
                                 false,
                                 self.parent_tool_use_id.clone(),
                                 out.raw_response.map(|r| self.redact_json(r)),
+                                Some(confirmed_started_at),
                             )
                             .await?;
                         self.push_message(Message::from_parts(
@@ -1018,6 +1022,10 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
+        let tool_started_ats: Vec<std::time::Instant> = tool_calls
+            .iter()
+            .map(|_| std::time::Instant::now())
+            .collect();
         for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
             let raw_params = tc.input.clone();
             self.channel
@@ -1071,10 +1079,11 @@ impl<C: Channel> Agent<C> {
 
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
-        for ((tc, tool_result), tool_call_id) in tool_calls
+        for (((tc, tool_result), tool_call_id), started_at) in tool_calls
             .iter()
             .zip(tool_results)
             .zip(tool_call_ids.iter())
+            .zip(tool_started_ats.iter())
         {
             let (output, is_error, diff, inline_stats, _, kept_lines, locations) =
                 match tool_result {
@@ -1156,6 +1165,7 @@ impl<C: Channel> Agent<C> {
                     is_error,
                     self.parent_tool_use_id.clone(),
                     None,
+                    Some(*started_at),
                 )
                 .await?;
 

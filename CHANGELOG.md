@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Tool definitions now carry `cache_control: ephemeral` on the last tool entry, enabling tools to be cached independently of the system prompt (#1084)
 - Top-level `cache_control` added to all Claude request body structs; activated automatically for multi-turn sessions (`messages.len() > 1`) (#1086)
 - Message-level `cache_control` breakpoint placed on user message at position `max(0, total - 20)` to cover the 20-block lookback window (#1087)
+- ACP P1.1: `list_sessions` now populates `title` field for in-memory sessions via async title-gen callback with SQLite caching (#1065)
+- ACP P1.2: `set_session_config_option` handles `thinking` (on/off) and `auto_approve` (suggest/auto-edit/full-auto) config keys; `build_config_options` returns all three option groups (#1065)
+- ACP P1.3: `send_tool_start` captures `Instant::now()`; `send_tool_output` propagates `started_at` through loopback channel; `tool_call_update` metadata now emits `startedAt` (ISO 8601) and `elapsedMs` (u64 ms) (#1065)
+- `Channel::send_tool_output` trait extended with `started_at: Option<Instant>` parameter; all implementations updated (#1065)
+- Filed #1099: replace raw user text fallback in ACP session title generation
 
 ### Fixed
 
