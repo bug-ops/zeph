@@ -271,6 +271,7 @@ pub(crate) async fn run_daemon(
     .with_mcp_shared_tools(mcp_shared_tools)
     .with_learning(config.skills.learning.clone())
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
+    .with_hybrid_search(config.skills.hybrid_search)
     .with_available_secrets(
         config
             .secrets

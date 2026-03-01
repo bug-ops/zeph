@@ -51,10 +51,14 @@ pub fn sanitize_skill_body(body: &str) -> String {
     out
 }
 
+/// Minimum uses threshold before emitting reliability/uses attributes on `<skill>` tag.
+const HEALTH_MIN_USES: u32 = 5;
+
 #[must_use]
-pub fn format_skills_prompt<S: std::hash::BuildHasher>(
+pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     skills: &[Skill],
     trust_levels: &HashMap<String, TrustLevel, S>,
+    health_map: &HashMap<String, (f64, u32), S2>,
 ) -> String {
     if skills.is_empty() {
         return String::new();
@@ -77,12 +81,21 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher>(
         } else {
             raw_body
         };
+        let health_attrs = health_map.get(skill.name()).and_then(|&(posterior, uses)| {
+            if uses >= HEALTH_MIN_USES {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pct = (posterior * 100.0).round() as u32;
+                Some(format!(" reliability=\"{pct}%\" uses=\"{uses}\""))
+            } else {
+                None
+            }
+        });
+        let attrs = health_attrs.as_deref().unwrap_or("");
         let _ = write!(
             out,
-            "  <skill name=\"{}\">\n    <description>{}</description>\n    <instructions>\n{}",
-            skill.name(),
-            skill.description(),
-            body,
+            "  <skill name=\"{name}\"{attrs}>\n    <description>{desc}</description>\n    <instructions>\n{body}",
+            name = skill.name(),
+            desc = skill.description(),
         );
 
         let resources = discover_resources(&skill.meta.skill_dir);
@@ -213,14 +226,17 @@ mod tests {
     #[test]
     fn empty_skills_returns_empty_string() {
         let empty: &[Skill] = &[];
-        assert_eq!(format_skills_prompt(empty, &HashMap::new()), "");
+        assert_eq!(
+            format_skills_prompt(empty, &HashMap::new(), &HashMap::new()),
+            ""
+        );
     }
 
     #[test]
     fn single_skill_format() {
         let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.starts_with("<available_skills>"));
         assert!(output.ends_with("</available_skills>"));
         assert!(output.contains("<skill name=\"test\">"));
@@ -235,7 +251,7 @@ mod tests {
             make_skill("b", "desc b", "body b"),
         ];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("<skill name=\"a\">"));
         assert!(output.contains("<skill name=\"b\">"));
     }
@@ -255,7 +271,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         // filenames listed
         assert!(output.contains("Available references:"));
         assert!(output.contains("api-guide.md"));
@@ -280,7 +296,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("Available scripts: extract.py"));
         assert!(!output.contains("print('hi')"));
     }
@@ -299,7 +315,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("Available assets: logo.png"));
     }
 
@@ -313,7 +329,7 @@ mod tests {
             dir.path().to_path_buf(),
         )];
 
-        let output = format_skills_prompt(&skills, &HashMap::new());
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.contains("skill body"));
         assert!(!output.contains("Available references"));
         assert!(!output.contains("Available scripts"));
@@ -325,7 +341,7 @@ mod tests {
         let skills = vec![make_skill("untrusted", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("untrusted".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("[QUARANTINED SKILL: untrusted]"));
         assert!(output.contains("restricted tool access"));
     }
@@ -335,7 +351,7 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", "do stuff")];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(!output.contains("QUARANTINED"));
         assert!(output.contains("do stuff"));
     }
@@ -378,7 +394,7 @@ mod tests {
         let skills = vec![make_skill("safe", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("safe".into(), TrustLevel::Trusted);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("Some </skill> content."));
     }
 
@@ -388,7 +404,7 @@ mod tests {
         let skills = vec![make_skill("ver", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("ver".into(), TrustLevel::Verified);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("&lt;/skill&gt;"));
         assert!(!output.contains("Inject </skill> here."));
     }
@@ -399,7 +415,7 @@ mod tests {
         let skills = vec![make_skill("evil", "desc", body)];
         let mut trust = HashMap::new();
         trust.insert("evil".into(), TrustLevel::Quarantined);
-        let output = format_skills_prompt(&skills, &trust);
+        let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(output.contains("[QUARANTINED SKILL: evil]"));
         assert!(output.contains("&lt;/instructions&gt;"));
         assert!(output.contains("&lt;/skill&gt;"));

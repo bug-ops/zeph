@@ -1313,6 +1313,17 @@ impl<C: Channel> Agent<C> {
                 .await;
 
             if !scored.is_empty() {
+                if self.skill_state.hybrid_search
+                    && let Some(ref bm25) = self.skill_state.bm25_index
+                {
+                    let bm25_results = bm25.search(query, self.skill_state.max_active_skills);
+                    scored = zeph_skills::bm25::rrf_fuse(
+                        &scored,
+                        &bm25_results,
+                        self.skill_state.max_active_skills,
+                    );
+                }
+
                 let metrics_map: std::collections::HashMap<String, (u32, u32)> =
                     if let Some(memory) = &self.memory_state.memory {
                         memory
@@ -1447,6 +1458,28 @@ impl<C: Channel> Agent<C> {
 
         let trust_map = self.build_skill_trust_map().await;
 
+        // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
+        let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
+            &self.memory_state.memory
+        {
+            memory
+                .sqlite()
+                .load_skill_outcome_stats()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| {
+                    let successes = u32::try_from(m.successes).unwrap_or(0);
+                    let failures = u32::try_from(m.failures).unwrap_or(0);
+                    let total = successes + failures;
+                    let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+                    (m.skill_name, (posterior, total))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let effective_mode = match self.skill_state.prompt_mode {
             crate::config::SkillPromptMode::Auto => {
                 if let Some(ref budget) = self.context_manager.budget
@@ -1463,7 +1496,7 @@ impl<C: Channel> Agent<C> {
         let skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
             format_skills_prompt_compact(&active_skills)
         } else {
-            format_skills_prompt(&active_skills, &trust_map)
+            format_skills_prompt(&active_skills, &trust_map, &health_map)
         };
         let catalog_prompt = format_skills_catalog(&remaining_skills);
         self.skill_state

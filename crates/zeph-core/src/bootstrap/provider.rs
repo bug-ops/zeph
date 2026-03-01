@@ -8,6 +8,7 @@ use zeph_llm::compatible::CompatibleProvider;
 use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
+use zeph_llm::router::RouterProvider;
 
 use crate::config::{Config, ProviderKind};
 
@@ -66,8 +67,6 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             Ok(AnyProvider::Orchestrator(Box::new(orch)))
         }
         ProviderKind::Router => {
-            use zeph_llm::router::RouterProvider;
-
             let router_cfg = config
                 .llm
                 .router
@@ -82,9 +81,15 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             if providers.is_empty() {
                 bail!("router chain is empty");
             }
-            Ok(AnyProvider::Router(Box::new(RouterProvider::new(
-                providers,
-            ))))
+            let router = if config.llm.router_ema_enabled {
+                RouterProvider::new(providers).with_ema(
+                    config.llm.router_ema_alpha,
+                    config.llm.router_reorder_interval,
+                )
+            } else {
+                RouterProvider::new(providers)
+            };
+            Ok(AnyProvider::Router(Box::new(router)))
         }
         #[cfg(not(feature = "candle"))]
         ProviderKind::Candle => bail!("candle feature is not enabled"),

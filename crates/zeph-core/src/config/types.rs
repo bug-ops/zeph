@@ -160,10 +160,24 @@ pub struct LlmConfig {
     pub response_cache_enabled: bool,
     #[serde(default = "default_response_cache_ttl_secs")]
     pub response_cache_ttl_secs: u64,
+    #[serde(default)]
+    pub router_ema_enabled: bool,
+    #[serde(default = "default_router_ema_alpha")]
+    pub router_ema_alpha: f64,
+    #[serde(default = "default_router_reorder_interval")]
+    pub router_reorder_interval: u64,
 }
 
 fn default_response_cache_ttl_secs() -> u64 {
     3600
+}
+
+fn default_router_ema_alpha() -> f64 {
+    0.3
+}
+
+fn default_router_reorder_interval() -> u64 {
+    10
 }
 
 fn default_embedding_model() -> String {
@@ -369,6 +383,8 @@ pub struct SkillsConfig {
     pub disambiguation_threshold: f32,
     #[serde(default = "default_cosine_weight")]
     pub cosine_weight: f32,
+    #[serde(default)]
+    pub hybrid_search: bool,
     #[serde(default)]
     pub learning: LearningConfig,
     #[serde(default)]
@@ -1375,12 +1391,16 @@ impl Default for Config {
                 vision_model: None,
                 response_cache_enabled: false,
                 response_cache_ttl_secs: default_response_cache_ttl_secs(),
+                router_ema_enabled: false,
+                router_ema_alpha: default_router_ema_alpha(),
+                router_reorder_interval: default_router_reorder_interval(),
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
                 cosine_weight: default_cosine_weight(),
+                hybrid_search: false,
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,

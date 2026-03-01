@@ -104,6 +104,8 @@ pub(super) struct SkillState {
     /// Custom secrets available at runtime: key=hyphenated name, value=secret.
     pub(super) available_custom_secrets: HashMap<String, Secret>,
     pub(super) cosine_weight: f32,
+    pub(super) hybrid_search: bool,
+    pub(super) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
 }
 
 pub(super) struct McpState {
@@ -192,7 +194,8 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| registry.get_skill(&m.name).ok())
             .collect();
         let empty_trust = HashMap::new();
-        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust);
+        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
+        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust, &empty_health);
         let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
@@ -236,6 +239,8 @@ impl<C: Channel> Agent<C> {
                 prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
                 cosine_weight: 0.7,
+                hybrid_search: false,
+                bm25_index: None,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -1264,6 +1269,11 @@ impl<C: Channel> Agent<C> {
             tracing::warn!("failed to sync skill embeddings: {e:#}");
         }
 
+        if self.skill_state.hybrid_search {
+            let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
+            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+        }
+
         let all_skills: Vec<Skill> = self
             .skill_state
             .registry
@@ -1272,7 +1282,8 @@ impl<C: Channel> Agent<C> {
             .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
             .collect();
         let trust_map = self.build_skill_trust_map().await;
-        let skills_prompt = format_skills_prompt(&all_skills, &trust_map);
+        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
+        let skills_prompt = format_skills_prompt(&all_skills, &trust_map, &empty_health);
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
@@ -1309,6 +1320,7 @@ impl<C: Channel> Agent<C> {
         self.skill_state.max_active_skills = config.skills.max_active_skills;
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
         self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
+        self.skill_state.hybrid_search = config.skills.hybrid_search;
 
         if config.memory.context_budget_tokens > 0 {
             self.context_manager.budget = Some(ContextBudget::new(

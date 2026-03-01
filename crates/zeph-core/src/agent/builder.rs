@@ -149,6 +149,17 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_hybrid_search(mut self, enabled: bool) -> Self {
+        self.skill_state.hybrid_search = enabled;
+        if enabled {
+            let all_meta = self.skill_state.registry.all_meta();
+            let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
+            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+        }
+        self
+    }
+
+    #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         if config.correction_detection {
             self.feedback_detector = super::feedback_detector::FeedbackDetector::new(

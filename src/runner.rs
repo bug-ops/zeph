@@ -295,7 +295,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.autosave_assistant,
         config.memory.autosave_min_length,
     )
-    .with_tool_call_cutoff(config.memory.tool_call_cutoff);
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
+    .with_hybrid_search(config.skills.hybrid_search);
 
     let agent = agent_setup::apply_response_cache(
         agent,

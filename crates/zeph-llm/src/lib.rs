@@ -10,6 +10,7 @@ pub mod candle_provider;
 pub mod candle_whisper;
 pub mod claude;
 pub mod compatible;
+pub mod ema;
 pub mod error;
 #[cfg(feature = "schema")]
 pub mod extractor;
