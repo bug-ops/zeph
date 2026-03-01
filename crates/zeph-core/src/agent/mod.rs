@@ -1267,16 +1267,19 @@ impl<C: Channel> Agent<C> {
             self.skill_state.matcher = SkillMatcher::new(&all_meta, embed_fn)
                 .await
                 .map(SkillMatcherBackend::InMemory);
-        } else if let Some(ref mut backend) = self.skill_state.matcher
-            && let Err(e) = backend
+        } else if let Some(ref mut backend) = self.skill_state.matcher {
+            let _ = self.channel.send_status("syncing skill index...").await;
+            if let Err(e) = backend
                 .sync(&all_meta, &self.skill_state.embedding_model, embed_fn)
                 .await
-        {
-            tracing::warn!("failed to sync skill embeddings: {e:#}");
+            {
+                tracing::warn!("failed to sync skill embeddings: {e:#}");
+            }
         }
 
         if self.skill_state.hybrid_search {
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
+            let _ = self.channel.send_status("rebuilding search index...").await;
             self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
         }
 
@@ -1413,6 +1416,7 @@ pub(super) mod agent_tests {
         sent: Arc<Mutex<Vec<String>>>,
         chunks: Arc<Mutex<Vec<String>>>,
         confirmations: Arc<Mutex<Vec<bool>>>,
+        pub(crate) statuses: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockChannel {
@@ -1422,6 +1426,7 @@ pub(super) mod agent_tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 chunks: Arc::new(Mutex::new(Vec::new())),
                 confirmations: Arc::new(Mutex::new(Vec::new())),
+                statuses: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -1475,6 +1480,11 @@ pub(super) mod agent_tests {
         }
 
         async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
+            Ok(())
+        }
+
+        async fn send_status(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
+            self.statuses.lock().unwrap().push(text.to_string());
             Ok(())
         }
 

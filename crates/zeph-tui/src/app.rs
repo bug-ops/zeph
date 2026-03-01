@@ -187,6 +187,7 @@ pub struct App {
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
     pub render_cache: RenderCache,
+    pending_file_index: Option<oneshot::Receiver<FileIndex>>,
 }
 
 impl App {
@@ -229,6 +230,7 @@ impl App {
             hyperlinks: Vec::new(),
             cancel_signal: None,
             render_cache: RenderCache::default(),
+            pending_file_index: None,
         }
     }
 
@@ -1110,11 +1112,39 @@ impl App {
     fn open_file_picker(&mut self) {
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
-        if needs_rebuild {
-            self.file_index = Some(FileIndex::build(&root));
+        if needs_rebuild && self.pending_file_index.is_none() {
+            self.status_label = Some("indexing files...".to_owned());
+            let (tx, rx) = oneshot::channel();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(FileIndex::build(&root));
+            });
+            self.pending_file_index = Some(rx);
+            return;
         }
         if let Some(idx) = &self.file_index {
             self.file_picker_state = Some(FilePickerState::new(idx));
+        }
+    }
+
+    /// Checks if the background file index build has completed and, if so,
+    /// installs the result and opens the picker.
+    pub fn poll_pending_file_index(&mut self) {
+        let Some(rx) = self.pending_file_index.as_mut() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(idx) => {
+                let picker = FilePickerState::new(&idx);
+                self.file_index = Some(idx);
+                self.file_picker_state = Some(picker);
+                self.pending_file_index = None;
+                self.status_label = None;
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.pending_file_index = None;
+                self.status_label = None;
+            }
         }
     }
 
@@ -2635,6 +2665,10 @@ mod tests {
         #[test]
         fn at_sign_opens_picker_and_does_not_insert_into_input() {
             let (mut app, _rx, _tx) = make_app_with_index();
+            // Pre-populate a fresh index so open_file_picker can open the picker immediately
+            // without spawning a background build (which requires a Tokio runtime).
+            let (idx, _dir) = build_temp_index(&["a.rs"]);
+            app.file_index = Some(idx);
             app.input_mode = InputMode::Insert;
             let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
@@ -2834,6 +2868,76 @@ mod tests {
             assert!(app.input.contains(&selected));
             assert!(app.input.starts_with('a'));
             assert!(app.input.ends_with('b'));
+        }
+
+        #[tokio::test]
+        async fn poll_pending_file_index_installs_index_and_opens_picker() {
+            let (user_tx, _user_rx) = tokio::sync::mpsc::channel(1);
+            let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(1);
+            let mut app = App::new(user_tx, agent_rx);
+
+            // Simulate: status is set, pending_file_index is Some (already resolved)
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let (idx, _dir) = build_temp_index(&["foo.rs"]);
+            let _ = tx.send(idx);
+            app.pending_file_index = Some(rx);
+            app.status_label = Some("indexing files...".to_owned());
+
+            // Give the oneshot a moment to be ready (it already is since we sent before assigning)
+            tokio::task::yield_now().await;
+
+            app.poll_pending_file_index();
+
+            assert!(app.file_index.is_some(), "file_index should be installed");
+            assert!(
+                app.file_picker_state.is_some(),
+                "picker should open after index ready"
+            );
+            assert!(
+                app.status_label.is_none(),
+                "status should be cleared after index ready"
+            );
+            assert!(
+                app.pending_file_index.is_none(),
+                "pending handle should be consumed"
+            );
+        }
+
+        #[tokio::test]
+        async fn poll_pending_file_index_noop_when_none() {
+            let (user_tx, _user_rx) = tokio::sync::mpsc::channel(1);
+            let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(1);
+            let mut app = App::new(user_tx, agent_rx);
+
+            // No pending handle — should be a no-op
+            app.poll_pending_file_index();
+
+            assert!(app.file_index.is_none());
+            assert!(app.file_picker_state.is_none());
+        }
+
+        #[tokio::test]
+        async fn poll_pending_file_index_clears_on_closed_sender() {
+            let (user_tx, _user_rx) = tokio::sync::mpsc::channel(1);
+            let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(1);
+            let mut app = App::new(user_tx, agent_rx);
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<crate::file_picker::FileIndex>();
+            // Drop sender without sending — simulates spawn_blocking panic
+            drop(tx);
+            app.pending_file_index = Some(rx);
+            app.status_label = Some("indexing files...".to_owned());
+
+            app.poll_pending_file_index();
+
+            assert!(
+                app.pending_file_index.is_none(),
+                "closed handle should be consumed"
+            );
+            assert!(
+                app.status_label.is_none(),
+                "status should be cleared on closed sender"
+            );
         }
     }
 }
