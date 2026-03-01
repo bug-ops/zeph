@@ -3585,6 +3585,72 @@ mod tests {
         ));
     }
 
+    // Regression test for #1033: multiline tool output must preserve newlines in
+    // terminal_output.data and raw_output. Before the fix, the markdown-wrapped display string
+    // was used, causing IDEs to receive fenced code block text rather than raw output.
+    #[test]
+    fn loopback_tool_output_multiline_preserves_newlines_in_terminal_data() {
+        let raw = "file1.rs\nfile2.rs\nfile3.rs".to_owned();
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: raw.clone(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-multi".to_owned(),
+            is_error: false,
+            terminal_id: Some("term-multi".to_owned()),
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 2, "expected intermediate + final update");
+
+        // Intermediate update carries terminal_output meta.
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let meta = tcu.meta.as_ref().expect("intermediate must have _meta");
+                let output = &meta["terminal_output"];
+                let data = output["data"]
+                    .as_str()
+                    .expect("terminal_output.data must be string");
+                // Must be raw text — no markdown fences.
+                assert!(
+                    !data.contains("```"),
+                    "terminal_output.data must not contain markdown fences; got: {data:?}"
+                );
+                assert!(
+                    data.contains('\n'),
+                    "terminal_output.data must preserve newlines; got: {data:?}"
+                );
+                assert_eq!(data, raw, "terminal_output.data must equal raw body");
+            }
+            other => panic!("expected intermediate ToolCallUpdate, got {other:?}"),
+        }
+
+        // Final update carries raw_output.
+        match &updates[1] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let raw_out = tcu
+                    .fields
+                    .raw_output
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .expect("raw_output must be string");
+                assert!(
+                    !raw_out.contains("```"),
+                    "raw_output must not contain markdown fences; got: {raw_out:?}"
+                );
+                assert!(
+                    raw_out.contains('\n'),
+                    "raw_output must preserve newlines; got: {raw_out:?}"
+                );
+                assert_eq!(raw_out, raw, "raw_output must equal raw body");
+            }
+            other => panic!("expected final ToolCallUpdate, got {other:?}"),
+        }
+    }
+
     // --- #958 SetSessionModel ---
 
     #[cfg(feature = "unstable-session-model")]

@@ -2409,4 +2409,70 @@ mod tests {
             "locations from ToolOutput must be forwarded to LoopbackEvent::ToolOutput"
         );
     }
+
+    // Regression test for #1033: send_tool_output must receive raw body, not markdown-wrapped text.
+    // Before the fix, `format_tool_output` output (with fenced code block) was passed to
+    // `send_tool_output`, which caused newlines inside the output to be lost in ACP consumers
+    // that read `terminal_output.data` or `raw_output` as plain text.
+    #[tokio::test]
+    async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
+        use super::super::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
+        use crate::channel::{LoopbackChannel, LoopbackEvent};
+        use zeph_tools::executor::ToolOutput;
+
+        let (loopback, mut handle) = LoopbackChannel::pair(32);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, loopback, registry, None, 5, executor);
+
+        let output = ToolOutput {
+            tool_name: "bash".into(),
+            summary: "line1\nline2\nline3".into(),
+            blocks_executed: 1,
+            diff: None,
+            filter_stats: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+        };
+        agent
+            .handle_tool_result("response", Ok(Some(output)))
+            .await
+            .unwrap();
+        drop(agent);
+
+        let mut events = Vec::new();
+        while let Ok(ev) = handle.output_rx.try_recv() {
+            events.push(ev);
+        }
+
+        let display = events.iter().find_map(|e| {
+            if let LoopbackEvent::ToolOutput { display, .. } = e {
+                Some(display.clone())
+            } else {
+                None
+            }
+        });
+
+        let display = display.expect("LoopbackEvent::ToolOutput must be emitted");
+        // Raw body must be passed — no markdown fence markers.
+        assert!(
+            !display.contains("```"),
+            "display must not contain markdown fences; got: {display:?}"
+        );
+        assert!(
+            !display.contains("[tool output:"),
+            "display must not contain markdown header; got: {display:?}"
+        );
+        // Newlines from the original output must be preserved.
+        assert!(
+            display.contains('\n'),
+            "display must preserve newlines from raw body; got: {display:?}"
+        );
+        assert!(
+            display.contains("line1") && display.contains("line2") && display.contains("line3"),
+            "display must contain all lines from raw body; got: {display:?}"
+        );
+    }
 }
