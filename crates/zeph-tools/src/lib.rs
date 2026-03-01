@@ -16,6 +16,7 @@ pub mod permissions;
 pub mod registry;
 pub mod scrape;
 pub mod shell;
+pub mod tool_filter;
 pub mod trust_gate;
 pub mod trust_level;
 
@@ -39,6 +40,10 @@ pub use permissions::{
 };
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
-pub use shell::ShellExecutor;
+pub use shell::{
+    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, check_blocklist,
+    effective_shell_command,
+};
+pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::TrustLevel;

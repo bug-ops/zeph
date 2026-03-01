@@ -120,6 +120,18 @@ struct WriteFileParams {
     content: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct ListDirectoryParams {
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FindPathParams {
+    pattern: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
 fn validate_absolute_path(raw: &str) -> Result<PathBuf, ToolError> {
     let path = PathBuf::from(raw);
     if !path.is_absolute() {
@@ -149,15 +161,32 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
         if self.can_read {
             defs.push(ToolDef {
                 id: "read_file".into(),
-                description: "Read a file from the IDE workspace".into(),
+                description: "Read a file from the IDE workspace. Preferred over bash cat/head/tail for reading files. Returns structured content with line numbers. Supports optional line offset and limit.".into(),
                 schema: schemars::schema_for!(ReadFileParams),
+                invocation: InvocationHint::ToolCall,
+            });
+            defs.push(ToolDef {
+                id: "list_directory".into(),
+                description:
+                    "List files and directories at the given path. Preferred over bash ls.".into(),
+                schema: schemars::schema_for!(ListDirectoryParams),
+                invocation: InvocationHint::ToolCall,
+            });
+            defs.push(ToolDef {
+                id: "find_path".into(),
+                description:
+                    "Find files matching a glob pattern in a directory. Preferred over bash find."
+                        .into(),
+                schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
             });
         }
         if self.can_write {
             defs.push(ToolDef {
                 id: "write_file".into(),
-                description: "Write content to a file in the IDE workspace".into(),
+                description:
+                    "Write content to a file in the IDE workspace. Preferred over shell redirects."
+                        .into(),
                 schema: schemars::schema_for!(WriteFileParams),
                 invocation: InvocationHint::ToolCall,
             });
@@ -220,8 +249,112 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     raw_response: None,
                 }))
             }
+            "list_directory" if self.can_read => {
+                let params: ListDirectoryParams = deserialize_params(&call.params)?;
+                Self::handle_list_directory(params)
+            }
+            "find_path" if self.can_read => {
+                let params: FindPathParams = deserialize_params(&call.params)?;
+                Self::handle_find_path(&params)
+            }
             _ => Ok(None),
         }
+    }
+}
+
+impl AcpFileExecutor {
+    fn handle_list_directory(params: ListDirectoryParams) -> Result<Option<ToolOutput>, ToolError> {
+        let dir = validate_absolute_path(&params.path)?;
+        let entries = std::fs::read_dir(&dir).map_err(|e| ToolError::InvalidParams {
+            message: format!("cannot read directory {}: {e}", params.path),
+        })?;
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| ToolError::InvalidParams {
+                message: format!("directory entry error: {e}"),
+            })?;
+            // Use symlink_metadata to avoid following symlinks outside the sandbox.
+            let meta = entry
+                .path()
+                .symlink_metadata()
+                .map_err(|e| ToolError::InvalidParams {
+                    message: format!("metadata error: {e}"),
+                })?;
+            items.push(serde_json::json!({
+                "name": entry.file_name().to_string_lossy(),
+                "is_dir": meta.is_dir(),
+                "size": meta.len(),
+                "is_symlink": meta.file_type().is_symlink(),
+            }));
+        }
+        items.sort_by(|a, b| {
+            let a_name = a["name"].as_str().unwrap_or("");
+            let b_name = b["name"].as_str().unwrap_or("");
+            a_name.cmp(b_name)
+        });
+        let summary = serde_json::to_string(&items).unwrap_or_default();
+        Ok(Some(ToolOutput {
+            tool_name: "list_directory".to_owned(),
+            summary,
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: Some(vec![params.path]),
+            raw_response: None,
+        }))
+    }
+
+    fn handle_find_path(params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
+        const MAX_RESULTS: usize = 1000;
+
+        // path is required; defaulting to "." would bypass sandbox validation.
+        let base_str = params
+            .path
+            .as_deref()
+            .ok_or_else(|| ToolError::InvalidParams {
+                message: "find_path: 'path' parameter is required and must be an absolute path"
+                    .into(),
+            })?;
+        let _base = validate_absolute_path(base_str)?;
+
+        // Reject traversal components in the pattern to prevent escaping the base directory.
+        if params
+            .pattern
+            .split('/')
+            .any(|seg| seg == ".." || seg.starts_with('/'))
+        {
+            return Err(ToolError::SandboxViolation {
+                path: params.pattern.clone(),
+            });
+        }
+
+        let glob_str = format!("{base_str}/{}", params.pattern);
+        let mut matches: Vec<String> = Vec::new();
+        for entry in glob::glob(&glob_str).map_err(|e| ToolError::InvalidParams {
+            message: format!("invalid glob pattern: {e}"),
+        })? {
+            if matches.len() >= MAX_RESULTS {
+                break;
+            }
+            if let Ok(p) = entry {
+                matches.push(p.display().to_string());
+            }
+        }
+
+        let summary = matches.join("\n");
+        Ok(Some(ToolOutput {
+            tool_name: "find_path".to_owned(),
+            summary,
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        }))
     }
 }
 
@@ -404,8 +537,12 @@ mod tests {
             can_write: false,
         };
         let defs = exec_read_only.tool_definitions();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].id, "read_file");
+        let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
+        assert!(ids.contains(&"read_file"));
+        assert!(ids.contains(&"list_directory"));
+        assert!(ids.contains(&"find_path"));
+        assert!(!ids.contains(&"write_file"));
+        assert!(defs[0].description.contains("cat/head/tail"));
 
         let exec_write_only = AcpFileExecutor {
             session_id: acp::SessionId::new("s"),
@@ -416,6 +553,64 @@ mod tests {
         let defs = exec_write_only.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "write_file");
+        assert!(defs[0].description.contains("shell redirects"));
+    }
+
+    #[tokio::test]
+    async fn list_directory_returns_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "list_directory".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("file.txt"));
+        assert!(result.summary.contains("subdir"));
+    }
+
+    #[tokio::test]
+    async fn find_path_matches_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("foo.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.path().join("bar.toml"), "[package]").unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("foo.rs"));
+        assert!(!result.summary.contains("bar.toml"));
     }
 
     #[tokio::test]
@@ -467,6 +662,186 @@ mod tests {
                 assert!(result.is_none());
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn list_directory_nonexistent_returns_error() {
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(test_path("nonexistent_dir_zeph")),
+        );
+        let call = ToolCall {
+            tool_id: "list_directory".to_owned(),
+            params,
+        };
+        let err = exec.execute_tool_call(&call).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidParams { .. }));
+    }
+
+    #[tokio::test]
+    async fn list_directory_empty_dir_returns_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "list_directory".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary, "[]");
+    }
+
+    #[tokio::test]
+    async fn find_path_no_matches_returns_empty_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("*.nomatch"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary, "");
+    }
+
+    #[tokio::test]
+    async fn find_path_invalid_glob_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("[invalid"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let err = exec.execute_tool_call(&call).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidParams { .. }));
+    }
+
+    #[tokio::test]
+    async fn list_directory_capability_disabled_returns_none() {
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: false,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("path".to_owned(), serde_json::json!(test_path("some_dir")));
+        let call = ToolCall {
+            tool_id: "list_directory".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_path_capability_disabled_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: false,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_path_traversal_in_pattern_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("../../etc/passwd"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let err = exec.execute_tool_call(&call).await.unwrap_err();
+        assert!(matches!(err, ToolError::SandboxViolation { .. }));
+    }
+
+    #[tokio::test]
+    async fn find_path_missing_path_param_returns_error() {
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
+        // no "path" key — should error, not default to "."
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let err = exec.execute_tool_call(&call).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidParams { .. }));
     }
 
     #[test]

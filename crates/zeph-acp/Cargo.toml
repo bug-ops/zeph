@@ -36,6 +36,7 @@ base64.workspace = true
 chrono = { workspace = true }
 dirs.workspace = true
 futures.workspace = true
+glob.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

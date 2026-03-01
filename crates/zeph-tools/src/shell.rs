@@ -23,6 +23,64 @@ const DEFAULT_BLOCKED: &[&str] = &[
     "reboot", "halt",
 ];
 
+/// The default list of blocked command patterns used by [`ShellExecutor`].
+///
+/// Exposed so other executors (e.g. `AcpShellExecutor`) can reuse the same
+/// blocklist without duplicating it.
+pub const DEFAULT_BLOCKED_COMMANDS: &[&str] = DEFAULT_BLOCKED;
+
+/// Shell interpreters that may execute arbitrary code via `-c` or positional args.
+pub const SHELL_INTERPRETERS: &[&str] =
+    &["bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh"];
+
+/// Subshell metacharacters that could embed a blocked command inside a benign wrapper.
+/// Commands containing these sequences are rejected outright because safe static
+/// analysis of nested shell evaluation is not feasible.
+const SUBSHELL_METACHARS: &[&str] = &["$(", "`"];
+
+/// Check if `command` matches any pattern in `blocklist`.
+///
+/// Returns the matched pattern string if the command is blocked, `None` otherwise.
+/// The check is case-insensitive and handles common shell escape sequences.
+///
+/// Commands containing subshell metacharacters (`$(` or `` ` ``) are always
+/// blocked because nested evaluation cannot be safely analysed statically.
+#[must_use]
+pub fn check_blocklist(command: &str, blocklist: &[String]) -> Option<String> {
+    let lower = command.to_lowercase();
+    // Reject commands that embed subshell constructs to prevent blocklist bypass.
+    for meta in SUBSHELL_METACHARS {
+        if lower.contains(meta) {
+            return Some((*meta).to_owned());
+        }
+    }
+    let cleaned = strip_shell_escapes(&lower);
+    let commands = tokenize_commands(&cleaned);
+    for blocked in blocklist {
+        for cmd_tokens in &commands {
+            if tokens_match_pattern(cmd_tokens, blocked) {
+                return Some(blocked.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Build the effective command string for blocklist evaluation when the binary is a
+/// shell interpreter (bash, sh, zsh, etc.) and args contains a `-c` script.
+///
+/// Returns `None` if the args do not follow the `-c <script>` pattern.
+#[must_use]
+pub fn effective_shell_command<'a>(binary: &str, args: &'a [String]) -> Option<&'a str> {
+    let base = binary.rsplit('/').next().unwrap_or(binary);
+    if !SHELL_INTERPRETERS.contains(&base) {
+        return None;
+    }
+    // Find "-c" and return the next element as the script to check.
+    let pos = args.iter().position(|a| a == "-c")?;
+    args.get(pos + 1).map(String::as_str)
+}
+
 const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
 
 #[derive(Deserialize, JsonSchema)]
@@ -457,7 +515,7 @@ impl ToolExecutor for ShellExecutor {
 /// Strip shell escape sequences that could bypass command detection.
 /// Handles: backslash insertion (`su\do` -> `sudo`), `$'\xNN'` hex and `$'\NNN'` octal
 /// escapes, adjacent quoted segments (`"su""do"` -> `sudo`), backslash-newline continuations.
-fn strip_shell_escapes(input: &str) -> String {
+pub(crate) fn strip_shell_escapes(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut i = 0;
@@ -548,7 +606,7 @@ fn strip_shell_escapes(input: &str) -> String {
 
 /// Split normalized shell code into sub-commands on `|`, `||`, `&&`, `;`, `\n`.
 /// Returns list of sub-commands, each as `Vec<String>` of tokens.
-fn tokenize_commands(normalized: &str) -> Vec<Vec<String>> {
+pub(crate) fn tokenize_commands(normalized: &str) -> Vec<Vec<String>> {
     // Replace two-char operators with a single separator, then split on single-char separators
     let replaced = normalized.replace("||", "\n").replace("&&", "\n");
     replaced
@@ -577,7 +635,7 @@ fn cmd_basename(tok: &str) -> &str {
 /// - Absolute paths (`/usr/bin/sudo rm` -> basename `sudo` is checked)
 /// - Dot-suffixed variants (`mkfs` matches `mkfs.ext4`)
 /// - Multi-word patterns (`rm -rf /` joined prefix check)
-fn tokens_match_pattern(tokens: &[String], pattern: &str) -> bool {
+pub(crate) fn tokens_match_pattern(tokens: &[String], pattern: &str) -> bool {
     if tokens.is_empty() || pattern.is_empty() {
         return false;
     }
@@ -2007,5 +2065,94 @@ mod tests {
         let executor = ShellExecutor::new(&default_config());
         // Known limitation: bash receives payload via stdin; inner command substitution is opaque.
         assert!(executor.find_blocked_command("bash <<< $(id)").is_none());
+    }
+
+    // --- check_blocklist direct tests (GAP-001) ---
+
+    fn default_blocklist() -> Vec<String> {
+        DEFAULT_BLOCKED.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn check_blocklist_blocks_rm_rf_root() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("rm -rf /", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_sudo() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("sudo apt install vim", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_allows_safe_commands() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("ls -la", &bl).is_none());
+        assert!(check_blocklist("echo hello world", &bl).is_none());
+        assert!(check_blocklist("git status", &bl).is_none());
+        assert!(check_blocklist("cargo build --release", &bl).is_none());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_subshell_dollar_paren() {
+        let bl = default_blocklist();
+        // Subshell $(sudo ...) must be rejected even if outer command is benign.
+        assert!(check_blocklist("echo $(sudo id)", &bl).is_some());
+        assert!(check_blocklist("echo $(rm -rf /tmp)", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_subshell_backtick() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("cat `sudo cat /etc/shadow`", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_mkfs() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("mkfs.ext4 /dev/sda1", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_shutdown() {
+        let bl = default_blocklist();
+        assert!(check_blocklist("shutdown -h now", &bl).is_some());
+    }
+
+    // --- effective_shell_command tests ---
+
+    #[test]
+    fn effective_shell_command_bash_minus_c() {
+        let args = vec!["-c".to_owned(), "rm -rf /".to_owned()];
+        assert_eq!(effective_shell_command("bash", &args), Some("rm -rf /"));
+    }
+
+    #[test]
+    fn effective_shell_command_sh_minus_c() {
+        let args = vec!["-c".to_owned(), "sudo ls".to_owned()];
+        assert_eq!(effective_shell_command("sh", &args), Some("sudo ls"));
+    }
+
+    #[test]
+    fn effective_shell_command_non_shell_returns_none() {
+        let args = vec!["-c".to_owned(), "rm -rf /".to_owned()];
+        assert_eq!(effective_shell_command("git", &args), None);
+        assert_eq!(effective_shell_command("cargo", &args), None);
+    }
+
+    #[test]
+    fn effective_shell_command_no_minus_c_returns_none() {
+        let args = vec!["script.sh".to_owned()];
+        assert_eq!(effective_shell_command("bash", &args), None);
+    }
+
+    #[test]
+    fn effective_shell_command_full_path_shell() {
+        let args = vec!["-c".to_owned(), "sudo rm".to_owned()];
+        assert_eq!(
+            effective_shell_command("/usr/bin/bash", &args),
+            Some("sudo rm")
+        );
     }
 }
