@@ -182,6 +182,7 @@ pub trait Channel: Send {
         _is_error: bool,
         _parent_tool_use_id: Option<String>,
         _raw_response: Option<serde_json::Value>,
+        _started_at: Option<std::time::Instant>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         let formatted = crate::agent::format_tool_output(tool_name, body);
         async move { self.send(&formatted).await }
@@ -216,6 +217,8 @@ pub enum LoopbackEvent {
         params: Option<serde_json::Value>,
         /// Set when this tool call is made by a subagent; identifies the parent's `tool_call_id`.
         parent_tool_use_id: Option<String>,
+        /// Wall-clock instant when the tool call was initiated; used to compute elapsed time.
+        started_at: std::time::Instant,
     },
     ToolOutput {
         tool_name: String,
@@ -232,6 +235,8 @@ pub enum LoopbackEvent {
         parent_tool_use_id: Option<String>,
         /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
         raw_response: Option<serde_json::Value>,
+        /// Wall-clock instant when the corresponding `ToolStart` was emitted; used for elapsed time.
+        started_at: Option<std::time::Instant>,
     },
     /// Token usage from the last LLM turn.
     Usage {
@@ -334,6 +339,7 @@ impl Channel for LoopbackChannel {
                 tool_call_id: tool_call_id.to_owned(),
                 params,
                 parent_tool_use_id,
+                started_at: std::time::Instant::now(),
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -352,6 +358,7 @@ impl Channel for LoopbackChannel {
         is_error: bool,
         parent_tool_use_id: Option<String>,
         raw_response: Option<serde_json::Value>,
+        started_at: Option<std::time::Instant>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
@@ -366,6 +373,7 @@ impl Channel for LoopbackChannel {
                 terminal_id: None,
                 parent_tool_use_id,
                 raw_response,
+                started_at,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -605,7 +613,7 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
             .send_tool_output(
-                "bash", "exit 0", None, None, None, None, "", false, None, None,
+                "bash", "exit 0", None, None, None, None, "", false, None, None, None,
             )
             .await
             .unwrap();
@@ -623,6 +631,7 @@ mod tests {
                 terminal_id,
                 parent_tool_use_id,
                 raw_response,
+                ..
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");

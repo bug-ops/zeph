@@ -5,10 +5,11 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
+    AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
     OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SessionsConfig,
     SlackConfig, TelegramConfig, VaultConfig,
 };
+use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
@@ -53,6 +54,7 @@ pub(crate) struct WizardState {
     pub(crate) acp_enabled: bool,
     pub(crate) acp_agent_name: String,
     pub(crate) acp_agent_version: String,
+    pub(crate) thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -203,6 +205,7 @@ fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
     let providers = [
         "Ollama (local)",
@@ -245,6 +248,38 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
                     .default("claude-sonnet-4-5-20250929".into())
                     .interact_text()?,
             );
+            let thinking_mode = Select::new()
+                .with_prompt("Enable thinking?")
+                .items(["No", "Extended", "Adaptive"])
+                .default(0)
+                .interact()?;
+            state.thinking = match thinking_mode {
+                1 => {
+                    let budget: u32 = Input::new()
+                        .with_prompt("Budget tokens (1024-128000)")
+                        .default(10_000)
+                        .interact_text()?;
+                    Some(ThinkingConfig::Extended {
+                        budget_tokens: budget,
+                    })
+                }
+                2 => {
+                    let effort_idx = Select::new()
+                        .with_prompt("Effort level")
+                        .items(["Low", "Medium", "High"])
+                        .default(1)
+                        .interact()?;
+                    let effort = match effort_idx {
+                        0 => ThinkingEffort::Low,
+                        2 => ThinkingEffort::High,
+                        _ => ThinkingEffort::Medium,
+                    };
+                    Some(ThinkingConfig::Adaptive {
+                        effort: Some(effort),
+                    })
+                }
+                _ => None,
+            };
         }
         2 => {
             state.provider = Some(ProviderKind::OpenAi);
@@ -432,6 +467,7 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     config.agent.auto_update_check = state.auto_update_check;
@@ -454,7 +490,18 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .embedding_model
             .clone()
             .unwrap_or_else(|| "qwen3-embedding".into()),
-        cloud: None,
+        cloud: if provider == ProviderKind::Claude {
+            Some(CloudLlmConfig {
+                model: state
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into()),
+                max_tokens: 8096,
+                thinking: state.thinking.clone(),
+            })
+        } else {
+            None
+        },
         ollama: None,
         openai: None,
         candle: None,

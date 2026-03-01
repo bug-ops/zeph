@@ -18,6 +18,9 @@ expression: pretty
       "required": [
         "command"
       ]
+    },
+    "cache_control": {
+      "type": "ephemeral"
     }
   }
 ]

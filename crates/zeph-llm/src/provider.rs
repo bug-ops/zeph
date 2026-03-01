@@ -66,6 +66,13 @@ pub struct ToolUseRequest {
     pub input: serde_json::Value,
 }
 
+/// Thinking block returned by Claude when thinking is enabled.
+#[derive(Debug, Clone)]
+pub enum ThinkingBlock {
+    Thinking { thinking: String, signature: String },
+    Redacted { data: String },
+}
+
 /// Response from `chat_with_tools()`.
 #[derive(Debug, Clone)]
 pub enum ChatResponse {
@@ -76,6 +83,9 @@ pub enum ChatResponse {
         /// Any text the model emitted before/alongside tool calls.
         text: Option<String>,
         tool_calls: Vec<ToolUseRequest>,
+        /// Thinking blocks from the model (empty when thinking is disabled).
+        /// Must be preserved verbatim in multi-turn requests.
+        thinking_blocks: Vec<ThinkingBlock>,
     },
 }
 
@@ -132,6 +142,15 @@ pub enum MessagePart {
         is_error: bool,
     },
     Image(Box<ImageData>),
+    /// Claude thinking block — must be preserved verbatim in multi-turn requests.
+    ThinkingBlock {
+        thinking: String,
+        signature: String,
+    },
+    /// Claude redacted thinking block — preserved as-is in multi-turn requests.
+    RedactedThinkingBlock {
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -291,6 +310,8 @@ impl Message {
                 MessagePart::Image(img) => {
                     let _ = write!(out, "[image: {}, {} bytes]", img.mime_type, img.data.len());
                 }
+                // Thinking blocks are internal reasoning — not rendered in text content.
+                MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. } => {}
             }
         }
         out
@@ -861,6 +882,7 @@ mod tests {
                 name: "bash".into(),
                 input: serde_json::json!({}),
             }],
+            thinking_blocks: vec![],
         };
         assert!(matches!(tool_use, ChatResponse::ToolUse { .. }));
     }

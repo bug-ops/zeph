@@ -32,11 +32,22 @@ fn parse_claude_sse_event(data: &str, event_type: &str) -> Option<Result<String,
     match event_type {
         "content_block_delta" => match serde_json::from_str::<ClaudeStreamEvent>(data) {
             Ok(event) => {
-                if let Some(delta) = event.delta
-                    && delta.delta_type == "text_delta"
-                    && !delta.text.is_empty()
-                {
-                    return Some(Ok(delta.text));
+                if let Some(delta) = event.delta {
+                    match delta.delta_type.as_str() {
+                        "text_delta" if !delta.text.is_empty() => {
+                            return Some(Ok(delta.text));
+                        }
+                        "thinking_delta" => {
+                            tracing::debug!(
+                                len = delta.thinking.len(),
+                                "Claude thinking_delta (not emitted to stream)"
+                            );
+                        }
+                        "signature_delta" => {
+                            tracing::debug!("Claude signature_delta (not emitted to stream)");
+                        }
+                        _ => {}
+                    }
                 }
                 None
             }
@@ -104,6 +115,8 @@ struct ClaudeDelta {
     delta_type: String,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    thinking: String,
 }
 
 #[derive(Deserialize)]
@@ -187,5 +200,20 @@ mod tests {
         let result = parse_openai_sse_event("not json");
         let err = result.unwrap().unwrap_err();
         assert!(err.to_string().contains("failed to parse SSE data"));
+    }
+
+    #[test]
+    fn claude_thinking_delta_not_emitted_to_stream() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I need to think about this"}}"#;
+        let result = parse_claude_sse_event(data, "content_block_delta");
+        // thinking_delta must not be emitted to the user stream
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claude_signature_delta_not_emitted_to_stream() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}"#;
+        let result = parse_claude_sse_event(data, "content_block_delta");
+        assert!(result.is_none());
     }
 }

@@ -6,8 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Claude extended thinking support: `ThinkingConfig` enum (`Extended { budget_tokens }` / `Adaptive { effort? }`) with model capability map; `ClaudeProvider::with_thinking()` builder (returns `Result` with validated 1024–128000 range) (#1089)
+- Claude API request serialization for thinking: `thinking` and `output_config` fields on all four request body variants; conditional `interleaved-thinking-2025-05-14` beta header for extended mode on Sonnet 4.6 with tools (#1090)
+- Claude response and SSE streaming: `AnthropicContentBlock::Thinking` and `RedactedThinking` variants; `thinking_delta`/`signature_delta` SSE events parsed and suppressed from user stream (#1091)
+- Multi-turn tool use: `MessagePart::ThinkingBlock`/`RedactedThinkingBlock` variants preserve thinking blocks verbatim across tool call turns in correct API ordering (#1092)
+- `--thinking extended:<budget>` and `--thinking adaptive[:<effort>]` CLI arguments with range validation in `parse_thinking_arg()` (#1089)
+- `--init` wizard thinking mode selection prompt (#1089)
+- `[llm.claude] thinking = { mode = "extended", budget_tokens = 16000 }` TOML config support (#1089)
+- `max_tokens` auto-bumped to 16000 when thinking is enabled and configured value is below threshold (#1090)
+- `CacheType` enum (`Ephemeral` variant) replaces bare `String` in `CacheControl` — compile-time safety for cache type construction (#1082, #1088)
+- Tool definitions now carry `cache_control: ephemeral` on the last tool entry, enabling tools to be cached independently of the system prompt (#1084)
+- Top-level `cache_control` added to all Claude request body structs; activated automatically for multi-turn sessions (`messages.len() > 1`) (#1086)
+- Message-level `cache_control` breakpoint placed on user message at position `max(0, total - 20)` to cover the 20-block lookback window (#1087)
+- ACP P1.1: `list_sessions` now populates `title` field for in-memory sessions via async title-gen callback with SQLite caching (#1065)
+- ACP P1.2: `set_session_config_option` handles `thinking` (on/off) and `auto_approve` (suggest/auto-edit/full-auto) config keys; `build_config_options` returns all third option groups (#1065)
+- ACP P1.3: `send_tool_start` captures `Instant::now()`; `send_tool_output` propagates `started_at` through loopback channel; `tool_call_update` metadata now emits `startedAt` (ISO 8601) and `elapsedMs` (u64 ms) (#1065)
+- `Channel::send_tool_output` trait extended with `started_at: Option<Instant>` parameter; all implementations updated (#1065)
+- Filed #1099: replace raw user text fallback in ACP session title generation
+
 ### Fixed
 
+- Block 1 of system prompt now includes skills prompt, tool catalog, and catalog prompt so its token count exceeds the model-aware minimum threshold (Sonnet 4.6: 2048 tokens, Opus/Haiku: 4096 tokens) — previously ~377 tokens caused caching to be silently skipped (#1083)
+- Removed outdated `anthropic-beta: prompt-caching-2024-07-31` request header; prompt caching is GA and no longer requires the beta header (#1085)
+- Model-aware `cache_min_tokens` check added to `split_system_into_blocks` to prevent `cache_control` from being attached to blocks below the minimum cacheable threshold (#1083)
 - Restructured `rebuild_system_prompt` block ordering so cache markers align with content stability: Block 1 (base prompt) is stable across all turns, Block 2 (skill catalog, MCP, project context) is semi-stable per session, Block 3 (env, tools, active skills) is volatile per turn — fixes near-zero cache hit rate in multi-turn Claude sessions (#1079)
 - TUI Skills panel now shows Wilson score confidence bars immediately after skill match, not only after the first LLM outcome is recorded (`context.rs`: call `update_skill_confidence_metrics()` at skill resolution time) (#1077)
 - TUI event loop redraws on every tick unconditionally; previously the dirty-flag was never set by the tick arm, causing confidence bars to stay stale between user keypresses (#1077)

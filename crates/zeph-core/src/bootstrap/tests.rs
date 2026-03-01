@@ -136,6 +136,7 @@ fn create_provider_claude_without_api_key_errors() {
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
         model: "claude-3-opus".into(),
         max_tokens: 4096,
+        thinking: None,
     });
     config.secrets.claude_api_key = None;
 
@@ -396,6 +397,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
         model: "claude-3".into(),
         max_tokens: 4096,
+        thinking: None,
     });
     config.secrets.claude_api_key = None;
 

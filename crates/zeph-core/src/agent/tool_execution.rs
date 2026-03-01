@@ -3,7 +3,8 @@
 
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
+    ToolDefinition,
 };
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
@@ -546,6 +547,7 @@ impl<C: Channel> Agent<C> {
                 }
 
                 let tool_call_id = uuid::Uuid::new_v4().to_string();
+                let tool_started_at = std::time::Instant::now();
                 self.channel
                     .send_tool_start(
                         &output.tool_name,
@@ -578,6 +580,7 @@ impl<C: Channel> Agent<C> {
                         false,
                         self.parent_tool_use_id.clone(),
                         output.raw_response.map(|r| self.redact_json(r)),
+                        Some(tool_started_at),
                     )
                     .await?;
 
@@ -620,6 +623,7 @@ impl<C: Channel> Agent<C> {
                         self.tool_executor.execute_confirmed_erased(response).await
                     {
                         let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
+                        let confirmed_started_at = std::time::Instant::now();
                         self.channel
                             .send_tool_start(
                                 &out.tool_name,
@@ -642,6 +646,7 @@ impl<C: Channel> Agent<C> {
                                 false,
                                 self.parent_tool_use_id.clone(),
                                 out.raw_response.map(|r| self.redact_json(r)),
+                                Some(confirmed_started_at),
                             )
                             .await?;
                         self.push_message(Message::from_parts(
@@ -864,9 +869,15 @@ impl<C: Channel> Agent<C> {
             }
 
             // ToolUse → execute tools and loop
-            let ChatResponse::ToolUse { text, tool_calls } = chat_result else {
+            let ChatResponse::ToolUse {
+                text,
+                tool_calls,
+                thinking_blocks,
+            } = chat_result
+            else {
                 unreachable!();
             };
+            self.preserve_thinking_blocks(thinking_blocks);
             self.handle_native_tool_calls(text.as_deref(), &tool_calls)
                 .await?;
 
@@ -933,7 +944,9 @@ impl<C: Channel> Agent<C> {
         let prompt_estimate = self.cached_prompt_tokens;
         let completion_estimate = match &result {
             ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
-            ChatResponse::ToolUse { text, tool_calls } => {
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
                 let text_len = text.as_deref().map_or(0, str::len);
                 let calls_len: usize = tool_calls
                     .iter()
@@ -963,6 +976,37 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(Some(result))
+    }
+
+    /// Prepend thinking blocks to the last assistant message in the context as `MessagePart`s.
+    ///
+    /// The Claude API requires `thinking`/`redacted_thinking` blocks to be preserved verbatim
+    /// in the assistant message when tool results are sent back in multi-turn conversations.
+    fn preserve_thinking_blocks(&mut self, blocks: Vec<ThinkingBlock>) {
+        if blocks.is_empty() {
+            return;
+        }
+        if let Some(last) = self.messages.last_mut()
+            && last.role == Role::Assistant
+        {
+            let mut thinking_parts: Vec<MessagePart> = blocks
+                .into_iter()
+                .map(|b| match b {
+                    ThinkingBlock::Thinking {
+                        thinking,
+                        signature,
+                    } => MessagePart::ThinkingBlock {
+                        thinking,
+                        signature,
+                    },
+                    ThinkingBlock::Redacted { data } => MessagePart::RedactedThinkingBlock { data },
+                })
+                .collect();
+            // Thinking blocks must appear before text/tool_use in the assistant message.
+            thinking_parts.append(&mut last.parts);
+            last.parts = thinking_parts;
+            last.rebuild_content();
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1018,6 +1062,10 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
+        let tool_started_ats: Vec<std::time::Instant> = tool_calls
+            .iter()
+            .map(|_| std::time::Instant::now())
+            .collect();
         for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
             let raw_params = tc.input.clone();
             self.channel
@@ -1071,10 +1119,11 @@ impl<C: Channel> Agent<C> {
 
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
-        for ((tc, tool_result), tool_call_id) in tool_calls
+        for (((tc, tool_result), tool_call_id), started_at) in tool_calls
             .iter()
             .zip(tool_results)
             .zip(tool_call_ids.iter())
+            .zip(tool_started_ats.iter())
         {
             let (output, is_error, diff, inline_stats, _, kept_lines, locations) =
                 match tool_result {
@@ -1156,6 +1205,7 @@ impl<C: Channel> Agent<C> {
                     is_error,
                     self.parent_tool_use_id.clone(),
                     None,
+                    Some(*started_at),
                 )
                 .await?;
 

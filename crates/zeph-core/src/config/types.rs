@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use zeph_llm::ThinkingConfig;
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
@@ -212,6 +213,8 @@ pub(crate) fn default_stt_language() -> String {
 pub struct CloudLlmConfig {
     pub model: String,
     pub max_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

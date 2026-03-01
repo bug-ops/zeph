@@ -8,16 +8,56 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
-    ToolUseRequest,
+    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ThinkingBlock,
+    ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const ANTHROPIC_BETA: &str = "prompt-caching-2024-07-31";
+const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
 const MAX_RETRIES: u32 = 3;
+const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
+
+/// Extended or adaptive thinking mode for Claude.
+///
+/// Serializes with `mode` as tag:
+/// `{ "mode": "extended", "budget_tokens": 10000 }` or `{ "mode": "adaptive" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ThinkingConfig {
+    Extended {
+        budget_tokens: u32,
+    },
+    Adaptive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<ThinkingEffort>,
+    },
+}
+
+/// Effort level for adaptive thinking.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingEffort {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+struct ThinkingCapability {
+    /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
+    needs_interleaved_beta: bool,
+}
+
+fn thinking_capability(model: &str) -> ThinkingCapability {
+    // Sonnet 4.6 with tools needs `interleaved-thinking-2025-05-14` beta header.
+    let needs_interleaved_beta = model.contains("claude-sonnet-4-6");
+    ThinkingCapability {
+        needs_interleaved_beta,
+    }
+}
 
 const CACHE_MARKER_STABLE: &str = "<!-- cache:stable -->";
 const CACHE_MARKER_TOOLS: &str = "<!-- cache:tools -->";
@@ -28,6 +68,7 @@ pub struct ClaudeProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    thinking: Option<ThinkingConfig>,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
@@ -42,6 +83,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("thinking", &self.thinking)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_usage", &self.last_usage.lock().ok())
             .field("last_cache", &self.last_cache.lock().ok())
@@ -64,6 +106,7 @@ impl Clone for ClaudeProvider {
             api_key: self.api_key.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
@@ -80,6 +123,7 @@ impl ClaudeProvider {
             api_key,
             model,
             max_tokens,
+            thinking: None,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
@@ -97,6 +141,48 @@ impl ClaudeProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    /// Configure thinking mode for Claude extended/adaptive thinking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `budget_tokens` is outside the API-allowed range
+    /// `[1024, 128_000]` or if `budget_tokens >= max_tokens` after the automatic
+    /// 16 000-token floor is applied.
+    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Result<Self, LlmError> {
+        if let ThinkingConfig::Extended { budget_tokens } = thinking {
+            const MIN_BUDGET: u32 = 1_024;
+            const MAX_BUDGET: u32 = 128_000;
+            if !(MIN_BUDGET..=MAX_BUDGET).contains(&budget_tokens) {
+                return Err(LlmError::Other(format!(
+                    "budget_tokens {budget_tokens} is out of range [{MIN_BUDGET}, {MAX_BUDGET}]"
+                )));
+            }
+            let max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+            if budget_tokens >= max_tokens {
+                return Err(LlmError::Other(format!(
+                    "budget_tokens {budget_tokens} must be less than max_tokens {max_tokens}"
+                )));
+            }
+            self.max_tokens = max_tokens;
+        } else {
+            self.max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+        }
+        self.thinking = Some(thinking);
+        Ok(self)
+    }
+
+    /// Configure thinking mode, propagating any validation error.
+    ///
+    /// # Errors
+    ///
+    /// Forwards errors from [`with_thinking`].
+    pub fn with_thinking_opt(self, thinking: Option<ThinkingConfig>) -> Result<Self, LlmError> {
+        match thinking {
+            Some(t) => self.with_thinking(t),
+            None => Ok(self),
+        }
     }
 
     /// Fetch all available Claude models from the Anthropic API and cache them.
@@ -203,6 +289,40 @@ impl ClaudeProvider {
         Ok(models)
     }
 
+    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<u32>) {
+        match &self.thinking {
+            None => (None, None),
+            Some(ThinkingConfig::Extended { budget_tokens }) => (
+                Some(ThinkingParam {
+                    thinking_type: "enabled",
+                    budget_tokens: Some(*budget_tokens),
+                }),
+                None,
+            ),
+            Some(ThinkingConfig::Adaptive { .. }) => (
+                Some(ThinkingParam {
+                    thinking_type: "enabled",
+                    budget_tokens: None,
+                }),
+                // Adaptive mode requires temperature=1
+                Some(1),
+            ),
+        }
+    }
+
+    fn beta_header(&self, has_tools: bool) -> Option<String> {
+        let cap = thinking_capability(&self.model);
+        if self.thinking.is_some()
+            && has_tools
+            && cap.needs_interleaved_beta
+            && matches!(self.thinking, Some(ThinkingConfig::Extended { .. }))
+        {
+            Some(ANTHROPIC_BETA_INTERLEAVED_THINKING.to_owned())
+        } else {
+            None
+        }
+    }
+
     fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         let mut guard = self
@@ -214,7 +334,7 @@ impl ClaudeProvider {
         {
             return cached_values.clone();
         }
-        let serialized: Vec<serde_json::Value> = tools
+        let mut serialized: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 serde_json::json!({
@@ -224,6 +344,12 @@ impl ClaudeProvider {
                 })
             })
             .collect();
+        if let Some(Some(obj)) = serialized.last_mut().map(serde_json::Value::as_object_mut) {
+            obj.insert(
+                "cache_control".into(),
+                serde_json::json!({"type": "ephemeral"}),
+            );
+        }
         *guard = Some((names, serialized.clone()));
         serialized
     }
@@ -247,28 +373,43 @@ impl ClaudeProvider {
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
+        let (thinking_param, temperature) = self.build_thinking_param();
+        let auto_cache = if messages.len() > 1 {
+            Some(CacheControl {
+                cache_type: CacheType::Ephemeral,
+            })
+        } else {
+            None
+        };
+
         if Self::has_image_parts(messages) {
             let (system, chat_messages) = split_messages_structured(messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s));
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
                 system: system_blocks,
                 messages: &chat_messages,
                 stream,
+                thinking: thinking_param,
+                temperature,
+                cache_control: auto_cache,
             };
-            return self
+            let mut req = self
                 .client
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", ANTHROPIC_BETA)
-                .header("content-type", "application/json")
-                .json(&body);
+                .header("anthropic-version", ANTHROPIC_VERSION);
+            if let Some(b) = beta {
+                req = req.header("anthropic-beta", b);
+            }
+            return req.header("content-type", "application/json").json(&body);
         }
 
         let (system, chat_messages) = split_messages(messages);
-        let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let beta = self.beta_header(false);
 
         let body = RequestBody {
             model: &self.model,
@@ -276,15 +417,20 @@ impl ClaudeProvider {
             system: system_blocks,
             messages: &chat_messages,
             stream,
+            thinking: thinking_param,
+            temperature,
+            cache_control: auto_cache,
         };
 
-        self.client
+        let mut req = self
+            .client
             .post(API_URL)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
-            .header("content-type", "application/json")
-            .json(&body)
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if let Some(b) = beta {
+            req = req.header("anthropic-beta", b);
+        }
+        req.header("content-type", "application/json").json(&body)
     }
 
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
@@ -310,7 +456,7 @@ impl ClaudeProvider {
                 self.store_cache_usage(usage);
             }
             let extracted = resp.content.into_iter().find_map(|b| {
-                if let AnthropicContentBlock::Text { text } = b {
+                if let AnthropicContentBlock::Text { text, .. } = b {
                     Some(text)
                 } else {
                     None
@@ -428,7 +574,16 @@ impl LlmProvider for ClaudeProvider {
             input_schema: &tool.parameters,
         };
 
-        let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let (thinking_param, temperature) = self.build_thinking_param();
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let auto_cache = if messages.len() > 1 {
+            Some(CacheControl {
+                cache_type: CacheType::Ephemeral,
+            })
+        } else {
+            None
+        };
+        let beta = self.beta_header(true);
         let body = TypedToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
@@ -439,14 +594,20 @@ impl LlmProvider for ClaudeProvider {
                 r#type: "tool",
                 name: &tool_name,
             },
+            thinking: thinking_param,
+            temperature,
+            cache_control: auto_cache,
         };
 
-        let response = self
+        let mut req = self
             .client
             .post(API_URL)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if let Some(b) = beta {
+            req = req.header("anthropic-beta", b);
+        }
+        let response = req
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -499,22 +660,37 @@ impl LlmProvider for ClaudeProvider {
         let (system, chat_messages) = split_messages_structured(messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
-        let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let (thinking_param, temperature) = self.build_thinking_param();
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let auto_cache = if messages.len() > 1 {
+            Some(CacheControl {
+                cache_type: CacheType::Ephemeral,
+            })
+        } else {
+            None
+        };
+        let beta = self.beta_header(!tools.is_empty());
         let body = ToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_blocks,
             messages: &chat_messages,
             tools: &api_tools,
+            thinking: thinking_param,
+            temperature,
+            cache_control: auto_cache,
         };
 
         let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.client
+            let mut req = self
+                .client
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", ANTHROPIC_BETA)
-                .header("content-type", "application/json")
+                .header("anthropic-version", ANTHROPIC_VERSION);
+            if let Some(ref b) = beta {
+                req = req.header("anthropic-beta", b);
+            }
+            req.header("content-type", "application/json")
                 .json(&body)
                 .send()
         })
@@ -530,9 +706,12 @@ impl LlmProvider for ClaudeProvider {
             )));
         }
 
-        tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
-
         let resp: ToolApiResponse = serde_json::from_str(&text)?;
+        tracing::debug!(
+            stop_reason = ?resp.stop_reason,
+            content_blocks = resp.content.len(),
+            "Claude chat_with_tools response"
+        );
         if let Some(ref usage) = resp.usage {
             log_cache_usage(usage);
             self.store_cache_usage(usage);
@@ -595,13 +774,25 @@ struct SystemContentBlock {
     cache_control: Option<CacheControl>,
 }
 
-#[derive(Serialize, Clone, Debug)]
-struct CacheControl {
-    #[serde(rename = "type")]
-    cache_type: &'static str,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+enum CacheType {
+    Ephemeral,
 }
 
-fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: CacheType,
+}
+
+/// Returns the minimum token count required for caching to activate for the given model.
+/// Uses `byte_len / 4` as a conservative token estimate (1 token ≈ 4 chars for English).
+fn cache_min_tokens(model: &str) -> usize {
+    if model.contains("sonnet") { 2048 } else { 4096 }
+}
+
+fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemContentBlock> {
     // Split on volatile marker first: everything before is cacheable
     let (cacheable_part, volatile_part) = if let Some(pos) = system.find(CACHE_MARKER_VOLATILE) {
         (
@@ -615,17 +806,30 @@ fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
     let mut blocks = Vec::new();
     let cache_markers = [CACHE_MARKER_STABLE, CACHE_MARKER_TOOLS];
     let mut remaining = cacheable_part;
+    let min_tokens = cache_min_tokens(model);
 
     for marker in &cache_markers {
         if let Some(pos) = remaining.find(marker) {
             let before = remaining[..pos].trim();
             if !before.is_empty() {
+                let estimated_tokens = before.len() / 4;
+                let cc = if estimated_tokens >= min_tokens {
+                    Some(CacheControl {
+                        cache_type: CacheType::Ephemeral,
+                    })
+                } else {
+                    tracing::debug!(
+                        estimated_tokens,
+                        min_tokens,
+                        model,
+                        "system block below cache threshold, skipping cache_control"
+                    );
+                    None
+                };
                 blocks.push(SystemContentBlock {
                     block_type: "text",
                     text: before.to_owned(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral",
-                    }),
+                    cache_control: cc,
                 });
             }
             remaining = &remaining[pos + marker.len()..];
@@ -638,7 +842,7 @@ fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
             block_type: "text",
             text: remaining.to_owned(),
             cache_control: Some(CacheControl {
-                cache_type: "ephemeral",
+                cache_type: CacheType::Ephemeral,
             }),
         });
     }
@@ -660,7 +864,7 @@ fn split_system_into_blocks(system: &str) -> Vec<SystemContentBlock> {
             block_type: "text",
             text: system.to_owned(),
             cache_control: Some(CacheControl {
-                cache_type: "ephemeral",
+                cache_type: CacheType::Ephemeral,
             }),
         });
     }
@@ -678,6 +882,12 @@ struct TypedToolRequestBody<'a> {
     messages: &'a [StructuredApiMessage],
     tools: &'a [AnthropicTool<'a>],
     tool_choice: ToolChoice<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[cfg(feature = "schema")]
@@ -702,6 +912,12 @@ struct ToolRequestBody<'a> {
     system: Option<Vec<SystemContentBlock>>,
     messages: &'a [StructuredApiMessage],
     tools: &'a [serde_json::Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
@@ -722,6 +938,8 @@ enum StructuredContent {
 enum AnthropicContentBlock {
     Text {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
@@ -733,10 +951,28 @@ enum AnthropicContentBlock {
         content: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     Image {
         source: ImageSource,
     },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
+    },
+}
+
+/// Serialization-only parameter for Claude's `thinking` request field.
+#[derive(Serialize)]
+struct ThinkingParam {
+    #[serde(rename = "type")]
+    thinking_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -760,12 +996,27 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
     let truncated = resp.stop_reason.as_deref() == Some("max_tokens");
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut thinking_blocks = Vec::new();
 
     for block in resp.content {
         match block {
-            AnthropicContentBlock::Text { text } => text_parts.push(text),
+            AnthropicContentBlock::Text { text, .. } => text_parts.push(text),
             AnthropicContentBlock::ToolUse { id, name, input } => {
                 tool_calls.push(ToolUseRequest { id, name, input });
+            }
+            AnthropicContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                tracing::debug!(len = thinking.len(), "Claude thinking block received");
+                thinking_blocks.push(ThinkingBlock::Thinking {
+                    thinking,
+                    signature,
+                });
+            }
+            AnthropicContentBlock::RedactedThinking { data } => {
+                tracing::debug!("Claude redacted_thinking block received");
+                thinking_blocks.push(ThinkingBlock::Redacted { data });
             }
             AnthropicContentBlock::ToolResult { .. } | AnthropicContentBlock::Image { .. } => {}
         }
@@ -797,7 +1048,11 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
         } else {
             Some(text_parts.join(""))
         };
-        ChatResponse::ToolUse { text, tool_calls }
+        ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks,
+        }
     }
 }
 
@@ -824,6 +1079,8 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                         MessagePart::ToolUse { .. }
                             | MessagePart::ToolResult { .. }
                             | MessagePart::Image(_)
+                            | MessagePart::ThinkingBlock { .. }
+                            | MessagePart::RedactedThinkingBlock { .. }
                     )
                 });
 
@@ -838,7 +1095,10 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                             | MessagePart::Summary { text }
                             | MessagePart::CrossSession { text } => {
                                 if !text.trim().is_empty() {
-                                    blocks.push(AnthropicContentBlock::Text { text: text.clone() });
+                                    blocks.push(AnthropicContentBlock::Text {
+                                        text: text.clone(),
+                                        cache_control: None,
+                                    });
                                 }
                             }
                             MessagePart::ToolOutput {
@@ -846,6 +1106,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                             } => {
                                 blocks.push(AnthropicContentBlock::Text {
                                     text: format!("[tool output: {tool_name}]\n{body}"),
+                                    cache_control: None,
                                 });
                             }
                             MessagePart::ToolUse { id, name, input } if is_assistant => {
@@ -858,6 +1119,7 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                             MessagePart::ToolUse { name, input, .. } => {
                                 blocks.push(AnthropicContentBlock::Text {
                                     text: format!("[tool_use: {name}] {input}"),
+                                    cache_control: None,
                                 });
                             }
                             MessagePart::ToolResult {
@@ -869,12 +1131,14 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                     tool_use_id: tool_use_id.clone(),
                                     content: content.clone(),
                                     is_error: *is_error,
+                                    cache_control: None,
                                 });
                             }
                             MessagePart::ToolResult { content, .. } => {
                                 if !content.trim().is_empty() {
                                     blocks.push(AnthropicContentBlock::Text {
                                         text: content.clone(),
+                                        cache_control: None,
                                     });
                                 }
                             }
@@ -887,6 +1151,23 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                     },
                                 });
                             }
+                            MessagePart::ThinkingBlock {
+                                thinking,
+                                signature,
+                            } if is_assistant => {
+                                blocks.push(AnthropicContentBlock::Thinking {
+                                    thinking: thinking.clone(),
+                                    signature: signature.clone(),
+                                });
+                            }
+                            MessagePart::RedactedThinkingBlock { data } if is_assistant => {
+                                blocks.push(AnthropicContentBlock::RedactedThinking {
+                                    data: data.clone(),
+                                });
+                            }
+                            // Thinking blocks in user messages are silently dropped.
+                            MessagePart::ThinkingBlock { .. }
+                            | MessagePart::RedactedThinkingBlock { .. } => {}
                         }
                     }
                     chat.push(StructuredApiMessage {
@@ -902,6 +1183,38 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                         });
                     }
                 }
+            }
+        }
+    }
+
+    // Place 1 message-level cache breakpoint at the user message closest to position
+    // (total - 20) to maximize the 20-block lookback window coverage.
+    if chat.len() > 1 {
+        let target = chat.len().saturating_sub(20);
+        let breakpoint_idx = (target..chat.len())
+            .find(|&i| chat[i].role == "user")
+            .unwrap_or(0);
+        let msg = &mut chat[breakpoint_idx];
+        match &mut msg.content {
+            StructuredContent::Blocks(blocks) => {
+                if let Some(
+                    AnthropicContentBlock::Text { cache_control, .. }
+                    | AnthropicContentBlock::ToolResult { cache_control, .. },
+                ) = blocks.last_mut()
+                {
+                    *cache_control = Some(CacheControl {
+                        cache_type: CacheType::Ephemeral,
+                    });
+                }
+            }
+            StructuredContent::Text(text) => {
+                let owned = std::mem::take(text);
+                msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
+                    text: owned,
+                    cache_control: Some(CacheControl {
+                        cache_type: CacheType::Ephemeral,
+                    }),
+                }]);
             }
         }
     }
@@ -924,6 +1237,12 @@ struct RequestBody<'a> {
     messages: &'a [ApiMessage<'a>],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
@@ -935,6 +1254,12 @@ struct VisionRequestBody<'a> {
     messages: &'a [StructuredApiMessage],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
@@ -1144,6 +1469,9 @@ mod tests {
                 content: "hello",
             }],
             stream: false,
+            thinking: None,
+            temperature: None,
+            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("system"));
@@ -1161,11 +1489,14 @@ mod tests {
                 block_type: "text",
                 text: "You are helpful.".into(),
                 cache_control: Some(CacheControl {
-                    cache_type: "ephemeral",
+                    cache_type: CacheType::Ephemeral,
                 }),
             }]),
             messages: &[],
             stream: false,
+            thinking: None,
+            temperature: None,
+            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"system\""));
@@ -1181,6 +1512,9 @@ mod tests {
             system: None,
             messages: &[],
             stream: true,
+            thinking: None,
+            temperature: None,
+            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
@@ -1347,6 +1681,9 @@ mod tests {
             system: None,
             messages: &[],
             stream: false,
+            thinking: None,
+            temperature: None,
+            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("stream"));
@@ -1354,7 +1691,8 @@ mod tests {
 
     #[test]
     fn split_system_no_markers_caches_entire_block() {
-        let blocks = split_system_into_blocks("You are Zeph, an AI assistant.");
+        let blocks =
+            split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6");
         assert_eq!(blocks.len(), 1);
         assert!(blocks[0].cache_control.is_some());
         assert!(blocks[0].text.contains("Zeph"));
@@ -1362,12 +1700,14 @@ mod tests {
 
     #[test]
     fn split_system_with_all_markers() {
+        // Each block must exceed 2048 tokens (≈ 8192 chars) for sonnet threshold
+        let padding = "x".repeat(8200);
         let system = format!(
-            "base prompt\n{CACHE_MARKER_STABLE}\nskills here\n\
-             {CACHE_MARKER_TOOLS}\ntool catalog\n\
+            "base prompt {padding}\n{CACHE_MARKER_STABLE}\nskills here {padding}\n\
+             {CACHE_MARKER_TOOLS}\ntool catalog {padding}\n\
              {CACHE_MARKER_VOLATILE}\nvolatile stuff"
         );
-        let blocks = split_system_into_blocks(&system);
+        let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
         assert_eq!(blocks.len(), 4);
         assert!(blocks[0].cache_control.is_some());
         assert!(blocks[0].text.contains("base prompt"));
@@ -1381,11 +1721,21 @@ mod tests {
 
     #[test]
     fn split_system_partial_markers() {
-        let system = format!("base prompt\n{CACHE_MARKER_VOLATILE}\nvolatile only");
-        let blocks = split_system_into_blocks(&system);
+        let padding = "x".repeat(8200);
+        let system = format!("base prompt {padding}\n{CACHE_MARKER_VOLATILE}\nvolatile only");
+        let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].cache_control.is_some());
         assert!(blocks[1].cache_control.is_none());
+    }
+
+    #[test]
+    fn split_system_block_below_threshold_skips_cache_control() {
+        // "short text" is well below 2048 tokens — cache_control must be None for Block 1
+        let system = format!("short text\n{CACHE_MARKER_STABLE}\nmore content");
+        let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
+        // Block 1 ("short text") is below threshold
+        assert!(blocks[0].cache_control.is_none());
     }
 
     #[test]
@@ -1519,6 +1869,7 @@ mod tests {
         let resp = ToolApiResponse {
             content: vec![AnthropicContentBlock::Text {
                 text: "Hello".into(),
+                cache_control: None,
             }],
             stop_reason: None,
             usage: None,
@@ -1533,6 +1884,7 @@ mod tests {
             content: vec![
                 AnthropicContentBlock::Text {
                     text: "I'll run that".into(),
+                    cache_control: None,
                 },
                 AnthropicContentBlock::ToolUse {
                     id: "toolu_123".into(),
@@ -1544,7 +1896,10 @@ mod tests {
             usage: None,
         };
         let result = parse_tool_response(resp);
-        if let ChatResponse::ToolUse { text, tool_calls } = result {
+        if let ChatResponse::ToolUse {
+            text, tool_calls, ..
+        } = result
+        {
             assert_eq!(text.unwrap(), "I'll run that");
             assert_eq!(tool_calls.len(), 1);
             assert_eq!(tool_calls[0].name, "bash");
@@ -1566,7 +1921,10 @@ mod tests {
             usage: None,
         };
         let result = parse_tool_response(resp);
-        if let ChatResponse::ToolUse { text, tool_calls } = result {
+        if let ChatResponse::ToolUse {
+            text, tool_calls, ..
+        } = result
+        {
             assert!(text.is_none());
             assert_eq!(tool_calls.len(), 1);
         } else {
@@ -1667,7 +2025,7 @@ mod tests {
             StructuredContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 2);
                 match &blocks[0] {
-                    AnthropicContentBlock::Text { text } => assert_eq!(text, "look at this"),
+                    AnthropicContentBlock::Text { text, .. } => assert_eq!(text, "look at this"),
                     _ => panic!("expected Text block first"),
                 }
                 match &blocks[1] {
@@ -2057,8 +2415,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Provider points at the real Anthropic URL so we test via unreachable-style check.
-        // The 429 fixture is validated by confirming the mock returns correct status.
         let resp = reqwest::Client::new()
             .post(format!("{}/v1/messages", server.uri()))
             .json(&serde_json::json!({}))
@@ -2115,5 +2471,616 @@ mod tests {
         assert!(raw.contains(" world"));
         assert!(raw.contains("message_stop"));
         assert!(raw.contains("content_block_delta"));
+    }
+
+    #[test]
+    fn thinking_config_extended_serializes() {
+        let cfg = ThinkingConfig::Extended {
+            budget_tokens: 10_000,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "extended");
+        assert_eq!(json["budget_tokens"], 10_000);
+    }
+
+    #[test]
+    fn thinking_config_adaptive_serializes_without_effort() {
+        let cfg = ThinkingConfig::Adaptive { effort: None };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "adaptive");
+        assert!(json.get("effort").is_none());
+    }
+
+    #[test]
+    fn thinking_config_adaptive_serializes_with_effort() {
+        let cfg = ThinkingConfig::Adaptive {
+            effort: Some(ThinkingEffort::High),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "adaptive");
+        assert_eq!(json["effort"], "high");
+    }
+
+    #[test]
+    fn thinking_config_extended_deserializes() {
+        let json = r#"{"mode":"extended","budget_tokens":8000}"#;
+        let cfg: ThinkingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Extended {
+                budget_tokens: 8000
+            }
+        );
+    }
+
+    #[test]
+    fn thinking_config_adaptive_deserializes() {
+        let json = r#"{"mode":"adaptive","effort":"low"}"#;
+        let cfg: ThinkingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::Low)
+            }
+        );
+    }
+
+    #[test]
+    fn thinking_capability_sonnet_4_6_needs_interleaved_beta() {
+        let cap = thinking_capability("claude-sonnet-4-6-20250514");
+        assert!(cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn thinking_capability_opus_4_6_no_interleaved_beta() {
+        let cap = thinking_capability("claude-opus-4-6");
+        assert!(!cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn thinking_capability_unknown_model_no_beta() {
+        let cap = thinking_capability("gpt-4o");
+        assert!(!cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_below_minimum() {
+        let err = ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended { budget_tokens: 0 })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+
+        let err = ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 1023,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_accepts_minimum_budget() {
+        ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 1024,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn with_thinking_accepts_maximum_budget() {
+        ClaudeProvider::new("k".into(), "m".into(), 256_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 128_000,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_above_maximum() {
+        let err = ClaudeProvider::new("k".into(), "m".into(), 256_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 128_001,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_not_less_than_max_tokens() {
+        // After auto-bump max_tokens = 16_000, budget_tokens = 16_000 is not < max_tokens
+        let err = ClaudeProvider::new("k".into(), "m".into(), 1024)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 16_000,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("less than max_tokens"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_bumps_max_tokens_when_too_low() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 8000,
+            })
+            .unwrap();
+        assert!(provider.max_tokens >= MIN_MAX_TOKENS_WITH_THINKING);
+    }
+
+    #[test]
+    fn with_thinking_keeps_max_tokens_when_already_high() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 8000,
+            })
+            .unwrap();
+        assert_eq!(provider.max_tokens, 32_000);
+    }
+
+    #[test]
+    fn build_thinking_param_extended_returns_enabled_with_budget() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let (param, temp) = provider.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "enabled");
+        assert_eq!(param.budget_tokens, Some(5000));
+        assert!(temp.is_none());
+    }
+
+    #[test]
+    fn build_thinking_param_adaptive_returns_enabled_with_temperature() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let (param, temp) = provider.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "enabled");
+        assert!(param.budget_tokens.is_none());
+        assert_eq!(temp, Some(1));
+    }
+
+    #[test]
+    fn build_thinking_param_no_thinking_returns_none() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 1024);
+        let (param, temp) = provider.build_thinking_param();
+        assert!(param.is_none());
+        assert!(temp.is_none());
+    }
+
+    #[test]
+    fn beta_header_without_thinking_returns_none() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+        let beta = provider.beta_header(true);
+        assert!(beta.is_none());
+    }
+
+    #[test]
+    fn beta_header_sonnet_4_6_extended_with_tools_includes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let beta = provider.beta_header(true);
+        assert!(
+            beta.as_deref()
+                .is_some_and(|b| b.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING))
+        );
+    }
+
+    #[test]
+    fn beta_header_sonnet_4_6_extended_no_tools_excludes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let beta = provider.beta_header(false);
+        assert!(beta.is_none());
+    }
+
+    #[test]
+    fn beta_header_adaptive_mode_excludes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let beta = provider.beta_header(true);
+        assert!(beta.is_none());
+    }
+
+    #[test]
+    fn parse_tool_response_with_thinking_blocks() {
+        let resp = ToolApiResponse {
+            content: vec![
+                AnthropicContentBlock::Thinking {
+                    thinking: "let me think".into(),
+                    signature: "sig123".into(),
+                },
+                AnthropicContentBlock::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+            stop_reason: None,
+            usage: None,
+        };
+        let result = parse_tool_response(resp);
+        if let ChatResponse::ToolUse {
+            thinking_blocks,
+            tool_calls,
+            ..
+        } = result
+        {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(thinking_blocks.len(), 1);
+            if let ThinkingBlock::Thinking {
+                thinking,
+                signature,
+            } = &thinking_blocks[0]
+            {
+                assert_eq!(thinking, "let me think");
+                assert_eq!(signature, "sig123");
+            } else {
+                panic!("expected Thinking variant");
+            }
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn parse_tool_response_with_redacted_thinking() {
+        let resp = ToolApiResponse {
+            content: vec![
+                AnthropicContentBlock::RedactedThinking {
+                    data: "redacted".into(),
+                },
+                AnthropicContentBlock::Text {
+                    text: "result".into(),
+                    cache_control: None,
+                },
+            ],
+            stop_reason: None,
+            usage: None,
+        };
+        let result = parse_tool_response(resp);
+        // No tool calls, so returns Text; thinking is dropped for text-only responses
+        assert!(matches!(result, ChatResponse::Text(_)));
+    }
+
+    #[test]
+    fn thinking_block_serializes_in_structured_message() {
+        let msg = Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ThinkingBlock {
+                    thinking: "my reasoning".into(),
+                    signature: "abc".into(),
+                },
+                MessagePart::Text {
+                    text: "answer".into(),
+                },
+            ],
+        );
+        let (_, chat) = split_messages_structured(&[msg]);
+        assert_eq!(chat.len(), 1);
+        let json = serde_json::to_value(&chat[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "my reasoning");
+        assert_eq!(blocks[0]["signature"], "abc");
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn redacted_thinking_block_serializes_in_structured_message() {
+        let msg = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::RedactedThinkingBlock {
+                data: "secret".into(),
+            }],
+        );
+        let (_, chat) = split_messages_structured(&[msg]);
+        let json = serde_json::to_value(&chat[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "redacted_thinking");
+        assert_eq!(blocks[0]["data"], "secret");
+    }
+
+    #[test]
+    fn thinking_content_block_roundtrip() {
+        let block = AnthropicContentBlock::Thinking {
+            thinking: "internal reasoning".into(),
+            signature: "signature-data".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        let restored: AnthropicContentBlock = serde_json::from_value(json).unwrap();
+        if let AnthropicContentBlock::Thinking {
+            thinking,
+            signature,
+        } = restored
+        {
+            assert_eq!(thinking, "internal reasoning");
+            assert_eq!(signature, "signature-data");
+        } else {
+            panic!("expected Thinking");
+        }
+    }
+
+    #[test]
+    fn redacted_thinking_content_block_roundtrip() {
+        let block = AnthropicContentBlock::RedactedThinking {
+            data: "opaque-data".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "redacted_thinking");
+        let restored: AnthropicContentBlock = serde_json::from_value(json).unwrap();
+        if let AnthropicContentBlock::RedactedThinking { data } = restored {
+            assert_eq!(data, "opaque-data");
+        } else {
+            panic!("expected RedactedThinking");
+        }
+    }
+
+    // ── #1085: anthropic-beta header removed ──────────────────────────────────
+
+    #[test]
+    fn build_request_does_not_include_anthropic_beta_header() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        assert!(
+            req.headers().get("anthropic-beta").is_none(),
+            "anthropic-beta header must not be present"
+        );
+        assert!(req.headers().get("anthropic-version").is_some());
+        assert!(req.headers().get("x-api-key").is_some());
+    }
+
+    // ── #1084: cache_control only on last tool ────────────────────────────────
+
+    #[test]
+    fn get_or_build_api_tools_only_last_tool_has_cache_control() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 512);
+        let tools = vec![
+            ToolDefinition {
+                name: "alpha".into(),
+                description: "First".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "beta".into(),
+                description: "Second".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "gamma".into(),
+                description: "Third".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        ];
+        let result = provider.get_or_build_api_tools(&tools);
+        assert_eq!(result.len(), 3);
+        assert!(
+            result[0].get("cache_control").is_none(),
+            "first tool must not have cache_control"
+        );
+        assert!(
+            result[1].get("cache_control").is_none(),
+            "middle tool must not have cache_control"
+        );
+        assert!(
+            result[2].get("cache_control").is_some(),
+            "last tool must have cache_control"
+        );
+        assert_eq!(result[2]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn get_or_build_api_tools_single_tool_has_cache_control() {
+        use crate::provider::ToolDefinition;
+        let provider = ClaudeProvider::new("key".into(), "model".into(), 512);
+        let tools = vec![ToolDefinition {
+            name: "only".into(),
+            description: "Only tool".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let result = provider.get_or_build_api_tools(&tools);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].get("cache_control").is_some());
+        assert_eq!(result[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    // ── #1083: model-aware token threshold ───────────────────────────────────
+
+    #[test]
+    fn cache_min_tokens_sonnet_returns_2048() {
+        assert_eq!(cache_min_tokens("claude-sonnet-4-6"), 2048);
+        assert_eq!(cache_min_tokens("claude-sonnet-4-5-20250929"), 2048);
+    }
+
+    #[test]
+    fn cache_min_tokens_non_sonnet_returns_4096() {
+        assert_eq!(cache_min_tokens("claude-opus-4-6"), 4096);
+        assert_eq!(cache_min_tokens("claude-haiku-4-5"), 4096);
+        assert_eq!(cache_min_tokens("unknown-model"), 4096);
+    }
+
+    #[test]
+    fn split_system_opus_block_above_threshold_gets_cache_control() {
+        // opus threshold = 4096 tokens = 16384 chars
+        let padding = "x".repeat(16400);
+        let system = format!("{padding}\n{CACHE_MARKER_STABLE}\nmore");
+        let blocks = split_system_into_blocks(&system, "claude-opus-4-6");
+        assert!(
+            blocks[0].cache_control.is_some(),
+            "block above opus threshold must be cached"
+        );
+    }
+
+    #[test]
+    fn split_system_opus_block_below_threshold_skips_cache_control() {
+        // text under 16384 chars is below opus threshold (4096 tokens)
+        let system = format!("short\n{CACHE_MARKER_STABLE}\nmore content");
+        let blocks = split_system_into_blocks(&system, "claude-opus-4-6");
+        assert!(
+            blocks[0].cache_control.is_none(),
+            "block below opus threshold must not be cached"
+        );
+    }
+
+    // ── #1086: top-level cache_control for multi-turn ─────────────────────────
+
+    #[test]
+    fn build_request_single_message_no_top_level_cache_control() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+        assert!(
+            body.get("cache_control").is_none(),
+            "single-turn request must not have top-level cache_control"
+        );
+    }
+
+    #[test]
+    fn build_request_multi_turn_has_top_level_cache_control() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "first".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "reply".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: "second".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+        assert_eq!(
+            body["cache_control"]["type"], "ephemeral",
+            "multi-turn request must have top-level cache_control"
+        );
+    }
+
+    // ── #1087: message-level breakpoint at position max(0, total-20) ──────────
+
+    #[test]
+    fn split_messages_structured_single_message_no_cache_breakpoint() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: "only message".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let (_, chat) = split_messages_structured(&messages);
+        assert_eq!(chat.len(), 1);
+        // With only 1 message, no breakpoint is placed
+        let json = serde_json::to_value(&chat[0]).unwrap();
+        let has_cache = json.to_string().contains("cache_control");
+        assert!(
+            !has_cache,
+            "single message must not have cache_control breakpoint"
+        );
+    }
+
+    #[test]
+    fn split_messages_structured_two_messages_places_breakpoint_on_user() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "first user".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "assistant reply".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, chat) = split_messages_structured(&messages);
+        assert_eq!(chat.len(), 2);
+        // Breakpoint must be on the user message at index 0 (only user in range)
+        let user_json = serde_json::to_value(&chat[0]).unwrap();
+        assert!(
+            user_json.to_string().contains("cache_control"),
+            "user message must carry cache_control breakpoint"
+        );
+        let assistant_json = serde_json::to_value(&chat[1]).unwrap();
+        assert!(
+            !assistant_json.to_string().contains("cache_control"),
+            "assistant message must not have cache_control"
+        );
+    }
+
+    #[test]
+    fn split_messages_structured_breakpoint_targets_last_minus_20_position() {
+        // Build 25 messages: user/assistant alternating, user first
+        let mut messages = Vec::new();
+        for i in 0..25u32 {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            let content = format!("message {i}");
+            messages.push(Message {
+                role,
+                content,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+        let (_, chat) = split_messages_structured(&messages);
+        assert_eq!(chat.len(), 25);
+        // target = 25 - 20 = 5; first user at or after index 5 is index 6 (even indices are user)
+        // Actually index 5 is assistant (odd), so search finds index 6 (user)
+        let mut breakpoint_idx = None;
+        for (i, msg) in chat.iter().enumerate() {
+            let json = serde_json::to_value(msg).unwrap();
+            if json.to_string().contains("cache_control") {
+                breakpoint_idx = Some(i);
+                break;
+            }
+        }
+        let idx = breakpoint_idx.expect("must have a breakpoint somewhere");
+        assert_eq!(
+            chat[idx].role, "user",
+            "breakpoint must be on a user message"
+        );
+        // Breakpoint index must be >= max(0, total-20) = 5
+        assert!(idx >= 5, "breakpoint must be at or after position total-20");
     }
 }

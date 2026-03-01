@@ -1582,7 +1582,6 @@ impl<C: Channel> Agent<C> {
         self.env_context
             .model_name
             .clone_from(&self.runtime.model_name);
-        let env_formatted = self.env_context.format();
         let tool_catalog = if self.provider.supports_tool_use() {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
@@ -1595,17 +1594,22 @@ impl<C: Channel> Agent<C> {
                 Some(reg.format_for_prompt_filtered(&self.runtime.permission_policy))
             }
         };
-        // BLOCK 1: stable across all turns — base prompt only, no dynamic content
+        // BLOCK 1: stable within a session — base prompt + skills + tool catalog
         #[allow(unused_mut)]
-        let mut system_prompt =
-            build_system_prompt("", None, None, self.provider.supports_tool_use());
-        system_prompt.push_str("\n<!-- cache:stable -->");
+        let mut system_prompt = build_system_prompt(
+            &skills_prompt,
+            Some(&self.env_context),
+            tool_catalog.as_deref(),
+            self.provider.supports_tool_use(),
+        );
 
         // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
         if !catalog_prompt.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&catalog_prompt);
         }
+
+        system_prompt.push_str("\n<!-- cache:stable -->");
 
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
@@ -1642,21 +1646,6 @@ impl<C: Channel> Agent<C> {
 
         // BLOCK 3: volatile — dynamic per-turn content, never cached
         system_prompt.push_str("\n<!-- cache:volatile -->");
-
-        if !env_formatted.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&env_formatted);
-        }
-
-        if let Some(ref catalog) = tool_catalog {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(catalog);
-        }
-
-        if !skills_prompt.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&skills_prompt);
-        }
 
         tracing::debug!(
             len = system_prompt.len(),
