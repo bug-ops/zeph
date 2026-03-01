@@ -1582,7 +1582,7 @@ impl<C: Channel> Agent<C> {
         self.env_context
             .model_name
             .clone_from(&self.runtime.model_name);
-        let env = &self.env_context;
+        let env_formatted = self.env_context.format();
         let tool_catalog = if self.provider.supports_tool_use() {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
@@ -1595,21 +1595,17 @@ impl<C: Channel> Agent<C> {
                 Some(reg.format_for_prompt_filtered(&self.runtime.permission_policy))
             }
         };
+        // BLOCK 1: stable across all turns — base prompt only, no dynamic content
         #[allow(unused_mut)]
-        let mut system_prompt = build_system_prompt(
-            &skills_prompt,
-            Some(env),
-            tool_catalog.as_deref(),
-            self.provider.supports_tool_use(),
-        );
+        let mut system_prompt =
+            build_system_prompt("", None, None, self.provider.supports_tool_use());
+        system_prompt.push_str("\n<!-- cache:stable -->");
 
+        // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
         if !catalog_prompt.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&catalog_prompt);
         }
-
-        system_prompt.push_str("\n<!-- cache:stable -->");
-        system_prompt.push_str("\n<!-- cache:volatile -->");
 
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
@@ -1642,6 +1638,24 @@ impl<C: Channel> Agent<C> {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&map);
             }
+        }
+
+        // BLOCK 3: volatile — dynamic per-turn content, never cached
+        system_prompt.push_str("\n<!-- cache:volatile -->");
+
+        if !env_formatted.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&env_formatted);
+        }
+
+        if let Some(ref catalog) = tool_catalog {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(catalog);
+        }
+
+        if !skills_prompt.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&skills_prompt);
         }
 
         tracing::debug!(
@@ -3540,6 +3554,78 @@ mod tests {
         // Even with no messages the prompt structure must be valid (not panic, contains sections)
         assert!(prompt.contains("User Intent"));
         assert!(prompt.contains("Next Step"));
+    }
+
+    // --- rebuild_system_prompt block order ---
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_stable_marker_before_volatile_marker() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.rebuild_system_prompt("test query").await;
+
+        let prompt = &agent.messages[0].content;
+        let pos_stable = prompt
+            .find("<!-- cache:stable -->")
+            .expect("cache:stable marker must be present");
+        let pos_volatile = prompt
+            .find("<!-- cache:volatile -->")
+            .expect("cache:volatile marker must be present");
+        assert!(
+            pos_stable < pos_volatile,
+            "cache:stable must appear before cache:volatile in the system prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_base_content_before_stable_marker() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.rebuild_system_prompt("test query").await;
+
+        let prompt = &agent.messages[0].content;
+        let pos_stable = prompt
+            .find("<!-- cache:stable -->")
+            .expect("cache:stable marker must be present");
+        // The prompt must have non-whitespace content before the stable marker.
+        let before_stable = prompt[..pos_stable].trim();
+        assert!(
+            !before_stable.is_empty(),
+            "base prompt content must appear before cache:stable marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_volatile_marker_at_block3_boundary() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.rebuild_system_prompt("test query").await;
+
+        let prompt = &agent.messages[0].content;
+        // Everything after cache:volatile must not include cache:stable.
+        let pos_volatile = prompt
+            .find("<!-- cache:volatile -->")
+            .expect("cache:volatile marker must be present");
+        let after_volatile = &prompt[pos_volatile + "<!-- cache:volatile -->".len()..];
+        assert!(
+            !after_volatile.contains("<!-- cache:stable -->"),
+            "cache:stable must not appear after cache:volatile"
+        );
     }
 
     // --- build_metadata_summary robustness ---
