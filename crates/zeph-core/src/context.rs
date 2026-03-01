@@ -27,11 +27,12 @@ You have access to tools via the API. Use them by calling the appropriate tool \
 with the required parameters. Do NOT write fenced code blocks to invoke tools; \
 use the structured tool_use mechanism instead.\n\
 \n\
-When `read_file` is available, always prefer it over bash alternatives like \
-`cat`, `head`, `tail`, or `sed` for reading files. `read_file` returns \
-structured output with line numbers and metadata. Similarly prefer `write_file` \
-over shell redirects, and `list_directory` / `find_path` over `ls` / `find` \
-when available.";
+**CRITICAL: When `read_file` is available, you MUST use it instead of bash \
+alternatives (`cat`, `head`, `tail`, `sed`). DO NOT invoke bash for file reading. \
+`read_file` returns structured output with line numbers and metadata.**\n\
+\n\
+Similarly prefer `write_file` over shell redirects, and `list_directory` / \
+`find_path` over `ls` / `find` when available.";
 
 const BASE_PROMPT_TAIL: &str = "\
 \n\n## Skills\n\
