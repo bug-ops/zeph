@@ -523,12 +523,12 @@ mod tests {
 
     use super::*;
 
+    fn test_cwd() -> PathBuf {
+        std::env::temp_dir()
+    }
+
     fn test_path(name: &str) -> String {
-        if cfg!(windows) {
-            format!("C:\\tmp\\{name}")
-        } else {
-            format!("/tmp/{name}")
-        }
+        test_cwd().join(name).to_string_lossy().into_owned()
     }
 
     struct FakeClient {
@@ -573,7 +573,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, true, false, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -603,7 +603,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -633,8 +633,7 @@ mod tests {
                     content: String::new(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, true, PathBuf::from("/tmp"), None);
+                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, true, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
@@ -655,7 +654,7 @@ mod tests {
             request_tx: tx.clone(),
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let defs = exec_read_only.tool_definitions();
@@ -671,7 +670,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: true,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let defs = exec_write_only.tool_definitions();
@@ -752,7 +751,7 @@ mod tests {
                 let sid = acp::SessionId::new("s1");
                 // can_read = false
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -778,7 +777,7 @@ mod tests {
                 let sid = acp::SessionId::new("s1");
                 // can_write = false
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, true, false, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -905,7 +904,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let mut params = serde_json::Map::new();
@@ -927,7 +926,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let mut params = serde_json::Map::new();
@@ -953,7 +952,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let mut params = serde_json::Map::new();
@@ -978,7 +977,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_cwd(),
             permission_gate: None,
         };
         let mut params = serde_json::Map::new();
@@ -1027,7 +1026,7 @@ mod tests {
                     content: "data".to_owned(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
+                let cwd = std::env::current_dir().unwrap_or_else(|_| test_cwd());
                 let (exec, handler) =
                     AcpFileExecutor::new(conn, sid, true, false, cwd.clone(), None);
                 tokio::task::spawn_local(handler);
@@ -1069,7 +1068,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -1169,18 +1168,12 @@ mod tests {
                 let (gate, gate_handler) = AcpPermissionGate::new(Rc::clone(&conn), None);
                 tokio::task::spawn_local(gate_handler);
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(
-                    conn,
-                    sid.clone(),
-                    false,
-                    true,
-                    PathBuf::from("/tmp"),
-                    Some(gate),
-                );
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid.clone(), false, true, test_cwd(), Some(gate));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
@@ -1201,18 +1194,12 @@ mod tests {
                 let (gate, gate_handler) = AcpPermissionGate::new(Rc::clone(&conn), None);
                 tokio::task::spawn_local(gate_handler);
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(
-                    conn,
-                    sid.clone(),
-                    false,
-                    true,
-                    PathBuf::from("/tmp"),
-                    Some(gate),
-                );
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid.clone(), false, true, test_cwd(), Some(gate));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
@@ -1234,11 +1221,11 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
-                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
