@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 
 use zeph_memory::TokenCounter;
 
+use crate::instructions::InstructionBlock;
+
 const BASE_PROMPT_HEADER: &str = "\
 You are Zeph, an AI coding assistant running in the user's terminal.";
 
@@ -83,12 +85,34 @@ pub fn build_system_prompt(
     tool_catalog: Option<&str>,
     native_tools: bool,
 ) -> String {
+    build_system_prompt_with_instructions(skills_prompt, env, tool_catalog, native_tools, &[])
+}
+
+/// Build the system prompt, injecting instruction blocks into the volatile section
+/// (Block 2 — after env context, before skills and tool catalog).
+///
+/// Instruction file content is user-editable and must NOT be placed in the stable
+/// cache block. It is injected here, in the dynamic/volatile section, so that
+/// prompt-caching (epic #1082) is not disrupted.
+#[must_use]
+pub fn build_system_prompt_with_instructions(
+    skills_prompt: &str,
+    env: Option<&EnvironmentContext>,
+    tool_catalog: Option<&str>,
+    native_tools: bool,
+    instructions: &[InstructionBlock],
+) -> String {
     let base = if native_tools {
         &*PROMPT_NATIVE
     } else {
         &*PROMPT_LEGACY
     };
+    let instructions_len: usize = instructions
+        .iter()
+        .map(|b| b.source.display().to_string().len() + b.content.len() + 30)
+        .sum();
     let dynamic_len = env.map_or(0, |e| e.format().len() + 2)
+        + instructions_len
         + tool_catalog.map_or(0, |c| if c.is_empty() { 0 } else { c.len() + 2 })
         + if skills_prompt.is_empty() {
             0
@@ -101,6 +125,22 @@ pub fn build_system_prompt(
     if let Some(env) = env {
         prompt.push_str("\n\n");
         prompt.push_str(&env.format());
+    }
+
+    // Instruction blocks are placed after env context (volatile, user-editable content).
+    // Safety: instruction content is user-trusted (controlled via local files and config).
+    // No sanitization is applied — see instructions.rs doc comment for trust model.
+    for block in instructions {
+        prompt.push_str("\n\n<!-- instructions: ");
+        prompt.push_str(
+            &block
+                .source
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        );
+        prompt.push_str(" -->\n");
+        prompt.push_str(&block.content);
     }
 
     if let Some(catalog) = tool_catalog

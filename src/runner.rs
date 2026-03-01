@@ -323,6 +323,29 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search);
 
+    // Load provider-specific and explicit instruction files.
+    // base_dir is the process CWD at startup — the most natural project root for local tools.
+    let instruction_base =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut explicit_instruction_files = config.agent.instruction_files.clone();
+    if let Some(ref p) = config.llm.instruction_file {
+        explicit_instruction_files.push(p.clone());
+    }
+    if let Some(ref orch) = config.llm.orchestrator {
+        for prov in orch.providers.values() {
+            if let Some(ref p) = prov.instruction_file {
+                explicit_instruction_files.push(p.clone());
+            }
+        }
+    }
+    let instruction_blocks = zeph_core::instructions::load_instructions(
+        &instruction_base,
+        &[config.llm.provider],
+        &explicit_instruction_files,
+        config.agent.instruction_auto_detect,
+    );
+    let agent = agent.with_instruction_blocks(instruction_blocks);
+
     let agent = agent_setup::apply_response_cache(
         agent,
         config.llm.response_cache_enabled,
