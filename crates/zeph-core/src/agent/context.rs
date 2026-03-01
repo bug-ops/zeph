@@ -831,8 +831,8 @@ impl<C: Channel> Agent<C> {
             let _ = writeln!(
                 text,
                 "- When you said: \"{}…\" → User corrected: \"{}\"",
-                truncate_chars(&c.original_output, 80),
-                truncate_chars(&c.correction_text, 200),
+                truncate_chars(&scrub_content(&c.original_output), 80),
+                truncate_chars(&scrub_content(&c.correction_text), 200),
             );
         }
         Ok(Some(Message::from_legacy(Role::System, text)))

@@ -818,7 +818,10 @@ impl<C: Channel> Agent<C> {
                         .find(|m| m.role == Role::Assistant)
                         .map_or("", |m| m.content.as_str());
                     // REV-PH2-001: use UTF-8-safe truncate_chars to avoid byte-slice panic
-                    let truncated = context::truncate_chars(last_assistant, 512);
+                    // Redact secrets before storing LLM output that may contain sensitive data
+                    let truncated = self
+                        .maybe_redact(&context::truncate_chars(last_assistant, 512))
+                        .into_owned();
                     match memory
                         .sqlite()
                         .store_user_correction(
