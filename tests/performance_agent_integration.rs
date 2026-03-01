@@ -108,6 +108,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         } else {
             Ok(None)
