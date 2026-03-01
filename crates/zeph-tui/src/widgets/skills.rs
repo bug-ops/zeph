@@ -3,10 +3,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::metrics::MetricsSnapshot;
+use crate::metrics::{MetricsSnapshot, SkillConfidence};
 use crate::theme::Theme;
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
@@ -19,11 +20,32 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Percentage(100), Constraint::Min(0)]).split(area)
     };
 
+    let confidence_map: std::collections::HashMap<&str, &SkillConfidence> = metrics
+        .skill_confidence
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+
     let skill_lines: Vec<Line<'_>> = metrics
         .active_skills
         .iter()
-        .map(|s| Line::from(format!("  - {s}")))
+        .map(|s| {
+            if let Some(conf) = confidence_map.get(s.as_str()) {
+                let bar = confidence_bar(conf.posterior, 8);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pct = (conf.posterior * 100.0) as u32;
+                let color = confidence_color(conf.posterior);
+                Line::from(vec![
+                    Span::raw(format!("  {s}  ")),
+                    Span::styled(bar, Style::default().fg(color)),
+                    Span::raw(format!(" {pct}% ({})", conf.total_uses)),
+                ])
+            } else {
+                Line::from(format!("  - {s}"))
+            }
+        })
         .collect();
+
     let skills = Paragraph::new(skill_lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -56,11 +78,32 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     }
 }
 
+fn confidence_bar(posterior: f64, width: usize) -> String {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let filled = ((posterior * width as f64).round() as usize).min(width);
+    let empty = width - filled;
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn confidence_color(posterior: f64) -> Color {
+    if posterior > 0.75 {
+        Color::Green
+    } else if posterior >= 0.40 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
 
-    use crate::metrics::MetricsSnapshot;
+    use crate::metrics::{MetricsSnapshot, SkillConfidence};
     use crate::test_utils::render_to_string;
 
     #[test]
@@ -73,5 +116,102 @@ mod tests {
             super::render(&metrics, frame, area);
         });
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn skills_with_confidence() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.active_skills = vec!["git".into(), "docker".into()];
+        metrics.total_skills = 3;
+        metrics.skill_confidence = vec![
+            SkillConfidence {
+                name: "git".into(),
+                posterior: 0.92,
+                total_uses: 42,
+            },
+            SkillConfidence {
+                name: "docker".into(),
+                posterior: 0.35,
+                total_uses: 5,
+            },
+        ];
+
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn confidence_bar_full() {
+        assert_eq!(super::confidence_bar(1.0, 8), "[████████]");
+    }
+
+    #[test]
+    fn confidence_bar_empty() {
+        assert_eq!(super::confidence_bar(0.0, 8), "[░░░░░░░░]");
+    }
+
+    #[test]
+    fn confidence_bar_half() {
+        assert_eq!(super::confidence_bar(0.5, 8), "[████░░░░]");
+    }
+
+    #[test]
+    fn confidence_color_green() {
+        assert_eq!(super::confidence_color(0.9), ratatui::style::Color::Green);
+    }
+
+    #[test]
+    fn confidence_color_yellow() {
+        assert_eq!(super::confidence_color(0.6), ratatui::style::Color::Yellow);
+    }
+
+    #[test]
+    fn confidence_color_red() {
+        assert_eq!(super::confidence_color(0.2), ratatui::style::Color::Red);
+    }
+
+    #[test]
+    fn confidence_color_boundary_exactly_0_75_is_yellow() {
+        // >0.75 = Green, >=0.40 = Yellow → 0.75 itself should be Yellow
+        assert_eq!(super::confidence_color(0.75), ratatui::style::Color::Yellow);
+    }
+
+    #[test]
+    fn confidence_color_boundary_exactly_0_40_is_yellow() {
+        // >=0.40 = Yellow → exactly 0.40 should be Yellow
+        assert_eq!(super::confidence_color(0.40), ratatui::style::Color::Yellow);
+    }
+
+    #[test]
+    fn confidence_color_just_below_0_40_is_red() {
+        assert_eq!(super::confidence_color(0.39), ratatui::style::Color::Red);
+    }
+
+    #[test]
+    fn confidence_color_just_above_0_75_is_green() {
+        assert_eq!(super::confidence_color(0.76), ratatui::style::Color::Green);
+    }
+
+    #[test]
+    fn confidence_bar_width_zero_no_panic() {
+        let result = super::confidence_bar(0.5, 0);
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn skills_no_confidence_uses_dash_prefix() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.active_skills = vec!["unknown-skill".into()];
+        metrics.total_skills = 1;
+        // No skill_confidence entries → should render with "  - " prefix
+        let output = render_to_string(40, 8, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("- unknown-skill"),
+            "expected dash prefix, got:\n{output}"
+        );
     }
 }

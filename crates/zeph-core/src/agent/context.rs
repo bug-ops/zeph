@@ -1299,7 +1299,7 @@ impl<C: Channel> Agent<C> {
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
-            let scored = matcher
+            let mut scored = matcher
                 .match_skills(
                     &all_meta,
                     query,
@@ -1311,6 +1311,39 @@ impl<C: Channel> Agent<C> {
                     },
                 )
                 .await;
+
+            if !scored.is_empty() {
+                let metrics_map: std::collections::HashMap<String, (u32, u32)> =
+                    if let Some(memory) = &self.memory_state.memory {
+                        memory
+                            .sqlite()
+                            .load_skill_outcome_stats()
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|m| {
+                                let pair = (
+                                    u32::try_from(m.successes).unwrap_or(0),
+                                    u32::try_from(m.failures).unwrap_or(0),
+                                );
+                                (m.skill_name, pair)
+                            })
+                            .collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                zeph_skills::trust_score::rerank(
+                    &mut scored,
+                    self.skill_state.cosine_weight,
+                    |idx| {
+                        all_meta
+                            .get(idx)
+                            .and_then(|m| metrics_map.get(&m.name))
+                            .copied()
+                            .unwrap_or((0, 0))
+                    },
+                );
+            }
 
             let indices: Vec<usize> = if scored.is_empty() {
                 // Embed or Qdrant failure: fall back to all skills so the agent

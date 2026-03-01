@@ -367,6 +367,8 @@ pub struct SkillsConfig {
     pub max_active_skills: usize,
     #[serde(default = "default_disambiguation_threshold")]
     pub disambiguation_threshold: f32,
+    #[serde(default = "default_cosine_weight")]
+    pub cosine_weight: f32,
     #[serde(default)]
     pub learning: LearningConfig,
     #[serde(default)]
@@ -377,6 +379,9 @@ pub struct SkillsConfig {
 
 fn default_disambiguation_threshold() -> f32 {
     0.05
+}
+fn default_cosine_weight() -> f32 {
+    0.7
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -441,6 +446,14 @@ pub struct LearningConfig {
     pub correction_recall_limit: u32,
     #[serde(default = "default_correction_min_similarity")]
     pub correction_min_similarity: f32,
+    #[serde(default = "default_auto_promote_min_uses")]
+    pub auto_promote_min_uses: u32,
+    #[serde(default = "default_auto_promote_threshold")]
+    pub auto_promote_threshold: f64,
+    #[serde(default = "default_auto_demote_min_uses")]
+    pub auto_demote_min_uses: u32,
+    #[serde(default = "default_auto_demote_threshold")]
+    pub auto_demote_threshold: f64,
 }
 
 impl Default for LearningConfig {
@@ -458,6 +471,10 @@ impl Default for LearningConfig {
             correction_confidence_threshold: default_correction_confidence_threshold(),
             correction_recall_limit: default_correction_recall_limit(),
             correction_min_similarity: default_correction_min_similarity(),
+            auto_promote_min_uses: default_auto_promote_min_uses(),
+            auto_promote_threshold: default_auto_promote_threshold(),
+            auto_demote_min_uses: default_auto_demote_min_uses(),
+            auto_demote_threshold: default_auto_demote_threshold(),
         }
     }
 }
@@ -491,6 +508,18 @@ fn default_correction_recall_limit() -> u32 {
 }
 fn default_correction_min_similarity() -> f32 {
     0.75
+}
+fn default_auto_promote_min_uses() -> u32 {
+    50
+}
+fn default_auto_promote_threshold() -> f64 {
+    0.95
+}
+fn default_auto_demote_min_uses() -> u32 {
+    30
+}
+fn default_auto_demote_threshold() -> f64 {
+    0.40
 }
 
 /// Vector backend selector for embedding storage.
@@ -1351,6 +1380,7 @@ impl Default for Config {
                 paths: vec!["./skills".into()],
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
+                cosine_weight: default_cosine_weight(),
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,

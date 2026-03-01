@@ -103,6 +103,7 @@ pub(super) struct SkillState {
     pub(super) prompt_mode: SkillPromptMode,
     /// Custom secrets available at runtime: key=hyphenated name, value=secret.
     pub(super) available_custom_secrets: HashMap<String, Secret>,
+    pub(super) cosine_weight: f32,
 }
 
 pub(super) struct McpState {
@@ -234,6 +235,7 @@ impl<C: Channel> Agent<C> {
                 last_skills_prompt: skills_prompt,
                 prompt_mode: SkillPromptMode::Auto,
                 available_custom_secrets: HashMap::new(),
+                cosine_weight: 0.7,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -795,8 +797,7 @@ impl<C: Channel> Agent<C> {
                     "implicit correction detected"
                 );
                 // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
-                let feedback_text =
-                    context::truncate_chars(&signal.feedback_text, 500);
+                let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
                 self.record_skill_outcomes(
                     "user_rejection",
                     Some(&feedback_text),
@@ -1307,6 +1308,7 @@ impl<C: Channel> Agent<C> {
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
         self.skill_state.max_active_skills = config.skills.max_active_skills;
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
+        self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
 
         if config.memory.context_budget_tokens > 0 {
             self.context_manager.budget = Some(ContextBudget::new(

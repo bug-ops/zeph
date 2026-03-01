@@ -55,6 +55,108 @@ impl<C: Channel> Agent<C> {
                 self.check_rollback(name).await;
             }
         }
+
+        let names: Vec<String> = self.skill_state.active_skill_names.clone();
+        for name in &names {
+            self.check_trust_transition(name).await;
+        }
+        self.update_skill_confidence_metrics().await;
+    }
+
+    async fn update_skill_confidence_metrics(&self) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Ok(stats) = memory.sqlite().load_skill_outcome_stats().await else {
+            return;
+        };
+        let confidences: Vec<crate::metrics::SkillConfidence> = stats
+            .iter()
+            .map(|s| {
+                let suc = u32::try_from(s.successes).unwrap_or(0);
+                let fail = u32::try_from(s.failures).unwrap_or(0);
+                crate::metrics::SkillConfidence {
+                    name: s.skill_name.clone(),
+                    posterior: zeph_skills::trust_score::posterior_mean(suc, fail),
+                    total_uses: u32::try_from(s.total).unwrap_or(0),
+                }
+            })
+            .collect();
+        self.update_metrics(|m| m.skill_confidence = confidences);
+    }
+
+    async fn check_trust_transition(&self, skill_name: &str) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Some(config) = &self.learning_engine.config else {
+            return;
+        };
+        let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
+            return;
+        };
+        let successes = u32::try_from(metrics.successes).unwrap_or(0);
+        let failures = u32::try_from(metrics.failures).unwrap_or(0);
+        let total = u32::try_from(metrics.total).unwrap_or(0);
+        let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+
+        if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
+            let trust_level = memory
+                .sqlite()
+                .load_skill_trust(skill_name)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.trust_level);
+            // Skip promotion only if explicitly blocked; promote even if no record exists.
+            if trust_level.as_deref() != Some("trusted")
+                && trust_level.as_deref() != Some("blocked")
+            {
+                tracing::info!(
+                    skill = skill_name,
+                    posterior = format!("{posterior:.3}"),
+                    total,
+                    "auto-promoting skill to trusted"
+                );
+                if trust_level.is_none() {
+                    // No existing record — create one via upsert.
+                    let _ = memory
+                        .sqlite()
+                        .upsert_skill_trust(
+                            skill_name,
+                            "trusted",
+                            zeph_memory::sqlite::SourceKind::Local,
+                            None,
+                            None,
+                            "",
+                        )
+                        .await;
+                } else {
+                    let _ = memory
+                        .sqlite()
+                        .set_skill_trust_level(skill_name, "trusted")
+                        .await;
+                }
+            }
+        }
+
+        if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
+            let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
+                return;
+            };
+            if trust_row.trust_level == "trusted" || trust_row.trust_level == "verified" {
+                tracing::warn!(
+                    skill = skill_name,
+                    posterior = format!("{posterior:.3}"),
+                    total,
+                    "auto-demoting skill to quarantined"
+                );
+                let _ = memory
+                    .sqlite()
+                    .set_skill_trust_level(skill_name, "quarantined")
+                    .await;
+            }
+        }
     }
 
     pub(super) async fn attempt_self_reflection(
@@ -828,6 +930,10 @@ mod tests {
             correction_confidence_threshold: 0.6,
             correction_recall_limit: 3,
             correction_min_similarity: 0.75,
+            auto_promote_min_uses: 50,
+            auto_promote_threshold: 0.95,
+            auto_demote_min_uses: 30,
+            auto_demote_threshold: 0.40,
         }
     }
 
@@ -1650,6 +1756,155 @@ mod tests {
         assert!(
             sent.iter().any(|s| s.contains("Usage")),
             "expected usage message, got: {sent:?}"
+        );
+    }
+
+    // check_trust_transition: auto-promote and auto-demote
+
+    async fn setup_skill_with_outcomes(
+        memory: &SemanticMemory,
+        skill_name: &str,
+        successes: u32,
+        failures: u32,
+        initial_trust: &str,
+    ) {
+        use zeph_memory::sqlite::SourceKind;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                skill_name,
+                initial_trust,
+                SourceKind::Local,
+                None,
+                None,
+                "hash",
+            )
+            .await
+            .unwrap();
+        for _ in 0..successes {
+            memory
+                .sqlite()
+                .record_skill_outcome(skill_name, None, None, "success", None, None)
+                .await
+                .unwrap();
+        }
+        for _ in 0..failures {
+            memory
+                .sqlite()
+                .record_skill_outcome(skill_name, None, None, "tool_failure", None, None)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_auto_promotes_to_trusted() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // 50 successes, 0 failures → posterior > 0.95 threshold
+        setup_skill_with_outcomes(&memory, "test-skill", 50, 0, "local").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_promote_min_uses = 50;
+        config.auto_promote_threshold = 0.95;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "trusted",
+            "should auto-promote to trusted, got: {}",
+            row.trust_level
+        );
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_auto_demotes_to_quarantined() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // 5 successes, 30 failures → posterior < 0.40 threshold, starting as "trusted"
+        setup_skill_with_outcomes(&memory, "test-skill", 5, 30, "trusted").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_demote_min_uses = 30;
+        config.auto_demote_threshold = 0.40;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "quarantined",
+            "should auto-demote to quarantined, got: {}",
+            row.trust_level
+        );
+    }
+
+    #[tokio::test]
+    async fn check_trust_transition_does_not_promote_blocked() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // High success rate but "blocked" — should NOT be promoted
+        setup_skill_with_outcomes(&memory, "test-skill", 100, 0, "blocked").await;
+
+        let mut config = learning_config_enabled();
+        config.auto_promote_min_uses = 50;
+        config.auto_promote_threshold = 0.95;
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(config)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+
+        let mem = agent.memory_state.memory.as_ref().unwrap();
+        agent.check_trust_transition("test-skill").await;
+
+        let row = mem
+            .sqlite()
+            .load_skill_trust("test-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level, "blocked",
+            "blocked skill should never be auto-promoted, got: {}",
+            row.trust_level
         );
     }
 
