@@ -811,22 +811,13 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
                 if let Some(memory) = &self.memory_state.memory {
-                    let last_assistant = self
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == Role::Assistant)
-                        .map_or("", |m| m.content.as_str());
-                    // REV-PH2-001: use UTF-8-safe truncate_chars to avoid byte-slice panic
-                    // Redact secrets before storing LLM output that may contain sensitive data
-                    let truncated = self
-                        .maybe_redact(&context::truncate_chars(last_assistant, 512))
-                        .into_owned();
+                    // original_output is omitted to avoid persisting LLM-generated content
+                    // that may be derived from a context containing secrets.
                     match memory
                         .sqlite()
                         .store_user_correction(
                             self.memory_state.conversation_id.map(|c| c.0),
-                            &truncated,
+                            "",
                             &feedback_text,
                             self.skill_state
                                 .active_skill_names
