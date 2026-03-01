@@ -150,6 +150,11 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
+        if config.correction_detection {
+            self.feedback_detector = super::feedback_detector::FeedbackDetector::new(
+                config.correction_confidence_threshold,
+            );
+        }
         self.learning_engine.config = Some(config);
         self
     }

@@ -433,6 +433,14 @@ pub struct LearningConfig {
     pub max_versions: u32,
     #[serde(default = "default_cooldown_minutes")]
     pub cooldown_minutes: u64,
+    #[serde(default = "default_correction_detection")]
+    pub correction_detection: bool,
+    #[serde(default = "default_correction_confidence_threshold")]
+    pub correction_confidence_threshold: f32,
+    #[serde(default = "default_correction_recall_limit")]
+    pub correction_recall_limit: u32,
+    #[serde(default = "default_correction_min_similarity")]
+    pub correction_min_similarity: f32,
 }
 
 impl Default for LearningConfig {
@@ -446,6 +454,10 @@ impl Default for LearningConfig {
             min_evaluations: default_min_evaluations(),
             max_versions: default_max_versions(),
             cooldown_minutes: default_cooldown_minutes(),
+            correction_detection: default_correction_detection(),
+            correction_confidence_threshold: default_correction_confidence_threshold(),
+            correction_recall_limit: default_correction_recall_limit(),
+            correction_min_similarity: default_correction_min_similarity(),
         }
     }
 }
@@ -467,6 +479,18 @@ fn default_max_versions() -> u32 {
 }
 fn default_cooldown_minutes() -> u64 {
     60
+}
+fn default_correction_detection() -> bool {
+    true
+}
+fn default_correction_confidence_threshold() -> f32 {
+    0.6
+}
+fn default_correction_recall_limit() -> u32 {
+    3
+}
+fn default_correction_min_similarity() -> f32 {
+    0.75
 }
 
 /// Vector backend selector for embedding storage.

@@ -5,6 +5,7 @@ mod builder;
 mod context;
 pub(crate) mod context_manager;
 pub mod error;
+pub(super) mod feedback_detector;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
@@ -57,6 +58,7 @@ pub(crate) const RECALL_PREFIX: &str = "[semantic recall]\n";
 pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
+pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
@@ -139,6 +141,7 @@ pub struct Agent<C: Channel> {
     pub(super) context_manager: context_manager::ContextManager,
     pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
     pub(super) learning_engine: learning_engine::LearningEngine,
+    pub(super) feedback_detector: feedback_detector::FeedbackDetector,
     config_path: Option<PathBuf>,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
@@ -235,6 +238,7 @@ impl<C: Channel> Agent<C> {
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
+            feedback_detector: feedback_detector::FeedbackDetector::new(0.6),
             config_path: None,
             config_reload_rx: None,
             shutdown: rx,
@@ -701,6 +705,7 @@ impl<C: Channel> Agent<C> {
         (text, image_parts)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_user_message(
         &mut self,
         text: String,
@@ -767,6 +772,73 @@ impl<C: Channel> Agent<C> {
         }
 
         self.rebuild_system_prompt(&text).await;
+
+        let correction_detection_enabled = self
+            .learning_engine
+            .config
+            .as_ref()
+            .is_none_or(|c| c.correction_detection);
+        if self.is_learning_enabled() && correction_detection_enabled {
+            let previous_user_messages: Vec<&str> = self
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| m.content.as_str())
+                .collect();
+            if let Some(signal) = self
+                .feedback_detector
+                .detect(trimmed, &previous_user_messages)
+            {
+                tracing::info!(
+                    kind = signal.kind.as_str(),
+                    confidence = signal.confidence,
+                    "implicit correction detected"
+                );
+                // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
+                let feedback_text =
+                    context::truncate_chars(&signal.feedback_text, 500);
+                self.record_skill_outcomes(
+                    "user_rejection",
+                    Some(&feedback_text),
+                    Some(signal.kind.as_str()),
+                )
+                .await;
+                if let Some(memory) = &self.memory_state.memory {
+                    let last_assistant = self
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == Role::Assistant)
+                        .map_or("", |m| m.content.as_str());
+                    // REV-PH2-001: use UTF-8-safe truncate_chars to avoid byte-slice panic
+                    let truncated = context::truncate_chars(last_assistant, 512);
+                    match memory
+                        .sqlite()
+                        .store_user_correction(
+                            self.memory_state.conversation_id.map(|c| c.0),
+                            &truncated,
+                            &feedback_text,
+                            self.skill_state
+                                .active_skill_names
+                                .first()
+                                .map(String::as_str),
+                            signal.kind.as_str(),
+                        )
+                        .await
+                    {
+                        Ok(correction_id) => {
+                            if let Err(e) = memory
+                                .store_correction_embedding(correction_id, &feedback_text)
+                                .await
+                            {
+                                tracing::warn!("failed to store correction embedding: {e:#}");
+                            }
+                        }
+                        Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
+                    }
+                }
+            }
+        }
 
         if let Err(e) = self.maybe_compact().await {
             tracing::warn!("context compaction failed: {e:#}");

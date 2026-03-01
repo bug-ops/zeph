@@ -15,6 +15,7 @@ use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
 const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
 const KEY_FACTS_COLLECTION: &str = "zeph_key_facts";
+const CORRECTIONS_COLLECTION: &str = "zeph_corrections";
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct StructuredSummary {
@@ -1043,6 +1044,81 @@ impl SemanticMemory {
             .collect();
 
         Ok(facts)
+    }
+
+    /// Store an embedding for a user correction in the vector store.
+    ///
+    /// Silently skips if no vector store is configured or embeddings are unsupported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding generation or vector store write fails.
+    pub async fn store_correction_embedding(
+        &self,
+        correction_id: i64,
+        correction_text: &str,
+    ) -> Result<(), MemoryError> {
+        let Some(ref store) = self.qdrant else {
+            return Ok(());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(());
+        }
+        let embedding = self
+            .provider
+            .embed(correction_text)
+            .await
+            .map_err(|e| MemoryError::Other(e.to_string()))?;
+        let payload = serde_json::json!({ "correction_id": correction_id });
+        store
+            .store_to_collection(CORRECTIONS_COLLECTION, payload, embedding)
+            .await?;
+        Ok(())
+    }
+
+    /// Retrieve corrections semantically similar to `query`.
+    ///
+    /// Returns up to `limit` corrections scoring above `min_score`.
+    /// Returns an empty vec if no vector store is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding generation or vector search fails.
+    pub async fn retrieve_similar_corrections(
+        &self,
+        query: &str,
+        limit: usize,
+        min_score: f32,
+    ) -> Result<Vec<crate::sqlite::corrections::UserCorrectionRow>, MemoryError> {
+        let Some(ref store) = self.qdrant else {
+            return Ok(vec![]);
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(vec![]);
+        }
+        let embedding = self
+            .provider
+            .embed(query)
+            .await
+            .map_err(|e| MemoryError::Other(e.to_string()))?;
+        let scored = store
+            .search_collection(CORRECTIONS_COLLECTION, &embedding, limit, None)
+            .await
+            .unwrap_or_default();
+
+        let mut results = Vec::new();
+        for point in scored {
+            if point.score < min_score {
+                continue;
+            }
+            if let Some(id_val) = point.payload.get("correction_id")
+                && let Some(id) = id_val.as_i64()
+            {
+                let rows = self.sqlite.load_corrections_for_id(id).await?;
+                results.extend(rows);
+            }
+        }
+        Ok(results)
     }
 }
 

@@ -33,6 +33,7 @@ pub use error::MemoryError;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
+pub use sqlite::corrections::UserCorrectionRow;
 pub use token_counter::TokenCounter;
 pub use types::{ConversationId, MessageId};
 pub use vector_store::{

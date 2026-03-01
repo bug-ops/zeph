@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod acp_sessions;
+pub mod corrections;
 mod history;
 mod messages;
 mod skills;

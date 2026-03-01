@@ -30,6 +30,10 @@ rollback_threshold = 0.5
 min_evaluations = 5
 max_versions = 10
 cooldown_minutes = 60
+correction_detection = true
+correction_confidence_threshold = 0.6
+correction_recall_limit = 3
+correction_min_similarity = 0.75
 
 [skills.trust]
 default_level = "quarantined"

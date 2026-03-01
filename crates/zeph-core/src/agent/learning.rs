@@ -823,7 +823,11 @@ mod tests {
             rollback_threshold: 0.3,
             min_evaluations: 3,
             max_versions: 5,
-            cooldown_minutes: 0, // no cooldown in tests
+            cooldown_minutes: 0,
+            correction_detection: true,
+            correction_confidence_threshold: 0.6,
+            correction_recall_limit: 3,
+            correction_min_similarity: 0.75,
         }
     }
 
