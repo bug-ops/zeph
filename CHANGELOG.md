@@ -35,10 +35,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI Skills panel now shows Wilson score confidence bars immediately after skill match, not only after the first LLM outcome is recorded (`context.rs`: call `update_skill_confidence_metrics()` at skill resolution time) (#1077)
 - TUI event loop redraws on every tick unconditionally; previously the dirty-flag was never set by the tick arm, causing confidence bars to stay stale between user keypresses (#1077)
 
+### Added
+
+- `zeph-core::testing` module (feature `mock`): reusable `MockChannel`, `MockToolExecutor`, `AgentTestHarness` builder — wires `MockProvider` + `MockChannel` + `MockToolExecutor` + `InMemoryVectorStore` into a ready-to-use agent for unit tests (#1113)
+- `zeph-llm::testing` module: wiremock fixture helpers for OpenAI (`/v1/chat/completions` happy path, 429, 401, 500, SSE stream with `finish_reason: stop`) and Claude (`/v1/messages` serde roundtrip, SSE stream, 429/529 overload) (#1109)
+- `zeph-memory::testing` module (feature `mock`): `mock_semantic_memory()` using `:memory:` SQLite + `InMemoryVectorStore` — no Docker required (#1110)
+- `zeph-mcp::testing` module: `MockMcpServer` at `ToolExecutor` level with configurable tool definitions, canned responses, error injection, and call recording (#1111)
+- HTTP-level wiremock tests for `OpenAiProvider`: health check, chat completion, 429 rate limit, 401 auth error, 500 server error (#1109)
+
 ### Tests
 
 - Added `skill_confidence_populated_before_first_outcome` regression test (`zeph-core`) to guard against confidence data being absent at skill match time (#1077)
 - Added `tick_arm_sets_dirty` regression test (`zeph-tui`) to verify `poll_metrics()` is called on each loop iteration (#1077)
+- Total test count: 3218 (+20 new mock infrastructure tests)
 
 ## [0.12.4] - 2026-03-01
 

@@ -266,6 +266,35 @@ impl SemanticMemory {
         self
     }
 
+    /// Construct a `SemanticMemory` from pre-built parts.
+    ///
+    /// Intended for tests that need full control over the backing stores.
+    #[cfg(any(test, feature = "mock"))]
+    #[must_use]
+    pub fn from_parts(
+        sqlite: SqliteStore,
+        qdrant: Option<EmbeddingStore>,
+        provider: AnyProvider,
+        embedding_model: impl Into<String>,
+        vector_weight: f64,
+        keyword_weight: f64,
+        token_counter: Arc<TokenCounter>,
+    ) -> Self {
+        Self {
+            sqlite,
+            qdrant,
+            provider,
+            embedding_model: embedding_model.into(),
+            vector_weight,
+            keyword_weight,
+            temporal_decay_enabled: false,
+            temporal_decay_half_life_days: 30,
+            mmr_enabled: false,
+            mmr_lambda: 0.7,
+            token_counter,
+        }
+    }
+
     /// Create a `SemanticMemory` using the `SQLite`-embedded vector backend.
     ///
     /// # Errors

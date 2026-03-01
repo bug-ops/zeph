@@ -2376,6 +2376,103 @@ mod tests {
         assert_eq!(display_name, "claude-x");
     }
 
+    // ------------------------------------------------------------------
+    // Wiremock HTTP-level tests using fixture helpers from testing module
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn messages_response_deserialization() {
+        let raw = serde_json::json!({
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "hello claude"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0
+            }
+        });
+        let resp: ApiResponse = serde_json::from_value(raw).unwrap();
+        let text: String = resp.content.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(text, "hello claude");
+    }
+
+    #[tokio::test]
+    async fn messages_429_overload_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::claude_overload_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(claude_overload_response(429))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}/v1/messages", server.uri()))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 429);
+    }
+
+    #[tokio::test]
+    async fn messages_529_overload_propagates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        use crate::testing::claude_overload_response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(claude_overload_response(529))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}/v1/messages", server.uri()))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 529);
+    }
+
+    #[tokio::test]
+    async fn claude_sse_fixture_contains_expected_events() {
+        use crate::testing::claude_sse_stream_response;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stream"))
+            .respond_with(claude_sse_stream_response(&["Hello", " world"]))
+            .mount(&server)
+            .await;
+        let raw = reqwest::Client::new()
+            .post(format!("{}/stream", server.uri()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(raw.contains("Hello"));
+        assert!(raw.contains(" world"));
+        assert!(raw.contains("message_stop"));
+        assert!(raw.contains("content_block_delta"));
+    }
+
     #[test]
     fn thinking_config_extended_serializes() {
         let cfg = ThinkingConfig::Extended {
