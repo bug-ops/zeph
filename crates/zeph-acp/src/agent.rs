@@ -1520,7 +1520,9 @@ fn tool_kind_from_name(name: &str) -> acp::ToolKind {
         "bash" | "shell" => acp::ToolKind::Execute,
         "read_file" => acp::ToolKind::Read,
         "write_file" => acp::ToolKind::Edit,
-        "search" | "grep" | "find" | "glob" => acp::ToolKind::Search,
+        "list_directory" | "find_path" | "search" | "grep" | "find" | "glob" => {
+            acp::ToolKind::Search
+        }
         "web_scrape" | "fetch" => acp::ToolKind::Fetch,
         _ => acp::ToolKind::Other,
     }
@@ -2714,6 +2716,8 @@ mod tests {
         assert_eq!(tool_kind_from_name("write_file"), acp::ToolKind::Edit);
         assert_eq!(tool_kind_from_name("search"), acp::ToolKind::Search);
         assert_eq!(tool_kind_from_name("glob"), acp::ToolKind::Search);
+        assert_eq!(tool_kind_from_name("list_directory"), acp::ToolKind::Search);
+        assert_eq!(tool_kind_from_name("find_path"), acp::ToolKind::Search);
         assert_eq!(tool_kind_from_name("web_scrape"), acp::ToolKind::Fetch);
         assert_eq!(tool_kind_from_name("unknown"), acp::ToolKind::Other);
     }

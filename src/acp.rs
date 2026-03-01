@@ -244,10 +244,13 @@ async fn spawn_acp_agent(
             let parent_tool_use_id = ctx.parent_tool_use_id.clone();
             let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
             if let Some(fs) = ctx.file_executor {
-                base = Arc::new(zeph_tools::CompositeExecutor::new(
-                    fs,
+                // Suppress FileExecutor's read/write/glob when AcpFileExecutor is active.
+                // edit and grep remain available from FileExecutor (no ACP equivalents yet).
+                let filtered = zeph_tools::ToolFilter::new(
                     zeph_tools::DynExecutor(base),
-                ));
+                    &["read", "write", "glob"],
+                );
+                base = Arc::new(zeph_tools::CompositeExecutor::new(fs, filtered));
             }
             if let Some(shell) = ctx.shell_executor {
                 base = Arc::new(zeph_tools::CompositeExecutor::new(
