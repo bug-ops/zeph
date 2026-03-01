@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph ingest <path>` CLI subcommand: recursively ingests `.txt`, `.md`, `.pdf` files into Qdrant `zeph_documents` collection via `DocumentPipeline` (#1028)
+- Agent RAG context injection: when `memory.documents.rag_enabled = true` and `zeph_documents` is non-empty, top-K relevant chunks are injected into the context window for each conversation turn (#1028)
+- `AnomalyDetector` integrated into agent tool execution pipeline: failure rate exceeding configurable threshold triggers `Severity::Critical` alert and auto-blocks the tool via trust system; controlled by `[tools.anomaly]` config section (#1027)
+- `GatewayServer` wired into daemon startup and `--daemon` CLI mode: the HTTP webhook ingestion server now starts automatically when `gateway` feature is enabled and `[gateway]` section is configured (#1026)
+- `/gateway status`, `/ingest`, `ViewFilters` entries added to TUI command palette (#1026, #1028, #1029)
+- `FilterMetrics` surfaced in TUI status bar: real-time filter savings percentage shown alongside existing metrics (#1029)
+- Integration test stubs for gateway webhook ingestion and document RAG pipeline (`tests/gateway_integration.rs`, `tests/ingest_integration.rs`) with `#[ignore]` annotation (#1026, #1028)
+
 ### Security
 
 - ACP tool notifications: `raw_response` (file content for `read_file`, stdout for `bash`) is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline when content reaches the IDE (SEC-ACP-001)

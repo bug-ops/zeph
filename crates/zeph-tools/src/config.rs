@@ -65,6 +65,42 @@ impl Default for OverflowConfig {
     }
 }
 
+fn default_anomaly_window() -> usize {
+    10
+}
+
+fn default_anomaly_error_threshold() -> f64 {
+    0.5
+}
+
+fn default_anomaly_critical_threshold() -> f64 {
+    0.8
+}
+
+/// Configuration for the sliding-window anomaly detector.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AnomalyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_anomaly_window")]
+    pub window_size: usize,
+    #[serde(default = "default_anomaly_error_threshold")]
+    pub error_threshold: f64,
+    #[serde(default = "default_anomaly_critical_threshold")]
+    pub critical_threshold: f64,
+}
+
+impl Default for AnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            window_size: default_anomaly_window(),
+            error_threshold: default_anomaly_error_threshold(),
+            critical_threshold: default_anomaly_critical_threshold(),
+        }
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -84,6 +120,8 @@ pub struct ToolsConfig {
     pub filters: crate::filter::FilterConfig,
     #[serde(default)]
     pub overflow: OverflowConfig,
+    #[serde(default)]
+    pub anomaly: AnomalyConfig,
 }
 
 impl ToolsConfig {
@@ -139,6 +177,7 @@ impl Default for ToolsConfig {
             permissions: None,
             filters: crate::filter::FilterConfig::default(),
             overflow: OverflowConfig::default(),
+            anomaly: AnomalyConfig::default(),
         }
     }
 }

@@ -213,6 +213,18 @@ max_history = 100
 # Maximum characters for auto-generated session titles
 title_max_chars = 60
 
+[memory.documents]
+# Qdrant collection for ingested documents
+collection = "zeph_documents"
+# Text chunk size in characters
+chunk_size = 1000
+# Overlap between consecutive chunks in characters
+chunk_overlap = 100
+# Number of document chunks to inject into agent context per turn
+top_k = 3
+# Enable RAG: inject relevant document chunks into agent context
+rag_enabled = false
+
 [memory.semantic]
 # Enable semantic memory with vector search
 enabled = true
@@ -385,6 +397,16 @@ retention_days = 7
 enabled = false
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
+
+[tools.anomaly]
+# Enable sliding-window anomaly detection for tool execution errors
+enabled = false
+# Number of recent tool calls to track in the window
+window_size = 10
+# Error ratio threshold for warning alerts (0.0-1.0)
+error_threshold = 0.5
+# Error ratio threshold for critical alerts (0.0-1.0)
+critical_threshold = 0.8
 
 [gateway]
 # Enable HTTP gateway for webhook ingestion (feature-gated: --features gateway)

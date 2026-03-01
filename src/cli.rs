@@ -95,6 +95,20 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
+    /// Ingest a document into semantic memory
+    Ingest {
+        /// Path to document or directory to ingest
+        path: PathBuf,
+        /// Chunk size in characters
+        #[arg(long, default_value = "1000")]
+        chunk_size: usize,
+        /// Chunk overlap in characters
+        #[arg(long, default_value = "100")]
+        chunk_overlap: usize,
+        /// Target Qdrant collection name
+        #[arg(long, default_value = "zeph_documents")]
+        collection: String,
+    },
     /// Manage ACP session history
     #[cfg(feature = "acp")]
     Sessions {

@@ -110,6 +110,18 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_document_config(mut self, config: crate::config::DocumentConfig) -> Self {
+        self.memory_state.document_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
+        self.anomaly_detector = Some(detector);
+        self
+    }
+
+    #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
         self.shutdown = rx;
         self
