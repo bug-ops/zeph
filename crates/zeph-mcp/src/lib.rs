@@ -12,6 +12,9 @@ pub mod registry;
 pub mod security;
 pub mod tool;
 
+#[cfg(test)]
+pub mod testing;
+
 pub use error::McpError;
 pub use executor::McpToolExecutor;
 pub use manager::{McpManager, McpTransport, ServerEntry};

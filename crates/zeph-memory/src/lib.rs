@@ -15,6 +15,8 @@ pub mod semantic;
 pub mod snapshot;
 pub mod sqlite;
 pub mod sqlite_vector_store;
+#[cfg(any(test, feature = "mock"))]
+pub mod testing;
 pub mod token_counter;
 pub mod types;
 pub mod vector_store;
