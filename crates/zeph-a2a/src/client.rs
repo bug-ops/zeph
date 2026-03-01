@@ -673,3 +673,172 @@ mod tests {
         assert!(matches!(back, TaskEvent::StatusUpdate(_)));
     }
 }
+
+#[cfg(test)]
+mod wiremock_tests {
+    use tokio_stream::StreamExt;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::client::A2aClient;
+    use crate::jsonrpc::{SendMessageParams, TaskIdParams};
+    use crate::testing::*;
+    use crate::types::Message;
+
+    #[tokio::test]
+    async fn send_message_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(task_rpc_response("task-1", "submitted"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        };
+        let task = client
+            .send_message(&format!("{}/rpc", server.uri()), params, None)
+            .await
+            .unwrap();
+        assert_eq!(task.id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn send_message_rpc_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(task_rpc_error_response(-32001, "task not found"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("hi"),
+            configuration: None,
+        };
+        let result = client
+            .send_message(&format!("{}/rpc", server.uri()), params, None)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::A2aError::JsonRpc { code: -32001, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_message_with_bearer_auth() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .and(header("authorization", "Bearer secret-token"))
+            .respond_with(task_rpc_response("task-auth", "submitted"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("secure"),
+            configuration: None,
+        };
+        let task = client
+            .send_message(
+                &format!("{}/rpc", server.uri()),
+                params,
+                Some("secret-token"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.id, "task-auth");
+    }
+
+    #[tokio::test]
+    async fn get_task_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(task_rpc_response("task-get", "completed"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = TaskIdParams {
+            id: "task-get".into(),
+            history_length: None,
+        };
+        let task = client
+            .get_task(&format!("{}/rpc", server.uri()), params, None)
+            .await
+            .unwrap();
+        assert_eq!(task.id, "task-get");
+    }
+
+    #[tokio::test]
+    async fn cancel_task_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(task_rpc_response("task-cancel", "canceled"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = TaskIdParams {
+            id: "task-cancel".into(),
+            history_length: None,
+        };
+        let task = client
+            .cancel_task(&format!("{}/rpc", server.uri()), params, None)
+            .await
+            .unwrap();
+        assert_eq!(task.id, "task-cancel");
+    }
+
+    #[tokio::test]
+    async fn stream_message_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(sse_task_events_response("task-stream", "result content"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("stream"),
+            configuration: None,
+        };
+        let stream = client
+            .stream_message(&format!("{}/rpc", server.uri()), params, None)
+            .await
+            .unwrap();
+        let events: Vec<_> = stream.collect().await;
+        assert!(!events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_message_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new());
+        let params = SendMessageParams {
+            message: Message::user_text("fail"),
+            configuration: None,
+        };
+        let result = client
+            .stream_message(&format!("{}/rpc", server.uri()), params, None)
+            .await;
+        let err = result.err().expect("expected error");
+        assert!(matches!(err, crate::error::A2aError::Stream(_)));
+    }
+}

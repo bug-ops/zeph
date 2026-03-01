@@ -198,3 +198,80 @@ mod tests {
         assert_eq!(all[0].name, "v2");
     }
 }
+
+#[cfg(test)]
+mod wiremock_tests {
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::discovery::AgentRegistry;
+    use crate::error::A2aError;
+    use crate::testing::agent_card_response;
+
+    #[tokio::test]
+    async fn discover_success() {
+        let server = MockServer::start().await;
+        let base_url = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(agent_card_response("mock-agent", &base_url))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let card = registry.discover(&base_url).await.unwrap();
+        assert_eq!(card.name, "mock-agent");
+    }
+
+    #[tokio::test]
+    async fn discover_404_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let result = registry.discover(&server.uri()).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));
+    }
+
+    #[tokio::test]
+    async fn discover_invalid_json_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let result = registry.discover(&server.uri()).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));
+    }
+
+    #[tokio::test]
+    async fn get_or_discover_refetches_after_ttl() {
+        let server = MockServer::start().await;
+        let base_url = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(agent_card_response("fresh-agent", &base_url))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_millis(1));
+        // Register stale card
+        let stale = crate::card::AgentCardBuilder::new("stale", &base_url, "0.0.1").build();
+        registry.register(base_url.clone(), stale).await;
+        // Wait for TTL to expire
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Should re-fetch from mock server
+        let card = registry.get_or_discover(&base_url).await.unwrap();
+        assert_eq!(card.name, "fresh-agent");
+    }
+}

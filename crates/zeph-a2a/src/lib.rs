@@ -12,6 +12,9 @@ pub mod jsonrpc;
 pub mod server;
 pub mod types;
 
+#[cfg(test)]
+mod testing;
+
 pub use card::AgentCardBuilder;
 pub use client::{A2aClient, TaskEvent, TaskEventStream};
 pub use discovery::AgentRegistry;
