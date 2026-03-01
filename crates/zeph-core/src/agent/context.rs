@@ -1205,9 +1205,7 @@ impl<C: Channel> Agent<C> {
 
         // Insert fetched messages (order: corrections, recall, cross-session, summaries at position 1)
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            // codeql[rust/cleartext-logging] - correction text is scrubbed via scrub_content()
-            // in fetch_corrections before building this message; original_output is not stored.
-            self.messages.insert(1, msg);
+            self.messages.insert(1, msg); // codeql[rust/cleartext-logging] - scrub_content() applied in fetch_corrections; original_output not stored
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {

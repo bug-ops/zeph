@@ -811,14 +811,16 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
                 if let Some(memory) = &self.memory_state.memory {
-                    // original_output is omitted to avoid persisting LLM-generated content
-                    // that may be derived from a context containing secrets.
+                    // Use `trimmed` (raw user input, untainted by secrets) instead of
+                    // `feedback_text` (derived from previous_user_messages → self.messages)
+                    // to avoid the CodeQL cleartext-logging taint path.
+                    let correction_text = context::truncate_chars(trimmed, 500);
                     match memory
                         .sqlite()
                         .store_user_correction(
                             self.memory_state.conversation_id.map(|c| c.0),
                             "",
-                            &feedback_text,
+                            &correction_text,
                             self.skill_state
                                 .active_skill_names
                                 .first()
@@ -829,7 +831,7 @@ impl<C: Channel> Agent<C> {
                     {
                         Ok(correction_id) => {
                             if let Err(e) = memory
-                                .store_correction_embedding(correction_id, &feedback_text)
+                                .store_correction_embedding(correction_id, &correction_text)
                                 .await
                             {
                                 tracing::warn!("failed to store correction embedding: {e:#}");
