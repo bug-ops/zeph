@@ -73,8 +73,8 @@ Use these in-session commands to monitor the system:
 The TUI dashboard (`zeph --tui`) shows real-time confidence bars:
 
 - **Green** bar — Wilson score ≥ 0.75
-- **Yellow** — 0.50–0.74
-- **Red** — below 0.50 (at risk of automatic demotion)
+- **Yellow** — 0.40–0.74
+- **Red** — below 0.40 (at risk of automatic demotion)
 
 ## Manually Triggering Improvement
 

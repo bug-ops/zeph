@@ -31,13 +31,13 @@ Every skill invocation records a `SkillOutcome`. Tool failures now carry a `Fail
 
 | Variant | Meaning |
 |---------|---------|
-| `ToolNotFound` | The skill referenced a tool that does not exist |
-| `PermissionDenied` | Tool execution was blocked by the permission policy |
+| `ExitNonzero` | The tool process exited with a non-zero exit code |
 | `Timeout` | The tool call exceeded the configured timeout |
-| `InvalidArguments` | Arguments did not match the tool's expected schema |
-| `ExecutionError` | The tool ran but returned a non-zero exit code or runtime error |
-| `OutputParseError` | Tool output could not be parsed into the expected format |
-| `Unsupported` | The operation is not supported in the current environment |
+| `PermissionDenied` | Tool execution was blocked by the permission policy |
+| `WrongApproach` | The skill used a command or method inappropriate for the task |
+| `Partial` | The tool completed but produced incomplete or truncated output |
+| `SyntaxError` | The generated command or script contained a syntax error |
+| `Unknown` | Failure cause could not be classified from the error message |
 
 The raw reason string is stored in the `outcome_detail` column (migration 018, `skill_outcomes` table) for later inspection and LLM-based improvement prompts.
 
@@ -111,8 +111,8 @@ Trust transitions are logged via `tracing` and reflected immediately in `/skill 
 The TUI dashboard (`--tui`) shows a per-skill confidence bar in the Skills panel:
 
 - **Green** — Wilson score ≥ 0.75 (high confidence)
-- **Yellow** — Wilson score 0.50–0.74 (moderate)
-- **Red** — Wilson score < 0.50 (low confidence, at risk of demotion)
+- **Yellow** — Wilson score 0.40–0.74 (moderate)
+- **Red** — Wilson score < 0.40 (low confidence, at risk of demotion)
 
 The bar width is proportional to the score and updates in real time as outcomes are recorded.
 
@@ -136,7 +136,7 @@ The `cosine_weight` parameter scales the cosine component relative to BM25 befor
 ```toml
 [skills]
 cosine_weight = 0.7    # Weight for cosine signal in fusion (default: 0.7)
-hybrid_search = true   # Enable BM25+cosine fusion (default: false)
+hybrid_search = true   # Enable BM25+cosine fusion (default: true)
 ```
 
 When `hybrid_search = false`, the previous cosine-only matching is used.
@@ -159,7 +159,7 @@ A lower `router_ema_alpha` gives more weight to historical latency; a higher val
 When `hybrid_search = true`, active skills include XML health attributes in the injected system prompt block:
 
 ```xml
-<skill name="git" trust="trusted" wilson="0.91" outcomes="47">
+<skill name="git" trust="trusted" reliability="91%" uses="47">
   ...skill body...
 </skill>
 ```
@@ -171,7 +171,7 @@ These attributes let the LLM factor in skill reliability when choosing between o
 ```toml
 [skills]
 cosine_weight = 0.7    # Cosine signal weight in BM25+cosine fusion (default: 0.7)
-hybrid_search = true   # Enable hybrid BM25+cosine skill matching (default: false)
+hybrid_search = true   # Enable hybrid BM25+cosine skill matching (default: true)
 
 [llm]
 router_ema_enabled = false      # EMA-based provider latency routing (default: false)
