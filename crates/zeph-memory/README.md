@@ -41,6 +41,28 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
 
+## Document RAG
+
+`IngestionPipeline` loads, chunks, embeds, and stores documents into the `zeph_documents` Qdrant collection. When `memory.documents.rag_enabled = true`, the agent automatically queries this collection on every turn and prepends the top-K most relevant chunks to the context window.
+
+```bash
+zeph ingest ./docs/           # ingest all .txt, .md, .pdf files recursively
+zeph ingest README.md --chunk-size 256 --collection my_docs
+```
+
+Configure via `[memory.documents]` in `config.toml`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `collection` | string | `"zeph_documents"` | Qdrant collection name for document storage |
+| `chunk_size` | usize | `512` | Target token count per chunk |
+| `chunk_overlap` | usize | `64` | Overlap between consecutive chunks |
+| `top_k` | usize | `3` | Max chunks injected into context per turn |
+| `rag_enabled` | bool | `false` | Enable automatic RAG context injection |
+
+> [!NOTE]
+> RAG injection is a no-op when the `zeph_documents` collection is empty. Documents must be ingested with `zeph ingest` before retrieval has any effect.
+
 ## Snapshot export/import
 
 Memory snapshots allow exporting all conversations and messages to a portable JSON file and importing them back into another instance.

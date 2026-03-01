@@ -2,6 +2,20 @@
 
 The HTTP gateway exposes a webhook endpoint for external services to send messages into Zeph. It provides bearer token authentication, per-IP rate limiting, body size limits, and a health check endpoint.
 
+## Activation
+
+`GatewayServer` starts automatically when the `gateway` feature is enabled and `[gateway]` is present in the config. No manual startup code is required.
+
+```bash
+# Daemon mode — starts agent + gateway server
+cargo run --features gateway -- --daemon
+
+# Custom config
+cargo run --features gateway -- --daemon --config path/to/config.toml
+```
+
+The server is wired via `src/gateway_spawn.rs` into both `daemon.rs` and `runner.rs`. Incoming webhook payloads are logged; full agent loopback forwarding is planned as a follow-up.
+
 ## Feature Flag
 
 Enable with `--features gateway` at build time:

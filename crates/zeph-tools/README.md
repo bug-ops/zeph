@@ -26,9 +26,9 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `registry` | Tool registry and discovery |
 | `trust_level` | `TrustLevel` enum — four-tier trust model (`Trusted`, `Verified`, `Quarantined`, `Blocked`) with severity ordering and `min_trust` helper |
 | `trust_gate` | Trust-based tool access control |
-| `anomaly` | `AnomalyDetector` — unusual execution pattern detection |
+| `anomaly` | `AnomalyDetector` — sliding-window failure rate detection; integrated into the agent tool execution pipeline — records every tool outcome, emits `Severity::Critical` when the failure rate exceeds `failure_threshold` in the last `window_size` executions, and auto-blocks the tool via the trust system |
 | `overflow` | Large output offload to filesystem — configurable threshold (default 50K chars), retention-based cleanup with symlink-safe deletion, 0o600 file permissions on Unix, path canonicalization |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, optional custom dir) |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, optional custom dir); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`
 
@@ -56,6 +56,27 @@ The `ShellExecutor` enforces two layers of protection:
 
 > [!WARNING]
 > `find_blocked_command` does **not** detect commands hidden inside process substitution (`<(...)` / `>(...)`), here-strings (`<<<`), `eval`/`bash -c` string arguments, or variable expansion (`$cmd`). These constructs are caught by `confirm_patterns` instead, which requests user confirmation but does not block execution outright. For high-security deployments, complement this filter with OS-level sandboxing.
+
+## Installation
+
+## Anomaly detection configuration
+
+`AnomalyDetector` is enabled by default when `tools.anomaly.enabled = true`. Configure via `[tools.anomaly]` in `config.toml`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Activate anomaly detection in the tool execution pipeline |
+| `window_size` | usize | `20` | Rolling window of last N tool executions to evaluate |
+| `failure_threshold` | f64 | `0.7` | Fraction of failures in the window to trigger a Critical alert |
+| `auto_block` | bool | `true` | Automatically block a tool via trust system on Critical alert |
+
+```toml
+[tools.anomaly]
+enabled = true
+window_size = 20
+failure_threshold = 0.7
+auto_block = true
+```
 
 ## Installation
 

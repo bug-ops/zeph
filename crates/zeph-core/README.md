@@ -51,6 +51,16 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 | `summary_model` | string? | `null` | — | Model used for context summarization |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
 
+Key `DocumentConfig` fields (TOML section `[memory.documents]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `collection` | string | `"zeph_documents"` | Qdrant collection for document chunks |
+| `chunk_size` | usize | `512` | Target tokens per chunk |
+| `chunk_overlap` | usize | `64` | Overlap between chunks |
+| `top_k` | usize | `3` | Max chunks injected per context-build turn |
+| `rag_enabled` | bool | `false` | Enable automatic RAG context injection from `zeph_documents` |
+
 Key `MemoryConfig` fields (TOML section `[memory]`):
 
 | Field | Type | Default | Description |

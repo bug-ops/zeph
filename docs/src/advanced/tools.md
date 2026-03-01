@@ -386,3 +386,18 @@ The `tools.file.allowed_paths` setting controls which directories `FileExecutor`
 | Variable | Description |
 |----------|-------------|
 | `ZEPH_AGENT_MAX_TOOL_ITERATIONS` | Max tool loop iterations (default: 10) |
+
+## Anomaly detection
+
+`AnomalyDetector` monitors tool failure rates in a sliding window. When the fraction of failed executions in the last `window_size` calls exceeds `failure_threshold`, a `Severity::Critical` alert is raised and the tool is automatically blocked via the trust system — no manual intervention required.
+
+```toml
+[tools.anomaly]
+enabled = true
+window_size = 20        # rolling window of last N executions
+failure_threshold = 0.7 # 70% failures triggers Critical alert
+auto_block = true       # block tool automatically on Critical
+```
+
+> [!NOTE]
+> Auto-block via the trust system is reversible. A blocked tool can be unblocked by resetting its trust level. Anomaly events are logged via `tracing::warn!` with the tool name and failure rate.

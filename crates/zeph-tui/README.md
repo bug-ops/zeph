@@ -21,10 +21,25 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **highlight** — syntax highlighting for code blocks
 - **hyperlink** — OSC 8 clickable hyperlinks for bare URLs and markdown links
 - **layout** — panel arrangement and responsive grid
-- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry
+- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry; filter savings percentage shown in the status bar (e.g. `Filters: 78%`)
 - **theme** — color palette and style definitions
 - **widgets** — reusable ratatui widget components
 - **error** — `TuiError` typed error enum (Io, Channel)
+
+## Command palette
+
+The command palette (opened with `/`) includes the following built-in commands:
+
+| Command | Description |
+|---------|-------------|
+| `/ingest <path>` | Ingest documents into Qdrant for RAG retrieval |
+| `/gateway status` | Show gateway server state (on/off, request count) |
+| `ViewFilters` | Display output filter hit rates and invocation counts |
+| `daemon:connect` | Attach to a running daemon session |
+| `daemon:disconnect` | Detach from daemon |
+| `daemon:status` | Show daemon connection state |
+| `session:new` | Start a new conversation session |
+| `app:quit` | Exit the TUI |
 
 ## Installation
 
