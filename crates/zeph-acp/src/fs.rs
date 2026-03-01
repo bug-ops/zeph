@@ -796,19 +796,21 @@ mod tests {
 
     #[tokio::test]
     async fn list_directory_nonexistent_returns_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nonexistent = tmp.path().join("nonexistent_dir_zeph");
         let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
         let exec = AcpFileExecutor {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: tmp.path().to_path_buf(),
             permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert(
             "path".to_owned(),
-            serde_json::json!(test_path("nonexistent_dir_zeph")),
+            serde_json::json!(nonexistent.to_string_lossy()),
         );
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
@@ -1047,7 +1049,12 @@ mod tests {
                     "location must be absolute, got: {}",
                     locations[0]
                 );
-                assert!(locations[0].ends_with("relative/path.txt"));
+                assert!(
+                    locations[0].ends_with("relative/path.txt")
+                        || locations[0].ends_with("relative\\path.txt"),
+                    "expected path ending with relative/path.txt, got: {}",
+                    locations[0]
+                );
             })
             .await;
     }
