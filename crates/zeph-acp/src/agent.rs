@@ -750,6 +750,8 @@ impl acp::Agent for ZephAcpAgent {
                             &prompt,
                         )];
 
+                        let sid_prefix = &sid.to_string()[..8.min(sid.to_string().len())];
+                        let fallback_title = format!("Session {sid_prefix}");
                         let title = match tokio::time::timeout(
                             std::time::Duration::from_secs(15),
                             provider.chat(&messages),
@@ -759,11 +761,11 @@ impl acp::Agent for ZephAcpAgent {
                             Ok(Ok(t)) => truncate_to_chars(t.trim(), title_max_chars),
                             Ok(Err(e)) => {
                                 tracing::debug!(error = %e, "title generation LLM call failed");
-                                truncate_to_chars(&user_text, title_max_chars)
+                                fallback_title
                             }
                             Err(_) => {
                                 tracing::debug!("title generation timed out");
-                                truncate_to_chars(&user_text, title_max_chars)
+                                fallback_title
                             }
                         };
 
