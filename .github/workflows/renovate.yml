@@ -1,0 +1,25 @@
+name: Renovate
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths: ["renovate.json"]
+
+# The workflow itself only needs read access. RENOVATE_TOKEN (PAT with repo+workflow
+# scopes) provides write access for branch creation and PR management.
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: renovatebot/github-action@8d75b92f43899d483728e9a8a7fd44238020f6e6 # v46.1.2
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          configurationFile: renovate.json

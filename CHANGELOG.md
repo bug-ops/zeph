@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Migrate dependency automation from Dependabot to self-hosted Renovate: adds `renovate.json` with MSRV-aware `constraintsFiltering: strict`, grouped minor/patch automerge, and a dedicated workflow at `.github/workflows/renovate.yml`; removes `dependabot.yml` and the `dependabot-automerge.yml` workflow (which used the insecure `pull_request_target` trigger)
+
 ### Security
 
 - ACP tool notifications: `raw_response` (file content for `read_file`, stdout for `bash`) is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline when content reaches the IDE (SEC-ACP-001)
