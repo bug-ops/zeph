@@ -779,6 +779,9 @@ impl<C: Channel> Agent<C> {
         }
 
         self.check_pending_rollbacks().await;
+        // Extract before rebuild_system_prompt so the value is not tainted
+        // by the secrets-bearing system prompt (ConversationId is just an i64).
+        let conv_id = self.memory_state.conversation_id;
         self.rebuild_system_prompt(&text).await;
 
         let correction_detection_enabled = self
@@ -818,7 +821,7 @@ impl<C: Channel> Agent<C> {
                     match memory
                         .sqlite()
                         .store_user_correction(
-                            self.memory_state.conversation_id.map(|c| c.0),
+                            conv_id.map(|c| c.0),
                             "",
                             &correction_text,
                             self.skill_state
