@@ -16,6 +16,7 @@ use zeph_tools::{
 };
 
 use crate::error::AcpError;
+use crate::permission::AcpPermissionGate;
 
 enum FsRequest {
     Read {
@@ -45,22 +46,26 @@ pub struct AcpFileExecutor {
     can_read: bool,
     can_write: bool,
     cwd: PathBuf,
+    permission_gate: Option<AcpPermissionGate>,
 }
 
 impl AcpFileExecutor {
     /// Create the executor and the `LocalSet`-side handler future.
     ///
     /// `can_read` / `can_write` gate which tool definitions are advertised.
+    /// `permission_gate` is used to request user confirmation before writing files.
     pub fn new<C>(
         conn: Rc<C>,
         session_id: acp::SessionId,
         can_read: bool,
         can_write: bool,
         cwd: PathBuf,
+        permission_gate: Option<AcpPermissionGate>,
     ) -> (Self, impl std::future::Future<Output = ()>)
     where
         C: acp::Client + 'static,
     {
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
         let (tx, rx) = mpsc::unbounded_channel::<FsRequest>();
         let handler = async move { run_fs_handler(conn, rx).await };
         (
@@ -70,6 +75,7 @@ impl AcpFileExecutor {
                 can_read,
                 can_write,
                 cwd,
+                permission_gate,
             },
             handler,
         )
@@ -144,6 +150,62 @@ struct FindPathParams {
     path: Option<String>,
 }
 
+/// Verify that `resolved` is contained within `sandbox` after symlink resolution.
+///
+/// For existing paths: canonicalize and check prefix.
+/// For non-existent paths (e.g. new files): canonicalize the parent directory instead.
+///
+/// # Errors
+///
+/// Returns `ToolError::SandboxViolation` if the path escapes the sandbox or the parent
+/// directory cannot be canonicalized.
+fn validate_within_sandbox(resolved: &Path, sandbox: &Path) -> Result<(), ToolError> {
+    let sandbox_canonical = sandbox
+        .canonicalize()
+        .unwrap_or_else(|_| sandbox.to_path_buf());
+    match resolved.canonicalize() {
+        Ok(canonical) => {
+            if canonical.starts_with(&sandbox_canonical) {
+                Ok(())
+            } else {
+                Err(ToolError::SandboxViolation {
+                    path: resolved.display().to_string(),
+                })
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Walk up ancestors to find the first existing directory.
+            let mut ancestor = resolved.parent();
+            while let Some(dir) = ancestor {
+                match dir.canonicalize() {
+                    Ok(canonical) => {
+                        if canonical.starts_with(&sandbox_canonical) {
+                            return Ok(());
+                        }
+                        return Err(ToolError::SandboxViolation {
+                            path: resolved.display().to_string(),
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        ancestor = dir.parent();
+                    }
+                    Err(_) => {
+                        return Err(ToolError::SandboxViolation {
+                            path: resolved.display().to_string(),
+                        });
+                    }
+                }
+            }
+            Err(ToolError::SandboxViolation {
+                path: resolved.display().to_string(),
+            })
+        }
+        Err(_) => Err(ToolError::SandboxViolation {
+            path: resolved.display().to_string(),
+        }),
+    }
+}
+
 fn validate_path(raw: &str) -> Result<PathBuf, ToolError> {
     let path = PathBuf::from(raw);
     // Reject obvious traversal components (agent shouldn't try to escape workspace).
@@ -207,6 +269,10 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 let params: ReadFileParams = deserialize_params(&call.params)?;
                 let path = validate_path(&params.path)?;
                 let resolved = self.resolve_path(&path);
+                // Defense-in-depth: reject paths that escape cwd. The IDE enforces its own
+                // sandbox; we use parent-dir canonicalization to handle non-existent paths
+                // and resolve symlinks in the directory component.
+                validate_within_sandbox(&resolved, &self.cwd)?;
                 let resolved_str = resolved.to_string_lossy().into_owned();
                 let content = self
                     .read(resolved, params.line, params.limit)
@@ -242,6 +308,30 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 let params: WriteFileParams = deserialize_params(&call.params)?;
                 let path = validate_path(&params.path)?;
                 let resolved = self.resolve_path(&path);
+                validate_within_sandbox(&resolved, &self.cwd)?;
+                if self.permission_gate.is_none() {
+                    tracing::warn!(
+                        path = %resolved.display(),
+                        "AcpFileExecutor: write_file called without permission gate"
+                    );
+                }
+                if let Some(gate) = &self.permission_gate {
+                    let fields = acp::ToolCallUpdateFields::new()
+                        .title("write_file".to_owned())
+                        .raw_input(serde_json::json!({ "path": params.path }));
+                    let tool_call = acp::ToolCallUpdate::new("write_file".to_owned(), fields);
+                    let allowed = gate
+                        .check_permission(self.session_id.clone(), tool_call)
+                        .await
+                        .map_err(|e| ToolError::InvalidParams {
+                            message: e.to_string(),
+                        })?;
+                    if !allowed {
+                        return Err(ToolError::Blocked {
+                            command: "write_file: permission denied".to_owned(),
+                        });
+                    }
+                }
                 self.write(resolved, params.content).await.map_err(|e| {
                     ToolError::InvalidParams {
                         message: e.to_string(),
@@ -279,6 +369,7 @@ impl AcpFileExecutor {
     ) -> Result<Option<ToolOutput>, ToolError> {
         let path = validate_path(&params.path)?;
         let dir = self.resolve_path(&path);
+        validate_within_sandbox(&dir, &self.cwd)?;
         let entries = std::fs::read_dir(&dir).map_err(|e| ToolError::InvalidParams {
             message: format!("cannot read directory {}: {e}", params.path),
         })?;
@@ -294,6 +385,12 @@ impl AcpFileExecutor {
                 .map_err(|e| ToolError::InvalidParams {
                     message: format!("metadata error: {e}"),
                 })?;
+            // Skip symlinks whose canonical target escapes the sandbox.
+            if meta.file_type().is_symlink()
+                && validate_within_sandbox(&entry.path(), &self.cwd).is_err()
+            {
+                continue;
+            }
             items.push(serde_json::json!({
                 "name": entry.file_name().to_string_lossy(),
                 "is_dir": meta.is_dir(),
@@ -331,7 +428,7 @@ impl AcpFileExecutor {
                 message: "find_path: 'path' parameter is required".into(),
             })?;
         let path = validate_path(base_str)?;
-        let _base = self.resolve_path(&path);
+        let base = self.resolve_path(&path);
 
         // Reject traversal components in the pattern to prevent escaping the base directory.
         if params
@@ -344,6 +441,8 @@ impl AcpFileExecutor {
             });
         }
 
+        validate_within_sandbox(&base, &self.cwd)?;
+
         let glob_str = format!("{base_str}/{}", params.pattern);
         let mut matches: Vec<String> = Vec::new();
         for entry in glob::glob(&glob_str).map_err(|e| ToolError::InvalidParams {
@@ -353,6 +452,10 @@ impl AcpFileExecutor {
                 break;
             }
             if let Ok(p) = entry {
+                // Skip paths that escape the sandbox via symlinks.
+                if validate_within_sandbox(&p, &self.cwd).is_err() {
+                    continue;
+                }
                 matches.push(p.display().to_string());
             }
         }
@@ -470,7 +573,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -500,7 +603,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -531,7 +634,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, true, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, true, true, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
@@ -553,6 +656,7 @@ mod tests {
             can_read: true,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let defs = exec_read_only.tool_definitions();
         let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
@@ -568,6 +672,7 @@ mod tests {
             can_read: false,
             can_write: true,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let defs = exec_write_only.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -587,7 +692,8 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: dir.path().to_path_buf(),
+            permission_gate: None,
         };
 
         let mut params = serde_json::Map::new();
@@ -616,7 +722,8 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: dir.path().to_path_buf(),
+            permission_gate: None,
         };
 
         let mut params = serde_json::Map::new();
@@ -645,7 +752,7 @@ mod tests {
                 let sid = acp::SessionId::new("s1");
                 // can_read = false
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -671,7 +778,7 @@ mod tests {
                 let sid = acp::SessionId::new("s1");
                 // can_write = false
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -696,6 +803,7 @@ mod tests {
             can_read: true,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert(
@@ -719,7 +827,8 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: dir.path().to_path_buf(),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert(
@@ -743,7 +852,8 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: dir.path().to_path_buf(),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.nomatch"));
@@ -768,7 +878,8 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
-            cwd: PathBuf::from("/tmp"),
+            cwd: dir.path().to_path_buf(),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("[invalid"));
@@ -793,6 +904,7 @@ mod tests {
             can_read: false,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("path".to_owned(), serde_json::json!(test_path("some_dir")));
@@ -814,6 +926,7 @@ mod tests {
             can_read: false,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
@@ -839,6 +952,7 @@ mod tests {
             can_read: true,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("../../etc/passwd"));
@@ -863,6 +977,7 @@ mod tests {
             can_read: true,
             can_write: false,
             cwd: PathBuf::from("/tmp"),
+            permission_gate: None,
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
@@ -911,7 +1026,8 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, false, cwd.clone());
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, true, false, cwd.clone(), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -946,7 +1062,7 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 let (exec, handler) =
-                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -956,6 +1072,367 @@ mod tests {
                     "/tmp/../etc/passwd"
                 };
                 params.insert("path".to_owned(), serde_json::json!(traversal));
+                params.insert("content".to_owned(), serde_json::json!("evil"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+            })
+            .await;
+    }
+
+    // --- P0.1: permission gate tests ---
+
+    struct AlwaysRejectPermClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for AlwaysRejectPermClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "reject_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            Ok(acp::ReadTextFileResponse::new(String::new()))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            Ok(acp::WriteTextFileResponse::new())
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct AlwaysAllowPermClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for AlwaysAllowPermClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "allow_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            Ok(acp::ReadTextFileResponse::new(String::new()))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            Ok(acp::WriteTextFileResponse::new())
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_file_permission_denied_returns_blocked_error() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(AlwaysRejectPermClient);
+                let (gate, gate_handler) = AcpPermissionGate::new(Rc::clone(&conn), None);
+                tokio::task::spawn_local(gate_handler);
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpFileExecutor::new(
+                    conn,
+                    sid.clone(),
+                    false,
+                    true,
+                    PathBuf::from("/tmp"),
+                    Some(gate),
+                );
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("content".to_owned(), serde_json::json!("data"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn write_file_permission_allowed_succeeds() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(AlwaysAllowPermClient);
+                let (gate, gate_handler) = AcpPermissionGate::new(Rc::clone(&conn), None);
+                tokio::task::spawn_local(gate_handler);
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpFileExecutor::new(
+                    conn,
+                    sid.clone(),
+                    false,
+                    true,
+                    PathBuf::from("/tmp"),
+                    Some(gate),
+                );
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("content".to_owned(), serde_json::json!("data"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert!(result.summary.contains("out.txt"));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn write_file_no_gate_succeeds() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeClient {
+                    content: String::new(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"), None);
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!("/tmp/out.txt"));
+                params.insert("content".to_owned(), serde_json::json!("data"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert!(result.summary.contains("out.txt"));
+            })
+            .await;
+    }
+
+    // --- P0.2: symlink sandbox tests ---
+
+    #[test]
+    fn validate_within_sandbox_allows_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("safe.txt");
+        std::fs::write(&file, "ok").unwrap();
+        assert!(validate_within_sandbox(&file, dir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_within_sandbox_rejects_escape() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("escape.txt");
+        std::fs::write(&file, "evil").unwrap();
+        assert!(validate_within_sandbox(&file, sandbox.path()).is_err());
+    }
+
+    #[test]
+    fn validate_within_sandbox_nonexistent_file_parent_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_file = dir.path().join("new_file.txt");
+        // File does not exist, but parent (dir) is inside sandbox.
+        assert!(validate_within_sandbox(&new_file, dir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_within_sandbox_nonexistent_file_parent_outside() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let new_file = outside.path().join("new_file.txt");
+        // File does not exist, parent is outside sandbox.
+        assert!(validate_within_sandbox(&new_file, sandbox.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_directory_symlink_escape_filtered() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+
+        // Create a symlink inside sandbox pointing outside.
+        let link = sandbox.path().join("escape_link");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
+        // Create a normal file inside sandbox.
+        std::fs::write(sandbox.path().join("normal.txt"), "ok").unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+            cwd: sandbox.path().to_path_buf(),
+            permission_gate: None,
+        };
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(sandbox.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "list_directory".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(
+            result.summary.contains("normal.txt"),
+            "normal file must appear"
+        );
+        assert!(
+            !result.summary.contains("escape_link"),
+            "symlink escaping sandbox must be filtered out"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn find_path_symlink_escape_filtered() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+
+        // Create a symlink inside sandbox pointing outside.
+        let link = sandbox.path().join("escape_link.txt");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
+        std::fs::write(sandbox.path().join("normal.txt"), "ok").unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let exec = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: true,
+            can_write: false,
+            cwd: sandbox.path().to_path_buf(),
+            permission_gate: None,
+        };
+
+        let mut params = serde_json::Map::new();
+        params.insert("pattern".to_owned(), serde_json::json!("*.txt"));
+        params.insert(
+            "path".to_owned(),
+            serde_json::json!(sandbox.path().to_str().unwrap()),
+        );
+        let call = ToolCall {
+            tool_id: "find_path".to_owned(),
+            params,
+        };
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(
+            result.summary.contains("normal.txt"),
+            "normal file must appear"
+        );
+        assert!(
+            !result.summary.contains("escape_link.txt"),
+            "symlinked path escaping sandbox must be filtered out"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_file_via_symlink_outside_sandbox_rejected() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let sandbox = tempfile::tempdir().unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+
+                let link = sandbox.path().join("escape_link.txt");
+                std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
+
+                let conn = Rc::new(FakeClient {
+                    content: "should not reach".to_owned(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpFileExecutor::new(
+                    conn,
+                    sid,
+                    true,
+                    false,
+                    sandbox.path().to_path_buf(),
+                    None,
+                );
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(link.to_str().unwrap()));
+                let call = ToolCall {
+                    tool_id: "read_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+            })
+            .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_via_symlink_outside_sandbox_rejected() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let sandbox = tempfile::tempdir().unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                std::fs::write(outside.path().join("target.txt"), "original").unwrap();
+
+                let link = sandbox.path().join("escape_link.txt");
+                std::os::unix::fs::symlink(outside.path().join("target.txt"), &link).unwrap();
+
+                let conn = Rc::new(FakeClient {
+                    content: String::new(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) = AcpFileExecutor::new(
+                    conn,
+                    sid,
+                    false,
+                    true,
+                    sandbox.path().to_path_buf(),
+                    None,
+                );
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(link.to_str().unwrap()));
                 params.insert("content".to_owned(), serde_json::json!("evil"));
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),

@@ -271,6 +271,7 @@ impl ZephAcpAgent {
             can_read,
             can_write,
             cwd,
+            Some(perm_gate.clone()),
         );
         tokio::task::spawn_local(fs_handler);
 
