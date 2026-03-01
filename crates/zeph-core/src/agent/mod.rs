@@ -1443,9 +1443,6 @@ pub(super) mod agent_tests {
             self.chunks.lock().unwrap().clone()
         }
 
-        pub(crate) fn sent_statuses(&self) -> Vec<String> {
-            self.statuses.lock().unwrap().clone()
-        }
     }
 
     impl Channel for MockChannel {
