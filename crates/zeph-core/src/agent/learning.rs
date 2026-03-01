@@ -474,6 +474,25 @@ impl<C: Channel> Agent<C> {
     }
 
     #[allow(clippy::cast_precision_loss)]
+    /// Check rollback eligibility for all skills that have an active auto-generated version.
+    /// Called once per turn before processing the user message so that accumulated outcome
+    /// data can trigger rollback even when no new tool executions occur in the current turn.
+    pub(super) async fn check_pending_rollbacks(&self) {
+        if !self.is_learning_enabled() {
+            return;
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let Ok(versions) = memory.sqlite().list_active_auto_versions().await else {
+            return;
+        };
+        for skill_name in versions {
+            self.check_rollback(&skill_name).await;
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
     async fn check_rollback(&self, skill_name: &str) {
         if !self.is_learning_enabled() {
             return;

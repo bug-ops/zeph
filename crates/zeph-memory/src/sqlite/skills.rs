@@ -488,6 +488,21 @@ impl SqliteStore {
 
         Ok(row.map(skill_version_from_tuple))
     }
+
+    /// Return the skill names for all currently active auto-generated versions.
+    ///
+    /// Used to check rollback eligibility at the start of each agent turn.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on `SQLite` query failure.
+    pub async fn list_active_auto_versions(&self) -> Result<Vec<String>, MemoryError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
 }
 
 #[cfg(test)]

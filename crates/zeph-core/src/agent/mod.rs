@@ -778,6 +778,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        self.check_pending_rollbacks().await;
         self.rebuild_system_prompt(&text).await;
 
         let correction_detection_enabled = self
