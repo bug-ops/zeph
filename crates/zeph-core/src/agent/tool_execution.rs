@@ -45,6 +45,20 @@ fn doom_loop_hash(content: &str) -> u64 {
     hasher.finish()
 }
 
+/// Extracts the language identifier from the first fenced code block in `response`
+/// (e.g. "bash" from ` ```bash `). Returns "tool" as fallback.
+fn first_tool_name(response: &str) -> &str {
+    if let Some(pos) = response.find("```") {
+        let after = &response[pos + 3..];
+        let line = after.split_once('\n').map_or(after, |(l, _)| l).trim();
+        let lang = line.split_whitespace().next().unwrap_or("");
+        if !lang.is_empty() {
+            return lang;
+        }
+    }
+    "tool"
+}
+
 fn hash_tool_result_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
     hasher.write(&rest.as_bytes()[..start]);
     if let Some(end) = rest[start..].find(']') {
@@ -198,7 +212,9 @@ impl<C: Channel> Agent<C> {
             self.persist_message(Role::Assistant, &response).await;
 
             self.inject_active_skill_env();
-            let _ = self.channel.send_status("running tool...").await;
+            let tool_name = first_tool_name(&response);
+            let status_msg = format!("running {tool_name}...");
+            let _ = self.channel.send_status(&status_msg).await;
             let result = self
                 .tool_executor
                 .execute_erased(&response)
@@ -2715,5 +2731,48 @@ mod tests {
             result.is_none(),
             "5/20 errors must not trigger any alert, got: {result:?}"
         );
+    }
+
+    use super::first_tool_name;
+
+    #[test]
+    fn first_tool_name_bash() {
+        assert_eq!(first_tool_name("```bash\necho hi\n```"), "bash");
+    }
+
+    #[test]
+    fn first_tool_name_python() {
+        assert_eq!(first_tool_name("```python\nprint(1)\n```"), "python");
+    }
+
+    #[test]
+    fn first_tool_name_with_leading_text() {
+        assert_eq!(
+            first_tool_name("Here is the command:\n```bash\nls\n```"),
+            "bash"
+        );
+    }
+
+    #[test]
+    fn first_tool_name_empty_lang_falls_back_to_tool() {
+        assert_eq!(first_tool_name("```\nsome code\n```"), "tool");
+    }
+
+    #[test]
+    fn first_tool_name_no_fenced_block_falls_back_to_tool() {
+        assert_eq!(first_tool_name("plain text response"), "tool");
+    }
+
+    #[test]
+    fn first_tool_name_picks_first_of_multiple_blocks() {
+        assert_eq!(
+            first_tool_name("```bash\necho 1\n```\n```python\nprint(2)\n```"),
+            "bash"
+        );
+    }
+
+    #[test]
+    fn first_tool_name_empty_input_falls_back_to_tool() {
+        assert_eq!(first_tool_name(""), "tool");
     }
 }
