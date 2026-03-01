@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use acp::Client as _;
@@ -44,6 +44,7 @@ pub struct AcpFileExecutor {
     request_tx: mpsc::UnboundedSender<FsRequest>,
     can_read: bool,
     can_write: bool,
+    cwd: PathBuf,
 }
 
 impl AcpFileExecutor {
@@ -55,6 +56,7 @@ impl AcpFileExecutor {
         session_id: acp::SessionId,
         can_read: bool,
         can_write: bool,
+        cwd: PathBuf,
     ) -> (Self, impl std::future::Future<Output = ()>)
     where
         C: acp::Client + 'static,
@@ -67,9 +69,19 @@ impl AcpFileExecutor {
                 request_tx: tx,
                 can_read,
                 can_write,
+                cwd,
             },
             handler,
         )
+    }
+
+    /// Resolve a potentially relative path to an absolute path
+    fn resolve_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        }
     }
 
     async fn read(
@@ -132,14 +144,9 @@ struct FindPathParams {
     path: Option<String>,
 }
 
-fn validate_absolute_path(raw: &str) -> Result<PathBuf, ToolError> {
+fn validate_path(raw: &str) -> Result<PathBuf, ToolError> {
     let path = PathBuf::from(raw);
-    if !path.is_absolute() {
-        return Err(ToolError::SandboxViolation {
-            path: raw.to_owned(),
-        });
-    }
-    // Reject obvious traversal components even in absolute paths.
+    // Reject obvious traversal components (agent shouldn't try to escape workspace).
     if path.components().any(|c| c.as_os_str() == "..") {
         return Err(ToolError::SandboxViolation {
             path: raw.to_owned(),
@@ -198,9 +205,11 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
         match call.tool_id.as_str() {
             "read_file" if self.can_read => {
                 let params: ReadFileParams = deserialize_params(&call.params)?;
-                let path = validate_absolute_path(&params.path)?;
+                let path = validate_path(&params.path)?;
+                let resolved = self.resolve_path(&path);
+                let resolved_str = resolved.to_string_lossy().into_owned();
                 let content = self
-                    .read(path, params.line, params.limit)
+                    .read(resolved, params.line, params.limit)
                     .await
                     .map_err(|e| ToolError::InvalidParams {
                         message: e.to_string(),
@@ -210,7 +219,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 let raw_response = Some(serde_json::json!({
                     "type": "text",
                     "file": {
-                        "filePath": &params.path,
+                        "filePath": &resolved_str,
                         "content": &content,
                         "numLines": total_lines,
                         "startLine": start_line,
@@ -225,18 +234,19 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     diff: None,
                     streamed: false,
                     terminal_id: None,
-                    locations: Some(vec![params.path]),
+                    locations: Some(vec![resolved_str]),
                     raw_response,
                 }))
             }
             "write_file" if self.can_write => {
                 let params: WriteFileParams = deserialize_params(&call.params)?;
-                let path = validate_absolute_path(&params.path)?;
-                self.write(path, params.content)
-                    .await
-                    .map_err(|e| ToolError::InvalidParams {
+                let path = validate_path(&params.path)?;
+                let resolved = self.resolve_path(&path);
+                self.write(resolved, params.content).await.map_err(|e| {
+                    ToolError::InvalidParams {
                         message: e.to_string(),
-                    })?;
+                    }
+                })?;
                 Ok(Some(ToolOutput {
                     tool_name: "write_file".to_owned(),
                     summary: format!("wrote {}", params.path),
@@ -251,11 +261,11 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
             }
             "list_directory" if self.can_read => {
                 let params: ListDirectoryParams = deserialize_params(&call.params)?;
-                Self::handle_list_directory(params)
+                self.handle_list_directory(params)
             }
             "find_path" if self.can_read => {
                 let params: FindPathParams = deserialize_params(&call.params)?;
-                Self::handle_find_path(&params)
+                self.handle_find_path(&params)
             }
             _ => Ok(None),
         }
@@ -263,8 +273,12 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
 }
 
 impl AcpFileExecutor {
-    fn handle_list_directory(params: ListDirectoryParams) -> Result<Option<ToolOutput>, ToolError> {
-        let dir = validate_absolute_path(&params.path)?;
+    fn handle_list_directory(
+        &self,
+        params: ListDirectoryParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        let path = validate_path(&params.path)?;
+        let dir = self.resolve_path(&path);
         let entries = std::fs::read_dir(&dir).map_err(|e| ToolError::InvalidParams {
             message: format!("cannot read directory {}: {e}", params.path),
         })?;
@@ -306,7 +320,7 @@ impl AcpFileExecutor {
         }))
     }
 
-    fn handle_find_path(params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
+    fn handle_find_path(&self, params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
         const MAX_RESULTS: usize = 1000;
 
         // path is required; defaulting to "." would bypass sandbox validation.
@@ -314,10 +328,10 @@ impl AcpFileExecutor {
             .path
             .as_deref()
             .ok_or_else(|| ToolError::InvalidParams {
-                message: "find_path: 'path' parameter is required and must be an absolute path"
-                    .into(),
+                message: "find_path: 'path' parameter is required".into(),
             })?;
-        let _base = validate_absolute_path(base_str)?;
+        let path = validate_path(base_str)?;
+        let _base = self.resolve_path(&path);
 
         // Reject traversal components in the pattern to prevent escaping the base directory.
         if params
@@ -455,7 +469,8 @@ mod tests {
                     content: "hello world".to_owned(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, false);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -484,7 +499,8 @@ mod tests {
                     content: String::new(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, false, true);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -514,7 +530,8 @@ mod tests {
                     content: String::new(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, true);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, true, true, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
@@ -535,6 +552,7 @@ mod tests {
             request_tx: tx.clone(),
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let defs = exec_read_only.tool_definitions();
         let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
@@ -549,6 +567,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: true,
+            cwd: PathBuf::from("/tmp"),
         };
         let defs = exec_write_only.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -568,6 +587,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
 
         let mut params = serde_json::Map::new();
@@ -596,6 +616,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
 
         let mut params = serde_json::Map::new();
@@ -623,7 +644,8 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 // can_read = false
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, false, true);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -648,7 +670,8 @@ mod tests {
                 });
                 let sid = acp::SessionId::new("s1");
                 // can_write = false
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, false);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, true, false, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -672,6 +695,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert(
@@ -695,6 +719,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert(
@@ -718,6 +743,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.nomatch"));
@@ -742,6 +768,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("[invalid"));
@@ -765,6 +792,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("path".to_owned(), serde_json::json!(test_path("some_dir")));
@@ -785,6 +813,7 @@ mod tests {
             request_tx: tx,
             can_read: false,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
@@ -809,6 +838,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("../../etc/passwd"));
@@ -832,6 +862,7 @@ mod tests {
             request_tx: tx,
             can_read: true,
             can_write: false,
+            cwd: PathBuf::from("/tmp"),
         };
         let mut params = serde_json::Map::new();
         params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
@@ -845,30 +876,33 @@ mod tests {
     }
 
     #[test]
-    fn validate_absolute_path_rejects_relative() {
-        let err = validate_absolute_path("relative/path.txt").unwrap_err();
-        assert!(matches!(err, ToolError::SandboxViolation { .. }));
-    }
-
-    #[test]
-    fn validate_absolute_path_rejects_traversal() {
+    fn validate_path_rejects_traversal() {
         let traversal = if cfg!(windows) {
             "C:\\tmp\\..\\etc\\passwd"
         } else {
             "/tmp/../etc/passwd"
         };
-        let err = validate_absolute_path(traversal).unwrap_err();
+        let err = validate_path(traversal).unwrap_err();
         assert!(matches!(err, ToolError::SandboxViolation { .. }));
     }
 
     #[test]
-    fn validate_absolute_path_accepts_absolute() {
-        let path = validate_absolute_path(&test_path("safe.txt")).unwrap();
+    fn validate_path_accepts_relative() {
+        // Relative paths are now accepted; resolve_path joins them with cwd.
+        let path = validate_path("relative/path.txt").unwrap();
+        assert_eq!(path, PathBuf::from("relative/path.txt"));
+    }
+
+    #[test]
+    fn validate_path_accepts_absolute() {
+        let path = validate_path(&test_path("safe.txt")).unwrap();
         assert!(path.is_absolute());
     }
 
     #[tokio::test]
-    async fn read_file_rejects_relative_path() {
+    async fn read_file_resolves_relative_path_against_cwd() {
+        // Relative paths are joined with cwd; the FakeClient mirrors the path back
+        // so we verify the resolved absolute path is forwarded correctly.
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -876,7 +910,8 @@ mod tests {
                     content: "data".to_owned(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, false);
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
+                let (exec, handler) = AcpFileExecutor::new(conn, sid, true, false, cwd.clone());
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();
@@ -885,8 +920,18 @@ mod tests {
                     tool_id: "read_file".to_owned(),
                     params,
                 };
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+                // Should succeed: relative path is resolved to cwd/relative/path.txt.
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert_eq!(result.summary, "data");
+                // locations must carry the absolute resolved path
+                let locations = result.locations.unwrap();
+                assert_eq!(locations.len(), 1);
+                assert!(
+                    std::path::Path::new(&locations[0]).is_absolute(),
+                    "location must be absolute, got: {}",
+                    locations[0]
+                );
+                assert!(locations[0].ends_with("relative/path.txt"));
             })
             .await;
     }
@@ -900,7 +945,8 @@ mod tests {
                     content: String::new(),
                 });
                 let sid = acp::SessionId::new("s1");
-                let (exec, handler) = AcpFileExecutor::new(conn, sid, false, true);
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, PathBuf::from("/tmp"));
                 tokio::task::spawn_local(handler);
 
                 let mut params = serde_json::Map::new();

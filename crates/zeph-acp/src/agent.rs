@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -249,6 +250,7 @@ impl ZephAcpAgent {
         session_id: &acp::SessionId,
         cancel_signal: std::sync::Arc<tokio::sync::Notify>,
         provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+        cwd: PathBuf,
     ) -> Option<AcpContext> {
         let conn_guard = self.conn_slot.borrow();
         let conn = conn_guard.as_ref()?;
@@ -263,8 +265,13 @@ impl ZephAcpAgent {
         let can_write = caps.fs.write_text_file;
         drop(caps);
 
-        let (fs_exec, fs_handler) =
-            AcpFileExecutor::new(Rc::clone(conn), session_id.clone(), can_read, can_write);
+        let (fs_exec, fs_handler) = AcpFileExecutor::new(
+            Rc::clone(conn),
+            session_id.clone(),
+            can_read,
+            can_write,
+            cwd,
+        );
         tokio::task::spawn_local(fs_handler);
 
         let (shell_exec, shell_handler) = AcpShellExecutor::new(
@@ -421,7 +428,13 @@ impl acp::Agent for ZephAcpAgent {
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
 
-        let acp_ctx = self.build_acp_context(&session_id, cancel_signal, provider_override_for_ctx);
+        let session_cwd = std::env::current_dir().unwrap_or_default();
+        let acp_ctx = self.build_acp_context(
+            &session_id,
+            cancel_signal,
+            provider_override_for_ctx,
+            session_cwd,
+        );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
@@ -811,8 +824,13 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
-        let acp_ctx =
-            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
+        let session_cwd = std::env::current_dir().unwrap_or_default();
+        let acp_ctx = self.build_acp_context(
+            &args.session_id,
+            cancel_signal,
+            provider_override_for_ctx,
+            session_cwd,
+        );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
@@ -1031,7 +1049,12 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
-        let acp_ctx = self.build_acp_context(&new_id, cancel_signal, provider_override_for_ctx);
+        let acp_ctx = self.build_acp_context(
+            &new_id,
+            cancel_signal,
+            provider_override_for_ctx,
+            args.cwd.clone(),
+        );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
@@ -1117,8 +1140,12 @@ impl acp::Agent for ZephAcpAgent {
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
-        let acp_ctx =
-            self.build_acp_context(&args.session_id, cancel_signal, provider_override_for_ctx);
+        let acp_ctx = self.build_acp_context(
+            &args.session_id,
+            cancel_signal,
+            provider_override_for_ctx,
+            args.cwd.clone(),
+        );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
             input_tx: handle.input_tx,
