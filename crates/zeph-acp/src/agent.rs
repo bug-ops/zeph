@@ -1377,9 +1377,13 @@ impl ZephAcpAgent {
                  /model <id> — switch the active model\n\
                  /mode <code|architect|ask> — switch session mode\n\
                  /clear — clear session history\n\
-                 /compact — summarize and compact context"
+                 /compact — summarize and compact context\n\
+                 /review [path] — review recent changes (read-only)"
                 .to_owned(),
             "/model" => self.handle_model_command(session_id, arg)?,
+            "/review" => {
+                return self.handle_review_command(session_id, arg);
+            }
             "/mode" => {
                 let valid_ids: &[&str] = &["code", "architect", "ask"];
                 if !valid_ids.contains(&arg) {
@@ -1435,6 +1439,43 @@ impl ZephAcpAgent {
         if let Err(e) = self.send_notification(notification).await {
             tracing::warn!(error = %e, "failed to send command reply");
         }
+
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
+    fn handle_review_command(
+        &self,
+        session_id: &acp::SessionId,
+        arg: &str,
+    ) -> acp::Result<acp::PromptResponse> {
+        let review_prompt = if arg.is_empty() {
+            "Review the recent changes in this workspace. Show a plain-text diff summary. \
+             Use only read_file and list_directory tools. Do not execute any commands or \
+             write any files."
+                .to_owned()
+        } else {
+            format!(
+                "Review the following file or path: {arg}. Show a plain-text diff summary. \
+                 Use only read_file and list_directory tools. Do not execute any commands or \
+                 write any files."
+            )
+        };
+
+        let sessions = self.sessions.borrow();
+        let entry = sessions
+            .get(session_id)
+            .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
+        if entry
+            .input_tx
+            .try_send(ChannelMessage {
+                text: review_prompt,
+                attachments: vec![],
+            })
+            .is_err()
+        {
+            tracing::warn!(%session_id, "failed to forward /review to agent input");
+        }
+        drop(sessions);
 
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
@@ -1699,6 +1740,11 @@ fn build_available_commands() -> Vec<acp::AvailableCommand> {
         ),
         acp::AvailableCommand::new("clear", "Clear session history"),
         acp::AvailableCommand::new("compact", "Summarize and compact context"),
+        acp::AvailableCommand::new("review", "Review recent changes (read-only)").input(
+            acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
+                "path (optional)",
+            )),
+        ),
     ]
 }
 
@@ -1888,6 +1934,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
         LoopbackEvent::ToolOutput {
             tool_name,
             display,
+            diff,
             locations,
             tool_call_id,
             is_error,
@@ -1995,9 +2042,15 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 );
                 vec![terminal_intermediate, final_update]
             } else {
-                let content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                let mut content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
                     acp::TextContent::new(display),
                 ))];
+                if let Some(d) = diff {
+                    let acp_diff =
+                        acp::Diff::new(std::path::PathBuf::from(&d.file_path), d.new_content)
+                            .old_text(d.old_content);
+                    content.push(acp::ToolCallContent::Diff(acp_diff));
+                }
                 let mut fields = acp::ToolCallUpdateFields::new()
                     .status(status)
                     .content(content);
@@ -2074,6 +2127,10 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 .collect();
             vec![acp::SessionUpdate::Plan(acp::Plan::new(acp_entries))]
         }
+        LoopbackEvent::ThinkingChunk(text) if text.is_empty() => vec![],
+        LoopbackEvent::ThinkingChunk(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
+            acp::ContentChunk::new(text.into()),
+        )],
     }
 }
 
@@ -4634,5 +4691,75 @@ mod tests {
         let ts = now.checked_sub(large_duration).unwrap_or(now);
         // The result must be at most `now` (could equal now in the fallback branch).
         assert!(ts <= now, "fallback must produce a timestamp <= now");
+    }
+
+    // --- P2.1: ThinkingChunk mapping ---
+
+    #[test]
+    fn thinking_chunk_maps_to_agent_thought_chunk() {
+        let updates =
+            loopback_event_to_updates(LoopbackEvent::ThinkingChunk("I'm thinking".into()));
+        assert_eq!(updates.len(), 1);
+        if let acp::SessionUpdate::AgentThoughtChunk(c) = &updates[0] {
+            assert_eq!(content_chunk_text(c), "I'm thinking");
+        } else {
+            panic!("expected AgentThoughtChunk");
+        }
+    }
+
+    #[test]
+    fn thinking_chunk_empty_produces_no_updates() {
+        let updates = loopback_event_to_updates(LoopbackEvent::ThinkingChunk(String::new()));
+        assert!(updates.is_empty());
+    }
+
+    // --- P2.4: /review command ---
+
+    #[test]
+    fn build_available_commands_includes_review() {
+        let cmds = build_available_commands();
+        assert!(
+            cmds.iter().any(|c| c.name.as_str() == "review"),
+            "/review must be in available_commands"
+        );
+    }
+
+    // --- P2.2: Diff content in loopback ToolOutput ---
+
+    #[test]
+    fn tool_output_with_diff_includes_diff_content() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "write_file".into(),
+            display: "new content".into(),
+            diff: Some(zeph_core::DiffData {
+                file_path: "src/main.rs".into(),
+                old_content: "old".into(),
+                new_content: "new content".into(),
+            }),
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc1".into(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        let has_diff = updates.iter().any(|u| {
+            if let acp::SessionUpdate::ToolCallUpdate(tcu) = u {
+                tcu.fields.content.as_ref().is_some_and(|c| {
+                    c.iter()
+                        .any(|item| matches!(item, acp::ToolCallContent::Diff(_)))
+                })
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_diff,
+            "ToolOutput with diff must produce Diff content in ToolCallUpdate"
+        );
     }
 }

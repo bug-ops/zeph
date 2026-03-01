@@ -58,7 +58,9 @@ mod tests {
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
             let response = self.chat(messages).await?;
-            Ok(Box::pin(tokio_stream::once(Ok(response))))
+            Ok(Box::pin(tokio_stream::once(Ok(
+                crate::StreamChunk::Content(response),
+            ))))
         }
 
         fn supports_streaming(&self) -> bool {

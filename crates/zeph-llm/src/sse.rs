@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 
 use crate::error::LlmError;
-use crate::provider::ChatStream;
+use crate::provider::{ChatStream, StreamChunk};
 
 /// Convert a Claude streaming response into a `ChatStream`.
 pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
@@ -28,20 +28,17 @@ pub(crate) fn openai_sse_to_stream(response: reqwest::Response) -> ChatStream {
     Box::pin(mapped)
 }
 
-fn parse_claude_sse_event(data: &str, event_type: &str) -> Option<Result<String, LlmError>> {
+fn parse_claude_sse_event(data: &str, event_type: &str) -> Option<Result<StreamChunk, LlmError>> {
     match event_type {
         "content_block_delta" => match serde_json::from_str::<ClaudeStreamEvent>(data) {
             Ok(event) => {
                 if let Some(delta) = event.delta {
                     match delta.delta_type.as_str() {
                         "text_delta" if !delta.text.is_empty() => {
-                            return Some(Ok(delta.text));
+                            return Some(Ok(StreamChunk::Content(delta.text)));
                         }
-                        "thinking_delta" => {
-                            tracing::debug!(
-                                len = delta.thinking.len(),
-                                "Claude thinking_delta (not emitted to stream)"
-                            );
+                        "thinking_delta" if !delta.thinking.is_empty() => {
+                            return Some(Ok(StreamChunk::Thinking(delta.thinking)));
                         }
                         "signature_delta" => {
                             tracing::debug!("Claude signature_delta (not emitted to stream)");
@@ -76,23 +73,27 @@ fn parse_claude_sse_event(data: &str, event_type: &str) -> Option<Result<String,
     }
 }
 
-fn parse_openai_sse_event(data: &str) -> Option<Result<String, LlmError>> {
+fn parse_openai_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
     if data == "[DONE]" {
         return None;
     }
 
     match serde_json::from_str::<OpenAiStreamChunk>(data) {
         Ok(chunk) => {
-            let content = chunk
-                .choices
-                .first()
-                .and_then(|c| c.delta.content.as_deref())
+            let choice = chunk.choices.first()?;
+            let reasoning = choice
+                .delta
+                .reasoning_content
+                .as_deref()
                 .unwrap_or_default();
-
+            if !reasoning.is_empty() {
+                return Some(Ok(StreamChunk::Thinking(reasoning.to_owned())));
+            }
+            let content = choice.delta.content.as_deref().unwrap_or_default();
             if content.is_empty() {
                 None
             } else {
-                Some(Ok(content.to_owned()))
+                Some(Ok(StreamChunk::Content(content.to_owned())))
             }
         }
         Err(e) => Some(Err(LlmError::SseParse(format!(
@@ -140,6 +141,8 @@ struct OpenAiStreamChoice {
 struct OpenAiStreamDelta {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[cfg(test)]
@@ -150,7 +153,8 @@ mod tests {
     fn claude_parse_text_delta() {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
         let result = parse_claude_sse_event(data, "content_block_delta");
-        assert_eq!(result.unwrap().unwrap(), "Hello");
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
     }
 
     #[test]
@@ -179,7 +183,8 @@ mod tests {
     fn openai_parse_text_chunk() {
         let data = r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#;
         let result = parse_openai_sse_event(data);
-        assert_eq!(result.unwrap().unwrap(), "hi");
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "hi"));
     }
 
     #[test]
@@ -203,11 +208,27 @@ mod tests {
     }
 
     #[test]
-    fn claude_thinking_delta_not_emitted_to_stream() {
+    fn claude_thinking_delta_emitted_as_thinking_chunk() {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I need to think about this"}}"#;
         let result = parse_claude_sse_event(data, "content_block_delta");
-        // thinking_delta must not be emitted to the user stream
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "I need to think about this"));
+    }
+
+    #[test]
+    fn claude_thinking_delta_empty_not_emitted() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}"#;
+        let result = parse_claude_sse_event(data, "content_block_delta");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn openai_parse_reasoning_content_chunk() {
+        let data =
+            r#"{"choices":[{"delta":{"reasoning_content":"Let me reason"},"finish_reason":null}]}"#;
+        let result = parse_openai_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "Let me reason"));
     }
 
     #[test]

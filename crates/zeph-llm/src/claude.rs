@@ -1804,16 +1804,16 @@ mod tests {
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
-        let mut chunks = Vec::new();
+        let mut full_response = String::new();
         let mut chunk_count = 0;
 
         while let Some(result) = stream.next().await {
-            let chunk = result.unwrap();
-            chunks.push(chunk);
+            if let crate::StreamChunk::Content(text) = result.unwrap() {
+                full_response.push_str(&text);
+            }
             chunk_count += 1;
         }
 
-        let full_response: String = chunks.concat();
         assert!(!full_response.is_empty());
         assert!(full_response.to_lowercase().contains("pong"));
         assert!(chunk_count >= 1);
@@ -1836,11 +1836,12 @@ mod tests {
         let chat_response = provider.chat(&messages).await.unwrap();
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
-        let mut stream_chunks = Vec::new();
+        let mut stream_response = String::new();
         while let Some(result) = stream.next().await {
-            stream_chunks.push(result.unwrap());
+            if let crate::StreamChunk::Content(text) = result.unwrap() {
+                stream_response.push_str(&text);
+            }
         }
-        let stream_response: String = stream_chunks.concat();
 
         assert!(chat_response.contains('4'));
         assert!(stream_response.contains('4'));

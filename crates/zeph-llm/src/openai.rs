@@ -1347,13 +1347,14 @@ mod tests {
         }];
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
-        let mut chunks = Vec::new();
+        let mut full_response = String::new();
 
         while let Some(result) = stream.next().await {
-            chunks.push(result.unwrap());
+            if let crate::StreamChunk::Content(text) = result.unwrap() {
+                full_response.push_str(&text);
+            }
         }
 
-        let full_response: String = chunks.concat();
         assert!(!full_response.is_empty());
         assert!(full_response.to_lowercase().contains("pong"));
     }

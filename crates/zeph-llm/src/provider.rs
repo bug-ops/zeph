@@ -44,8 +44,17 @@ pub(crate) fn cached_schema<T: schemars::JsonSchema + 'static>()
     Ok((value, pretty))
 }
 
-/// Boxed stream of string chunks from an LLM provider.
-pub type ChatStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
+/// A chunk from an LLM streaming response.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Regular response text.
+    Content(String),
+    /// Internal reasoning/thinking token (e.g. Claude extended thinking, `OpenAI` reasoning).
+    Thinking(String),
+}
+
+/// Boxed stream of typed chunks from an LLM provider.
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>;
 
 /// Minimal tool definition for LLM providers.
 ///
@@ -485,7 +494,9 @@ mod tests {
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
             let response = self.chat(messages).await?;
-            Ok(Box::pin(tokio_stream::once(Ok(response))))
+            Ok(Box::pin(tokio_stream::once(Ok(StreamChunk::Content(
+                response,
+            )))))
         }
 
         fn supports_streaming(&self) -> bool {
@@ -535,7 +546,7 @@ mod tests {
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
         let chunk = stream.next().await.unwrap().unwrap();
-        assert_eq!(chunk, "hello world");
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "hello world"));
         assert!(stream.next().await.is_none());
     }
 
@@ -550,7 +561,9 @@ mod tests {
 
             async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
                 let response = self.chat(messages).await?;
-                Ok(Box::pin(tokio_stream::once(Ok(response))))
+                Ok(Box::pin(tokio_stream::once(Ok(StreamChunk::Content(
+                    response,
+                )))))
             }
 
             fn supports_streaming(&self) -> bool {
@@ -605,7 +618,9 @@ mod tests {
 
             async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
                 let response = self.chat(messages).await?;
-                Ok(Box::pin(tokio_stream::once(Ok(response))))
+                Ok(Box::pin(tokio_stream::once(Ok(StreamChunk::Content(
+                    response,
+                )))))
             }
 
             fn supports_streaming(&self) -> bool {
@@ -1037,7 +1052,9 @@ mod tests {
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
             let response = self.chat(messages).await?;
-            Ok(Box::pin(tokio_stream::once(Ok(response))))
+            Ok(Box::pin(tokio_stream::once(Ok(StreamChunk::Content(
+                response,
+            )))))
         }
 
         fn supports_streaming(&self) -> bool {

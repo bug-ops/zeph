@@ -721,10 +721,16 @@ impl<C: Channel> Agent<C> {
                     break;
                 }
             };
-            let chunk: String = chunk_result?;
-            response.push_str(&chunk);
-            let display_chunk = self.maybe_redact(&chunk);
-            self.channel.send_chunk(&display_chunk).await?;
+            match chunk_result? {
+                zeph_llm::StreamChunk::Content(chunk) => {
+                    response.push_str(&chunk);
+                    let display_chunk = self.maybe_redact(&chunk);
+                    self.channel.send_chunk(&display_chunk).await?;
+                }
+                zeph_llm::StreamChunk::Thinking(thinking) => {
+                    self.channel.send_thinking_chunk(&thinking).await?;
+                }
+            }
         }
 
         self.channel.flush_chunks().await?;

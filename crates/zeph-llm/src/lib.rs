@@ -33,5 +33,5 @@ pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 #[cfg(feature = "schema")]
 pub use extractor::Extractor;
-pub use provider::{LlmProvider, ThinkingBlock};
+pub use provider::{ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
 pub use stt::{SpeechToText, Transcription};

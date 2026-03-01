@@ -102,6 +102,18 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send a thinking/reasoning token chunk. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_thinking_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Notify channel of queued message count. No-op by default.
     ///
     /// # Errors
@@ -248,6 +260,8 @@ pub enum LoopbackEvent {
     SessionTitle(String),
     /// Execution plan update.
     Plan(Vec<(String, PlanItemStatus)>),
+    /// Thinking/reasoning token chunk from the LLM.
+    ThinkingChunk(String),
 }
 
 /// Status of a plan item, mirroring `acp::PlanEntryStatus`.
@@ -322,6 +336,13 @@ impl Channel for LoopbackChannel {
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::Status(text.to_owned()))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn send_thinking_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::ThinkingChunk(chunk.to_owned()))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }

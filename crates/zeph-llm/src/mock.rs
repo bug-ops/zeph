@@ -120,7 +120,10 @@ impl LlmProvider for MockProvider {
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {
         let response = self.chat(messages).await?;
-        let chunks: Vec<_> = response.chars().map(|c| c.to_string()).map(Ok).collect();
+        let chunks: Vec<Result<crate::StreamChunk, crate::LlmError>> = response
+            .chars()
+            .map(|c| Ok(crate::StreamChunk::Content(c.to_string())))
+            .collect();
         Ok(Box::pin(tokio_stream::iter(chunks)))
     }
 
