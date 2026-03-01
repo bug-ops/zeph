@@ -134,6 +134,7 @@ impl Channel for TuiChannel {
         is_error: bool,
         _parent_tool_use_id: Option<String>,
         _raw_response: Option<serde_json::Value>,
+        _started_at: Option<std::time::Instant>,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
             %tool_name,
@@ -374,6 +375,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -397,6 +399,7 @@ mod tests {
             None,
             "",
             false,
+            None,
             None,
             None,
         )

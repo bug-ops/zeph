@@ -156,7 +156,7 @@ fn session_not_found() -> acp::Error {
 }
 
 fn now_iso8601() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    chrono::Utc::now().to_rfc3339()
 }
 
 /// Validate `session_id`: reject if too long or contains characters outside `[a-zA-Z0-9_-]`.
@@ -179,6 +179,12 @@ async fn handle_session_list(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
 ) -> acp::Result<acp::ExtResponse> {
+    // Deprecated: use the native `list_sessions` ACP method instead.
+    // This extension method returns a reduced `SessionListEntry` schema and will be removed
+    // in a future release.
+    tracing::warn!(
+        "ext method `_session/list` is deprecated; use the native `list_sessions` ACP method"
+    );
     let _: SessionListParams = parse_params(raw)?;
 
     // Collect in-memory session tuples while holding the borrow, then release it.
