@@ -176,6 +176,18 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     .map_err(|e| ToolError::InvalidParams {
                         message: e.to_string(),
                     })?;
+                let total_lines = content.lines().count();
+                let start_line = params.line.unwrap_or(1);
+                let raw_response = Some(serde_json::json!({
+                    "type": "text",
+                    "file": {
+                        "filePath": &params.path,
+                        "content": &content,
+                        "numLines": total_lines,
+                        "startLine": start_line,
+                        "totalLines": total_lines
+                    }
+                }));
                 Ok(Some(ToolOutput {
                     tool_name: "read_file".to_owned(),
                     summary: content,
@@ -185,6 +197,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     streamed: false,
                     terminal_id: None,
                     locations: Some(vec![params.path]),
+                    raw_response,
                 }))
             }
             "write_file" if self.can_write => {
@@ -204,6 +217,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     streamed: false,
                     terminal_id: None,
                     locations: Some(vec![params.path]),
+                    raw_response: None,
                 }))
             }
             _ => Ok(None),

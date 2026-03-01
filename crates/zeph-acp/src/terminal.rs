@@ -196,10 +196,23 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
                 message: e.to_string(),
             })?;
 
-        let summary = match result.exit_code {
-            Some(0) | None => result.output,
-            Some(code) => format!("[exit {code}]\n{}", result.output),
+        let is_error = !matches!(result.exit_code, Some(0) | None);
+        let summary = if is_error {
+            format!(
+                "[exit {}]\n{}",
+                result.exit_code.unwrap_or(1),
+                result.output
+            )
+        } else {
+            result.output.clone()
         };
+        let raw_response = Some(serde_json::json!({
+            "stdout": result.output,
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false,
+            "noOutputExpected": false
+        }));
 
         Ok(Some(ToolOutput {
             tool_name: "bash".to_owned(),
@@ -210,6 +223,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             streamed: false,
             terminal_id: Some(result.terminal_id),
             locations: None,
+            raw_response,
         }))
     }
 }

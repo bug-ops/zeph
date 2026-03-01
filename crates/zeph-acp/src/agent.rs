@@ -1520,7 +1520,7 @@ fn tool_kind_from_name(name: &str) -> acp::ToolKind {
         "bash" | "shell" => acp::ToolKind::Execute,
         "read_file" => acp::ToolKind::Read,
         "write_file" => acp::ToolKind::Edit,
-        "search" | "grep" | "find" => acp::ToolKind::Search,
+        "search" | "grep" | "find" | "glob" => acp::ToolKind::Search,
         "web_scrape" | "fetch" => acp::ToolKind::Fetch,
         _ => acp::ToolKind::Other,
     }
@@ -1696,6 +1696,17 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             let mut tool_call = acp::ToolCall::new(tool_call_id.clone(), title)
                 .kind(kind)
                 .status(acp::ToolCallStatus::InProgress);
+            if let Some(ref p) = params
+                && kind == acp::ToolKind::Read
+                && let Some(loc) = p
+                    .get("file_path")
+                    .or_else(|| p.get("path"))
+                    .and_then(|v| v.as_str())
+            {
+                tool_call = tool_call.locations(vec![acp::ToolCallLocation::new(
+                    std::path::PathBuf::from(loc),
+                )]);
+            }
             if let Some(p) = params {
                 tool_call = tool_call.raw_input(p);
             }
@@ -1712,25 +1723,33 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                     acp::Terminal::new(tool_call_id.clone()),
                 )]);
             }
+            let mut claude_code = serde_json::Map::new();
+            claude_code.insert(
+                "toolName".to_owned(),
+                serde_json::Value::String(tool_name.clone()),
+            );
             if let Some(parent_id) = parent_tool_use_id {
-                meta.insert(
-                    "claudeCode".to_owned(),
-                    serde_json::json!({ "parentToolUseId": parent_id }),
+                claude_code.insert(
+                    "parentToolUseId".to_owned(),
+                    serde_json::Value::String(parent_id),
                 );
             }
-            if !meta.is_empty() {
-                tool_call = tool_call.meta(meta);
-            }
+            meta.insert(
+                "claudeCode".to_owned(),
+                serde_json::Value::Object(claude_code),
+            );
+            tool_call = tool_call.meta(meta);
             vec![acp::SessionUpdate::ToolCall(tool_call)]
         }
         LoopbackEvent::ToolOutput {
-            tool_name: _,
+            tool_name,
             display,
             locations,
             tool_call_id,
             is_error,
             terminal_id,
             parent_tool_use_id,
+            raw_response,
             ..
         } => {
             let acp_locations: Vec<acp::ToolCallLocation> = locations
@@ -1744,7 +1763,34 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
             } else {
                 acp::ToolCallStatus::Completed
             };
-            if terminal_id.is_some() {
+
+            // Build intermediate tool_call_update with toolResponse when raw_response is present.
+            // This update has no status — it only carries the structured response payload.
+            let response_update = raw_response.map(|resp| {
+                let mut resp_meta = serde_json::Map::new();
+                let mut cc = serde_json::Map::new();
+                cc.insert(
+                    "toolName".to_owned(),
+                    serde_json::Value::String(tool_name.clone()),
+                );
+                cc.insert("toolResponse".to_owned(), resp);
+                if let Some(ref parent_id) = parent_tool_use_id {
+                    cc.insert(
+                        "parentToolUseId".to_owned(),
+                        serde_json::Value::String(parent_id.clone()),
+                    );
+                }
+                resp_meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
+                acp::SessionUpdate::ToolCallUpdate(
+                    acp::ToolCallUpdate::new(
+                        tool_call_id.clone(),
+                        acp::ToolCallUpdateFields::new(),
+                    )
+                    .meta(resp_meta),
+                )
+            });
+
+            let final_updates = if terminal_id.is_some() {
                 // Terminal tool: emit two updates matching the Zed _meta extension pattern.
                 // First: stream output to the display terminal registered in ToolStart.
                 // Second: finalize with terminal_exit and ToolCallContent::Terminal.
@@ -1755,7 +1801,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                     "terminal_output".to_owned(),
                     serde_json::json!({ "terminal_id": tool_call_id, "data": display }),
                 );
-                let intermediate = acp::SessionUpdate::ToolCallUpdate(
+                let terminal_intermediate = acp::SessionUpdate::ToolCallUpdate(
                     acp::ToolCallUpdate::new(
                         tool_call_id.clone(),
                         acp::ToolCallUpdateFields::new(),
@@ -1773,12 +1819,18 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                         "signal": null
                     }),
                 );
+                let mut cc = serde_json::Map::new();
+                cc.insert(
+                    "toolName".to_owned(),
+                    serde_json::Value::String(tool_name.clone()),
+                );
                 if let Some(parent_id) = parent_tool_use_id {
-                    exit_meta.insert(
-                        "claudeCode".to_owned(),
-                        serde_json::json!({ "parentToolUseId": parent_id }),
+                    cc.insert(
+                        "parentToolUseId".to_owned(),
+                        serde_json::Value::String(parent_id),
                     );
                 }
+                exit_meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
                 let mut final_fields = acp::ToolCallUpdateFields::new()
                     .status(status)
                     .content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
@@ -1791,7 +1843,7 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 let final_update = acp::SessionUpdate::ToolCallUpdate(
                     acp::ToolCallUpdate::new(tool_call_id, final_fields).meta(exit_meta),
                 );
-                vec![intermediate, final_update]
+                vec![terminal_intermediate, final_update]
             } else {
                 let content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
                     acp::TextContent::new(display),
@@ -1802,17 +1854,29 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
                 if !acp_locations.is_empty() {
                     fields = fields.locations(acp_locations);
                 }
-                let mut update = acp::ToolCallUpdate::new(tool_call_id, fields);
+                let mut meta = serde_json::Map::new();
+                let mut cc = serde_json::Map::new();
+                cc.insert(
+                    "toolName".to_owned(),
+                    serde_json::Value::String(tool_name.clone()),
+                );
                 if let Some(parent_id) = parent_tool_use_id {
-                    let mut meta = serde_json::Map::new();
-                    meta.insert(
-                        "claudeCode".to_owned(),
-                        serde_json::json!({ "parentToolUseId": parent_id }),
+                    cc.insert(
+                        "parentToolUseId".to_owned(),
+                        serde_json::Value::String(parent_id),
                     );
-                    update = update.meta(meta);
                 }
+                meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
+                let update = acp::ToolCallUpdate::new(tool_call_id, fields).meta(meta);
                 vec![acp::SessionUpdate::ToolCallUpdate(update)]
+            };
+
+            let mut result = Vec::with_capacity(final_updates.len() + 1);
+            if let Some(ru) = response_update {
+                result.push(ru);
             }
+            result.extend(final_updates);
+            result
         }
         LoopbackEvent::Flush => vec![],
         #[cfg(feature = "unstable-session-usage")]
@@ -2251,6 +2315,7 @@ mod tests {
             is_error: false,
             terminal_id: None,
             parent_tool_use_id: Some("parent-uuid".to_owned()),
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2265,6 +2330,11 @@ mod tests {
                 assert_eq!(
                     claude_code.get("parentToolUseId").and_then(|v| v.as_str()),
                     Some("parent-uuid")
+                );
+                // GAP-01: toolName must also be present alongside parentToolUseId
+                assert_eq!(
+                    claude_code.get("toolName").and_then(|v| v.as_str()),
+                    Some("bash")
                 );
             }
             other => panic!("expected ToolCallUpdate, got {other:?}"),
@@ -2345,6 +2415,7 @@ mod tests {
             is_error: false,
             terminal_id: None,
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2369,6 +2440,7 @@ mod tests {
             is_error: true,
             terminal_id: None,
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2380,12 +2452,268 @@ mod tests {
         }
     }
 
+    // #1037 — toolName always present in claudeCode, even without parentToolUseId
+    #[test]
+    fn tool_start_always_includes_tool_name_in_claude_code() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "tc-1".to_owned(),
+            params: None,
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let meta = tc.meta.as_ref().expect("meta must be present");
+                let cc = meta
+                    .get("claudeCode")
+                    .expect("claudeCode must be set")
+                    .as_object()
+                    .expect("claudeCode must be object");
+                assert_eq!(cc.get("toolName").and_then(|v| v.as_str()), Some("bash"));
+                assert!(
+                    cc.get("parentToolUseId").is_none(),
+                    "no parent when not set"
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_start_tool_name_and_parent_merged_in_claude_code() {
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "read_file".to_owned(),
+            tool_call_id: "tc-2".to_owned(),
+            params: None,
+            parent_tool_use_id: Some("parent-abc".to_owned()),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let cc = tc
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert_eq!(
+                    cc.get("toolName").and_then(|v| v.as_str()),
+                    Some("read_file")
+                );
+                assert_eq!(
+                    cc.get("parentToolUseId").and_then(|v| v.as_str()),
+                    Some("parent-abc")
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    // #1037 — toolName always present in claudeCode of tool output, even without parent
+    #[test]
+    fn tool_output_always_includes_tool_name_in_claude_code() {
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "ok".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-out".to_owned(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                let cc = tcu
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert_eq!(cc.get("toolName").and_then(|v| v.as_str()), Some("bash"));
+            }
+            other => panic!("expected ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    // #1040 — locations populated from params for Read-kind tools
+    #[test]
+    fn tool_start_read_kind_sets_location_from_file_path_param() {
+        let params = serde_json::json!({ "file_path": "/src/main.rs" });
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "read_file".to_owned(),
+            tool_call_id: "tc-read".to_owned(),
+            params: Some(params),
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let locs = &tc.locations;
+                assert_eq!(locs.len(), 1);
+                assert_eq!(locs[0].path, std::path::PathBuf::from("/src/main.rs"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_start_read_kind_sets_location_from_path_param() {
+        let params = serde_json::json!({ "path": "/tmp/file.txt" });
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "read_file".to_owned(),
+            tool_call_id: "tc-read2".to_owned(),
+            params: Some(params),
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                let locs = &tc.locations;
+                assert_eq!(locs.len(), 1);
+                assert_eq!(locs[0].path, std::path::PathBuf::from("/tmp/file.txt"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_start_execute_kind_does_not_set_locations() {
+        let params = serde_json::json!({ "command": "ls" });
+        let event = LoopbackEvent::ToolStart {
+            tool_name: "bash".to_owned(),
+            tool_call_id: "tc-bash".to_owned(),
+            params: Some(params),
+            parent_tool_use_id: None,
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::ToolCall(tc) => {
+                assert!(&tc.locations.is_empty(), "bash must not set locations");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    // #1038 — intermediate tool_call_update with toolResponse emitted before final update
+    #[test]
+    fn tool_output_with_raw_response_emits_intermediate_before_final() {
+        let raw_resp = serde_json::json!({
+            "type": "text",
+            "file": { "filePath": "/foo.rs", "content": "fn main(){}", "numLines": 1, "startLine": 1, "totalLines": 1 }
+        });
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "read_file".to_owned(),
+            display: "fn main(){}".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-r".to_owned(),
+            is_error: false,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: Some(raw_resp),
+        };
+        let updates = loopback_event_to_updates(event);
+        assert_eq!(updates.len(), 2, "expected intermediate + final");
+        // First: intermediate with toolResponse, no status
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(
+                    tcu.fields.status.is_none(),
+                    "intermediate must have no status"
+                );
+                let cc = tcu
+                    .meta
+                    .as_ref()
+                    .expect("meta")
+                    .get("claudeCode")
+                    .expect("claudeCode")
+                    .as_object()
+                    .expect("object");
+                assert!(cc.get("toolResponse").is_some(), "toolResponse must be set");
+                assert_eq!(
+                    cc.get("toolName").and_then(|v| v.as_str()),
+                    Some("read_file")
+                );
+            }
+            other => panic!("expected intermediate ToolCallUpdate, got {other:?}"),
+        }
+        // Second: final with status=completed
+        match &updates[1] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert_eq!(tcu.fields.status, Some(acp::ToolCallStatus::Completed));
+            }
+            other => panic!("expected final ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    // #1039 — intermediate tool_call_update with toolResponse for terminal tools
+    #[test]
+    fn tool_output_terminal_with_raw_response_emits_three_updates() {
+        let raw_resp = serde_json::json!({
+            "stdout": "hello", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false
+        });
+        let event = LoopbackEvent::ToolOutput {
+            tool_name: "bash".to_owned(),
+            display: "hello".to_owned(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "tc-bash".to_owned(),
+            is_error: false,
+            terminal_id: Some("term-x".to_owned()),
+            parent_tool_use_id: None,
+            raw_response: Some(raw_resp),
+        };
+        let updates = loopback_event_to_updates(event);
+        // toolResponse intermediate + terminal_output intermediate + terminal_exit final
+        assert_eq!(
+            updates.len(),
+            3,
+            "expected 3 updates for terminal with raw_response"
+        );
+        match &updates[0] {
+            acp::SessionUpdate::ToolCallUpdate(tcu) => {
+                assert!(tcu.fields.status.is_none());
+                let cc = tcu
+                    .meta
+                    .as_ref()
+                    .unwrap()
+                    .get("claudeCode")
+                    .unwrap()
+                    .as_object()
+                    .unwrap();
+                assert!(cc.get("toolResponse").is_some());
+            }
+            other => panic!("expected toolResponse update, got {other:?}"),
+        }
+    }
+
     #[test]
     fn tool_kind_from_name_maps_correctly() {
         assert_eq!(tool_kind_from_name("bash"), acp::ToolKind::Execute);
         assert_eq!(tool_kind_from_name("read_file"), acp::ToolKind::Read);
         assert_eq!(tool_kind_from_name("write_file"), acp::ToolKind::Edit);
         assert_eq!(tool_kind_from_name("search"), acp::ToolKind::Search);
+        assert_eq!(tool_kind_from_name("glob"), acp::ToolKind::Search);
         assert_eq!(tool_kind_from_name("web_scrape"), acp::ToolKind::Fetch);
         assert_eq!(tool_kind_from_name("unknown"), acp::ToolKind::Other);
     }
@@ -2674,6 +3002,7 @@ mod tests {
             is_error: false,
             terminal_id: None,
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2701,6 +3030,7 @@ mod tests {
             is_error: false,
             terminal_id: None,
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 1);
@@ -2739,6 +3069,7 @@ mod tests {
             is_error: false,
             terminal_id: Some("term-42".to_owned()),
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         // Expect 2 updates: intermediate with terminal_output meta, final with terminal_exit +
@@ -3602,6 +3933,7 @@ mod tests {
             is_error: false,
             terminal_id: Some("term-multi".to_owned()),
             parent_tool_use_id: None,
+            raw_response: None,
         };
         let updates = loopback_event_to_updates(event);
         assert_eq!(updates.len(), 2, "expected intermediate + final update");

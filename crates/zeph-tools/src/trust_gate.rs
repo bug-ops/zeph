@@ -125,6 +125,7 @@ mod tests {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         }
     }

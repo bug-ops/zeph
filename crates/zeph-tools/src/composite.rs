@@ -73,6 +73,7 @@ mod tests {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         }
     }
@@ -108,6 +109,7 @@ mod tests {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         }
     }
@@ -188,6 +190,7 @@ mod tests {
                     streamed: false,
                     terminal_id: None,
                     locations: None,
+                    raw_response: None,
                 }))
             } else {
                 Ok(None)
@@ -215,6 +218,7 @@ mod tests {
                     streamed: false,
                     terminal_id: None,
                     locations: None,
+                    raw_response: None,
                 }))
             } else {
                 Ok(None)

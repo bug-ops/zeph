@@ -312,6 +312,7 @@ impl ShellExecutor {
             streamed: self.tool_event_tx.is_some(),
             terminal_id: None,
             locations: None,
+            raw_response: None,
         }))
     }
 

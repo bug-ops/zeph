@@ -82,6 +82,8 @@ pub struct ToolOutput {
     pub terminal_id: Option<String>,
     /// File paths touched by this tool call, for IDE follow-along (e.g. `ToolCallLocation`).
     pub locations: Option<Vec<String>>,
+    /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
+    pub raw_response: Option<serde_json::Value>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -351,6 +353,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }
@@ -592,6 +595,7 @@ mod tests {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         }
 
@@ -612,6 +616,7 @@ mod tests {
                 streamed: false,
                 terminal_id: None,
                 locations: None,
+                raw_response: None,
             }))
         }
     }

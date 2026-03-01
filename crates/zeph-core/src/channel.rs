@@ -181,6 +181,7 @@ pub trait Channel: Send {
         _tool_call_id: &str,
         _is_error: bool,
         _parent_tool_use_id: Option<String>,
+        _raw_response: Option<serde_json::Value>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         let formatted = crate::agent::format_tool_output(tool_name, body);
         async move { self.send(&formatted).await }
@@ -229,6 +230,8 @@ pub enum LoopbackEvent {
         terminal_id: Option<String>,
         /// Set when this tool output belongs to a subagent; identifies the parent's `tool_call_id`.
         parent_tool_use_id: Option<String>,
+        /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
+        raw_response: Option<serde_json::Value>,
     },
     /// Token usage from the last LLM turn.
     Usage {
@@ -348,6 +351,7 @@ impl Channel for LoopbackChannel {
         tool_call_id: &str,
         is_error: bool,
         parent_tool_use_id: Option<String>,
+        raw_response: Option<serde_json::Value>,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
@@ -361,6 +365,7 @@ impl Channel for LoopbackChannel {
                 is_error,
                 terminal_id: None,
                 parent_tool_use_id,
+                raw_response,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -599,7 +604,9 @@ mod tests {
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_tool_output("bash", "exit 0", None, None, None, None, "", false, None)
+            .send_tool_output(
+                "bash", "exit 0", None, None, None, None, "", false, None, None,
+            )
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -615,6 +622,7 @@ mod tests {
                 is_error,
                 terminal_id,
                 parent_tool_use_id,
+                raw_response,
             } => {
                 assert_eq!(tool_name, "bash");
                 assert_eq!(display, "exit 0");
@@ -626,6 +634,7 @@ mod tests {
                 assert!(!is_error);
                 assert!(terminal_id.is_none());
                 assert!(parent_tool_use_id.is_none());
+                assert!(raw_response.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }

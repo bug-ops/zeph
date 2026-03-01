@@ -543,6 +543,7 @@ impl<C: Channel> Agent<C> {
                         &tool_call_id,
                         false,
                         self.parent_tool_use_id.clone(),
+                        output.raw_response.map(|r| self.redact_json(r)),
                     )
                     .await?;
 
@@ -596,6 +597,7 @@ impl<C: Channel> Agent<C> {
                                 &confirmed_tool_call_id,
                                 false,
                                 self.parent_tool_use_id.clone(),
+                                out.raw_response.map(|r| self.redact_json(r)),
                             )
                             .await?;
                         self.push_message(Message::from_parts(
@@ -694,6 +696,28 @@ impl<C: Channel> Agent<C> {
             }
         } else {
             std::borrow::Cow::Borrowed(text)
+        }
+    }
+
+    /// Walk a JSON value and apply `maybe_redact` to every string leaf.
+    ///
+    /// Used to sanitize `raw_response` before it is forwarded to `claudeCode.toolResponse`
+    /// in the ACP notification. Without this, file content and shell stdout would bypass
+    /// the `redact_secrets` pipeline even when it is enabled.
+    pub(super) fn redact_json(&self, value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::String(s) => {
+                serde_json::Value::String(self.maybe_redact(&s).into_owned())
+            }
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.into_iter().map(|v| self.redact_json(v)).collect())
+            }
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, self.redact_json(v)))
+                    .collect(),
+            ),
+            other => other,
         }
     }
 
@@ -1084,6 +1108,7 @@ impl<C: Channel> Agent<C> {
                     tool_call_id,
                     is_error,
                     self.parent_tool_use_id.clone(),
+                    None,
                 )
                 .await?;
 
@@ -1349,6 +1374,7 @@ mod tests {
                     streamed: false,
                     terminal_id: None,
                     locations: None,
+                    raw_response: None,
                 }))
             }
         }
@@ -1390,6 +1416,7 @@ mod tests {
                         streamed: false,
                         terminal_id: None,
                         locations: None,
+                        raw_response: None,
                     }))
                 }
             }
@@ -1506,6 +1533,86 @@ mod tests {
         // With redaction enabled, result should either be redacted or unchanged
         // (actual redaction depends on patterns matching)
         let _ = result.as_ref(); // just ensure no panic
+    }
+
+    #[test]
+    fn redact_json_sanitizes_string_leaves() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.security.redact_secrets = false;
+
+        // With redaction disabled, strings pass through unchanged.
+        let val = serde_json::json!({
+            "file": { "content": "hello", "filePath": "/tmp/a.rs" },
+            "count": 42,
+            "tags": ["a", "b"]
+        });
+        let result = agent.redact_json(val.clone());
+        assert_eq!(result, val);
+
+        // With redaction enabled, secret patterns inside nested strings are replaced.
+        agent.runtime.security.redact_secrets = true;
+        let secret = "sk-abc123def456";
+        let val_with_secret = serde_json::json!({
+            "file": {
+                "content": format!("api_key = {secret}"),
+                "filePath": "/tmp/config.rs"
+            },
+            "stdout": format!("loaded key {secret} ok"),
+            "count": 1
+        });
+        let redacted = agent.redact_json(val_with_secret);
+        let content = redacted["file"]["content"].as_str().unwrap();
+        let stdout = redacted["stdout"].as_str().unwrap();
+        assert!(
+            !content.contains(secret),
+            "secret must not appear in file.content after redaction"
+        );
+        assert!(
+            content.contains("[REDACTED]"),
+            "file.content must contain [REDACTED]"
+        );
+        assert!(
+            !stdout.contains(secret),
+            "secret must not appear in stdout after redaction"
+        );
+        assert!(
+            stdout.contains("[REDACTED]"),
+            "stdout must contain [REDACTED]"
+        );
+        // Non-string fields must remain intact.
+        assert_eq!(redacted["count"], 1);
+    }
+
+    #[test]
+    fn redact_json_preserves_non_string_types() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let val = serde_json::json!({
+            "n": 1,
+            "b": true,
+            "null_val": null,
+            "arr": [1, 2, 3]
+        });
+        let result = agent.redact_json(val.clone());
+        assert_eq!(result["n"], 1);
+        assert_eq!(result["b"], true);
+        assert!(result["null_val"].is_null());
     }
 
     #[test]
@@ -1713,6 +1820,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1743,6 +1851,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         let result = agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -1773,6 +1882,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         // reflection_used = true so reflection path is skipped
         agent.learning_engine.mark_reflection_used();
@@ -2273,6 +2383,7 @@ mod tests {
             streamed: true,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -2307,6 +2418,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -2384,6 +2496,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: Some(vec!["/src/main.rs".to_owned()]),
+            raw_response: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))
@@ -2435,6 +2548,7 @@ mod tests {
             streamed: false,
             terminal_id: None,
             locations: None,
+            raw_response: None,
         };
         agent
             .handle_tool_result("response", Ok(Some(output)))

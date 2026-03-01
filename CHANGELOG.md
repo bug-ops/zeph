@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- ACP tool notifications: `raw_response` (file content for `read_file`, stdout for `bash`) is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline when content reaches the IDE (SEC-ACP-001)
+
+### Fixed
+
+- ACP tool notifications: `claudeCode.toolName` is now always included in `_meta.claudeCode` for every `tool_call` and `tool_call_update`, regardless of whether `parentToolUseId` is present (#1037)
+- ACP tool notifications: `locations` field is now populated on the initial `tool_call` for Read-kind tools by extracting the path from `params["file_path"]` or `params["path"]` at `ToolStart` time (#1040)
+- ACP tool notifications: an intermediate `tool_call_update` (without `status`) carrying `_meta.claudeCode.toolResponse` is now emitted before the final status update for non-terminal tools (`AcpFileExecutor`), allowing IDEs to display structured file content (#1038)
+- ACP tool notifications: an intermediate `tool_call_update` carrying `_meta.claudeCode.toolResponse` with `stdout`/`stderr`/`interrupted` fields is now emitted before `terminal_exit` for bash tools (`AcpShellExecutor`) (#1039)
+
+### Changed
+
+- `tool_kind_from_name`: `"glob"` now maps to `ToolKind::Search` (was `ToolKind::Other`) — consistent with other search-oriented tools (GAP-02)
+- `ToolOutput` struct: added `raw_response: Option<serde_json::Value>` field for structured ACP intermediate notification payloads; all existing construction sites default to `None`
+- `LoopbackEvent::ToolOutput` variant: added `raw_response: Option<serde_json::Value>` field; propagated through `Channel::send_tool_output` trait and all implementations
+- `Channel::send_tool_output` signature extended with `raw_response: Option<serde_json::Value>` parameter (`AnyChannel`, `TuiChannel`, `LoopbackChannel` all updated)
+- `zeph-tui`: added `serde_json` as explicit dependency (required by updated `Channel` trait signature)
+
 ### Performance
 
 - Parallelize agent startup initialization: `build_memory` + `build_tool_setup` run concurrently via `tokio::join!` (est. 1-5s savings); `build_skill_matcher` + `build_cli_history` also parallelized; `warmup_provider` spawned as background task on CLI path overlapping with agent assembly (#1031)

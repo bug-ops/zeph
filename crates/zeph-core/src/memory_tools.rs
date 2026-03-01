@@ -140,6 +140,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     streamed: false,
                     terminal_id: None,
                     locations: None,
+                    raw_response: None,
                 }))
             }
             "memory_save" => {
@@ -176,6 +177,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     streamed: false,
                     terminal_id: None,
                     locations: None,
+                    raw_response: None,
                 }))
             }
             _ => Ok(None),

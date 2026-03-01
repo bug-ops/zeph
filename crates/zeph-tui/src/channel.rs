@@ -133,6 +133,7 @@ impl Channel for TuiChannel {
         _tool_call_id: &str,
         is_error: bool,
         _parent_tool_use_id: Option<String>,
+        _raw_response: Option<serde_json::Value>,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
             %tool_name,
@@ -372,6 +373,7 @@ mod tests {
             "",
             false,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -395,6 +397,7 @@ mod tests {
             None,
             "",
             false,
+            None,
             None,
         )
         .await

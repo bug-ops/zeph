@@ -94,6 +94,7 @@ impl Channel for AnyChannel {
         tool_call_id: &str,
         is_error: bool,
         parent_tool_use_id: Option<String>,
+        raw_response: Option<serde_json::Value>,
     ) -> Result<(), ChannelError> {
         dispatch_channel!(
             self,
@@ -106,7 +107,8 @@ impl Channel for AnyChannel {
             locations,
             tool_call_id,
             is_error,
-            parent_tool_use_id
+            parent_tool_use_id,
+            raw_response
         )
     }
 }
