@@ -532,11 +532,10 @@ impl<C: Channel> Agent<C> {
                     (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&output.tool_name))
                 });
                 let formatted_output = format_tool_output(&output.tool_name, &body);
-                let display = self.maybe_redact(&formatted_output);
                 self.channel
                     .send_tool_output(
                         &output.tool_name,
-                        &display,
+                        &self.maybe_redact(&body),
                         None,
                         filter_stats_inline,
                         None,
@@ -586,11 +585,10 @@ impl<C: Channel> Agent<C> {
                             .await?;
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
-                        let display = self.maybe_redact(&formatted);
                         self.channel
                             .send_tool_output(
                                 &out.tool_name,
-                                &display,
+                                &self.maybe_redact(&processed),
                                 None,
                                 None,
                                 None,
