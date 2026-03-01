@@ -17,4 +17,10 @@ pub enum AcpError {
 
     #[error("terminal command timed out; partial output: {output}")]
     TerminalTimeout { output: String },
+
+    #[error("stdin payload too large: {size} bytes (max 65536)")]
+    StdinTooLarge { size: usize },
+
+    #[error("broken pipe: terminal stdin closed")]
+    BrokenPipe,
 }

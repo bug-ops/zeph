@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -10,13 +11,33 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use zeph_tools::{
-    ToolCall, ToolError, ToolOutput,
+    DiffData, ToolCall, ToolError, ToolOutput,
     executor::deserialize_params,
     registry::{InvocationHint, ToolDef},
 };
 
 use crate::error::AcpError;
 use crate::permission::AcpPermissionGate;
+
+const MAX_WRITE_BYTES: usize = 10 * 1024 * 1024; // REQ-P31-5: 10 MiB
+
+fn is_binary(content: &[u8]) -> bool {
+    content.contains(&0) // REQ-P31-6: null byte detection
+}
+
+fn hash_content(content: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn compute_diff_data(old: &str, new: &str, path: &str) -> DiffData {
+    DiffData {
+        file_path: path.to_owned(),
+        old_content: old.to_owned(),
+        new_content: new.to_owned(),
+    }
+}
 
 enum FsRequest {
     Read {
@@ -31,6 +52,11 @@ enum FsRequest {
         path: PathBuf,
         content: String,
         reply: oneshot::Sender<Result<(), AcpError>>,
+    },
+    ReadForDiff {
+        session_id: acp::SessionId,
+        path: PathBuf,
+        reply: oneshot::Sender<Result<Option<String>, AcpError>>,
     },
 }
 
@@ -116,6 +142,18 @@ impl AcpFileExecutor {
                 session_id: self.session_id.clone(),
                 path,
                 content,
+                reply: reply_tx,
+            })
+            .map_err(|_| AcpError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
+    }
+
+    async fn read_for_diff(&self, path: PathBuf) -> Result<Option<String>, AcpError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.request_tx
+            .send(FsRequest::ReadForDiff {
+                session_id: self.session_id.clone(),
+                path,
                 reply: reply_tx,
             })
             .map_err(|_| AcpError::ChannelClosed)?;
@@ -306,48 +344,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
             }
             "write_file" if self.can_write => {
                 let params: WriteFileParams = deserialize_params(&call.params)?;
-                let path = validate_path(&params.path)?;
-                let resolved = self.resolve_path(&path);
-                validate_within_sandbox(&resolved, &self.cwd)?;
-                if self.permission_gate.is_none() {
-                    tracing::warn!(
-                        path = %resolved.display(),
-                        "AcpFileExecutor: write_file called without permission gate"
-                    );
-                }
-                if let Some(gate) = &self.permission_gate {
-                    let fields = acp::ToolCallUpdateFields::new()
-                        .title("write_file".to_owned())
-                        .raw_input(serde_json::json!({ "path": params.path }));
-                    let tool_call = acp::ToolCallUpdate::new("write_file".to_owned(), fields);
-                    let allowed = gate
-                        .check_permission(self.session_id.clone(), tool_call)
-                        .await
-                        .map_err(|e| ToolError::InvalidParams {
-                            message: e.to_string(),
-                        })?;
-                    if !allowed {
-                        return Err(ToolError::Blocked {
-                            command: "write_file: permission denied".to_owned(),
-                        });
-                    }
-                }
-                self.write(resolved, params.content).await.map_err(|e| {
-                    ToolError::InvalidParams {
-                        message: e.to_string(),
-                    }
-                })?;
-                Ok(Some(ToolOutput {
-                    tool_name: "write_file".to_owned(),
-                    summary: format!("wrote {}", params.path),
-                    blocks_executed: 1,
-                    filter_stats: None,
-                    diff: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: Some(vec![params.path]),
-                    raw_response: None,
-                }))
+                self.handle_write_file(params).await
             }
             "list_directory" if self.can_read => {
                 let params: ListDirectoryParams = deserialize_params(&call.params)?;
@@ -363,6 +360,111 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
 }
 
 impl AcpFileExecutor {
+    async fn handle_write_file(
+        &self,
+        params: WriteFileParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        // REQ-P31-5: size check before any work
+        if params.content.len() > MAX_WRITE_BYTES {
+            return Err(ToolError::InvalidParams {
+                message: format!("content exceeds {MAX_WRITE_BYTES} byte limit"),
+            });
+        }
+        // REQ-P31-6: binary detection on new content
+        if is_binary(params.content.as_bytes()) {
+            return Err(ToolError::InvalidParams {
+                message: "binary content not supported for write_file".into(),
+            });
+        }
+        let path = validate_path(&params.path)?;
+        let resolved = self.resolve_path(&path);
+        validate_within_sandbox(&resolved, &self.cwd)?;
+
+        // Read current file for diff (None if new file).
+        let old_content =
+            self.read_for_diff(resolved.clone())
+                .await
+                .map_err(|e| ToolError::InvalidParams {
+                    message: e.to_string(),
+                })?;
+
+        // REQ-P31-6: binary detection on existing content
+        if let Some(ref old) = old_content
+            && is_binary(old.as_bytes())
+        {
+            return Err(ToolError::InvalidParams {
+                message: "existing file is binary; cannot diff".into(),
+            });
+        }
+
+        // Hash old content for TOCTOU guard (REQ-P31-3)
+        let old_hash = old_content.as_deref().map(hash_content);
+
+        if self.permission_gate.is_none() {
+            tracing::warn!(
+                path = %resolved.display(),
+                "AcpFileExecutor: write_file called without permission gate"
+            );
+        }
+
+        // REQ-P31-2: show diff preview and require approval
+        if let Some(gate) = &self.permission_gate {
+            let diff = acp::Diff::new(resolved.clone(), params.content.clone())
+                .old_text(old_content.clone());
+            let fields = acp::ToolCallUpdateFields::new()
+                .title("write_file".to_owned())
+                .content(vec![acp::ToolCallContent::Diff(diff)])
+                .raw_input(serde_json::json!({ "path": params.path }));
+            let tool_call = acp::ToolCallUpdate::new("write_file".to_owned(), fields);
+            let allowed = gate
+                .check_permission(self.session_id.clone(), tool_call)
+                .await
+                .map_err(|e| ToolError::InvalidParams {
+                    message: e.to_string(),
+                })?;
+            if !allowed {
+                return Err(ToolError::Blocked {
+                    command: "write_file: diff rejected".to_owned(),
+                });
+            }
+        }
+
+        // REQ-P31-3: TOCTOU guard — re-read and compare hash
+        let current_content =
+            self.read_for_diff(resolved.clone())
+                .await
+                .map_err(|e| ToolError::InvalidParams {
+                    message: e.to_string(),
+                })?;
+        if old_hash != current_content.as_deref().map(hash_content) {
+            return Err(ToolError::InvalidParams {
+                message: "file changed between diff preview and write; aborting".into(),
+            });
+        }
+
+        let diff_data = Some(compute_diff_data(
+            old_content.as_deref().unwrap_or(""),
+            &params.content,
+            &params.path,
+        ));
+        self.write(resolved, params.content.clone())
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: e.to_string(),
+            })?;
+        Ok(Some(ToolOutput {
+            tool_name: "write_file".to_owned(),
+            summary: format!("wrote {}", params.path),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: diff_data,
+            streamed: false,
+            terminal_id: None,
+            locations: Some(vec![params.path]),
+            raw_response: None,
+        }))
+    }
+
     fn handle_list_directory(
         &self,
         params: ListDirectoryParams,
@@ -509,6 +611,19 @@ where
                     .await
                     .map(|_| ())
                     .map_err(|e| AcpError::ClientError(e.to_string()));
+                reply.send(result).ok();
+            }
+            FsRequest::ReadForDiff {
+                session_id,
+                path,
+                reply,
+            } => {
+                let req = acp::ReadTextFileRequest::new(session_id, path);
+                let result = match conn.read_text_file(req).await {
+                    Ok(r) => Ok(Some(r.content)),
+                    Err(e) if e.code == acp::ErrorCode::ResourceNotFound => Ok(None),
+                    Err(e) => Err(AcpError::ClientError(e.to_string())),
+                };
                 reply.send(result).ok();
             }
         }
@@ -1434,6 +1549,289 @@ mod tests {
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::SandboxViolation { .. }));
+            })
+            .await;
+    }
+
+    #[test]
+    fn is_binary_detects_null_byte() {
+        assert!(is_binary(b"hello\x00world"));
+        assert!(!is_binary(b"plain text\nno nulls"));
+    }
+
+    #[test]
+    fn hash_content_is_deterministic() {
+        let h1 = hash_content("hello");
+        let h2 = hash_content("hello");
+        let h3 = hash_content("world");
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn compute_diff_data_captures_both_sides() {
+        let d = compute_diff_data("old\n", "new\n", "file.txt");
+        assert_eq!(d.file_path, "file.txt");
+        assert_eq!(d.old_content, "old\n");
+        assert_eq!(d.new_content, "new\n");
+    }
+
+    #[tokio::test]
+    async fn write_file_size_limit_rejected() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeClient {
+                    content: String::new(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
+                tokio::task::spawn_local(handler);
+
+                let oversized = "x".repeat(MAX_WRITE_BYTES + 1);
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("big.txt")));
+                params.insert("content".to_owned(), serde_json::json!(oversized));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::InvalidParams { .. }));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn write_file_binary_content_rejected() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = Rc::new(FakeClient {
+                    content: String::new(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let (exec, handler) =
+                    AcpFileExecutor::new(conn, sid, false, true, test_cwd(), None);
+                tokio::task::spawn_local(handler);
+
+                // Embed a null byte to trigger binary detection.
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("bin.txt")));
+                params.insert(
+                    "content".to_owned(),
+                    serde_json::json!("hello\u{0000}world"),
+                );
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::InvalidParams { .. }));
+            })
+            .await;
+    }
+
+    struct DiffApproveClient {
+        old_content: String,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for DiffApproveClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "allow_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            Ok(acp::ReadTextFileResponse::new(self.old_content.clone()))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            Ok(acp::WriteTextFileResponse::new())
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_file_with_permission_gate_shows_diff_and_succeeds() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let perm_conn = Rc::new(DiffApproveClient {
+                    old_content: "old content\n".into(),
+                });
+                let sid = acp::SessionId::new("s1");
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) =
+                    AcpPermissionGate::new(perm_conn.clone(), Some(perm_file));
+                tokio::task::spawn_local(perm_handler);
+
+                let (exec, handler) =
+                    AcpFileExecutor::new(perm_conn, sid, false, true, test_cwd(), Some(gate));
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
+                params.insert("content".to_owned(), serde_json::json!("new content\n"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert!(result.summary.contains("wrote"));
+                assert!(result.diff.is_some());
+                let diff = result.diff.unwrap();
+                assert_eq!(diff.old_content, "old content\n");
+                assert_eq!(diff.new_content, "new content\n");
+            })
+            .await;
+    }
+
+    struct DiffRejectClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for DiffRejectClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "reject_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            Ok(acp::ReadTextFileResponse::new("current\n".to_owned()))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            panic!("write should not be called when diff rejected")
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_file_diff_rejected_returns_blocked() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let perm_conn = Rc::new(DiffRejectClient);
+                let sid = acp::SessionId::new("s1");
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) =
+                    AcpPermissionGate::new(perm_conn.clone(), Some(perm_file));
+                tokio::task::spawn_local(perm_handler);
+
+                let (exec, handler) =
+                    AcpFileExecutor::new(perm_conn, sid, false, true, test_cwd(), Some(gate));
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
+                params.insert("content".to_owned(), serde_json::json!("new\n"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(matches!(err, ToolError::Blocked { .. }));
+            })
+            .await;
+    }
+
+    struct NotFoundReadClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for NotFoundReadClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "allow_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            Err(acp::Error::resource_not_found(None))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            Ok(acp::WriteTextFileResponse::new())
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_new_file_with_no_old_content_succeeds() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let perm_conn = Rc::new(NotFoundReadClient);
+                let sid = acp::SessionId::new("s1");
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) =
+                    AcpPermissionGate::new(perm_conn.clone(), Some(perm_file));
+                tokio::task::spawn_local(perm_handler);
+
+                let (exec, handler) =
+                    AcpFileExecutor::new(perm_conn, sid, false, true, test_cwd(), Some(gate));
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("new.txt")));
+                params.insert("content".to_owned(), serde_json::json!("hello\n"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert!(result.summary.contains("wrote"));
+                let diff = result.diff.unwrap();
+                assert_eq!(diff.old_content, "");
+                assert_eq!(diff.new_content, "hello\n");
             })
             .await;
     }
