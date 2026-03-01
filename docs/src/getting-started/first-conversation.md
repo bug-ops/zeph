@@ -24,7 +24,7 @@ You: What files are in the current directory?
 Behind the scenes:
 1. Zeph embeds your query and matches the `file-ops` skill (ranked by cosine similarity)
 2. The skill's instructions are injected into the prompt
-3. The agent calls the `glob` tool to list files
+3. The agent calls the `list_directory` or `find_path` tool to list files
 4. You get a structured answer with the directory listing
 
 You did not tell Zeph which skill to use — it figured it out from context.

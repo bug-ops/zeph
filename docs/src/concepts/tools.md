@@ -14,13 +14,26 @@ Execute any shell command via the `bash` tool. Commands are sandboxed:
 
 ## File Operations
 
-Five file tools (`read`, `write`, `edit`, `glob`, `grep`) provide structured access to the filesystem. All paths are validated against an allowlist. Directory traversal is prevented via canonical path resolution.
+File tools provide structured access to the filesystem. All paths are validated against an allowlist. Directory traversal is prevented via canonical path resolution.
+
+**Read/write:** `read`, `write`, `edit`, `grep`
+
+**Navigation:** `find_path` (find files matching a glob pattern), `list_directory` (list entries with `[dir]`/`[file]`/`[symlink]` type labels)
+
+**Mutation:** `create_directory`, `delete_path`, `move_path`, `copy_path` — all sandbox-validated, symlink-safe
 
 ## Web Scraping
 
-The `web_scrape` tool extracts data from web pages using CSS selectors. Configurable timeout (default: 15s) and body size limit (default: 1 MiB).
+Two tools fetch data from the web:
 
-SSRF protection is applied at every stage: private hostnames and IP ranges are blocked before any connection is made, DNS results are validated to prevent rebinding attacks, and HTTP redirects are followed manually (up to 3 hops) with each target re-validated. See [SSRF Protection for Web Scraping](../reference/security.md#ssrf-protection-for-web-scraping).
+- **`web_scrape`** — extracts elements matching a CSS selector from an HTTPS page
+- **`fetch`** — returns plain text from a URL without requiring a selector
+
+Both tools share the same configurable timeout (default: 15s), body size limit (default: 1 MiB), and SSRF protection: private hostnames and IP ranges are blocked before any connection is made, DNS results are validated to prevent rebinding attacks, and HTTP redirects are followed manually (up to 3 hops) with each target re-validated. See [SSRF Protection for Web Scraping](../reference/security.md#ssrf-protection-for-web-scraping).
+
+## Diagnostics
+
+The `diagnostics` tool runs `cargo check` or `cargo clippy --message-format=json` and returns a structured list of compiler diagnostics (file, line, column, severity, message). Output is capped at a configurable limit (default: 50 entries) and degrades gracefully if `cargo` is absent.
 
 ## MCP Tools
 

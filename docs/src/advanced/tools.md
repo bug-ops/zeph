@@ -12,20 +12,65 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 | `read` | Read file contents | `ToolCall` | `path` (string) | `offset` (integer), `limit` (integer) |
 | `edit` | Replace a string in a file | `ToolCall` | `path` (string), `old_string` (string), `new_string` (string) | |
 | `write` | Write content to a file | `ToolCall` | `path` (string), `content` (string) | |
-| `glob` | Find files matching a glob pattern | `ToolCall` | `pattern` (string) | |
+| `find_path` | Find files matching a glob pattern | `ToolCall` | `path` (string), `pattern` (string) | |
+| `list_directory` | List directory entries with type labels | `ToolCall` | `path` (string) | |
+| `create_directory` | Create a directory (including parents) | `ToolCall` | `path` (string) | |
+| `delete_path` | Delete a file or directory recursively | `ToolCall` | `path` (string) | |
+| `move_path` | Move or rename a file or directory | `ToolCall` | `source` (string), `destination` (string) | |
+| `copy_path` | Copy a file or directory | `ToolCall` | `source` (string), `destination` (string) | |
 | `grep` | Search file contents with regex | `ToolCall` | `pattern` (string) | `path` (string), `case_sensitive` (boolean) |
 | `web_scrape` | Scrape data from a web page via CSS selectors | ` ```scrape ` | `url` (string), `select` (string) | `extract` (string), `limit` (integer) |
+| `fetch` | Fetch a URL and return plain text (no selector required) | `ToolCall` | `url` (string) | |
+| `diagnostics` | Run `cargo check` or `cargo clippy` and return structured diagnostics | `ToolCall` | | `kind` (`check`\|`clippy`), `max_diagnostics` (integer) |
 
 ## FileExecutor
 
-`FileExecutor` handles the file-oriented tools (`read`, `write`, `edit`, `glob`, `grep`) in a sandboxed environment. All file paths are validated against an allowlist before any I/O operation.
+`FileExecutor` handles file-oriented tools in a sandboxed environment. All file paths are validated against an allowlist before any I/O operation.
+
+**Read/write tools:** `read`, `write`, `edit`, `grep`
+
+**Navigation tools:** `find_path` (renamed from `glob`), `list_directory`
+
+**Mutation tools:** `create_directory`, `delete_path`, `move_path`, `copy_path`
 
 - If `allowed_paths` is empty, the sandbox defaults to the current working directory.
 - Paths are resolved via ancestor-walk canonicalization to prevent traversal attacks on non-existing paths.
-- `glob` results are filtered post-match to exclude files outside the sandbox.
-- `grep` validates the search directory before scanning.
+- `find_path` results are filtered post-match to exclude entries outside the sandbox.
+- `list_directory` uses `symlink_metadata` (lstat) to classify entries as `[dir]`, `[file]`, or `[symlink]` without following symlinks.
+- `copy_path` uses lstat when recursing directories to prevent symlink escape via a symlink inside the allowed paths tree.
+- `delete_path` guards against recursive deletion of the sandbox root or a path above it.
 
 See [Security](../reference/security.md#file-executor-sandbox) for details on the path validation mechanism.
+
+## WebScrapeExecutor — `fetch` tool
+
+In addition to `web_scrape` (CSS-selector-based extraction), `WebScrapeExecutor` exposes a `fetch` tool that returns plain text from a URL without requiring a selector. SSRF validation (HTTPS-only, private IP block, redirect re-validation) is applied identically to both tools.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `url` | Yes | HTTPS URL to fetch |
+
+## DiagnosticsExecutor
+
+`DiagnosticsExecutor` runs `cargo check` or `cargo clippy --message-format=json` in the project directory and returns a structured list of diagnostics. Each diagnostic includes:
+
+| Field | Description |
+|-------|-------------|
+| `severity` | `error` or `warning` |
+| `message` | Human-readable description |
+| `file` | Source file path |
+| `line` | Line number |
+| `col` | Column number |
+
+Output is capped at `max_diagnostics` (default: 50) to avoid overwhelming the context. If `cargo` is absent, the tool returns an empty list with a warning rather than panicking.
+
+```toml
+[tools.diagnostics]
+max_diagnostics = 50   # Maximum number of diagnostics returned (default: 50)
+```
+
+> [!TIP]
+> Use `kind = "clippy"` for lint warnings in addition to compilation errors. The `check` kind is faster and sufficient for build errors only.
 
 ## WebScrapeExecutor
 

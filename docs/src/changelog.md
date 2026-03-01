@@ -6,10 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-03-01
+
+### Added
+
+- `list_directory` tool in `FileExecutor`: sorted entries with `[dir]`/`[file]`/`[symlink]` labels; uses lstat to avoid following symlinks (#1053)
+- `create_directory`, `delete_path`, `move_path`, `copy_path` tools in `FileExecutor`: structured file system mutation ops, all paths sandbox-validated; `copy_dir_recursive` uses lstat to prevent symlink escape (#1054)
+- `fetch` tool in `WebScrapeExecutor`: plain URL-to-text without CSS selector requirement, SSRF protection applied (#1055)
+- `DiagnosticsExecutor` with `diagnostics` tool: runs `cargo check` or `cargo clippy --message-format=json`, returns structured error/warning list (file, line, col, severity, message), output capped, graceful degradation if cargo absent (#1056)
+- `list_directory` and `find_path` tools in `AcpFileExecutor`: run on agent filesystem when IDE advertises `fs.readTextFile` capability; paths sandbox-validated, glob segments validated against `..` traversal, results capped at 1000 (#1059)
+- `ToolFilter`: suppresses local `FileExecutor` tools (`read`, `write`, `glob`) when `AcpFileExecutor` provides IDE-proxied alternatives (#1059)
+- `check_blocklist()` and `DEFAULT_BLOCKED_COMMANDS` extracted to `zeph-tools` public API so `AcpShellExecutor` applies the same blocklist as `ShellExecutor` (#1050)
+- `ToolPermission` enum with per-binary pattern support in persisted TOML (`[tools.bash.patterns]`); `deny` patterns route to `RejectAlways` fast-path without IDE round-trip (#1050)
+- Self-learning loop (Phase 1–4): `FailureKind` enum, `/skill reject`, `FeedbackDetector`, `UserCorrection` cross-session recall, Wilson score Bayesian re-ranking, `check_trust_transition()`, BM25+RRF hybrid search, EMA routing (#1035)
+
+### Changed
+
+- Renamed `FileExecutor` tool id `glob` → `find_path` to align with Zed IDE native tool surface (#1052)
+- `READONLY_TOOLS` allowlist updated to current tool IDs: `read`, `find_path`, `grep`, `list_directory`, `web_scrape`, `fetch` (#1052)
+- CI: migrated from Dependabot to self-hosted Renovate with MSRV-aware `constraintsFiltering: strict` and grouped minor/patch automerge (#1048)
+
+### Security
+
+- ACP permission gate: subshell injection (`$(`, backtick) blocked before pattern matching; `effective_shell_command()` checks inner command of `bash -c <cmd>` against blocklist; `extract_command_binary()` strips transparent prefixes to prevent allow-always scope expansion (SEC-ACP-C1, SEC-ACP-C2) (#1050)
+- ACP tool notifications: `raw_response` is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline (SEC-ACP-001)
+
 ### Fixed
 
-- ACP: terminal release deferred until after `tool_call_update` notification is dispatched. The ACP spec requires the terminal to remain alive when the IDE processes `ToolCallContent::Terminal`; previously the terminal was released inside `execute_in_terminal` before the notification was sent, preventing IDEs from displaying tool output. `SessionEntry` now retains the shell executor and triggers deferred `terminal/release` from the `prompt()` event loop (#1013).
-- ACP: tool execution output is now correctly forwarded via `LoopbackEvent::ToolOutput` to the ACP channel and mapped to `SessionUpdate::ToolCallUpdate` with a `ContentBlock::Text`. Tool blocks in Zed and other ACP-compatible IDEs now display the full output content instead of an empty block (#1003).
+- ACP: terminal release deferred until after `tool_call_update` notification is dispatched (#1013)
+- ACP: tool execution output forwarded via `LoopbackEvent::ToolOutput` to ACP channel (#1003)
+- ACP: newlines preserved in tool output for IDE terminal widget (#1034)
 
 ## [0.12.1] - 2026-02-25
 

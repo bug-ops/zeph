@@ -18,7 +18,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.1",
+  "version": "0.12.4",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
@@ -116,7 +116,7 @@ ACP settings live in `config.toml` under the `[acp]` section:
 [acp]
 enabled = true
 agent_name = "zeph"
-agent_version = "0.12.1"
+agent_version = "0.12.4"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 terminal_timeout_secs = 120
@@ -573,7 +573,7 @@ Example response (with bearer auth configured):
 ```json
 {
   "name": "zeph",
-  "version": "0.12.1",
+  "version": "0.12.4",
   "protocol": "acp",
   "protocol_version": "0.9",
   "transports": {
@@ -589,7 +589,7 @@ When `auth_bearer_token` is not set, the `authentication` field is `null`:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.1",
+  "version": "0.12.4",
   "protocol": "acp",
   "protocol_version": "0.9",
   "transports": {
@@ -1018,6 +1018,52 @@ src/auth.rs:67:1  error    mismatched types: expected `bool`, found `()`  [E0308
 If the IDE returns no diagnostics, the `@diagnostics` mention is silently removed and the prompt proceeds without a diagnostics block.
 
 > **Note:** `@diagnostics` requires the IDE to support the `get_diagnostics` extension method. Zed supports it natively. Other editors may need a plugin or updated ACP client. If the IDE does not implement `get_diagnostics`, Zeph logs a `WARN` and continues without injecting the block.
+
+## Native file tools
+
+When the IDE advertises the `fs.readTextFile` capability, `AcpFileExecutor` exposes two native file tools that run on the **agent filesystem** instead of delegating to the IDE:
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `list_directory` | List directory entries with `[dir]`/`[file]`/`[symlink]` labels | `path` (required) |
+| `find_path` | Find files matching a glob pattern | `path` (required), `pattern` (required) |
+
+Both tools enforce absolute-path validation and reject traversal components (`..`). `find_path` caps results at 1000 entries to prevent runaway output.
+
+### ToolFilter
+
+`ToolFilter` is a compositor that wraps the local `FileExecutor` and suppresses its `read`, `write`, and `glob` tools when `AcpFileExecutor` provides IDE-proxied alternatives. This prevents tool duplication in the model's context window — the LLM sees only one set of file tools, not two overlapping sets.
+
+The `ToolFilter` is wired into the ACP session executor composition automatically when the IDE advertises the native file capability. No configuration is required.
+
+## Permission gate hardening
+
+The ACP shell executor (`AcpShellExecutor`) applies several hardening layers before presenting a command to the IDE permission gate:
+
+| Check | Description |
+|-------|-------------|
+| Blocklist | Same `DEFAULT_BLOCKED_COMMANDS` as the local `ShellExecutor`; both executors share the public API |
+| Subshell injection | Commands containing `$(` or backtick characters are rejected before pattern matching (SEC-ACP-C1) |
+| Args-field bypass | `effective_shell_command()` extracts the inner command from `bash -c <cmd>` and checks it against the blocklist — prevents sneaking a blocked command through the `-c` argument (SEC-ACP-C2) |
+| Binary extraction | `extract_command_binary()` strips transparent prefixes (`env`, `command`, `exec`) and uses the resolved binary as the permission cache key — "Allow always" for `git` cannot auto-approve `rm` |
+
+### ToolPermission TOML
+
+Permission decisions can be persisted with per-binary pattern support:
+
+```toml
+[tools.bash.patterns]
+git = "allow"
+rm = "deny"
+```
+
+`deny` patterns fast-path to `RejectAlways` — the IDE is never consulted and the command is blocked immediately.
+
+> [!WARNING]
+> The `deny` fast-path runs before the IDE permission prompt. A command matching a `deny` pattern will silently fail without user interaction. Use it only for commands you are certain must never execute.
+
+> [!NOTE]
+> A missing or unconfigured `AcpShellExecutor` permission gate is logged as a `tracing::warn` at construction time. All shell commands still execute correctly, but user confirmation prompts are skipped.
 
 ## Security
 

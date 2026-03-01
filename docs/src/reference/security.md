@@ -142,7 +142,7 @@ The `security.autonomy_level` setting controls the agent's tool access scope:
 
 | Level | Tools Available | Confirmations |
 |-------|----------------|---------------|
-| `readonly` | `file_read`, `file_glob`, `file_grep`, `web_scrape` | N/A (write tools hidden) |
+| `readonly` | `read`, `find_path`, `list_directory`, `grep`, `web_scrape`, `fetch` | N/A (write tools hidden) |
 | `supervised` | All tools per permission policy | Yes, for destructive patterns |
 | `full` | All tools | No confirmations |
 

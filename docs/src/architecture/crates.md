@@ -115,11 +115,12 @@ Channel implementations for the Zeph agent.
 Tool execution abstraction and shell backend. This crate has no dependency on `zeph-skills`.
 
 - `ToolExecutor` trait + `ErasedToolExecutor` — `ErasedToolExecutor` is an object-safe wrapper enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch in `Agent<C>`
-- `ToolRegistry` — typed definitions for 7 built-in tools (bash, read, edit, write, glob, grep, web_scrape), injected into system prompt as `<tools>` catalog
+- `ToolRegistry` — typed definitions for built-in tools (bash, read, edit, write, find_path, list_directory, create_directory, delete_path, move_path, copy_path, grep, web_scrape, fetch, diagnostics), injected into system prompt as `<tools>` catalog
 - `ToolCall` / `execute_tool_call()` — structured tool invocation with typed parameters alongside legacy bash extraction (dual-mode)
-- `FileExecutor` — sandboxed file operations (read, write, edit, glob, grep) with ancestor-walk path canonicalization
-- `ShellExecutor` — bash block parser, command safety filter, sandbox validation
-- `WebScrapeExecutor` — HTML scraping with CSS selectors, SSRF protection
+- `FileExecutor` — sandboxed file operations (read, write, edit, find_path, list_directory, create_directory, delete_path, move_path, copy_path, grep) with ancestor-walk path canonicalization and lstat-based symlink safety
+- `ShellExecutor` — bash block parser, command safety filter, sandbox validation; exposes `check_blocklist()` and `DEFAULT_BLOCKED_COMMANDS` as public API so ACP executors apply the same blocklist
+- `WebScrapeExecutor` — HTML scraping with CSS selectors (`web_scrape`) and plain URL-to-text (`fetch`), both with SSRF protection
+- `DiagnosticsExecutor` — runs `cargo check`/`cargo clippy --message-format=json`, returns structured diagnostics capped at configurable max; uses `tokio::process::Command`
 - `CompositeExecutor<A, B>` — generic chaining with first-match-wins dispatch, routes structured tool calls by `tool_id` to the appropriate backend; used to place ACP executors ahead of local tools so IDE-proxied operations take priority
 - `DynExecutor` — newtype wrapping `Arc<dyn ErasedToolExecutor>` so a heap-allocated erased executor can be used anywhere a concrete `ToolExecutor` is required; enables runtime composition without static type chains
 - `TrustLevel` — canonical trust tier enum (`Trusted`, `Verified`, `Quarantined`, `Blocked`) used by `TrustGateExecutor` to enforce per-skill tool access restrictions; re-exported by `zeph-skills` for convenience
