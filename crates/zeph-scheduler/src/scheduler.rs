@@ -83,9 +83,7 @@ impl Scheduler {
         let now = Utc::now();
         for task in &self.tasks {
             let should_run = match self.store.get_next_run(&task.name).await {
-                Ok(Some(ref s)) => s
-                    .parse::<chrono::DateTime<Utc>>()
-                    .is_ok_and(|dt| dt <= now),
+                Ok(Some(ref s)) => s.parse::<chrono::DateTime<Utc>>().is_ok_and(|dt| dt <= now),
                 Ok(None) => true,
                 Err(e) => {
                     tracing::warn!(task = %task.name, "failed to check next_run: {e}");
@@ -183,10 +181,12 @@ mod tests {
         scheduler.init().await.unwrap();
 
         // Backdate next_run to simulate a due task.
-        sqlx::query("UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         scheduler.tick().await;
         assert_eq!(count.load(Ordering::Relaxed), 1);
