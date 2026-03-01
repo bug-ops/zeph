@@ -1506,6 +1506,7 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!("failed to record skill usage: {e:#}");
             }
         }
+        self.update_skill_confidence_metrics().await;
 
         let all_skills: Vec<Skill> = self
             .skill_state
