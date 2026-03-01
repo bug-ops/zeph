@@ -2328,6 +2328,7 @@ mod self_learning {
             min_evaluations: 5,
             max_versions: 10,
             cooldown_minutes: 0,
+            ..Default::default()
         }
     }
 
@@ -2401,12 +2402,12 @@ mod self_learning {
 
         memory
             .sqlite()
-            .record_skill_outcome("git", None, Some(cid), "success", None)
+            .record_skill_outcome("git", None, Some(cid), "success", None, None)
             .await
             .unwrap();
         memory
             .sqlite()
-            .record_skill_outcome("git", None, Some(cid), "tool_failure", Some("err"))
+            .record_skill_outcome("git", None, Some(cid), "tool_failure", Some("err"), None)
             .await
             .unwrap();
 
@@ -3231,7 +3232,14 @@ mod self_learning {
         for _ in 0..6 {
             memory
                 .sqlite()
-                .record_skill_outcome("test-skill", None, Some(cid), "tool_failure", Some("err"))
+                .record_skill_outcome(
+                    "test-skill",
+                    None,
+                    Some(cid),
+                    "tool_failure",
+                    Some("err"),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -3245,6 +3253,7 @@ mod self_learning {
             min_evaluations: 5,
             max_versions: 10,
             cooldown_minutes: 0,
+            ..Default::default()
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -3288,7 +3297,7 @@ mod self_learning {
         for _ in 0..6 {
             memory
                 .sqlite()
-                .record_skill_outcome("test-skill", None, Some(cid), "tool_failure", None)
+                .record_skill_outcome("test-skill", None, Some(cid), "tool_failure", None, None)
                 .await
                 .unwrap();
         }
@@ -3302,6 +3311,7 @@ mod self_learning {
             min_evaluations: 5,
             max_versions: 10,
             cooldown_minutes: 0,
+            ..Default::default()
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -3336,7 +3346,7 @@ mod self_learning {
             .unwrap();
         memory
             .sqlite()
-            .record_skill_outcome("test-skill", None, Some(cid), "success", None)
+            .record_skill_outcome("test-skill", None, Some(cid), "success", None, None)
             .await
             .unwrap();
 
@@ -3349,6 +3359,7 @@ mod self_learning {
             min_evaluations: 5,
             max_versions: 10,
             cooldown_minutes: 0,
+            ..Default::default()
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -3399,6 +3410,7 @@ mod self_learning {
             min_evaluations: 5,
             max_versions: 10,
             cooldown_minutes: 0,
+            ..Default::default()
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
