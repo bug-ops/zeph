@@ -2022,36 +2022,8 @@ mod tests {
     // Wiremock HTTP-level tests using fixture helpers from testing module
     // ------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn messages_happy_path_wiremock() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer};
-
-        use crate::testing::claude_messages_response;
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(claude_messages_response("hello claude"))
-            .mount(&server)
-            .await;
-
-        let mut provider =
-            ClaudeProvider::new("sk-ant-test".into(), "claude-sonnet-4-6".into(), 256);
-        // Override the hardcoded API_URL by pointing at the mock server.
-        // ClaudeProvider does not expose base_url, so we inject a custom client
-        // pointed at the mock.  The const API_URL is overridden via with_client +
-        // mock server running on the same port that the provider would call if
-        // its URL were set to server.uri().
-        //
-        // To make the URL injectable we use the fact that with_client keeps the
-        // field but ClaudeProvider sends to API_URL (const).  Instead we test
-        // that the JSON serialisation of the response is parsed correctly using
-        // the public method directly.
-        let _ = provider; // provider is replaced below via bypass_url approach
-
-        // We test response parsing via the internal helper used by chat().
-        // Use serde to reproduce what chat() does after a successful HTTP call.
+    #[test]
+    fn messages_response_deserialization() {
         let raw = serde_json::json!({
             "id": "msg_test",
             "type": "message",
@@ -2066,15 +2038,9 @@ mod tests {
                 "cache_read_input_tokens": 0
             }
         });
-        let resp: ClaudeResponse = serde_json::from_value(raw).unwrap();
-        let text: String = resp
-            .content
-            .iter()
-            .filter(|b| b.block_type == "text")
-            .map(|b| b.text.as_deref().unwrap_or(""))
-            .collect();
+        let resp: ApiResponse = serde_json::from_value(raw).unwrap();
+        let text: String = resp.content.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(text, "hello claude");
-        drop(server); // mock server used for the mount proof
     }
 
     #[tokio::test]
@@ -2125,11 +2091,26 @@ mod tests {
         assert_eq!(resp.status().as_u16(), 529);
     }
 
-    #[test]
-    fn claude_sse_fixture_contains_expected_events() {
+    #[tokio::test]
+    async fn claude_sse_fixture_contains_expected_events() {
         use crate::testing::claude_sse_stream_response;
-        let tmpl = claude_sse_stream_response(&["Hello", " world"]);
-        let raw = std::str::from_utf8(tmpl.body().unwrap()).unwrap();
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stream"))
+            .respond_with(claude_sse_stream_response(&["Hello", " world"]))
+            .mount(&server)
+            .await;
+        let raw = reqwest::Client::new()
+            .post(format!("{}/stream", server.uri()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         assert!(raw.contains("Hello"));
         assert!(raw.contains(" world"));
         assert!(raw.contains("message_stop"));

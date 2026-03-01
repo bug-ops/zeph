@@ -267,9 +267,19 @@ impl AgentTestHarness {
 
     /// Build the [`Agent`]. The `MockChannel` is moved into the agent; use
     /// the returned channel handle to inspect sent messages after the run.
+    ///
+    /// When no registry was set via [`with_registry`](Self::with_registry), a
+    /// temporary directory is created and its guard is included in the return
+    /// value.  The caller must hold the `Option<TempDir>` for the entire test —
+    /// dropping it early removes the backing skill files.
     #[must_use]
-    pub fn build(self) -> (Agent<MockChannel>, ChannelHandle) {
-        let registry = self.registry.unwrap_or_else(empty_registry);
+    pub fn build(self) -> (Agent<MockChannel>, ChannelHandle, Option<tempfile::TempDir>) {
+        let (registry, tempdir) = if let Some(r) = self.registry {
+            (r, None)
+        } else {
+            let (r, d) = empty_registry();
+            (r, Some(d))
+        };
         let provider = AnyProvider::Mock(MockProvider::with_responses(self.responses));
         let channel = MockChannel::new(self.messages);
         let sent = Arc::clone(&channel.sent);
@@ -284,7 +294,7 @@ impl AgentTestHarness {
             executor,
         );
         let handle = ChannelHandle { sent, chunks };
-        (agent, handle)
+        (agent, handle, tempdir)
     }
 }
 
@@ -322,13 +332,18 @@ impl ChannelHandle {
 
 /// Build an empty [`SkillRegistry`] backed by a temporary directory.
 ///
+/// Returns both the registry and the [`tempfile::TempDir`] guard. The caller
+/// must hold the `TempDir` for the lifetime of the registry — dropping it
+/// early removes the backing directory, invalidating any paths stored inside
+/// the registry.
+///
 /// The registry contains a single stub skill so prompts are not empty.
 ///
 /// # Panics
 ///
 /// Panics if the temporary directory or stub skill file cannot be created.
 #[must_use]
-pub fn empty_registry() -> SkillRegistry {
+pub fn empty_registry() -> (SkillRegistry, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let skill_dir = dir.path().join("stub");
     std::fs::create_dir(&skill_dir).expect("create skill dir");
@@ -337,7 +352,8 @@ pub fn empty_registry() -> SkillRegistry {
         "---\nname: stub\ndescription: Stub skill for testing\n---\nStub body",
     )
     .expect("write SKILL.md");
-    SkillRegistry::load(&[dir.path().to_path_buf()])
+    let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+    (registry, dir)
 }
 
 /// Build a [`MockProvider`]-backed [`AnyProvider`] that returns `responses` in order.

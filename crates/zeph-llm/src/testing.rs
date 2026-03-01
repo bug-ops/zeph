@@ -90,6 +90,16 @@ pub fn openai_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
         });
         body.push_str(&format!("data: {}\n\n", event));
     }
+    let stop_event = serde_json::json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    });
+    body.push_str(&format!("data: {stop_event}\n\n"));
     body.push_str("data: [DONE]\n\n");
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
@@ -206,48 +216,106 @@ pub fn ollama_server_error_response() -> ResponseTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
 
-    #[test]
-    fn openai_chat_response_is_200() {
-        let tmpl = openai_chat_response("hello");
-        // Verify the status code stored in the template via serialization check
-        let body: serde_json::Value =
-            serde_json::from_slice(tmpl.body().unwrap()).expect("valid json");
+    // ResponseTemplate does not expose its body, so we verify fixtures via a
+    // real MockServer round-trip using reqwest.
+
+    #[tokio::test]
+    async fn openai_chat_response_is_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(openai_chat_response("hello"))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .post(format!("{}/v1/chat/completions", server.uri()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["choices"][0]["message"]["content"], "hello");
     }
 
-    #[test]
-    fn claude_messages_response_shape() {
-        let tmpl = claude_messages_response("world");
-        let body: serde_json::Value =
-            serde_json::from_slice(tmpl.body().unwrap()).expect("valid json");
+    #[tokio::test]
+    async fn claude_messages_response_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(claude_messages_response("world"))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .post(format!("{}/v1/messages", server.uri()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["content"][0]["text"], "world");
         assert_eq!(body["role"], "assistant");
     }
 
-    #[test]
-    fn openai_sse_contains_done_sentinel() {
-        let tmpl = openai_sse_stream_response(&["chunk1", "chunk2"]);
-        let raw = std::str::from_utf8(tmpl.body().unwrap()).unwrap();
+    #[tokio::test]
+    async fn openai_sse_contains_done_sentinel() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stream"))
+            .respond_with(openai_sse_stream_response(&["chunk1", "chunk2"]))
+            .mount(&server)
+            .await;
+        let raw = reqwest::Client::new()
+            .post(format!("{}/stream", server.uri()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         assert!(raw.contains("chunk1"));
         assert!(raw.contains("chunk2"));
         assert!(raw.contains("[DONE]"));
     }
 
-    #[test]
-    fn claude_sse_contains_chunks() {
-        let tmpl = claude_sse_stream_response(&["part1", "part2"]);
-        let raw = std::str::from_utf8(tmpl.body().unwrap()).unwrap();
+    #[tokio::test]
+    async fn claude_sse_contains_chunks() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stream"))
+            .respond_with(claude_sse_stream_response(&["part1", "part2"]))
+            .mount(&server)
+            .await;
+        let raw = reqwest::Client::new()
+            .post(format!("{}/stream", server.uri()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         assert!(raw.contains("part1"));
         assert!(raw.contains("part2"));
         assert!(raw.contains("message_stop"));
     }
 
-    #[test]
-    fn ollama_response_shape() {
-        let tmpl = ollama_chat_response("ok");
-        let body: serde_json::Value =
-            serde_json::from_slice(tmpl.body().unwrap()).expect("valid json");
+    #[tokio::test]
+    async fn ollama_response_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("ok"))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .post(format!("{}/api/chat", server.uri()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["message"]["content"], "ok");
         assert_eq!(body["done"], true);
     }

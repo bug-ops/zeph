@@ -115,6 +115,9 @@ impl ToolExecutor for MockMcpServer {
     }
 
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        // Intentionally no-op: this mock operates at the ToolExecutor level
+        // and bypasses the rmcp transport layer entirely.  Tool dispatch always
+        // goes through execute_tool_call; execute is never called in tests.
         Ok(None)
     }
 

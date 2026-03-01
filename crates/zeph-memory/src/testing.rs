@@ -63,9 +63,6 @@ mod tests {
     #[tokio::test]
     async fn mock_semantic_memory_creates_successfully() {
         let memory = mock_semantic_memory().await;
-        assert!(
-            memory.is_ok(),
-            "mock_semantic_memory should not fail: {memory:?}"
-        );
+        assert!(memory.is_ok(), "mock_semantic_memory should not fail");
     }
 }
