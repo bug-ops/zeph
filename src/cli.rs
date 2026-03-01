@@ -68,6 +68,12 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH")]
     pub(crate) vault_path: Option<PathBuf>,
 
+    /// Enable Claude thinking mode: `extended:<budget_tokens>` or `adaptive` or `adaptive:<effort>`
+    /// where effort is `low`, `medium`, or `high`. Overrides config.toml thinking setting.
+    /// Examples: `--thinking extended:10000`  `--thinking adaptive`  `--thinking adaptive:high`
+    #[arg(long, value_name = "MODE")]
+    pub(crate) thinking: Option<String>,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

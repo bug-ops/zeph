@@ -573,6 +573,7 @@ impl LlmProvider for OpenAiProvider {
             return Ok(ChatResponse::ToolUse {
                 text,
                 tool_calls: calls,
+                thinking_blocks: vec![],
             });
         }
 

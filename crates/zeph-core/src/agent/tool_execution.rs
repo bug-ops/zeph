@@ -3,7 +3,8 @@
 
 use tokio_stream::StreamExt;
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
+    ToolDefinition,
 };
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
@@ -864,9 +865,15 @@ impl<C: Channel> Agent<C> {
             }
 
             // ToolUse → execute tools and loop
-            let ChatResponse::ToolUse { text, tool_calls } = chat_result else {
+            let ChatResponse::ToolUse {
+                text,
+                tool_calls,
+                thinking_blocks,
+            } = chat_result
+            else {
                 unreachable!();
             };
+            self.preserve_thinking_blocks(thinking_blocks);
             self.handle_native_tool_calls(text.as_deref(), &tool_calls)
                 .await?;
 
@@ -933,7 +940,9 @@ impl<C: Channel> Agent<C> {
         let prompt_estimate = self.cached_prompt_tokens;
         let completion_estimate = match &result {
             ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
-            ChatResponse::ToolUse { text, tool_calls } => {
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
                 let text_len = text.as_deref().map_or(0, str::len);
                 let calls_len: usize = tool_calls
                     .iter()
@@ -963,6 +972,37 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(Some(result))
+    }
+
+    /// Prepend thinking blocks to the last assistant message in the context as `MessagePart`s.
+    ///
+    /// The Claude API requires `thinking`/`redacted_thinking` blocks to be preserved verbatim
+    /// in the assistant message when tool results are sent back in multi-turn conversations.
+    fn preserve_thinking_blocks(&mut self, blocks: Vec<ThinkingBlock>) {
+        if blocks.is_empty() {
+            return;
+        }
+        if let Some(last) = self.messages.last_mut()
+            && last.role == Role::Assistant
+        {
+            let mut thinking_parts: Vec<MessagePart> = blocks
+                .into_iter()
+                .map(|b| match b {
+                    ThinkingBlock::Thinking {
+                        thinking,
+                        signature,
+                    } => MessagePart::ThinkingBlock {
+                        thinking,
+                        signature,
+                    },
+                    ThinkingBlock::Redacted { data } => MessagePart::RedactedThinkingBlock { data },
+                })
+                .collect();
+            // Thinking blocks must appear before text/tool_use in the assistant message.
+            thinking_parts.append(&mut last.parts);
+            last.parts = thinking_parts;
+            last.rebuild_content();
+        }
     }
 
     #[allow(clippy::too_many_lines)]

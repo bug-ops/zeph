@@ -26,6 +26,7 @@ use zeph_core::bootstrap::resolve_config_path;
 use zeph_core::bootstrap::warmup_provider;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 use zeph_core::vault::Secret;
+use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[cfg(feature = "acp-http")]
 use crate::acp::run_acp_http_server;
@@ -148,13 +149,21 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     init_subscriber(&resolve_config_path(cli.config.as_deref()));
 
-    let app = AppBuilder::new(
+    let mut app = AppBuilder::new(
         cli.config.as_deref(),
         cli.vault.as_deref(),
         cli.vault_key.as_deref(),
         cli.vault_path.as_deref(),
     )
     .await?;
+
+    if let Some(ref thinking_str) = cli.thinking {
+        let thinking = parse_thinking_arg(thinking_str)?;
+        if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
+            cloud.thinking = Some(thinking);
+        }
+    }
+
     let (provider, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
@@ -438,4 +447,115 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let result = Box::pin(agent.run()).await;
     agent.shutdown().await;
     result
+}
+
+/// Parse `--thinking` CLI argument into a `ThinkingConfig`.
+///
+/// Accepted formats:
+/// - `extended:<budget_tokens>` — e.g. `extended:10000`
+/// - `adaptive` — adaptive mode with default effort
+/// - `adaptive:<effort>` — effort is `low`, `medium`, or `high`
+fn parse_thinking_arg(s: &str) -> anyhow::Result<ThinkingConfig> {
+    const MIN_BUDGET: u32 = 1_024;
+    const MAX_BUDGET: u32 = 128_000;
+    if let Some(budget_str) = s.strip_prefix("extended:") {
+        let budget_tokens: u32 = budget_str.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "--thinking extended:<budget> requires a numeric token budget, got: {budget_str}"
+            )
+        })?;
+        if !(MIN_BUDGET..=MAX_BUDGET).contains(&budget_tokens) {
+            anyhow::bail!(
+                "--thinking extended:{budget_tokens}: budget_tokens must be in [{MIN_BUDGET}, {MAX_BUDGET}]"
+            );
+        }
+        return Ok(ThinkingConfig::Extended { budget_tokens });
+    }
+    if s == "adaptive" {
+        return Ok(ThinkingConfig::Adaptive { effort: None });
+    }
+    if let Some(effort_str) = s.strip_prefix("adaptive:") {
+        let effort = match effort_str {
+            "low" => ThinkingEffort::Low,
+            "medium" => ThinkingEffort::Medium,
+            "high" => ThinkingEffort::High,
+            other => {
+                anyhow::bail!("--thinking adaptive:<effort> requires low/medium/high, got: {other}")
+            }
+        };
+        return Ok(ThinkingConfig::Adaptive {
+            effort: Some(effort),
+        });
+    }
+    anyhow::bail!(
+        "invalid --thinking value: \"{s}\". Use \"extended:<budget>\", \"adaptive\", or \"adaptive:<effort>\""
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_thinking_extended() {
+        let cfg = parse_thinking_arg("extended:10000").unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Extended {
+                budget_tokens: 10_000
+            }
+        );
+    }
+
+    #[test]
+    fn parse_thinking_adaptive_no_effort() {
+        let cfg = parse_thinking_arg("adaptive").unwrap();
+        assert_eq!(cfg, ThinkingConfig::Adaptive { effort: None });
+    }
+
+    #[test]
+    fn parse_thinking_adaptive_with_effort() {
+        let cfg = parse_thinking_arg("adaptive:high").unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::High)
+            }
+        );
+    }
+
+    #[test]
+    fn parse_thinking_invalid_returns_error() {
+        assert!(parse_thinking_arg("unknown").is_err());
+        assert!(parse_thinking_arg("extended:notanumber").is_err());
+        assert!(parse_thinking_arg("adaptive:invalid").is_err());
+    }
+
+    #[test]
+    fn parse_thinking_extended_budget_below_minimum_is_error() {
+        assert!(parse_thinking_arg("extended:0").is_err());
+        assert!(parse_thinking_arg("extended:1023").is_err());
+    }
+
+    #[test]
+    fn parse_thinking_extended_budget_above_maximum_is_error() {
+        assert!(parse_thinking_arg("extended:128001").is_err());
+    }
+
+    #[test]
+    fn parse_thinking_extended_boundary_values_succeed() {
+        assert!(parse_thinking_arg("extended:1024").is_ok());
+        assert!(parse_thinking_arg("extended:128000").is_ok());
+    }
+
+    #[test]
+    fn parse_thinking_adaptive_medium_effort() {
+        let cfg = parse_thinking_arg("adaptive:medium").unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::Medium)
+            }
+        );
+    }
 }

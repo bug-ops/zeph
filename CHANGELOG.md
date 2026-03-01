@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Claude extended thinking support: `ThinkingConfig` enum (`Extended { budget_tokens }` / `Adaptive { effort? }`) with model capability map; `ClaudeProvider::with_thinking()` builder (returns `Result` with validated 1024–128000 range) (#1089)
+- Claude API request serialization for thinking: `thinking` and `output_config` fields on all four request body variants; conditional `interleaved-thinking-2025-05-14` beta header for extended mode on Sonnet 4.6 with tools (#1090)
+- Claude response and SSE streaming: `AnthropicContentBlock::Thinking` and `RedactedThinking` variants; `thinking_delta`/`signature_delta` SSE events parsed and suppressed from user stream (#1091)
+- Multi-turn tool use: `MessagePart::ThinkingBlock`/`RedactedThinkingBlock` variants preserve thinking blocks verbatim across tool call turns in correct API ordering (#1092)
+- `--thinking extended:<budget>` and `--thinking adaptive[:<effort>]` CLI arguments with range validation in `parse_thinking_arg()` (#1089)
+- `--init` wizard thinking mode selection prompt (#1089)
+- `[llm.claude] thinking = { mode = "extended", budget_tokens = 16000 }` TOML config support (#1089)
+- `max_tokens` auto-bumped to 16000 when thinking is enabled and configured value is below threshold (#1090)
+
 ### Fixed
 
 - Restructured `rebuild_system_prompt` block ordering so cache markers align with content stability: Block 1 (base prompt) is stable across all turns, Block 2 (skill catalog, MCP, project context) is semi-stable per session, Block 3 (env, tools, active skills) is volatile per turn — fixes near-zero cache hit rate in multi-turn Claude sessions (#1079)

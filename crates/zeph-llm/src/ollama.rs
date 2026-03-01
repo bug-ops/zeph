@@ -267,7 +267,11 @@ impl LlmProvider for OllamaProvider {
             Some(response.message.content)
         };
 
-        Ok(ChatResponse::ToolUse { text, tool_calls })
+        Ok(ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks: vec![],
+        })
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {

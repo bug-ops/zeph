@@ -130,10 +130,11 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .context("ZEPH_CLAUDE_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
-            Ok(AnyProvider::Claude(
-                ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens)
-                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
-            ))
+            let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens)
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                .with_thinking_opt(cloud.thinking.clone())
+                .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
+            Ok(AnyProvider::Claude(provider))
         }
         "openai" => {
             let openai_cfg = config
@@ -275,10 +276,11 @@ pub fn build_orchestrator(
                     .expose()
                     .to_owned();
                 let model = pcfg.model.as_deref().unwrap_or(&cloud.model);
-                SubProvider::Claude(
-                    ClaudeProvider::new(api_key, model.to_owned(), cloud.max_tokens)
-                        .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
-                )
+                let sub = ClaudeProvider::new(api_key, model.to_owned(), cloud.max_tokens)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                    .with_thinking_opt(cloud.thinking.clone())
+                    .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
+                SubProvider::Claude(sub)
             }
             "openai" => {
                 let openai_cfg = config

@@ -8,16 +8,57 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
-    ToolUseRequest,
+    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ThinkingBlock,
+    ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const ANTHROPIC_BETA: &str = "prompt-caching-2024-07-31";
+const ANTHROPIC_BETA_CACHE: &str = "prompt-caching-2024-07-31";
+const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
 const MAX_RETRIES: u32 = 3;
+const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
+
+/// Extended or adaptive thinking mode for Claude.
+///
+/// Serializes with `mode` as tag:
+/// `{ "mode": "extended", "budget_tokens": 10000 }` or `{ "mode": "adaptive" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ThinkingConfig {
+    Extended {
+        budget_tokens: u32,
+    },
+    Adaptive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<ThinkingEffort>,
+    },
+}
+
+/// Effort level for adaptive thinking.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingEffort {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+struct ThinkingCapability {
+    /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
+    needs_interleaved_beta: bool,
+}
+
+fn thinking_capability(model: &str) -> ThinkingCapability {
+    // Sonnet 4.6 with tools needs `interleaved-thinking-2025-05-14` beta header.
+    let needs_interleaved_beta = model.contains("claude-sonnet-4-6");
+    ThinkingCapability {
+        needs_interleaved_beta,
+    }
+}
 
 const CACHE_MARKER_STABLE: &str = "<!-- cache:stable -->";
 const CACHE_MARKER_TOOLS: &str = "<!-- cache:tools -->";
@@ -28,6 +69,7 @@ pub struct ClaudeProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    thinking: Option<ThinkingConfig>,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
@@ -42,6 +84,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("thinking", &self.thinking)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_usage", &self.last_usage.lock().ok())
             .field("last_cache", &self.last_cache.lock().ok())
@@ -64,6 +107,7 @@ impl Clone for ClaudeProvider {
             api_key: self.api_key.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
@@ -80,6 +124,7 @@ impl ClaudeProvider {
             api_key,
             model,
             max_tokens,
+            thinking: None,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
@@ -97,6 +142,48 @@ impl ClaudeProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    /// Configure thinking mode for Claude extended/adaptive thinking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `budget_tokens` is outside the API-allowed range
+    /// `[1024, 128_000]` or if `budget_tokens >= max_tokens` after the automatic
+    /// 16 000-token floor is applied.
+    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Result<Self, LlmError> {
+        if let ThinkingConfig::Extended { budget_tokens } = thinking {
+            const MIN_BUDGET: u32 = 1_024;
+            const MAX_BUDGET: u32 = 128_000;
+            if !(MIN_BUDGET..=MAX_BUDGET).contains(&budget_tokens) {
+                return Err(LlmError::Other(format!(
+                    "budget_tokens {budget_tokens} is out of range [{MIN_BUDGET}, {MAX_BUDGET}]"
+                )));
+            }
+            let max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+            if budget_tokens >= max_tokens {
+                return Err(LlmError::Other(format!(
+                    "budget_tokens {budget_tokens} must be less than max_tokens {max_tokens}"
+                )));
+            }
+            self.max_tokens = max_tokens;
+        } else {
+            self.max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+        }
+        self.thinking = Some(thinking);
+        Ok(self)
+    }
+
+    /// Configure thinking mode, propagating any validation error.
+    ///
+    /// # Errors
+    ///
+    /// Forwards errors from [`with_thinking`].
+    pub fn with_thinking_opt(self, thinking: Option<ThinkingConfig>) -> Result<Self, LlmError> {
+        match thinking {
+            Some(t) => self.with_thinking(t),
+            None => Ok(self),
+        }
     }
 
     /// Fetch all available Claude models from the Anthropic API and cache them.
@@ -203,6 +290,40 @@ impl ClaudeProvider {
         Ok(models)
     }
 
+    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<u32>) {
+        match &self.thinking {
+            None => (None, None),
+            Some(ThinkingConfig::Extended { budget_tokens }) => (
+                Some(ThinkingParam {
+                    thinking_type: "enabled",
+                    budget_tokens: Some(*budget_tokens),
+                }),
+                None,
+            ),
+            Some(ThinkingConfig::Adaptive { .. }) => (
+                Some(ThinkingParam {
+                    thinking_type: "enabled",
+                    budget_tokens: None,
+                }),
+                // Adaptive mode requires temperature=1
+                Some(1),
+            ),
+        }
+    }
+
+    fn beta_header(&self, has_tools: bool) -> String {
+        let cap = thinking_capability(&self.model);
+        if self.thinking.is_some()
+            && has_tools
+            && cap.needs_interleaved_beta
+            && matches!(self.thinking, Some(ThinkingConfig::Extended { .. }))
+        {
+            format!("{ANTHROPIC_BETA_CACHE},{ANTHROPIC_BETA_INTERLEAVED_THINKING}")
+        } else {
+            ANTHROPIC_BETA_CACHE.to_owned()
+        }
+    }
+
     fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         let mut guard = self
@@ -247,28 +368,34 @@ impl ClaudeProvider {
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
+        let (thinking_param, temperature) = self.build_thinking_param();
+
         if Self::has_image_parts(messages) {
             let (system, chat_messages) = split_messages_structured(messages);
             let system_blocks = system.map(|s| split_system_into_blocks(&s));
+            let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
                 system: system_blocks,
                 messages: &chat_messages,
                 stream,
+                thinking: thinking_param,
+                temperature,
             };
             return self
                 .client
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", ANTHROPIC_BETA)
+                .header("anthropic-beta", beta)
                 .header("content-type", "application/json")
                 .json(&body);
         }
 
         let (system, chat_messages) = split_messages(messages);
         let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let beta = self.beta_header(false);
 
         let body = RequestBody {
             model: &self.model,
@@ -276,13 +403,15 @@ impl ClaudeProvider {
             system: system_blocks,
             messages: &chat_messages,
             stream,
+            thinking: thinking_param,
+            temperature,
         };
 
         self.client
             .post(API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("anthropic-beta", beta)
             .header("content-type", "application/json")
             .json(&body)
     }
@@ -428,7 +557,9 @@ impl LlmProvider for ClaudeProvider {
             input_schema: &tool.parameters,
         };
 
+        let (thinking_param, temperature) = self.build_thinking_param();
         let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let beta = self.beta_header(true);
         let body = TypedToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
@@ -439,6 +570,8 @@ impl LlmProvider for ClaudeProvider {
                 r#type: "tool",
                 name: &tool_name,
             },
+            thinking: thinking_param,
+            temperature,
         };
 
         let response = self
@@ -446,7 +579,7 @@ impl LlmProvider for ClaudeProvider {
             .post(API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("anthropic-beta", beta)
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -499,13 +632,17 @@ impl LlmProvider for ClaudeProvider {
         let (system, chat_messages) = split_messages_structured(messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
+        let (thinking_param, temperature) = self.build_thinking_param();
         let system_blocks = system.map(|s| split_system_into_blocks(&s));
+        let beta = self.beta_header(!tools.is_empty());
         let body = ToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_blocks,
             messages: &chat_messages,
             tools: &api_tools,
+            thinking: thinking_param,
+            temperature,
         };
 
         let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
@@ -513,7 +650,7 @@ impl LlmProvider for ClaudeProvider {
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", ANTHROPIC_BETA)
+                .header("anthropic-beta", &beta)
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
@@ -530,9 +667,12 @@ impl LlmProvider for ClaudeProvider {
             )));
         }
 
-        tracing::debug!(raw_response = %text, "Claude chat_with_tools response");
-
         let resp: ToolApiResponse = serde_json::from_str(&text)?;
+        tracing::debug!(
+            stop_reason = ?resp.stop_reason,
+            content_blocks = resp.content.len(),
+            "Claude chat_with_tools response"
+        );
         if let Some(ref usage) = resp.usage {
             log_cache_usage(usage);
             self.store_cache_usage(usage);
@@ -678,6 +818,10 @@ struct TypedToolRequestBody<'a> {
     messages: &'a [StructuredApiMessage],
     tools: &'a [AnthropicTool<'a>],
     tool_choice: ToolChoice<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
 }
 
 #[cfg(feature = "schema")]
@@ -702,6 +846,10 @@ struct ToolRequestBody<'a> {
     system: Option<Vec<SystemContentBlock>>,
     messages: &'a [StructuredApiMessage],
     tools: &'a [serde_json::Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -737,6 +885,22 @@ enum AnthropicContentBlock {
     Image {
         source: ImageSource,
     },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
+    },
+}
+
+/// Serialization-only parameter for Claude's `thinking` request field.
+#[derive(Serialize)]
+struct ThinkingParam {
+    #[serde(rename = "type")]
+    thinking_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -760,12 +924,27 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
     let truncated = resp.stop_reason.as_deref() == Some("max_tokens");
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut thinking_blocks = Vec::new();
 
     for block in resp.content {
         match block {
             AnthropicContentBlock::Text { text } => text_parts.push(text),
             AnthropicContentBlock::ToolUse { id, name, input } => {
                 tool_calls.push(ToolUseRequest { id, name, input });
+            }
+            AnthropicContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                tracing::debug!(len = thinking.len(), "Claude thinking block received");
+                thinking_blocks.push(ThinkingBlock::Thinking {
+                    thinking,
+                    signature,
+                });
+            }
+            AnthropicContentBlock::RedactedThinking { data } => {
+                tracing::debug!("Claude redacted_thinking block received");
+                thinking_blocks.push(ThinkingBlock::Redacted { data });
             }
             AnthropicContentBlock::ToolResult { .. } | AnthropicContentBlock::Image { .. } => {}
         }
@@ -797,7 +976,11 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
         } else {
             Some(text_parts.join(""))
         };
-        ChatResponse::ToolUse { text, tool_calls }
+        ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks,
+        }
     }
 }
 
@@ -824,6 +1007,8 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                         MessagePart::ToolUse { .. }
                             | MessagePart::ToolResult { .. }
                             | MessagePart::Image(_)
+                            | MessagePart::ThinkingBlock { .. }
+                            | MessagePart::RedactedThinkingBlock { .. }
                     )
                 });
 
@@ -887,6 +1072,23 @@ fn split_messages_structured(messages: &[Message]) -> (Option<String>, Vec<Struc
                                     },
                                 });
                             }
+                            MessagePart::ThinkingBlock {
+                                thinking,
+                                signature,
+                            } if is_assistant => {
+                                blocks.push(AnthropicContentBlock::Thinking {
+                                    thinking: thinking.clone(),
+                                    signature: signature.clone(),
+                                });
+                            }
+                            MessagePart::RedactedThinkingBlock { data } if is_assistant => {
+                                blocks.push(AnthropicContentBlock::RedactedThinking {
+                                    data: data.clone(),
+                                });
+                            }
+                            // Thinking blocks in user messages are silently dropped.
+                            MessagePart::ThinkingBlock { .. }
+                            | MessagePart::RedactedThinkingBlock { .. } => {}
                         }
                     }
                     chat.push(StructuredApiMessage {
@@ -924,6 +1126,10 @@ struct RequestBody<'a> {
     messages: &'a [ApiMessage<'a>],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -935,6 +1141,10 @@ struct VisionRequestBody<'a> {
     messages: &'a [StructuredApiMessage],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1144,6 +1354,8 @@ mod tests {
                 content: "hello",
             }],
             stream: false,
+            thinking: None,
+            temperature: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("system"));
@@ -1166,6 +1378,8 @@ mod tests {
             }]),
             messages: &[],
             stream: false,
+            thinking: None,
+            temperature: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"system\""));
@@ -1181,6 +1395,8 @@ mod tests {
             system: None,
             messages: &[],
             stream: true,
+            thinking: None,
+            temperature: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
@@ -1347,6 +1563,8 @@ mod tests {
             system: None,
             messages: &[],
             stream: false,
+            thinking: None,
+            temperature: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("stream"));
@@ -1544,7 +1762,10 @@ mod tests {
             usage: None,
         };
         let result = parse_tool_response(resp);
-        if let ChatResponse::ToolUse { text, tool_calls } = result {
+        if let ChatResponse::ToolUse {
+            text, tool_calls, ..
+        } = result
+        {
             assert_eq!(text.unwrap(), "I'll run that");
             assert_eq!(tool_calls.len(), 1);
             assert_eq!(tool_calls[0].name, "bash");
@@ -1566,7 +1787,10 @@ mod tests {
             usage: None,
         };
         let result = parse_tool_response(resp);
-        if let ChatResponse::ToolUse { text, tool_calls } = result {
+        if let ChatResponse::ToolUse {
+            text, tool_calls, ..
+        } = result
+        {
             assert!(text.is_none());
             assert_eq!(tool_calls.len(), 1);
         } else {
@@ -2016,5 +2240,357 @@ mod tests {
             .unwrap_or(&id)
             .to_string();
         assert_eq!(display_name, "claude-x");
+    }
+
+    #[test]
+    fn thinking_config_extended_serializes() {
+        let cfg = ThinkingConfig::Extended {
+            budget_tokens: 10_000,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "extended");
+        assert_eq!(json["budget_tokens"], 10_000);
+    }
+
+    #[test]
+    fn thinking_config_adaptive_serializes_without_effort() {
+        let cfg = ThinkingConfig::Adaptive { effort: None };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "adaptive");
+        assert!(json.get("effort").is_none());
+    }
+
+    #[test]
+    fn thinking_config_adaptive_serializes_with_effort() {
+        let cfg = ThinkingConfig::Adaptive {
+            effort: Some(ThinkingEffort::High),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "adaptive");
+        assert_eq!(json["effort"], "high");
+    }
+
+    #[test]
+    fn thinking_config_extended_deserializes() {
+        let json = r#"{"mode":"extended","budget_tokens":8000}"#;
+        let cfg: ThinkingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Extended {
+                budget_tokens: 8000
+            }
+        );
+    }
+
+    #[test]
+    fn thinking_config_adaptive_deserializes() {
+        let json = r#"{"mode":"adaptive","effort":"low"}"#;
+        let cfg: ThinkingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cfg,
+            ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::Low)
+            }
+        );
+    }
+
+    #[test]
+    fn thinking_capability_sonnet_4_6_needs_interleaved_beta() {
+        let cap = thinking_capability("claude-sonnet-4-6-20250514");
+        assert!(cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn thinking_capability_opus_4_6_no_interleaved_beta() {
+        let cap = thinking_capability("claude-opus-4-6");
+        assert!(!cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn thinking_capability_unknown_model_no_beta() {
+        let cap = thinking_capability("gpt-4o");
+        assert!(!cap.needs_interleaved_beta);
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_below_minimum() {
+        let err = ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended { budget_tokens: 0 })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+
+        let err = ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 1023,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_accepts_minimum_budget() {
+        ClaudeProvider::new("k".into(), "m".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 1024,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn with_thinking_accepts_maximum_budget() {
+        ClaudeProvider::new("k".into(), "m".into(), 256_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 128_000,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_above_maximum() {
+        let err = ClaudeProvider::new("k".into(), "m".into(), 256_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 128_001,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_rejects_budget_not_less_than_max_tokens() {
+        // After auto-bump max_tokens = 16_000, budget_tokens = 16_000 is not < max_tokens
+        let err = ClaudeProvider::new("k".into(), "m".into(), 1024)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 16_000,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("less than max_tokens"), "{err}");
+    }
+
+    #[test]
+    fn with_thinking_bumps_max_tokens_when_too_low() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 8000,
+            })
+            .unwrap();
+        assert!(provider.max_tokens >= MIN_MAX_TOKENS_WITH_THINKING);
+    }
+
+    #[test]
+    fn with_thinking_keeps_max_tokens_when_already_high() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 8000,
+            })
+            .unwrap();
+        assert_eq!(provider.max_tokens, 32_000);
+    }
+
+    #[test]
+    fn build_thinking_param_extended_returns_enabled_with_budget() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let (param, temp) = provider.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "enabled");
+        assert_eq!(param.budget_tokens, Some(5000));
+        assert!(temp.is_none());
+    }
+
+    #[test]
+    fn build_thinking_param_adaptive_returns_enabled_with_temperature() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let (param, temp) = provider.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "enabled");
+        assert!(param.budget_tokens.is_none());
+        assert_eq!(temp, Some(1));
+    }
+
+    #[test]
+    fn build_thinking_param_no_thinking_returns_none() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 1024);
+        let (param, temp) = provider.build_thinking_param();
+        assert!(param.is_none());
+        assert!(temp.is_none());
+    }
+
+    #[test]
+    fn beta_header_without_thinking_returns_cache_only() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+        let beta = provider.beta_header(true);
+        assert_eq!(beta, ANTHROPIC_BETA_CACHE);
+    }
+
+    #[test]
+    fn beta_header_sonnet_4_6_extended_with_tools_includes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let beta = provider.beta_header(true);
+        assert!(beta.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
+        assert!(beta.contains(ANTHROPIC_BETA_CACHE));
+    }
+
+    #[test]
+    fn beta_header_sonnet_4_6_extended_no_tools_excludes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let beta = provider.beta_header(false);
+        assert!(!beta.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
+    }
+
+    #[test]
+    fn beta_header_adaptive_mode_excludes_interleaved() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let beta = provider.beta_header(true);
+        assert!(!beta.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
+    }
+
+    #[test]
+    fn parse_tool_response_with_thinking_blocks() {
+        let resp = ToolApiResponse {
+            content: vec![
+                AnthropicContentBlock::Thinking {
+                    thinking: "let me think".into(),
+                    signature: "sig123".into(),
+                },
+                AnthropicContentBlock::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+            stop_reason: None,
+            usage: None,
+        };
+        let result = parse_tool_response(resp);
+        if let ChatResponse::ToolUse {
+            thinking_blocks,
+            tool_calls,
+            ..
+        } = result
+        {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(thinking_blocks.len(), 1);
+            if let ThinkingBlock::Thinking {
+                thinking,
+                signature,
+            } = &thinking_blocks[0]
+            {
+                assert_eq!(thinking, "let me think");
+                assert_eq!(signature, "sig123");
+            } else {
+                panic!("expected Thinking variant");
+            }
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn parse_tool_response_with_redacted_thinking() {
+        let resp = ToolApiResponse {
+            content: vec![
+                AnthropicContentBlock::RedactedThinking {
+                    data: "redacted".into(),
+                },
+                AnthropicContentBlock::Text {
+                    text: "result".into(),
+                },
+            ],
+            stop_reason: None,
+            usage: None,
+        };
+        let result = parse_tool_response(resp);
+        // No tool calls, so returns Text; thinking is dropped for text-only responses
+        assert!(matches!(result, ChatResponse::Text(_)));
+    }
+
+    #[test]
+    fn thinking_block_serializes_in_structured_message() {
+        let msg = Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ThinkingBlock {
+                    thinking: "my reasoning".into(),
+                    signature: "abc".into(),
+                },
+                MessagePart::Text {
+                    text: "answer".into(),
+                },
+            ],
+        );
+        let (_, chat) = split_messages_structured(&[msg]);
+        assert_eq!(chat.len(), 1);
+        let json = serde_json::to_value(&chat[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "my reasoning");
+        assert_eq!(blocks[0]["signature"], "abc");
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn redacted_thinking_block_serializes_in_structured_message() {
+        let msg = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::RedactedThinkingBlock {
+                data: "secret".into(),
+            }],
+        );
+        let (_, chat) = split_messages_structured(&[msg]);
+        let json = serde_json::to_value(&chat[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "redacted_thinking");
+        assert_eq!(blocks[0]["data"], "secret");
+    }
+
+    #[test]
+    fn thinking_content_block_roundtrip() {
+        let block = AnthropicContentBlock::Thinking {
+            thinking: "internal reasoning".into(),
+            signature: "signature-data".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        let restored: AnthropicContentBlock = serde_json::from_value(json).unwrap();
+        if let AnthropicContentBlock::Thinking {
+            thinking,
+            signature,
+        } = restored
+        {
+            assert_eq!(thinking, "internal reasoning");
+            assert_eq!(signature, "signature-data");
+        } else {
+            panic!("expected Thinking");
+        }
+    }
+
+    #[test]
+    fn redacted_thinking_content_block_roundtrip() {
+        let block = AnthropicContentBlock::RedactedThinking {
+            data: "opaque-data".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "redacted_thinking");
+        let restored: AnthropicContentBlock = serde_json::from_value(json).unwrap();
+        if let AnthropicContentBlock::RedactedThinking { data } = restored {
+            assert_eq!(data, "opaque-data");
+        } else {
+            panic!("expected RedactedThinking");
+        }
     }
 }

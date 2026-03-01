@@ -29,8 +29,9 @@ pub mod stt;
 #[cfg(feature = "stt")]
 pub mod whisper;
 
+pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 #[cfg(feature = "schema")]
 pub use extractor::Extractor;
-pub use provider::LlmProvider;
+pub use provider::{LlmProvider, ThinkingBlock};
 pub use stt::{SpeechToText, Transcription};
