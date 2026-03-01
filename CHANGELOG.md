@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Restructured `rebuild_system_prompt` block ordering so cache markers align with content stability: Block 1 (base prompt) is stable across all turns, Block 2 (skill catalog, MCP, project context) is semi-stable per session, Block 3 (env, tools, active skills) is volatile per turn — fixes near-zero cache hit rate in multi-turn Claude sessions (#1079)
+
 ## [0.12.4] - 2026-03-01
 
 ### Added
