@@ -68,6 +68,7 @@ impl Channel for AppChannel {
     async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_diff, diff)
     }
+    #[allow(clippy::too_many_arguments)]
     async fn send_tool_output(
         &mut self,
         tool_name: &str,
@@ -79,6 +80,7 @@ impl Channel for AppChannel {
         tool_call_id: &str,
         is_error: bool,
         parent_tool_use_id: Option<String>,
+        raw_response: Option<serde_json::Value>,
     ) -> Result<(), ChannelError> {
         dispatch_app_channel!(
             self,
@@ -91,7 +93,8 @@ impl Channel for AppChannel {
             locations,
             tool_call_id,
             is_error,
-            parent_tool_use_id
+            parent_tool_use_id,
+            raw_response
         )
     }
 }
