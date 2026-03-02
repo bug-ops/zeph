@@ -18,7 +18,7 @@ use zeph_core::vault::Secret;
 #[cfg(feature = "acp")]
 struct AgentDeps {
     provider: zeph_llm::any::AnyProvider,
-    registry: zeph_skills::registry::SkillRegistry,
+    registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     max_active_skills: usize,
     tool_executor: zeph_tools::CompositeExecutor<
@@ -94,10 +94,19 @@ async fn build_acp_deps(
     let (provider, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
-    let registry = app.build_registry();
+    let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
-    let all_meta = registry.all_meta();
-    let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
+        .read()
+        .expect("registry read lock")
+        .all_meta()
+        .into_iter()
+        .cloned()
+        .collect();
+    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
+    let matcher = app
+        .build_skill_matcher(&provider, &all_meta_refs, &memory)
+        .await;
     let config = app.config();
 
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
@@ -237,6 +246,7 @@ async fn spawn_acp_agent(
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     let memory_executor =
         zeph_core::memory_tools::MemoryToolExecutor::new(Arc::clone(&d.memory), d.conversation_id);
+    let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&d.registry));
     let (tool_executor, cancel_signal, provider_override, parent_tool_use_id) =
         if let Some(ctx) = acp_ctx {
             let cancel_signal = Arc::clone(&ctx.cancel_signal);
@@ -259,8 +269,8 @@ async fn spawn_acp_agent(
                 ));
             }
             base = Arc::new(zeph_tools::CompositeExecutor::new(
-                memory_executor,
-                zeph_tools::DynExecutor(base),
+                skill_loader_executor,
+                zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
             ));
             (
                 zeph_tools::DynExecutor(base),
@@ -270,13 +280,16 @@ async fn spawn_acp_agent(
             )
         } else {
             let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
-                memory_executor,
-                zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
+                skill_loader_executor,
+                zeph_tools::CompositeExecutor::new(
+                    memory_executor,
+                    zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
+                ),
             ));
             (zeph_tools::DynExecutor(base), None, None, None)
         };
 
-    let mut agent = Agent::new(
+    let mut agent = Agent::new_with_registry_arc(
         d.provider,
         channel,
         d.registry,

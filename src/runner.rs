@@ -197,10 +197,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     );
     let memory = std::sync::Arc::new(memory_result?);
 
-    let all_meta = registry.all_meta();
-    let skill_count = all_meta.len();
+    let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
+        .read()
+        .expect("registry read lock")
+        .all_meta()
+        .into_iter()
+        .cloned()
+        .collect();
+    let skill_count = all_meta_owned.len();
+    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
     let (matcher, cli_history) = tokio::join!(
-        app.build_skill_matcher(&provider, &all_meta, &memory),
+        app.build_skill_matcher(&provider, &all_meta_refs, &memory),
         build_cli_history(&memory),
     );
     if matcher.is_some() {
@@ -245,11 +253,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         std::sync::Arc::clone(&memory),
         conversation_id,
     );
+    let skill_loader_executor =
+        zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
         std::sync::Arc::new(tool_setup.executor);
-    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
-        zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
-    ));
+    let tool_executor =
+        zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
+        )));
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
@@ -274,7 +286,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let config_path = app.config_path().to_owned();
     let cache_pool = memory.sqlite().pool().clone();
 
-    let agent = Agent::new(
+    let agent = Agent::new_with_registry_arc(
         provider,
         channel,
         registry,

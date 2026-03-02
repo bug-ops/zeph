@@ -23,6 +23,7 @@ pub mod vault;
 pub mod hash;
 pub mod http;
 pub mod memory_tools;
+pub mod skill_loader;
 pub mod subagent;
 pub mod text;
 
@@ -37,4 +38,5 @@ pub use channel::{
 };
 pub use config::{Config, ConfigError};
 pub use hash::content_hash;
+pub use skill_loader::SkillLoaderExecutor;
 pub use zeph_tools::executor::DiffData;

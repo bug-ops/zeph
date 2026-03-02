@@ -1372,7 +1372,17 @@ impl<C: Channel> Agent<C> {
 
     #[allow(clippy::too_many_lines)]
     pub(super) async fn rebuild_system_prompt(&mut self, query: &str) {
-        let all_meta = self.skill_state.registry.all_meta();
+        let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .all_meta()
+            .into_iter()
+            .cloned()
+            .collect();
+        let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta.iter().collect();
+        let all_meta = all_meta_refs;
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
@@ -1510,19 +1520,25 @@ impl<C: Channel> Agent<C> {
         }
         self.update_skill_confidence_metrics().await;
 
-        let all_skills: Vec<Skill> = self
-            .skill_state
-            .registry
-            .all_meta()
-            .iter()
-            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
-            .collect();
-        let active_skills: Vec<Skill> = self
-            .skill_state
-            .active_skill_names
-            .iter()
-            .filter_map(|name| self.skill_state.registry.get_skill(name).ok())
-            .collect();
+        let (all_skills, active_skills): (Vec<Skill>, Vec<Skill>) = {
+            let reg = self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock");
+            let all: Vec<Skill> = reg
+                .all_meta()
+                .iter()
+                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .collect();
+            let active: Vec<Skill> = self
+                .skill_state
+                .active_skill_names
+                .iter()
+                .filter_map(|name| reg.get_skill(name).ok())
+                .collect();
+            (all, active)
+        };
         let remaining_skills: Vec<Skill> = all_skills
             .iter()
             .filter(|s| {

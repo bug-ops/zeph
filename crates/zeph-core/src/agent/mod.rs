@@ -95,7 +95,7 @@ pub(super) struct MemoryState {
 }
 
 pub(super) struct SkillState {
-    pub(super) registry: SkillRegistry,
+    pub(super) registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
     pub(super) skill_paths: Vec<PathBuf>,
     pub(super) managed_dir: Option<PathBuf>,
     pub(super) matcher: Option<SkillMatcherBackend>,
@@ -197,11 +197,40 @@ impl<C: Channel> Agent<C> {
         max_active_skills: usize,
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
-        let all_skills: Vec<Skill> = registry
-            .all_meta()
-            .iter()
-            .filter_map(|m| registry.get_skill(&m.name).ok())
-            .collect();
+        let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
+        Self::new_with_registry_arc(
+            provider,
+            channel,
+            registry,
+            matcher,
+            max_active_skills,
+            tool_executor,
+        )
+    }
+
+    /// Create an agent from a pre-wrapped registry Arc, allowing the caller to
+    /// share the same Arc with other components (e.g. [`crate::SkillLoaderExecutor`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry `RwLock` is poisoned.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn new_with_registry_arc(
+        provider: AnyProvider,
+        channel: C,
+        registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
+        matcher: Option<SkillMatcherBackend>,
+        max_active_skills: usize,
+        tool_executor: impl ToolExecutor + 'static,
+    ) -> Self {
+        let all_skills: Vec<Skill> = {
+            let reg = registry.read().expect("registry read lock poisoned");
+            reg.all_meta()
+                .iter()
+                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .collect()
+        };
         let empty_trust = HashMap::new();
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
         let skills_prompt = format_skills_prompt(&all_skills, &empty_trust, &empty_health);
@@ -951,7 +980,17 @@ impl<C: Channel> Agent<C> {
 
         let mut output = String::from("Available skills:\n\n");
 
-        for meta in self.skill_state.registry.all_meta() {
+        let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .all_meta()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        for meta in &all_meta {
             let trust_info = if let Some(memory) = &self.memory_state.memory {
                 memory
                     .sqlite()
@@ -1231,7 +1270,12 @@ impl<C: Channel> Agent<C> {
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
         let mgr = self.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
-        match crate::subagent::filter_skills(&self.skill_state.registry, &def.skills) {
+        let reg = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock");
+        match crate::subagent::filter_skills(&reg, &def.skills) {
             Ok(skills) => {
                 let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
                 if bodies.is_empty() {
@@ -1249,13 +1293,33 @@ impl<C: Channel> Agent<C> {
 
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
-        if new_registry.fingerprint() == self.skill_state.registry.fingerprint() {
+        if new_registry.fingerprint()
+            == self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock")
+                .fingerprint()
+        {
             return;
         }
         let _ = self.channel.send_status("reloading skills...").await;
-        self.skill_state.registry = new_registry;
+        *self
+            .skill_state
+            .registry
+            .write()
+            .expect("registry write lock") = new_registry;
 
-        let all_meta = self.skill_state.registry.all_meta();
+        let all_meta = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .all_meta()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let all_meta = all_meta.iter().collect::<Vec<_>>();
         let provider = self.provider.clone();
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
@@ -1289,13 +1353,17 @@ impl<C: Channel> Agent<C> {
             self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
         }
 
-        let all_skills: Vec<Skill> = self
-            .skill_state
-            .registry
-            .all_meta()
-            .iter()
-            .filter_map(|m| self.skill_state.registry.get_skill(&m.name).ok())
-            .collect();
+        let all_skills: Vec<Skill> = {
+            let reg = self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock");
+            reg.all_meta()
+                .iter()
+                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .collect()
+        };
         let trust_map = self.build_skill_trust_map().await;
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
         let skills_prompt = format_skills_prompt(&all_skills, &trust_map, &empty_health);
@@ -1310,7 +1378,12 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
         tracing::info!(
             "reloaded {} skill(s)",
-            self.skill_state.registry.all_meta().len()
+            self.skill_state
+                .registry
+                .read()
+                .expect("registry read lock")
+                .all_meta()
+                .len()
         );
     }
 

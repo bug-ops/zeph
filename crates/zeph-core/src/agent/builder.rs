@@ -169,11 +169,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// # Panics
+    ///
+    /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
     pub fn with_hybrid_search(mut self, enabled: bool) -> Self {
         self.skill_state.hybrid_search = enabled;
         if enabled {
-            let all_meta = self.skill_state.registry.all_meta();
+            let reg = self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock");
+            let all_meta = reg.all_meta();
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
             self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
         }
@@ -309,11 +317,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// # Panics
+    ///
+    /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = self.provider.name().to_string();
         let model_name = self.runtime.model_name.clone();
-        let total_skills = self.skill_state.registry.all_meta().len();
+        let total_skills = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .all_meta()
+            .len();
         let qdrant_available = false;
         let conversation_id = self.memory_state.conversation_id;
         let prompt_estimate = self

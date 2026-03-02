@@ -13,6 +13,7 @@ use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use tracing::Instrument;
 use zeph_skills::evolution::FailureKind;
+use zeph_skills::loader::Skill;
 
 enum AnomalyOutcome {
     Success,
@@ -1254,11 +1255,20 @@ impl<C: Channel> Agent<C> {
         {
             return;
         }
-        let env: std::collections::HashMap<String, String> = self
-            .skill_state
-            .active_skill_names
-            .iter()
-            .filter_map(|name| self.skill_state.registry.get_skill(name).ok())
+        let active_skills: Vec<Skill> = {
+            let reg = self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock");
+            self.skill_state
+                .active_skill_names
+                .iter()
+                .filter_map(|name| reg.get_skill(name).ok())
+                .collect()
+        };
+        let env: std::collections::HashMap<String, String> = active_skills
+            .into_iter()
             .flat_map(|skill| {
                 skill
                     .meta

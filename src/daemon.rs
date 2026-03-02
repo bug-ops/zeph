@@ -164,11 +164,20 @@ pub(crate) async fn run_daemon(
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
 
-    let registry = app.build_registry();
+    let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
-    let all_meta = registry.all_meta();
-    let matcher = app.build_skill_matcher(&provider, &all_meta, &memory).await;
-    let skill_count = all_meta.len();
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
+        .read()
+        .expect("registry read lock")
+        .all_meta()
+        .into_iter()
+        .cloned()
+        .collect();
+    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
+    let matcher = app
+        .build_skill_matcher(&provider, &all_meta_refs, &memory)
+        .await;
+    let skill_count = all_meta_owned.len();
     tracing::info!("skills loaded: {skill_count}");
 
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
@@ -213,12 +222,16 @@ pub(crate) async fn run_daemon(
         std::sync::Arc::clone(&memory),
         conversation_id,
     );
+    let skill_loader_executor =
+        zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
     let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
         zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
     );
-    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
-        zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base_tool)),
-    ));
+    let tool_executor =
+        zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base_tool)),
+        )));
 
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
 
@@ -235,7 +248,7 @@ pub(crate) async fn run_daemon(
 
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
-    let agent = Agent::new(
+    let agent = Agent::new_with_registry_arc(
         provider,
         loopback_channel,
         registry,
