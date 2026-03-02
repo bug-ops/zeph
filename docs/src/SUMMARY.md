@@ -16,6 +16,7 @@
 - [LLM Providers](concepts/providers.md)
 - [Tools](concepts/tools.md)
 - [Instruction Files](concepts/instruction-files.md)
+- [load_skill Tool](concepts/load-skill-tool.md)
 
 # Guides
 
