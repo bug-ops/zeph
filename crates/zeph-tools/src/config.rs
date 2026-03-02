@@ -209,7 +209,7 @@ fn default_scrape_timeout() -> u64 {
 }
 
 fn default_max_body_bytes() -> usize {
-    1_048_576
+    4_194_304
 }
 
 /// Configuration for the web scrape tool.
@@ -310,7 +310,7 @@ mod tests {
         assert!(config.shell.allow_network);
         assert!(!config.shell.confirm_patterns.is_empty());
         assert_eq!(config.scrape.timeout, 15);
-        assert_eq!(config.scrape.max_body_bytes, 1_048_576);
+        assert_eq!(config.scrape.max_body_bytes, 4_194_304);
         assert!(!config.audit.enabled);
         assert_eq!(config.audit.destination, "stdout");
         assert!(config.summarize_output);
@@ -320,7 +320,7 @@ mod tests {
     fn default_scrape_config() {
         let config = ScrapeConfig::default();
         assert_eq!(config.timeout, 15);
-        assert_eq!(config.max_body_bytes, 1_048_576);
+        assert_eq!(config.max_body_bytes, 4_194_304);
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
     fn tools_config_default_includes_scrape() {
         let config = ToolsConfig::default();
         assert_eq!(config.scrape.timeout, 15);
-        assert_eq!(config.scrape.max_body_bytes, 1_048_576);
+        assert_eq!(config.scrape.max_body_bytes, 4_194_304);
     }
 
     #[test]

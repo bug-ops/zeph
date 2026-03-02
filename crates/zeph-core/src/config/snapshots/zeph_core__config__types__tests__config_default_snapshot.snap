@@ -118,7 +118,7 @@ confirm_patterns = [
 
 [tools.scrape]
 timeout = 15
-max_body_bytes = 1048576
+max_body_bytes = 4194304
 
 [tools.audit]
 enabled = false
