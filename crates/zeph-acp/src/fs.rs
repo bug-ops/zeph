@@ -25,6 +25,7 @@ fn is_binary(content: &[u8]) -> bool {
     content.contains(&0) // REQ-P31-6: null byte detection
 }
 
+// Same-process comparison only: `DefaultHasher` is not stable across processes or versions.
 fn hash_content(content: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     content.hash(&mut hasher);
@@ -288,7 +289,8 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 invocation: InvocationHint::ToolCall,
             });
         }
-        if self.can_write {
+        // REQ-P31-1: write_file requires a permission gate (diff preview must have an approver).
+        if self.can_write && self.permission_gate.is_some() {
             defs.push(ToolDef {
                 id: "write_file".into(),
                 description:
@@ -646,6 +648,27 @@ mod tests {
         test_cwd().join(name).to_string_lossy().into_owned()
     }
 
+    /// Minimal client for constructing `AcpPermissionGate` in tests that don't need real perms.
+    struct NoopPermClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for NoopPermClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "allow_once",
+                )),
+            ))
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
     struct FakeClient {
         content: String,
     }
@@ -780,15 +803,35 @@ mod tests {
         assert!(!ids.contains(&"write_file"));
         assert!(defs[0].description.contains("cat/head/tail"));
 
-        let exec_write_only = AcpFileExecutor {
+        // REQ-P31-1: write_file not advertised without permission gate.
+        let exec_write_no_gate = AcpFileExecutor {
             session_id: acp::SessionId::new("s"),
-            request_tx: tx,
+            request_tx: tx.clone(),
             can_read: false,
             can_write: true,
             cwd: test_cwd(),
             permission_gate: None,
         };
-        let defs = exec_write_only.tool_definitions();
+        let defs = exec_write_no_gate.tool_definitions();
+        assert_eq!(
+            defs.len(),
+            0,
+            "write_file must not appear without permission gate"
+        );
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let perm_file = tmp_dir.path().join("perms.toml");
+        let perm_conn = Rc::new(NoopPermClient);
+        let (gate, _handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
+        let exec_write_with_gate = AcpFileExecutor {
+            session_id: acp::SessionId::new("s"),
+            request_tx: tx,
+            can_read: false,
+            can_write: true,
+            cwd: test_cwd(),
+            permission_gate: Some(gate),
+        };
+        let defs = exec_write_with_gate.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "write_file");
         assert!(defs[0].description.contains("shell redirects"));
@@ -1801,6 +1844,86 @@ mod tests {
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
             Ok(())
         }
+    }
+
+    /// Simulates a file being modified externally between the diff preview read and the TOCTOU
+    /// re-read. Returns different content on each call to `read_text_file`.
+    struct ToctouClient {
+        call_count: std::cell::Cell<usize>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for ToctouClient {
+        async fn request_permission(
+            &self,
+            _args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    "allow_once",
+                )),
+            ))
+        }
+
+        async fn read_text_file(
+            &self,
+            _args: acp::ReadTextFileRequest,
+        ) -> acp::Result<acp::ReadTextFileResponse> {
+            let n = self.call_count.get();
+            self.call_count.set(n + 1);
+            // First read (diff preview): original content.
+            // Second read (TOCTOU guard): externally modified content.
+            let content = if n == 0 {
+                "original\n"
+            } else {
+                "modified by someone else\n"
+            };
+            Ok(acp::ReadTextFileResponse::new(content.to_owned()))
+        }
+
+        async fn write_text_file(
+            &self,
+            _args: acp::WriteTextFileRequest,
+        ) -> acp::Result<acp::WriteTextFileResponse> {
+            panic!("write_text_file must not be called when TOCTOU guard fires")
+        }
+
+        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_file_toctou_guard_aborts_when_file_changed() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let perm_conn = Rc::new(ToctouClient { call_count: std::cell::Cell::new(0) });
+                let sid = acp::SessionId::new("s1");
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) =
+                    AcpPermissionGate::new(perm_conn.clone(), Some(perm_file));
+                tokio::task::spawn_local(perm_handler);
+
+                let (exec, handler) =
+                    AcpFileExecutor::new(perm_conn, sid, false, true, test_cwd(), Some(gate));
+                tokio::task::spawn_local(handler);
+
+                let mut params = serde_json::Map::new();
+                params.insert("path".to_owned(), serde_json::json!(test_path("toctou.txt")));
+                params.insert("content".to_owned(), serde_json::json!("my new content\n"));
+                let call = ToolCall {
+                    tool_id: "write_file".to_owned(),
+                    params,
+                };
+                let err = exec.execute_tool_call(&call).await.unwrap_err();
+                assert!(
+                    matches!(err, ToolError::InvalidParams { ref message } if message.contains("file changed")),
+                    "expected TOCTOU abort error, got: {err:?}"
+                );
+            })
+            .await;
     }
 
     #[tokio::test]

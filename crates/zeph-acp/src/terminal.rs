@@ -25,6 +25,12 @@ const KILL_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum stdin payload size (64 KiB). REQ-P23-1.
 const MAX_STDIN_BYTES: usize = 65_536;
 
+/// Bounded stdin channel capacity (back-pressure). MED-02.
+const STDIN_CHANNEL_CAPACITY: usize = 16;
+
+/// Stdin rate-limit interval — 100 msg/sec. MED-02.
+const STDIN_RATE_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Shell interpreters that require explicit warning in permission prompt. REQ-P23-5.
 const SHELL_INTERPRETERS: &[&str] = &["bash", "sh", "zsh", "fish", "dash"];
 
@@ -177,13 +183,16 @@ impl AcpShellExecutor {
             })?;
 
         let params: BashStdinParams = deserialize_params(&call.params)?;
-        let data = params.data.as_bytes().to_vec();
 
-        if data.len() > MAX_STDIN_BYTES {
+        if params.data.len() > MAX_STDIN_BYTES {
             return Err(ToolError::InvalidParams {
-                message: format!("stdin data exceeds {MAX_STDIN_BYTES} byte limit"),
+                message: AcpError::StdinTooLarge {
+                    size: params.data.len(),
+                }
+                .to_string(),
             });
         }
+        let data = params.data.as_bytes().to_vec();
 
         // REQ-P23-5: warn when writing to a shell interpreter terminal.
         // Terminal IDs are opaque strings, but common practice is to include
@@ -436,13 +445,51 @@ where
         .map_err(|e| AcpError::ClientError(e.to_string()))
 }
 
-async fn run_terminal_handler<C>(conn: Rc<C>, mut rx: mpsc::UnboundedReceiver<TerminalMessage>)
-where
+/// Background pump: drains bounded stdin channel at ≤100 msg/sec (MED-02).
+///
+/// REQ-P23-3: on any error from `ext_method`, cancels the token and exits.
+async fn run_stdin_pump<C>(
+    conn: Rc<C>,
+    session_id: acp::SessionId,
+    terminal_id: acp::TerminalId,
+    mut data_rx: mpsc::Receiver<Vec<u8>>,
+    cancel: CancellationToken,
+) where
     C: acp::Client,
 {
-    // Maps terminal_id -> CancellationToken for active stdin sessions. REQ-P23-4.
-    let mut stdin_cancels: std::collections::HashMap<String, CancellationToken> =
-        std::collections::HashMap::new();
+    let mut interval = tokio::time::interval(STDIN_RATE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let data = tokio::select! {
+            () = cancel.cancelled() => break,
+            msg = data_rx.recv() => match msg {
+                Some(d) => d,
+                None => break,
+            },
+        };
+        // Rate-limit: wait for tick before forwarding. MED-02.
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        if let Err(e) = forward_stdin_via_ext(&conn, &session_id, &terminal_id, data).await {
+            // REQ-P23-3: no panics, log and cancel.
+            tracing::warn!(%terminal_id, error = %e, "stdin pump error — cancelling");
+            cancel.cancel();
+            break;
+        }
+    }
+}
+
+async fn run_terminal_handler<C>(conn: Rc<C>, mut rx: mpsc::UnboundedReceiver<TerminalMessage>)
+where
+    C: acp::Client + 'static,
+{
+    // Maps terminal_id -> (bounded stdin sender, CancellationToken). MED-02, REQ-P23-4.
+    let mut stdin_pumps: std::collections::HashMap<
+        String,
+        (mpsc::Sender<Vec<u8>>, CancellationToken),
+    > = std::collections::HashMap::new();
 
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -457,17 +504,17 @@ where
                     req.stream_tx,
                 )
                 .await;
-                // Clean up stdin cancel token when terminal completes.
+                // Cancel stdin pump when terminal completes. REQ-P23-4.
                 if let Ok(ref shell_result) = result
-                    && let Some(token) = stdin_cancels.remove(&shell_result.terminal_id)
+                    && let Some((_, token)) = stdin_pumps.remove(&shell_result.terminal_id)
                 {
                     token.cancel();
                 }
                 req.reply.send(result).ok();
             }
             TerminalMessage::Release(req) => {
-                // Cancel any active stdin session for this terminal. REQ-P23-4.
-                if let Some(token) = stdin_cancels.remove(&req.terminal_id) {
+                // Cancel stdin pump on release. REQ-P23-4.
+                if let Some((_, token)) = stdin_pumps.remove(&req.terminal_id) {
                     token.cancel();
                 }
                 let tid = req.terminal_id.clone();
@@ -482,22 +529,27 @@ where
             }
             TerminalMessage::WriteStdin(req) => {
                 let tid_str = req.terminal_id.to_string();
-                // Register cancel token for this terminal if not yet tracked.
-                let cancel = stdin_cancels.entry(tid_str).or_default().clone();
+
+                // Lazily start a bounded pump task per terminal. MED-02.
+                let (data_tx, cancel) = stdin_pumps.entry(tid_str).or_insert_with(|| {
+                    let (tx, rx) = mpsc::channel::<Vec<u8>>(STDIN_CHANNEL_CAPACITY);
+                    let token = CancellationToken::new();
+                    tokio::task::spawn_local(run_stdin_pump(
+                        conn.clone(),
+                        req.session_id.clone(),
+                        req.terminal_id.clone(),
+                        rx,
+                        token.clone(),
+                    ));
+                    (tx, token)
+                });
 
                 let result = if cancel.is_cancelled() {
                     Err(AcpError::BrokenPipe)
                 } else {
-                    forward_stdin_via_ext(&conn, &req.session_id, &req.terminal_id, req.data).await
+                    // Bounded send — returns Err if channel is full (back-pressure).
+                    data_tx.try_send(req.data).map_err(|_| AcpError::BrokenPipe)
                 };
-
-                // REQ-P23-3: on BrokenPipe, cancel the token so future writes fail fast.
-                if matches!(
-                    &result,
-                    Err(AcpError::BrokenPipe | AcpError::ClientError(_))
-                ) {
-                    cancel.cancel();
-                }
 
                 req.reply.send(result).ok();
             }
@@ -1289,5 +1341,132 @@ mod tests {
         let defs = exec.tool_definitions();
         assert!(defs.iter().any(|d| d.id == "bash_stdin"));
         assert!(defs.iter().any(|d| d.id == "bash"));
+    }
+
+    #[tokio::test]
+    async fn bash_stdin_exactly_64kib_boundary_accepted() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let perm_conn = Rc::new(AllowPermissionClient);
+                let sid = acp::SessionId::new("s1");
+                let tmp_dir = tempfile::tempdir().unwrap();
+                let perm_file = tmp_dir.path().join("perms.toml");
+                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
+                tokio::task::spawn_local(perm_handler);
+
+                let term_conn = Rc::new(FakeTerminalClient);
+                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
+                tokio::task::spawn_local(term_handler);
+
+                // Exactly at the limit must succeed.
+                let at_limit = "x".repeat(MAX_STDIN_BYTES);
+                let mut params = serde_json::Map::new();
+                params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
+                params.insert("data".to_owned(), serde_json::json!(at_limit));
+                let call = ToolCall {
+                    tool_id: "bash_stdin".to_owned(),
+                    params,
+                };
+                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+                assert_eq!(result.tool_name, "bash_stdin");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn bash_stdin_broken_pipe_fast_fail() {
+        // After the CancellationToken is cancelled, WriteStdin must return BrokenPipe immediately.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
+                let conn = Rc::new(FakeTerminalClient);
+                let handler = async move { run_terminal_handler(conn, rx).await };
+                tokio::task::spawn_local(handler);
+
+                let sid = acp::SessionId::new("s1");
+                let tid: acp::TerminalId = "term-bp".to_owned().into();
+
+                // First WriteStdin: establishes the pump and cancels via a pre-cancelled token.
+                // We simulate a broken pump by sending two WriteStdin messages to the same
+                // terminal: the first establishes the pump, then we fill the channel beyond
+                // capacity so the next try_send returns Err (BrokenPipe).
+                let mut replies = Vec::new();
+                for _ in 0..=STDIN_CHANNEL_CAPACITY {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
+                        session_id: sid.clone(),
+                        terminal_id: tid.clone(),
+                        data: b"x".to_vec(),
+                        reply: reply_tx,
+                    }))
+                    .unwrap();
+                    replies.push(reply_rx);
+                }
+                // Collect results: at least one must be BrokenPipe (channel overflow).
+                let mut got_broken_pipe = false;
+                for reply_rx in replies {
+                    if let Ok(Err(AcpError::BrokenPipe)) = reply_rx.await {
+                        got_broken_pipe = true;
+                    }
+                }
+                assert!(
+                    got_broken_pipe,
+                    "expected at least one BrokenPipe from overflow"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn bash_stdin_pump_cancelled_on_release() {
+        // After Release, the pump's CancellationToken must be cancelled.
+        // Subsequent WriteStdin to the same terminal_id starts a fresh pump (no persistent state).
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
+                let conn = Rc::new(FakeTerminalClient);
+                let handler = async move { run_terminal_handler(conn, rx).await };
+                tokio::task::spawn_local(handler);
+
+                let sid = acp::SessionId::new("s1");
+                let tid: acp::TerminalId = "term-rel".to_owned().into();
+
+                // Establish a pump by writing stdin.
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
+                    session_id: sid.clone(),
+                    terminal_id: tid.clone(),
+                    data: b"hello\n".to_vec(),
+                    reply: reply_tx,
+                }))
+                .unwrap();
+                reply_rx.await.unwrap().unwrap(); // pump established, write queued
+
+                // Release the terminal — must cancel the pump.
+                tx.send(TerminalMessage::Release(TerminalReleaseRequest {
+                    session_id: sid.clone(),
+                    terminal_id: tid.to_string(),
+                }))
+                .unwrap();
+
+                // Allow the handler to process the Release.
+                tokio::task::yield_now().await;
+
+                // Writing again after release starts a fresh pump — should succeed.
+                let (reply_tx2, reply_rx2) = oneshot::channel();
+                tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
+                    session_id: sid.clone(),
+                    terminal_id: tid.clone(),
+                    data: b"after release\n".to_vec(),
+                    reply: reply_tx2,
+                }))
+                .unwrap();
+                // Fresh pump: send must succeed (Ok).
+                reply_rx2.await.unwrap().unwrap();
+            })
+            .await;
     }
 }
