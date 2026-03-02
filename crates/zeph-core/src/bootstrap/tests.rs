@@ -328,6 +328,7 @@ fn build_orchestrator_with_unknown_provider_errors() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -367,6 +368,7 @@ fn build_orchestrator_claude_without_cloud_config_errors() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -411,6 +413,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -451,6 +454,7 @@ fn build_orchestrator_candle_without_config_errors() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -489,6 +493,7 @@ fn build_orchestrator_with_ollama_sub_provider() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -522,6 +527,7 @@ fn build_orchestrator_ollama_per_provider_base_url() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -554,6 +560,7 @@ fn build_orchestrator_ollama_per_provider_embedding_model() {
             embedding_model: Some("nomic-embed-text".to_string()),
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -587,6 +594,7 @@ fn effective_embedding_model_reads_orchestrator_sub_provider() {
             embedding_model: Some("custom-embed".to_string()),
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 
@@ -618,6 +626,7 @@ fn build_orchestrator_routes_parsing() {
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 

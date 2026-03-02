@@ -8,6 +8,10 @@ max_tool_iterations = 10
 # summary_model = "ollama/llama3.2"
 # Check for new Zeph releases on startup
 # auto_update_check = true
+# Automatically detect provider-specific instruction files (CLAUDE.md, AGENTS.md, etc.)
+# instruction_auto_detect = true
+# Additional instruction files to always inject into the system prompt
+# instruction_files = ["custom-instructions.md"]
 
 [llm]
 # LLM provider: "ollama", "claude", "openai", "candle", "orchestrator", "compatible", "router"
@@ -18,6 +22,8 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 # Model for generating embeddings (semantic memory)
 embedding_model = "qwen3-embedding"
+# Provider-specific instruction file to inject into the system prompt (optional)
+# instruction_file = "llm-instructions.md"
 
 [llm.cloud]
 # Claude API model (used when provider = "claude")

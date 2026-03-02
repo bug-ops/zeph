@@ -122,6 +122,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_instruction_blocks(
+        mut self,
+        blocks: Vec<crate::instructions::InstructionBlock>,
+    ) -> Self {
+        self.instruction_blocks = blocks;
+        self
+    }
+
+    #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
         self.shutdown = rx;
         self

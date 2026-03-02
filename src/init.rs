@@ -528,6 +528,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         router_ema_enabled: false,
         router_ema_alpha: 0.1,
         router_reorder_interval: 10,
+        instruction_file: None,
     };
 
     config.memory = MemoryConfig {
@@ -643,6 +644,7 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
     providers.insert(
@@ -654,6 +656,7 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
             embedding_model: None,
             filename: None,
             device: None,
+            instruction_file: None,
         },
     );
 

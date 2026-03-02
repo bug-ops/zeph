@@ -6,6 +6,8 @@ expression: toml_str
 name = "Zeph"
 max_tool_iterations = 10
 auto_update_check = true
+instruction_files = []
+instruction_auto_detect = true
 
 [llm]
 provider = "ollama"

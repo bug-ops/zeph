@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Provider instruction file loader (`InstructionLoader`) in `zeph-core`: auto-detects `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, and `zeph.md` from the working directory and injects them into the system prompt with path-traversal protection (symlink boundary check, null byte guard, 256 KiB size cap) (#1122)
+
+### Fixed
+
+- `zeph.md` and `.zeph/zeph.md` are now loaded unconditionally regardless of provider or `auto_detect` setting; previously the early-return on `!auto_detect` skipped them when auto-detection was disabled and no explicit files were configured (#1122)
+- `[agent.instructions]` TOML config section: `auto_detect` (default `true`), `extra_files` list, and `max_size_bytes` cap (#1122)
+- `--instruction-file <path>` CLI flag for supplying additional instruction files at startup (#1122)
 - Claude extended thinking support: `ThinkingConfig` enum (`Extended { budget_tokens }` / `Adaptive { effort? }`) with model capability map; `ClaudeProvider::with_thinking()` builder (returns `Result` with validated 1024–128000 range) (#1089)
 - Claude API request serialization for thinking: `thinking` and `output_config` fields on all four request body variants; conditional `interleaved-thinking-2025-05-14` beta header for extended mode on Sonnet 4.6 with tools (#1090)
 - Claude response and SSE streaming: `AnthropicContentBlock::Thinking` and `RedactedThinking` variants; `thinking_delta`/`signature_delta` SSE events parsed and suppressed from user stream (#1091)

@@ -46,8 +46,11 @@ use crate::channel::Channel;
 use crate::config::Config;
 use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
-use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
+use crate::context::{
+    ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
+};
 use crate::cost::CostTracker;
+use crate::instructions::InstructionBlock;
 use crate::vault::Secret;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
@@ -179,6 +182,8 @@ pub struct Agent<C: Channel> {
     /// a subagent hierarchy.
     pub(crate) parent_tool_use_id: Option<String>,
     pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
+    /// Instruction blocks loaded at startup from provider-specific and explicit files.
+    pub(super) instruction_blocks: Vec<InstructionBlock>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -294,6 +299,7 @@ impl<C: Channel> Agent<C> {
             response_cache: None,
             parent_tool_use_id: None,
             anomaly_detector: None,
+            instruction_blocks: Vec::new(),
         }
     }
 

@@ -97,6 +97,17 @@ pub struct AgentConfig {
     pub summary_model: Option<String>,
     #[serde(default = "default_auto_update_check")]
     pub auto_update_check: bool,
+    /// Additional instruction files to always load, regardless of provider.
+    #[serde(default)]
+    pub instruction_files: Vec<std::path::PathBuf>,
+    /// When true, automatically detect provider-specific instruction files
+    /// (e.g. `CLAUDE.md` for Claude, `AGENTS.md` for `OpenAI`).
+    #[serde(default = "default_instruction_auto_detect")]
+    pub instruction_auto_detect: bool,
+}
+
+fn default_instruction_auto_detect() -> bool {
+    true
 }
 
 /// LLM provider backend selector.
@@ -167,6 +178,10 @@ pub struct LlmConfig {
     pub router_ema_alpha: f64,
     #[serde(default = "default_router_reorder_interval")]
     pub router_reorder_interval: u64,
+    /// Provider-specific instruction file to inject into the system prompt.
+    /// Merged with `agent.instruction_files` at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_file: Option<std::path::PathBuf>,
 }
 
 fn default_response_cache_ttl_secs() -> u64 {
@@ -365,6 +380,9 @@ pub struct OrchestratorProviderConfig {
     pub filename: Option<String>,
     #[serde(default)]
     pub device: Option<String>,
+    /// Provider-specific instruction file to inject into the system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_file: Option<std::path::PathBuf>,
 }
 
 /// Controls how skills are formatted in the system prompt.
@@ -1428,6 +1446,8 @@ impl Default for Config {
                 max_tool_iterations: 10,
                 summary_model: None,
                 auto_update_check: default_auto_update_check(),
+                instruction_files: Vec::new(),
+                instruction_auto_detect: default_instruction_auto_detect(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
@@ -1448,6 +1468,7 @@ impl Default for Config {
                 router_ema_enabled: false,
                 router_ema_alpha: default_router_ema_alpha(),
                 router_reorder_interval: default_router_reorder_interval(),
+                instruction_file: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

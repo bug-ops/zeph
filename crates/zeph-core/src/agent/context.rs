@@ -17,7 +17,7 @@ use crate::redact::scrub_content;
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget,
     DOCUMENT_RAG_PREFIX, LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill,
-    build_system_prompt, format_skills_prompt,
+    build_system_prompt_with_instructions, format_skills_prompt,
 };
 
 fn chunk_messages(
@@ -1597,12 +1597,14 @@ impl<C: Channel> Agent<C> {
             }
         };
         // BLOCK 1: stable within a session — base prompt + skills + tool catalog
+        // Instruction blocks are passed separately and injected in the volatile section.
         #[allow(unused_mut)]
-        let mut system_prompt = build_system_prompt(
+        let mut system_prompt = build_system_prompt_with_instructions(
             &skills_prompt,
             Some(&self.env_context),
             tool_catalog.as_deref(),
             self.provider.supports_tool_use(),
+            &self.instruction_blocks,
         );
 
         // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
