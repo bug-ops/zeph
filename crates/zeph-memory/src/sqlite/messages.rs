@@ -7,6 +7,19 @@ use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
 
+/// Sanitize an arbitrary string into a valid FTS5 query.
+///
+/// Extracts alphanumeric tokens and joins them with spaces. FTS5 special
+/// characters (`,`, `"`, `*`, `(`, `)`, `^`, `-`, `+`) are stripped to avoid
+/// syntax errors in the `MATCH` clause.
+fn sanitize_fts5_query(query: &str) -> String {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn parse_role(s: &str) -> Role {
     match s {
         "assistant" => Role::Assistant,
@@ -457,6 +470,10 @@ impl SqliteStore {
         conversation_id: Option<ConversationId>,
     ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let safe_query = sanitize_fts5_query(query);
+        if safe_query.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let rows: Vec<(MessageId, f64)> = if let Some(cid) = conversation_id {
             sqlx::query_as(
@@ -467,7 +484,7 @@ impl SqliteStore {
                  ORDER BY rank \
                  LIMIT ?",
             )
-            .bind(query)
+            .bind(&safe_query)
             .bind(cid)
             .bind(effective_limit)
             .fetch_all(&self.pool)
@@ -481,7 +498,7 @@ impl SqliteStore {
                  ORDER BY rank \
                  LIMIT ?",
             )
-            .bind(query)
+            .bind(&safe_query)
             .bind(effective_limit)
             .fetch_all(&self.pool)
             .await?
@@ -942,6 +959,31 @@ mod tests {
 
         let results = store.keyword_search("test", 3, None).await.unwrap();
         assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn sanitize_fts5_query_strips_special_chars() {
+        assert_eq!(sanitize_fts5_query("skill-audit"), "skill audit");
+        assert_eq!(sanitize_fts5_query("hello, world"), "hello world");
+        assert_eq!(sanitize_fts5_query("a+b*c^d"), "a b c d");
+        assert_eq!(sanitize_fts5_query("  "), "");
+        assert_eq!(sanitize_fts5_query("rust programming"), "rust programming");
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_special_chars_does_not_error() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        store
+            .save_message(cid, "user", "skill audit info")
+            .await
+            .unwrap();
+        // query with comma and special chars — previously caused FTS5 syntax error
+        // result may be empty; important is that no error is returned
+        store
+            .keyword_search("skill-audit, confidence=0.1", 10, None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
