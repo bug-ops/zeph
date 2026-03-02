@@ -18,7 +18,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.4",
+  "version": "0.12.5",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
@@ -116,7 +116,7 @@ ACP settings live in `config.toml` under the `[acp]` section:
 [acp]
 enabled = true
 agent_name = "zeph"
-agent_version = "0.12.4"
+agent_version = "0.12.5"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 terminal_timeout_secs = 120
@@ -573,7 +573,7 @@ Example response (with bearer auth configured):
 ```json
 {
   "name": "zeph",
-  "version": "0.12.4",
+  "version": "0.12.5",
   "protocol": "acp",
   "protocol_version": "0.9",
   "transports": {
@@ -589,7 +589,7 @@ When `auth_bearer_token` is not set, the `authentication` field is `null`:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.4",
+  "version": "0.12.5",
   "protocol": "acp",
   "protocol_version": "0.9",
   "transports": {

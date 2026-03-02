@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-03-02
+
+See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.
+
 ## [0.12.4] - 2026-03-01
 
 ### Added
