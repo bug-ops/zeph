@@ -34,6 +34,7 @@ The command palette (opened with `/`) includes the following built-in commands:
 |---------|-------------|
 | `/ingest <path>` | Ingest documents into Qdrant for RAG retrieval |
 | `/gateway status` | Show gateway server state (on/off, request count) |
+| `/schedule` | Show scheduler status (enabled, tick interval, active task count) |
 | `ViewFilters` | Display output filter hit rates and invocation counts |
 | `daemon:connect` | Attach to a running daemon session |
 | `daemon:disconnect` | Detach from daemon |

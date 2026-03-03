@@ -47,11 +47,32 @@ router_reorder_interval = 60    # seconds between reordering
 > [!NOTE]
 > EMA routing is disabled by default. It is most useful in multi-provider setups where provider latencies differ significantly or change over time.
 
+## Claude extended thinking
+
+`ClaudeProvider` supports two thinking modes via `ThinkingConfig`:
+
+| Mode | Description |
+|------|-------------|
+| `Extended { budget_tokens }` | Allocates a fixed token budget (1024–128000) for visible reasoning; emits `interleaved-thinking-2025-05-14` beta header on Sonnet 4.6 with tools |
+| `Adaptive { effort? }` | Lets the model allocate thinking budget automatically |
+
+```toml
+[llm.claude]
+thinking = { mode = "extended", budget_tokens = 16000 }
+```
+
+CLI: `--thinking extended:16000` or `--thinking adaptive`. When thinking is enabled and `max_tokens` is below 16000, it is raised automatically. Thinking deltas are parsed from the SSE stream and suppressed from the user-facing output; `MessagePart::ThinkingBlock` variants preserve thinking blocks verbatim across tool-use turns.
+
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `schema` | on | Enables `schemars` dependency, `chat_typed`, `Extractor`, and per-`TypeId` schema caching |
+| `schema` | on | `schemars` dependency, `chat_typed`, `Extractor`, and per-`TypeId` schema caching |
+| `mock` | off | `MockProvider` for unit testing without a live LLM endpoint |
+| `stt` | off | `WhisperProvider` using OpenAI Whisper API (requires `reqwest/multipart`) |
+| `candle` | off | Local GGUF inference via Candle; pulls in `candle-core`, `candle-nn`, `candle-transformers`, `hf-hub`, `tokenizers`, `symphonia`, `rubato` |
+| `cuda` | off | Enables CUDA backend for Candle (implies `candle`) |
+| `metal` | off | Enables Metal backend for Candle on Apple Silicon (implies `candle`) |
 
 To compile without `schemars`:
 
