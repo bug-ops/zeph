@@ -38,11 +38,11 @@ tasks at a specific future time, and `cancel_task` to remove a scheduled task.
 ```
 
 ```schedule_deferred
-{"name": "reminder-call-home", "run_at": "+2h", "kind": "custom", "task": "позвонить домой"}
+{"name": "reminder-call-home", "run_at": "+2h", "kind": "custom", "task": "Remind the user to call home"}
 ```
 
 ```schedule_deferred
-{"name": "standup-reminder", "run_at": "in 30 minutes", "kind": "custom", "task": "time for standup"}
+{"name": "standup-reminder", "run_at": "in 30 minutes", "kind": "custom", "task": "Remind the user: standup in 5 minutes"}
 ```
 
 ```schedule_deferred
@@ -61,8 +61,28 @@ tasks at a specific future time, and `cancel_task` to remove a scheduled task.
 
 Built-in kinds: `memory_cleanup`, `skill_refresh`, `health_check`, `update_check`, `custom`.
 
-For `custom` kind, put a human-readable description in the `task` field —
-the scheduler will inject it as a new agent turn at the scheduled time.
+For `custom` kind, the `task` field controls what happens at execution time.
+At the scheduled moment it is injected as `[Scheduled task] <task>` into the agent turn.
+
+**Two patterns for `task`:**
+
+1. **Reminder for the user** — write what the user should be notified about.
+   The agent will relay the message to the user without acting on it.
+   ```
+   "task": "Remind the user to call home"
+   "task": "Remind the user: standup in 5 minutes"
+   ```
+
+2. **Action for the agent** — write an instruction for the agent to execute.
+   The agent will perform the action autonomously at the scheduled time.
+   ```
+   "task": "Check if PR #42 was merged and notify the user"
+   "task": "Generate an end-of-day summary and send it"
+   "task": "Run memory cleanup and report results"
+   ```
+
+**Rule:** if the user says "remind me to X", use pattern 1 (`Remind the user to X`).
+If the user says "do X at time", use pattern 2 (`X`).
 
 ## run_at formats
 
