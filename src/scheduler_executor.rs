@@ -149,18 +149,37 @@ fn parse_run_at(s: &str, now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<
 pub struct SchedulerExecutor {
     task_tx: mpsc::Sender<SchedulerMessage>,
     store: Arc<JobStore>,
+    /// Optional channel to signal TUI metrics refresh after task mutations.
+    refresh_tx: Option<tokio::sync::watch::Sender<()>>,
 }
 
 impl SchedulerExecutor {
     #[must_use]
     pub fn new(task_tx: mpsc::Sender<SchedulerMessage>, store: Arc<JobStore>) -> Self {
-        Self { task_tx, store }
+        Self {
+            task_tx,
+            store,
+            refresh_tx: None,
+        }
+    }
+
+    /// Attach a watch sender used to trigger immediate TUI metrics refresh.
+    #[must_use]
+    pub fn with_refresh_tx(mut self, tx: tokio::sync::watch::Sender<()>) -> Self {
+        self.refresh_tx = Some(tx);
+        self
     }
 
     /// Return a cloned reference to the backing `JobStore` for external inspection (e.g. TUI).
     #[must_use]
     pub fn store(&self) -> Arc<JobStore> {
         Arc::clone(&self.store)
+    }
+
+    fn notify_refresh(&self) {
+        if let Some(ref tx) = self.refresh_tx {
+            let _ = tx.send(());
+        }
     }
 
     async fn schedule_periodic(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
@@ -224,6 +243,7 @@ impl SchedulerExecutor {
             "{action} periodic task '{}' (kind: {}, next run: {next_run})",
             params.name, params.kind
         );
+        self.notify_refresh();
         Ok(Some(make_output("schedule_periodic", &summary)))
     }
 
@@ -286,6 +306,7 @@ impl SchedulerExecutor {
             "{action} deferred task '{}' (kind: {}, run_at: {})",
             params.name, params.kind, params.run_at
         );
+        self.notify_refresh();
         Ok(Some(make_output("schedule_deferred", &summary)))
     }
 
@@ -306,6 +327,7 @@ impl SchedulerExecutor {
                 .map_err(|_| ToolError::InvalidParams {
                     message: "scheduler channel full or closed".into(),
                 })?;
+            self.notify_refresh();
             format!("Cancelled task '{}'", params.name)
         } else {
             format!("Task '{}' not found", params.name)
