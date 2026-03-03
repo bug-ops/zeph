@@ -439,7 +439,7 @@ max_restart_backoff_secs = 60
 
 [scheduler]
 # Enable cron scheduler (feature-gated: --features scheduler)
-enabled = false
+enabled = true
 # Example task definitions:
 # [[scheduler.tasks]]
 # name = "memory_cleanup"

@@ -1296,7 +1296,7 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             tick_interval_secs: default_scheduler_tick_interval(),
             max_tasks: default_scheduler_max_tasks(),
             tasks: Vec::new(),
@@ -1692,7 +1692,7 @@ mod tests {
     #[test]
     fn scheduler_config_defaults() {
         let cfg = SchedulerConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(cfg.tick_interval_secs, 60);
         assert_eq!(cfg.max_tasks, 100);
         assert!(cfg.tasks.is_empty());

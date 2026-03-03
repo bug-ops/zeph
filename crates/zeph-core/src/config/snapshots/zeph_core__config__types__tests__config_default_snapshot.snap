@@ -201,7 +201,7 @@ health_interval_secs = 30
 max_restart_backoff_secs = 60
 
 [scheduler]
-enabled = false
+enabled = true
 tick_interval_secs = 60
 max_tasks = 100
 tasks = []
