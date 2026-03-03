@@ -182,12 +182,6 @@ impl SchedulerExecutor {
         }
     }
 
-    /// Return a cloned reference to the backing `JobStore` for external inspection (e.g. TUI).
-    #[must_use]
-    pub fn store(&self) -> Arc<JobStore> {
-        Arc::clone(&self.store)
-    }
-
     async fn schedule_periodic(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let params: PeriodicParams = deserialize_params(&call.params)?;
 
