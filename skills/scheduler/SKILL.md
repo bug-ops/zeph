@@ -37,6 +37,18 @@ tasks at a specific future time, and `cancel_task` to remove a scheduled task.
 {"name": "follow-up", "run_at": "2026-03-03T18:00:00Z", "kind": "custom", "task": "check if PR was merged and notify"}
 ```
 
+```schedule_deferred
+{"name": "reminder-call-home", "run_at": "+2h", "kind": "custom", "task": "позвонить домой"}
+```
+
+```schedule_deferred
+{"name": "standup-reminder", "run_at": "in 30 minutes", "kind": "custom", "task": "time for standup"}
+```
+
+```schedule_deferred
+{"name": "eod-summary", "run_at": "today 18:00", "kind": "custom", "task": "generate end-of-day summary"}
+```
+
 ## Cancel a scheduled task
 
 ```cancel_task
@@ -52,8 +64,19 @@ Built-in kinds: `memory_cleanup`, `skill_refresh`, `health_check`, `update_check
 For `custom` kind, put a human-readable description in the `task` field —
 the scheduler will inject it as a new agent turn at the scheduled time.
 
+## run_at formats
+
+`run_at` accepts any of the following (must resolve to a future time):
+
+| Format | Example |
+|--------|---------|
+| ISO 8601 UTC | `2026-03-03T18:00:00Z` |
+| ISO 8601 naive (treated as UTC) | `2026-03-03T18:00:00` |
+| Relative shorthand | `+2m`, `+1h`, `+30s`, `+1d`, `+1h30m` |
+| Natural language | `in 5 minutes`, `in 2 hours`, `today 14:00`, `tomorrow 09:30` |
+
 ## Validation rules
 
-- `run_at` must be ISO 8601 UTC and in the future.
+- `run_at` must resolve to a future time.
 - `cron` must be a valid 6-field cron expression.
 - Task names must be unique. Scheduling with an existing name updates the task.
