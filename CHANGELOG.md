@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Hot reload for instruction files: `InstructionWatcher` in `zeph-core` subscribes to filesystem events via `notify-debouncer-mini` (500ms debounce) and reloads `instruction_blocks` in-place on `.md` file changes without agent restart (#1124)
+- `InstructionReloadState` carries reload parameters (base dir, provider kinds, explicit files, auto-detect flag) through the agent select loop
+- Explicit instruction file paths are boundary-checked against project root before being added to the watcher; TOCTOU-free load via canonicalize-before-open
+
 ### Fixed
 
 - PERF-SC-04: `Scheduler::tick()` `Ok(None)` branch now computes and persists `next_run` via the cron schedule instead of treating missing `next_run` as "due now" — cron expressions are now respected at runtime (#1133)

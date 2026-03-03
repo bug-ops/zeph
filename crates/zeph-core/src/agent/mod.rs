@@ -50,7 +50,7 @@ use crate::context::{
     ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
 };
 use crate::cost::CostTracker;
-use crate::instructions::InstructionBlock;
+use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
 use crate::vault::Secret;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
@@ -185,6 +185,8 @@ pub struct Agent<C: Channel> {
     pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
     /// Instruction blocks loaded at startup from provider-specific and explicit files.
     pub(super) instruction_blocks: Vec<InstructionBlock>,
+    pub(super) instruction_reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
+    pub(super) instruction_reload_state: Option<InstructionReloadState>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -331,6 +333,8 @@ impl<C: Channel> Agent<C> {
             parent_tool_use_id: None,
             anomaly_detector: None,
             instruction_blocks: Vec::new(),
+            instruction_reload_rx: None,
+            instruction_reload_state: None,
         }
     }
 
@@ -491,6 +495,10 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(_) = recv_optional(&mut self.skill_state.skill_reload_rx) => {
                         self.reload_skills().await;
+                        continue;
+                    }
+                    Some(_) = recv_optional(&mut self.instruction_reload_rx) => {
+                        self.reload_instructions();
                         continue;
                     }
                     Some(_) = recv_optional(&mut self.config_reload_rx) => {
@@ -1392,6 +1400,38 @@ impl<C: Channel> Agent<C> {
                 .all_meta()
                 .len()
         );
+    }
+
+    fn reload_instructions(&mut self) {
+        // Drain any additional queued events before reloading to avoid redundant reloads.
+        if let Some(ref mut rx) = self.instruction_reload_rx {
+            while rx.try_recv().is_ok() {}
+        }
+        let Some(ref state) = self.instruction_reload_state else {
+            return;
+        };
+        let new_blocks = crate::instructions::load_instructions(
+            &state.base_dir,
+            &state.provider_kinds,
+            &state.explicit_files,
+            state.auto_detect,
+        );
+        let old_sources: std::collections::HashSet<_> =
+            self.instruction_blocks.iter().map(|b| &b.source).collect();
+        let new_sources: std::collections::HashSet<_> =
+            new_blocks.iter().map(|b| &b.source).collect();
+        for added in new_sources.difference(&old_sources) {
+            tracing::info!(path = %added.display(), "instruction file added");
+        }
+        for removed in old_sources.difference(&new_sources) {
+            tracing::info!(path = %removed.display(), "instruction file removed");
+        }
+        tracing::info!(
+            old_count = self.instruction_blocks.len(),
+            new_count = new_blocks.len(),
+            "reloaded instruction files"
+        );
+        self.instruction_blocks = new_blocks;
     }
 
     fn reload_config(&mut self) {

@@ -14,6 +14,7 @@ use crate::config::{LearningConfig, SecurityConfig, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
 use crate::cost::CostTracker;
+use crate::instructions::{InstructionEvent, InstructionReloadState};
 use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
@@ -145,6 +146,17 @@ impl<C: Channel> Agent<C> {
         blocks: Vec<crate::instructions::InstructionBlock>,
     ) -> Self {
         self.instruction_blocks = blocks;
+        self
+    }
+
+    #[must_use]
+    pub fn with_instruction_reload(
+        mut self,
+        rx: mpsc::Receiver<InstructionEvent>,
+        state: InstructionReloadState,
+    ) -> Self {
+        self.instruction_reload_rx = Some(rx);
+        self.instruction_reload_state = Some(state);
         self
     }
 
