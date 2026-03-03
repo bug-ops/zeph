@@ -239,6 +239,19 @@ impl SchedulerExecutor {
             config: params.config,
         };
 
+        self.store
+            .upsert_job(&params.name, &params.cron, &params.kind)
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("store error: {e}"),
+            })?;
+        self.store
+            .set_next_run(&params.name, &next_run)
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("store error: {e}"),
+            })?;
+
         self.task_tx
             .try_send(SchedulerMessage::Add(Box::new(desc)))
             .map_err(|_| ToolError::InvalidParams {
@@ -302,6 +315,19 @@ impl SchedulerExecutor {
             config,
         };
 
+        self.store
+            .upsert_job_with_mode(
+                &params.name,
+                "",
+                &params.kind,
+                "oneshot",
+                Some(&run_at.to_rfc3339()),
+            )
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("store error: {e}"),
+            })?;
+
         self.task_tx
             .try_send(SchedulerMessage::Add(Box::new(desc)))
             .map_err(|_| ToolError::InvalidParams {
@@ -328,6 +354,12 @@ impl SchedulerExecutor {
                 })?;
 
         let summary = if exists {
+            self.store
+                .delete_job(&params.name)
+                .await
+                .map_err(|e| ToolError::InvalidParams {
+                    message: format!("store error: {e}"),
+                })?;
             self.task_tx
                 .try_send(SchedulerMessage::Cancel(params.name.clone()))
                 .map_err(|_| ToolError::InvalidParams {
