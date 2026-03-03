@@ -229,8 +229,8 @@ impl ToolExecutor for SchedulerExecutor {
         ] {
             let blocks = zeph_tools::executor::extract_fenced_blocks(response, tag);
             if let Some(body) = blocks.into_iter().next() {
-                let params: serde_json::Value =
-                    serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+                let params: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(body).unwrap_or_default();
                 let call = ToolCall {
                     tool_id: tool_id.into(),
                     params,
