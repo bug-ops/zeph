@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--init` wizard scheduler section: enable/disable, tick interval, max tasks (#1136)
 - TUI `/schedule` input command and scheduler status line in footer (#1136)
 - `skills/scheduler/SKILL.md`: teaches the agent to create periodic and deferred tasks with `schedule_periodic`, `schedule_deferred`, and `cancel_task` tools; includes cron format reference, built-in kinds, validation rules, and trigger words (#1137)
+- `parse_run_at` in `SchedulerExecutor`: `run_at` field now accepts relative shorthand (`+2m`, `+1h30m`, `+3d`), natural language (`in 5 minutes`, `today 14:00`, `tomorrow 09:30`), and naive ISO 8601 (treated as UTC); overflow-safe with `checked_mul`/`checked_add`; single `Utc::now()` snapshot eliminates TOCTOU race (#1141)
+- `SchedulerExecutor`: fenced-block dispatch (`InvocationHint::FencedBlock`) for Ollama legacy text-extraction path — model can now invoke scheduler tools without native function calling (#1141)
+- Scheduler enabled by default (`SchedulerConfig::default().enabled = true`); updated `config/default.toml` and snapshot (#1141)
+- Scheduler `custom` task injection prefixed with `[Scheduled task]`; `SKILL.md` documents reminder-for-user vs agent-action patterns (#1141)
 
 ## [0.12.5] - 2026-03-02
 
