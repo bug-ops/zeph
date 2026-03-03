@@ -4,7 +4,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{NaiveDateTime, Utc};
 use cron::Schedule as CronSchedule;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -29,6 +29,9 @@ pub struct PeriodicParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeferredParams {
     pub name: String,
+    #[schemars(
+        description = "When to run. Accepts: ISO 8601 UTC (2026-03-03T18:00:00Z), naive ISO 8601 (2026-03-03T18:00:00), relative offsets (+2h, +30m, +1h30m, 5s, +3d), or natural expressions (in 5 minutes, in 2 hours, today 14:30, tomorrow 09:00)."
+    )]
     pub run_at: String,
     pub kind: String,
     #[serde(default)]
@@ -38,6 +41,108 @@ pub struct DeferredParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CancelParams {
     pub name: String,
+}
+
+/// Parses a relative shorthand like `+2m`, `1h30m`, `+3d`, `5s` into a [`chrono::Duration`].
+///
+/// Units: `s` = seconds, `m` = minutes, `h` = hours, `d` = days. Leading `+` is optional.
+/// Returns `None` for zero duration, trailing digits without unit, or unknown unit characters.
+fn parse_relative(s: &str) -> Option<chrono::Duration> {
+    let s = s.strip_prefix('+').unwrap_or(s);
+    let mut total_secs: i64 = 0;
+    let mut num_buf = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            num_buf.push(ch);
+        } else {
+            let n: i64 = num_buf.parse().ok()?;
+            num_buf.clear();
+            let unit_secs = match ch {
+                's' => n,
+                'm' => n.checked_mul(60)?,
+                'h' => n.checked_mul(3600)?,
+                'd' => n.checked_mul(86400)?,
+                _ => return None,
+            };
+            total_secs = total_secs.checked_add(unit_secs)?;
+        }
+    }
+    if !num_buf.is_empty() {
+        return None;
+    }
+    if total_secs == 0 {
+        return None;
+    }
+    Some(chrono::Duration::seconds(total_secs))
+}
+
+/// Parses natural-language time expressions into an absolute [`chrono::DateTime<Utc>`].
+///
+/// Supported patterns (case-insensitive):
+/// - `"in N second(s)/minute(s)/hour(s)/day(s)"` — relative offset from `now`
+/// - `"today HH:MM"` — today at the given time (UTC)
+/// - `"tomorrow HH:MM"` — tomorrow at the given time (UTC)
+fn parse_natural(s: &str, now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    let s = s.trim().to_lowercase();
+    if let Some(rest) = s.strip_prefix("in ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() == 2 {
+            let n: i64 = parts[0].parse().ok()?;
+            let secs = match parts[1].trim_end_matches('s') {
+                "second" => n,
+                "minute" => n * 60,
+                "hour" => n * 3600,
+                "day" => n * 86400,
+                _ => return None,
+            };
+            return Some(now + chrono::Duration::seconds(secs));
+        }
+    }
+    let (day_offset, rest) = if let Some(r) = s.strip_prefix("tomorrow ") {
+        (1i64, r)
+    } else if let Some(r) = s.strip_prefix("today ") {
+        (0i64, r)
+    } else {
+        return None;
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let hour: u32 = parts[0].parse().ok()?;
+    let minute: u32 = parts[1].parse().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    let today = now.date_naive();
+    let target = (today + chrono::Duration::days(day_offset))
+        .and_hms_opt(hour, minute, 0)?
+        .and_utc();
+    Some(target)
+}
+
+/// Parses a `run_at` string into an absolute UTC timestamp using a caller-supplied `now`.
+///
+/// Tries strategies in order:
+/// 1. ISO 8601 with timezone (e.g. `2026-03-03T18:00:00Z`)
+/// 2. Naive ISO 8601 assumed UTC (e.g. `2026-03-03T18:00:00`)
+/// 3. Relative shorthand (e.g. `+2h`, `30m`, `+1h30m`)
+/// 4. Natural language (e.g. `in 5 minutes`, `tomorrow 10:00`)
+///
+/// Passing `now` explicitly avoids a TOCTOU race between parsing and the future-time check.
+/// Returns `None` if none of the strategies match.
+fn parse_run_at(s: &str, now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    let s = s.trim();
+    if let Ok(dt) = s.parse::<chrono::DateTime<Utc>>() {
+        return Some(dt);
+    }
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ndt.and_utc());
+    }
+    if let Some(dur) = parse_relative(s) {
+        return Some(now + dur);
+    }
+    parse_natural(s, now)
 }
 
 /// Tool executor that exposes scheduler management to the LLM.
@@ -119,30 +224,24 @@ impl SchedulerExecutor {
     async fn schedule_deferred(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let params: DeferredParams = deserialize_params(&call.params)?;
 
-        if params.name.len() > 128 {
+        if params.name.chars().count() > 128 {
             return Err(ToolError::InvalidParams {
                 message: "name exceeds 128 characters".into(),
             });
         }
 
-        if params.kind.len() > 64 {
+        if params.kind.chars().count() > 64 {
             return Err(ToolError::InvalidParams {
                 message: "kind exceeds 64 characters".into(),
             });
         }
 
-        let run_at = params
-            .run_at
-            .parse::<chrono::DateTime<Utc>>()
-            .or_else(|_| {
-                chrono::NaiveDateTime::parse_from_str(&params.run_at, "%Y-%m-%dT%H:%M:%S")
-                    .map(|ndt| ndt.and_utc())
-            })
-            .map_err(|_| ToolError::InvalidParams {
-                message: "run_at must be ISO 8601 UTC, e.g. 2026-03-03T18:00:00Z".into(),
-            })?;
+        let now = Utc::now();
+        let run_at = parse_run_at(&params.run_at, now).ok_or_else(|| ToolError::InvalidParams {
+            message: "run_at: expected ISO 8601 (2026-03-03T18:00:00Z or 2026-03-03T18:00:00), relative (+2h, +30m, +1h30m), or natural (in 5 minutes, tomorrow 10:00)".into(),
+        })?;
 
-        if run_at <= Utc::now() {
+        if run_at <= now {
             return Err(ToolError::InvalidParams {
                 message: "run_at must be in the future".into(),
             });
@@ -255,7 +354,7 @@ impl ToolExecutor for SchedulerExecutor {
             },
             ToolDef {
                 id: "schedule_deferred".into(),
-                description: "Schedule a one-shot task to run at a specific future time (ISO 8601 UTC). Use for reminders, follow-ups, or time-specific actions.".into(),
+                description: "Schedule a one-shot task at a future time. Accepts ISO 8601 UTC, relative offsets (+2h, +30m, +1h30m), or natural expressions (in 5 minutes, tomorrow 10:00).".into(),
                 schema: schemars::schema_for!(DeferredParams),
                 invocation: InvocationHint::FencedBlock("schedule_deferred"),
             },
@@ -480,5 +579,180 @@ mod tests {
     fn sanitize_preserves_tab_and_newline() {
         let result = super::sanitize_task_prompt("line1\nline2\ttab");
         assert_eq!(result, "line1\nline2\ttab");
+    }
+
+    // parse_run_at: ISO 8601 with Z suffix
+    #[test]
+    fn parse_run_at_iso8601_z() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("2030-06-15T12:00:00Z", now);
+        assert!(dt.is_some());
+        assert_eq!(dt.unwrap().to_rfc3339(), "2030-06-15T12:00:00+00:00");
+    }
+
+    // parse_run_at: ISO 8601 with timezone offset
+    #[test]
+    fn parse_run_at_iso8601_offset() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("2030-06-15T15:00:00+03:00", now);
+        assert!(dt.is_some());
+        assert_eq!(dt.unwrap().to_rfc3339(), "2030-06-15T12:00:00+00:00");
+    }
+
+    // parse_run_at: naive ISO 8601 (assumed UTC)
+    #[test]
+    fn parse_run_at_naive_iso8601() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("2030-06-15T12:00:00", now);
+        assert!(dt.is_some());
+        assert_eq!(dt.unwrap().to_rfc3339(), "2030-06-15T12:00:00+00:00");
+    }
+
+    // parse_run_at: relative shorthand
+    #[test]
+    fn parse_run_at_relative_2m() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("+2m", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::seconds(120));
+    }
+
+    #[test]
+    fn parse_run_at_relative_1h30m() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("+1h30m", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::seconds(5400));
+    }
+
+    #[test]
+    fn parse_run_at_relative_5s() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("5s", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::seconds(5));
+    }
+
+    #[test]
+    fn parse_run_at_relative_3d() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("+3d", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::days(3));
+    }
+
+    // parse_run_at: natural language
+    #[test]
+    fn parse_run_at_natural_in_5_minutes() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("in 5 minutes", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::seconds(300));
+    }
+
+    #[test]
+    fn parse_run_at_natural_in_1_hour() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("in 1 hour", now).unwrap();
+        assert_eq!(dt, now + chrono::Duration::seconds(3600));
+    }
+
+    #[test]
+    fn parse_run_at_natural_tomorrow() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("tomorrow 10:00", now);
+        assert!(dt.is_some());
+        let dt = dt.unwrap();
+        assert!(dt > now);
+        assert_eq!(dt.format("%H:%M").to_string(), "10:00");
+    }
+
+    #[test]
+    fn parse_run_at_natural_today() {
+        let now = Utc::now();
+        // today parsing may be in the past; just verify it returns a result with correct time
+        let dt = super::parse_run_at("today 23:59", now);
+        // Could be None only if date math fails; otherwise Some
+        if let Some(dt) = dt {
+            assert_eq!(dt.format("%H:%M").to_string(), "23:59");
+        }
+    }
+
+    #[test]
+    fn parse_run_at_natural_case_insensitive() {
+        let now = Utc::now();
+        let dt = super::parse_run_at("In 5 Minutes", now);
+        assert!(dt.is_some());
+    }
+
+    // parse_run_at: rejection cases
+    #[test]
+    fn parse_run_at_rejects_empty() {
+        let now = Utc::now();
+        assert!(super::parse_run_at("", now).is_none());
+    }
+
+    #[test]
+    fn parse_run_at_rejects_garbage() {
+        let now = Utc::now();
+        assert!(super::parse_run_at("not-a-date", now).is_none());
+        assert!(super::parse_run_at("foobar", now).is_none());
+    }
+
+    #[test]
+    fn parse_run_at_rejects_zero_duration() {
+        let now = Utc::now();
+        assert!(super::parse_run_at("+0m", now).is_none());
+        assert!(super::parse_run_at("0s", now).is_none());
+    }
+
+    #[test]
+    fn parse_run_at_rejects_invalid_time() {
+        let now = Utc::now();
+        assert!(super::parse_run_at("tomorrow 25:00", now).is_none());
+        assert!(super::parse_run_at("today 12:99", now).is_none());
+    }
+
+    #[test]
+    fn parse_run_at_rejects_trailing_digits() {
+        let now = Utc::now();
+        assert!(super::parse_run_at("+5h30", now).is_none());
+    }
+
+    // schedule_deferred integration test with relative input
+    #[tokio::test]
+    async fn schedule_deferred_relative_offset() {
+        let (exec, mut rx) = make_executor().await;
+        let call = make_call(
+            "schedule_deferred",
+            serde_json::json!({"name": "soon", "run_at": "+2h", "kind": "custom", "task": "do something"}),
+        );
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("Created"));
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn schedule_deferred_natural_language() {
+        let (exec, mut rx) = make_executor().await;
+        let call = make_call(
+            "schedule_deferred",
+            serde_json::json!({"name": "nat_test", "run_at": "in 3 hours", "kind": "custom"}),
+        );
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("Created"));
+        assert!(rx.recv().await.is_some());
+    }
+
+    // Overflow: astronomically large day count must return None, not panic
+    #[test]
+    fn parse_relative_overflow_returns_none() {
+        assert!(super::parse_relative("+99999999999999999d").is_none());
+    }
+
+    // Leading/trailing whitespace trimmed by parse_run_at
+    #[test]
+    fn parse_run_at_strips_whitespace() {
+        let now = Utc::now();
+        let dt = super::parse_run_at(" +2h ", now);
+        assert!(dt.is_some());
+        let dt = dt.unwrap();
+        assert!(dt > now + chrono::Duration::seconds(7199));
+        assert!(dt <= now + chrono::Duration::seconds(7201));
     }
 }
