@@ -1,6 +1,6 @@
 # Scheduler
 
-The scheduler runs background tasks on a cron schedule or at a specific future time, persisting job state in SQLite so tasks survive restarts. It is an optional, feature-gated component (`--features scheduler`) that integrates with the agent loop through three LLM-callable tools.
+The scheduler runs background tasks on a cron schedule or at a specific future time, persisting job state in SQLite so tasks survive restarts. It is an optional, feature-gated component (`--features scheduler`) that integrates with the agent loop through three LLM-callable tools. The scheduler is **enabled by default** when the feature is compiled in.
 
 ## Prerequisites
 
@@ -92,9 +92,38 @@ Schedule a one-shot task to fire at a specific future time.
 | Parameter | Type | Constraints |
 |-----------|------|-------------|
 | `name` | string | Max 128 characters; unique |
-| `run_at` | string | ISO 8601 UTC; must be in the future |
+| `run_at` | string | Future time in any supported format (see below) |
 | `kind` | string | Max 64 characters |
-| `task` | string | Optional. Human-readable description injected as an agent turn when the task fires (for `custom` kind) |
+| `task` | string | Optional. Injected as `[Scheduled task] <task>` into the agent turn when the task fires (for `custom` kind) |
+
+### `run_at` formats
+
+`run_at` accepts any of the following (must resolve to a future time):
+
+| Format | Example |
+|--------|---------|
+| ISO 8601 UTC | `2026-03-03T18:00:00Z` |
+| ISO 8601 naive (treated as UTC) | `2026-03-03T18:00:00` |
+| Relative shorthand | `+2m`, `+1h`, `+30s`, `+1d`, `+1h30m` |
+| Natural language | `in 5 minutes`, `in 2 hours`, `today 14:00`, `tomorrow 09:30` |
+
+### `task` field patterns
+
+The `task` string determines how the agent behaves when the task fires. Two patterns:
+
+**Reminder for the user** — the agent notifies the user without acting:
+
+```json
+{ "task": "Remind the user to call home" }
+{ "task": "Remind the user: standup in 5 minutes" }
+```
+
+**Action for the agent** — the agent executes the instruction autonomously:
+
+```json
+{ "task": "Check if PR #42 was merged and notify the user" }
+{ "task": "Generate an end-of-day summary and send it" }
+```
 
 The `task` field is sanitized before injection: control characters below U+0020 (except `\n` and `\t`) are stripped, and the string is truncated to 512 Unicode code points.
 

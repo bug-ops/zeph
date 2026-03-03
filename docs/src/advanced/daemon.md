@@ -107,9 +107,21 @@ pub trait TaskHandler: Send + Sync {
 }
 ```
 
+### Deferred (one-shot) tasks
+
+One-shot tasks fire once at a specified time and are removed automatically after execution. The `run_at` field accepts flexible time formats:
+
+| Format | Example |
+|--------|---------|
+| ISO 8601 UTC | `2026-03-10T18:00:00Z` |
+| Relative shorthand | `+2m`, `+1h30m`, `+3d` |
+| Natural language | `in 5 minutes`, `today 14:00`, `tomorrow 09:30` |
+
+For `custom` kind deferred tasks, the `task` field content is injected as `[Scheduled task] <task>` into the agent loop at fire time. Use `"Remind the user to X"` for user notifications, or a direct instruction for agent-executed actions.
+
 ### Persistence
 
-Job metadata is stored in a `scheduled_jobs` SQLite table. The scheduler ticks every 60 seconds and checks whether each task is due based on `last_run` and the cron expression.
+Job metadata is stored in a `scheduled_jobs` SQLite table. The scheduler ticks every 60 seconds by default (`tick_interval_secs`) and checks whether each task is due based on `last_run` and the cron expression.
 
 ## Shutdown
 
