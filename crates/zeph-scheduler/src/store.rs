@@ -203,7 +203,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
         let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT name, kind, task_mode, next_run FROM scheduled_jobs WHERE done = 0 ORDER BY name",
+            "SELECT name, kind, task_mode, next_run FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await?;
