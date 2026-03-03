@@ -11,6 +11,8 @@ mod gateway_spawn;
 mod init;
 mod runner;
 mod scheduler;
+#[cfg(feature = "scheduler")]
+mod scheduler_executor;
 mod tracing_init;
 mod tui_bridge;
 mod tui_remote;

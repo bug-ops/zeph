@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
 
 use crate::error::SchedulerError;
@@ -42,15 +43,29 @@ impl TaskKind {
     }
 }
 
+/// Execution mode for a scheduled task.
+pub enum TaskMode {
+    Periodic { schedule: Box<CronSchedule> },
+    OneShot { run_at: DateTime<Utc> },
+}
+
+/// Descriptor sent over the mpsc channel to register tasks at runtime.
+pub struct TaskDescriptor {
+    pub name: String,
+    pub mode: TaskMode,
+    pub kind: TaskKind,
+    pub config: serde_json::Value,
+}
+
 pub struct ScheduledTask {
     pub name: String,
-    pub schedule: CronSchedule,
+    pub mode: TaskMode,
     pub kind: TaskKind,
     pub config: serde_json::Value,
 }
 
 impl ScheduledTask {
-    /// Create a new scheduled task from a cron expression string.
+    /// Create a new periodic task from a cron expression string.
     ///
     /// # Errors
     ///
@@ -61,14 +76,74 @@ impl ScheduledTask {
         kind: TaskKind,
         config: serde_json::Value,
     ) -> Result<Self, SchedulerError> {
+        Self::periodic(name, cron_expr, kind, config)
+    }
+
+    /// Create a periodic task from a cron expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SchedulerError::InvalidCron` if the expression is not valid.
+    pub fn periodic(
+        name: impl Into<String>,
+        cron_expr: &str,
+        kind: TaskKind,
+        config: serde_json::Value,
+    ) -> Result<Self, SchedulerError> {
         let schedule = CronSchedule::from_str(cron_expr)
             .map_err(|e| SchedulerError::InvalidCron(format!("{cron_expr}: {e}")))?;
         Ok(Self {
             name: name.into(),
-            schedule,
+            mode: TaskMode::Periodic {
+                schedule: Box::new(schedule),
+            },
             kind,
             config,
         })
+    }
+
+    /// Create a one-shot task that runs at a specific point in time.
+    #[must_use]
+    pub fn oneshot(
+        name: impl Into<String>,
+        run_at: DateTime<Utc>,
+        kind: TaskKind,
+        config: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            mode: TaskMode::OneShot { run_at },
+            kind,
+            config,
+        }
+    }
+
+    /// Returns the cron schedule if this is a periodic task.
+    #[must_use]
+    pub fn cron_schedule(&self) -> Option<&CronSchedule> {
+        if let TaskMode::Periodic { schedule } = &self.mode {
+            Some(schedule.as_ref())
+        } else {
+            None
+        }
+    }
+
+    /// Returns the cron expression string for DB persistence (periodic tasks only).
+    #[must_use]
+    pub fn cron_expr_string(&self) -> String {
+        match &self.mode {
+            TaskMode::Periodic { schedule } => schedule.to_string(),
+            TaskMode::OneShot { .. } => String::new(),
+        }
+    }
+
+    /// Returns `task_mode` string for DB persistence.
+    #[must_use]
+    pub fn task_mode_str(&self) -> &'static str {
+        match &self.mode {
+            TaskMode::Periodic { .. } => "periodic",
+            TaskMode::OneShot { .. } => "oneshot",
+        }
     }
 }
 
@@ -131,5 +206,27 @@ mod tests {
             serde_json::Value::Null,
         );
         assert!(task.is_err());
+    }
+
+    #[test]
+    fn oneshot_task_creates_correctly() {
+        let run_at = Utc::now() + chrono::Duration::hours(1);
+        let task =
+            ScheduledTask::oneshot("t", run_at, TaskKind::HealthCheck, serde_json::Value::Null);
+        assert_eq!(task.task_mode_str(), "oneshot");
+        assert!(task.cron_schedule().is_none());
+    }
+
+    #[test]
+    fn periodic_task_mode_str() {
+        let task = ScheduledTask::periodic(
+            "p",
+            "0 * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(task.task_mode_str(), "periodic");
+        assert!(task.cron_schedule().is_some());
     }
 }

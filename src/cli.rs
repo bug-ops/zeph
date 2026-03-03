@@ -74,6 +74,16 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "MODE")]
     pub(crate) thinking: Option<String>,
 
+    /// Override scheduler tick interval in seconds (requires scheduler feature)
+    #[cfg(feature = "scheduler")]
+    #[arg(long, value_name = "SECS")]
+    pub(crate) scheduler_tick: Option<u64>,
+
+    /// Disable the scheduler even if enabled in config (requires scheduler feature)
+    #[cfg(feature = "scheduler")]
+    #[arg(long)]
+    pub(crate) scheduler_disable: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

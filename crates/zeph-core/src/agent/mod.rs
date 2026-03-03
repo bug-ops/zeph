@@ -172,6 +172,7 @@ pub struct Agent<C: Channel> {
     pub(crate) token_counter: Arc<TokenCounter>,
     stt: Option<Box<dyn SpeechToText>>,
     update_notify_rx: Option<mpsc::Receiver<String>>,
+    custom_task_rx: Option<mpsc::Receiver<String>>,
     /// Manages spawned sub-agents. Wired up during construction but not yet
     /// dispatched to in the current agent loop iteration; retained for
     /// forward-compatible multi-agent orchestration.
@@ -324,6 +325,7 @@ impl<C: Channel> Agent<C> {
             token_counter,
             stt: None,
             update_notify_rx: None,
+            custom_task_rx: None,
             subagent_manager: None,
             response_cache: None,
             parent_tool_use_id: None,
@@ -500,6 +502,10 @@ impl<C: Channel> Agent<C> {
                             tracing::warn!("failed to send update notification: {e}");
                         }
                         continue;
+                    }
+                    Some(prompt) = recv_optional(&mut self.custom_task_rx) => {
+                        tracing::info!("scheduler: injecting custom task as agent turn");
+                        Some(crate::channel::ChannelMessage { text: prompt, attachments: Vec::new() })
                     }
                 };
                 let Some(msg) = incoming else { break };

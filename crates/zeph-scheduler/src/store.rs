@@ -25,7 +25,7 @@ impl JobStore {
         Ok(Self { pool })
     }
 
-    /// Initialize the `scheduled_jobs` table.
+    /// Initialize the `scheduled_jobs` table with oneshot support columns.
     ///
     /// # Errors
     ///
@@ -35,15 +35,26 @@ impl JobStore {
             "CREATE TABLE IF NOT EXISTS scheduled_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                cron_expr TEXT NOT NULL,
+                cron_expr TEXT NOT NULL DEFAULT '',
                 kind TEXT NOT NULL,
                 last_run TEXT,
                 next_run TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
+                status TEXT NOT NULL DEFAULT 'pending',
+                task_mode TEXT NOT NULL DEFAULT 'periodic',
+                run_at TEXT
             )",
         )
         .execute(&self.pool)
         .await?;
+        // Add columns if upgrading from an older schema without them.
+        let _ = sqlx::query(
+            "ALTER TABLE scheduled_jobs ADD COLUMN task_mode TEXT NOT NULL DEFAULT 'periodic'",
+        )
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query("ALTER TABLE scheduled_jobs ADD COLUMN run_at TEXT")
+            .execute(&self.pool)
+            .await;
         Ok(())
     }
 
@@ -58,14 +69,37 @@ impl JobStore {
         cron_expr: &str,
         kind: &str,
     ) -> Result<(), SchedulerError> {
+        self.upsert_job_with_mode(name, cron_expr, kind, "periodic", None)
+            .await
+    }
+
+    /// Upsert a job definition with explicit `task_mode` and optional `run_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    pub async fn upsert_job_with_mode(
+        &self,
+        name: &str,
+        cron_expr: &str,
+        kind: &str,
+        task_mode: &str,
+        run_at: Option<&str>,
+    ) -> Result<(), SchedulerError> {
         sqlx::query(
-            "INSERT INTO scheduled_jobs (name, cron_expr, kind)
-             VALUES (?, ?, ?)
-             ON CONFLICT(name) DO UPDATE SET cron_expr = excluded.cron_expr, kind = excluded.kind",
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(name) DO UPDATE SET
+               cron_expr = excluded.cron_expr,
+               kind = excluded.kind,
+               task_mode = excluded.task_mode,
+               run_at = excluded.run_at",
         )
         .bind(name)
         .bind(cron_expr)
         .bind(kind)
+        .bind(task_mode)
+        .bind(run_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -91,6 +125,47 @@ impl JobStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Mark a one-shot job as done.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    pub async fn mark_done(&self, name: &str) -> Result<(), SchedulerError> {
+        sqlx::query(
+            "UPDATE scheduled_jobs SET status = 'done', last_run = datetime('now') WHERE name = ?",
+        )
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a job by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    pub async fn delete_job(&self, name: &str) -> Result<bool, SchedulerError> {
+        let result = sqlx::query("DELETE FROM scheduled_jobs WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Check if a job with the given name exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query fails.
+    pub async fn job_exists(&self, name: &str) -> Result<bool, SchedulerError> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM scheduled_jobs WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
     }
 
     /// Persist the next scheduled run time for a job (used during init).
@@ -119,6 +194,11 @@ impl JobStore {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row.and_then(|r| r.0))
+    }
+
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 }
 
@@ -188,11 +268,67 @@ mod tests {
         store.init().await.unwrap();
         assert!(store.get_next_run("no_such_job").await.unwrap().is_none());
     }
-}
 
-impl JobStore {
-    #[must_use]
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+    #[tokio::test]
+    async fn job_exists_returns_true_for_existing() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("exists_job", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        assert!(store.job_exists("exists_job").await.unwrap());
+        assert!(!store.job_exists("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_job_removes_row() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("del_job", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        assert!(store.delete_job("del_job").await.unwrap());
+        assert!(!store.job_exists("del_job").await.unwrap());
+        assert!(!store.delete_job("del_job").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_done_sets_status() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job_with_mode(
+                "os_job",
+                "",
+                "health_check",
+                "oneshot",
+                Some("2026-01-01T01:00:00Z"),
+            )
+            .await
+            .unwrap();
+        store.mark_done("os_job").await.unwrap();
+        let row: (String,) =
+            sqlx::query_as("SELECT status FROM scheduled_jobs WHERE name = 'os_job'")
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(row.0, "done");
+    }
+
+    #[tokio::test]
+    async fn duplicate_name_detected() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("dup", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        assert!(store.job_exists("dup").await.unwrap());
     }
 }

@@ -65,6 +65,24 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_custom_task_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
+        self.custom_task_rx = Some(rx);
+        self
+    }
+
+    /// Wrap the current tool executor with an additional executor via `CompositeExecutor`.
+    #[must_use]
+    pub fn add_tool_executor(
+        mut self,
+        extra: impl zeph_tools::executor::ToolExecutor + 'static,
+    ) -> Self {
+        let existing = Arc::clone(&self.tool_executor);
+        let combined = zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(existing), extra);
+        self.tool_executor = Arc::new(combined);
+        self
+    }
+
+    #[must_use]
     pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
         self.tool_orchestrator.max_iterations = max;
         self

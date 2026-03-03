@@ -157,6 +157,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .await?;
 
+    #[cfg(feature = "scheduler")]
+    {
+        if cli.scheduler_disable {
+            app.config_mut().scheduler.enabled = false;
+        }
+        if let Some(tick) = cli.scheduler_tick {
+            app.config_mut().scheduler.tick_interval_secs = tick;
+        }
+    }
+
     if let Some(ref thinking_str) = cli.thinking {
         let thinking = parse_thinking_arg(thinking_str)?;
         if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
@@ -410,7 +420,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "scheduler")]
-    let agent = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
+    let agent = {
+        let (agent, sched_executor) = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
+        if let Some(sched_exec) = sched_executor {
+            agent.add_tool_executor(sched_exec)
+        } else {
+            agent
+        }
+    };
 
     #[cfg(feature = "gateway")]
     if config.gateway.enabled {

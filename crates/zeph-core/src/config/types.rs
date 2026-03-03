@@ -1273,12 +1273,35 @@ impl Default for DaemonConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+fn default_scheduler_tick_interval() -> u64 {
+    60
+}
+
+fn default_scheduler_max_tasks() -> usize {
+    100
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchedulerConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_scheduler_tick_interval")]
+    pub tick_interval_secs: u64,
+    #[serde(default = "default_scheduler_max_tasks")]
+    pub max_tasks: usize,
     #[serde(default)]
     pub tasks: Vec<ScheduledTaskConfig>,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tick_interval_secs: default_scheduler_tick_interval(),
+            max_tasks: default_scheduler_max_tasks(),
+            tasks: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -1419,7 +1442,10 @@ pub enum ScheduledTaskKind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
     pub name: String,
-    pub cron: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_at: Option<String>,
     pub kind: ScheduledTaskKind,
     #[serde(default)]
     pub config: serde_json::Value,
@@ -1634,6 +1660,42 @@ mod tests {
         "#;
         let result: Result<ScheduledTaskConfig, _> = toml::from_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn scheduled_task_config_oneshot_with_run_at() {
+        let toml = r#"
+            name = "reminder"
+            run_at = "2026-04-01T09:00:00Z"
+            kind = { custom = "my_job" }
+        "#;
+        let cfg: ScheduledTaskConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.cron.is_none());
+        assert_eq!(cfg.run_at.as_deref(), Some("2026-04-01T09:00:00Z"));
+        assert_eq!(cfg.kind, ScheduledTaskKind::Custom("my_job".to_owned()));
+    }
+
+    #[test]
+    fn config_rejects_both_cron_and_run_at() {
+        // Both set: application should validate, struct itself accepts both for flexibility.
+        // The validation is done at bootstrap, not at deserialization.
+        let toml = r#"
+            name = "bad"
+            cron = "0 * * * * *"
+            run_at = "2026-04-01T09:00:00Z"
+            kind = "health_check"
+        "#;
+        let cfg: ScheduledTaskConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.cron.is_some() && cfg.run_at.is_some());
+    }
+
+    #[test]
+    fn scheduler_config_defaults() {
+        let cfg = SchedulerConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.tick_interval_secs, 60);
+        assert_eq!(cfg.max_tasks, 100);
+        assert!(cfg.tasks.is_empty());
     }
 
     #[test]

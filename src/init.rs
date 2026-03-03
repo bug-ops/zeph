@@ -47,6 +47,9 @@ pub(crate) struct WizardState {
     pub(crate) orchestrator_fallback_api_key: Option<String>,
     pub(crate) orchestrator_fallback_compatible_name: Option<String>,
     pub(crate) auto_update_check: bool,
+    pub(crate) scheduler_enabled: bool,
+    pub(crate) scheduler_tick_interval_secs: u64,
+    pub(crate) scheduler_max_tasks: usize,
     pub(crate) daemon_enabled: bool,
     pub(crate) daemon_host: String,
     pub(crate) daemon_port: u16,
@@ -73,6 +76,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         vault_backend: "env".into(),
         semantic_enabled: true,
         auto_update_check: true,
+        scheduler_tick_interval_secs: 60,
+        scheduler_max_tasks: 100,
         daemon_host: "127.0.0.1".into(),
         daemon_port: 8080,
         acp_agent_name: "zeph".into(),
@@ -85,6 +90,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_memory(&mut state)?;
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
+    step_scheduler(&mut state)?;
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_review_and_write(&state, output)?;
@@ -174,7 +180,7 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
 }
 
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 2/6: LLM Provider ==\n");
+    println!("== Step 2/9: LLM Provider ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -343,7 +349,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
 }
 
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 3/6: Memory ==\n");
+    println!("== Step 3/9: Memory ==\n");
 
     state.sqlite_path = Some(
         Input::new()
@@ -381,7 +387,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 4/6: Channel ==\n");
+    println!("== Step 4/9: Channel ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -448,7 +454,7 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 1/6: Secrets Backend ==\n");
+    println!("== Step 1/9: Secrets Backend ==\n");
 
     let backends = ["env (environment variables)", "age (encrypted file)"];
     let selection = Select::new()
@@ -587,6 +593,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     apply_daemon_config(&mut config, state);
     apply_acp_config(&mut config, state);
 
+    config.scheduler = zeph_core::config::SchedulerConfig {
+        enabled: state.scheduler_enabled,
+        tick_interval_secs: state.scheduler_tick_interval_secs,
+        max_tasks: state.scheduler_max_tasks,
+        tasks: Vec::new(),
+    };
+
     config
 }
 
@@ -673,7 +686,7 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
 }
 
 fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 5/6: Update Check ==\n");
+    println!("== Step 5/9: Update Check ==\n");
 
     state.auto_update_check = Confirm::new()
         .with_prompt("Enable automatic update checks?")
@@ -684,8 +697,32 @@ fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_scheduler(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 6/9: Scheduler ==\n");
+
+    state.scheduler_enabled = Confirm::new()
+        .with_prompt("Enable background task scheduler?")
+        .default(false)
+        .interact()?;
+
+    if state.scheduler_enabled {
+        state.scheduler_tick_interval_secs = Input::new()
+            .with_prompt("Tick interval in seconds")
+            .default(60u64)
+            .interact_text()?;
+
+        state.scheduler_max_tasks = Input::new()
+            .with_prompt("Maximum scheduled tasks")
+            .default(100usize)
+            .interact_text()?;
+    }
+
+    println!();
+    Ok(())
+}
+
 fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 6a/6: Daemon / A2A Server ==\n");
+    println!("== Step 7/9: Daemon / A2A Server ==\n");
 
     state.daemon_enabled = Confirm::new()
         .with_prompt("Enable A2A daemon server?")
@@ -715,7 +752,7 @@ fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 6b/6: ACP Server (IDE Embedding) ==\n");
+    println!("== Step 8/9: ACP Server (IDE Embedding) ==\n");
 
     state.acp_enabled = Confirm::new()
         .with_prompt("Enable ACP server for IDE embedding?")
@@ -739,7 +776,7 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
-    println!("== Step 6/6: Review & Write ==\n");
+    println!("== Step 9/9: Review & Write ==\n");
 
     let config = build_config(state);
     let toml_str = toml::to_string_pretty(&config)?;

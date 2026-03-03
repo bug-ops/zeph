@@ -202,6 +202,8 @@ max_restart_backoff_secs = 60
 
 [scheduler]
 enabled = false
+tick_interval_secs = 60
+max_tasks = 100
 tasks = []
 
 [tui]
