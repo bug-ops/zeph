@@ -28,19 +28,29 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 
 ## Command palette
 
-The command palette (opened with `/`) includes the following built-in commands:
+The command palette is opened with `:` in normal mode. Type to fuzzy-filter entries, then press Enter to execute.
 
-| Command | Description |
-|---------|-------------|
-| `/ingest <path>` | Ingest documents into Qdrant for RAG retrieval |
-| `/gateway status` | Show gateway server state (on/off, request count) |
-| `/schedule` | Show scheduler status (enabled, tick interval, active task count) |
-| `ViewFilters` | Display output filter hit rates and invocation counts |
-| `daemon:connect` | Attach to a running daemon session |
+| Entry | Description |
+|-------|-------------|
+| `skill:list` | List all loaded skills |
+| `mcp:list` | List MCP servers and registered tools |
+| `memory:stats` | Show SQLite message count and vector store status |
+| `view:cost` | Show token usage and cost breakdown |
+| `view:tools` | List available tools |
+| `view:config` | Show active configuration |
+| `view:autonomy` | Show autonomy/trust level |
+| `view:filters` | Display output filter hit rates and invocation counts |
+| `scheduler:list` | List active scheduled tasks (name, kind, mode, next run) — requires `scheduler` feature |
+| `gateway:status` | Show gateway server state — requires `gateway` feature |
+| `ingest` | Usage hint for `zeph ingest <path>` |
+| `session:new` | Start a new conversation session |
+| `session:history` | Browse session history (`H` shortcut) |
+| `daemon:connect` | Attach to a running daemon — requires `daemon` feature |
 | `daemon:disconnect` | Detach from daemon |
 | `daemon:status` | Show daemon connection state |
-| `session:new` | Start a new conversation session |
-| `app:quit` | Exit the TUI |
+| `app:quit` | Exit the TUI (`q` shortcut) |
+| `app:help` | Show keybindings help (`?` shortcut) |
+| `app:theme` | Toggle dark/light theme |
 
 ## Installation
 

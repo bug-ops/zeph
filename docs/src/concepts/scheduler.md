@@ -269,7 +269,9 @@ let _ = shutdown_tx.send(true); // signal shutdown
 
 ## TUI Integration
 
-When both `tui` and `scheduler` features are enabled, the TUI command palette accepts `/scheduler list` to display active tasks with their next scheduled run. Background task execution is indicated by the system status spinner in the TUI status bar.
+When both `tui` and `scheduler` features are enabled, the command palette includes a `scheduler:list` entry. Open the palette with `:` in normal mode, type `scheduler`, and select the entry to display all active tasks as a table with columns NAME, KIND, MODE, and NEXT RUN.
+
+The task list is refreshed from SQLite every 30 seconds in the background. Background task execution is indicated by the system status spinner in the TUI status bar.
 
 ## Related
 
