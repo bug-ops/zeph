@@ -505,7 +505,10 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(prompt) = recv_optional(&mut self.custom_task_rx) => {
                         tracing::info!("scheduler: injecting custom task as agent turn");
-                        Some(crate::channel::ChannelMessage { text: prompt, attachments: Vec::new() })
+                        let reminder = format!(
+                            "[Scheduled reminder for the user] {prompt}\n\nNotify the user about this reminder. Do not perform the action yourself."
+                        );
+                        Some(crate::channel::ChannelMessage { text: reminder, attachments: Vec::new() })
                     }
                 };
                 let Some(msg) = incoming else { break };
