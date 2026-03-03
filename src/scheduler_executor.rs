@@ -134,6 +134,10 @@ impl SchedulerExecutor {
         let run_at = params
             .run_at
             .parse::<chrono::DateTime<Utc>>()
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(&params.run_at, "%Y-%m-%dT%H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+            })
             .map_err(|_| ToolError::InvalidParams {
                 message: "run_at must be ISO 8601 UTC, e.g. 2026-03-03T18:00:00Z".into(),
             })?;
