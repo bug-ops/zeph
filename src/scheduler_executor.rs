@@ -361,7 +361,10 @@ impl ToolExecutor for SchedulerExecutor {
             let blocks = zeph_tools::executor::extract_fenced_blocks(response, tag);
             if let Some(body) = blocks.into_iter().next() {
                 let params: serde_json::Map<String, serde_json::Value> =
-                    serde_json::from_str(body).unwrap_or_default();
+                    serde_json::from_str(body).unwrap_or_else(|e| {
+                        tracing::warn!(tool = tag, error = %e, "fenced block contains invalid JSON, using empty params");
+                        serde_json::Map::default()
+                    });
                 let call = ToolCall {
                     tool_id: tool_id.into(),
                     params,
@@ -782,5 +785,67 @@ mod tests {
         let dt = dt.unwrap();
         assert!(dt > now + chrono::Duration::seconds(7199));
         assert!(dt <= now + chrono::Duration::seconds(7201));
+    }
+
+    // execute() fenced-block dispatch tests (GAP-02)
+
+    #[tokio::test]
+    async fn execute_fenced_schedule_periodic_dispatches() {
+        let (exec, mut rx) = make_executor().await;
+        let response = "Sure!\n```schedule_periodic\n{\"name\":\"daily\",\"cron\":\"0 0 3 * * *\",\"kind\":\"memory_cleanup\"}\n```";
+        let result = exec.execute(response).await.unwrap();
+        assert!(result.is_some(), "fenced schedule_periodic must dispatch");
+        assert!(result.unwrap().summary.contains("daily"));
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_fenced_schedule_deferred_dispatches() {
+        let (exec, mut rx) = make_executor().await;
+        let response = "```schedule_deferred\n{\"name\":\"soon\",\"run_at\":\"+2h\",\"kind\":\"custom\",\"task\":\"ping\"}\n```";
+        let result = exec.execute(response).await.unwrap();
+        assert!(result.is_some(), "fenced schedule_deferred must dispatch");
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_fenced_cancel_task_dispatches() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("to_cancel", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        let store = Arc::new(store);
+        let (tx, mut rx) = mpsc::channel(16);
+        let exec = SchedulerExecutor::new(tx, store);
+
+        let response = "```cancel_task\n{\"name\":\"to_cancel\"}\n```";
+        let result = exec.execute(response).await.unwrap();
+        assert!(result.is_some(), "fenced cancel_task must dispatch");
+        assert!(result.unwrap().summary.contains("Cancelled"));
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_no_fenced_block_returns_none() {
+        let (exec, _rx) = make_executor().await;
+        let response = "This is a plain text response with no fenced blocks.";
+        let result = exec.execute(response).await.unwrap();
+        assert!(result.is_none(), "no fenced block must return None");
+    }
+
+    #[tokio::test]
+    async fn execute_invalid_json_in_fenced_block_proceeds_with_empty_params() {
+        let (exec, _rx) = make_executor().await;
+        // Invalid JSON in fenced block — serde_json::from_str returns unwrap_or_default (empty map)
+        // which causes deserialization of params to fail with ToolError.
+        let response = "```schedule_periodic\nnot valid json\n```";
+        let result = exec.execute(response).await;
+        assert!(
+            result.is_err(),
+            "invalid JSON in fenced block must propagate as error"
+        );
     }
 }

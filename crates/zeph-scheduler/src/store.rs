@@ -338,6 +338,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_jobs_excludes_done_jobs() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job_with_mode(
+                "done_job",
+                "",
+                "health_check",
+                "oneshot",
+                Some("2026-01-01T01:00:00Z"),
+            )
+            .await
+            .unwrap();
+        store.mark_done("done_job").await.unwrap();
+        let jobs = store.list_jobs().await.unwrap();
+        assert!(
+            jobs.iter().all(|(name, ..)| name != "done_job"),
+            "list_jobs must not return done jobs"
+        );
+    }
+
+    #[tokio::test]
     async fn duplicate_name_detected() {
         let pool = test_pool().await;
         let store = JobStore::new(pool);

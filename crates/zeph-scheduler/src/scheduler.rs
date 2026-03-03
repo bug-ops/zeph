@@ -8,6 +8,7 @@ use chrono::Utc;
 use tokio::sync::{mpsc, watch};
 
 use crate::error::SchedulerError;
+use crate::sanitize::sanitize_task_prompt;
 use crate::store::JobStore;
 use crate::task::{ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode};
 
@@ -312,12 +313,12 @@ impl Scheduler {
                     // prompt directly into the agent loop through `custom_task_tx` for cases
                     // where no handler was registered (e.g. scheduler created without one).
                     if let (TaskKind::Custom(_), Some(tx)) = (&task.kind, &self.custom_task_tx) {
-                        let prompt = task
+                        let raw = task
                             .config
                             .get("task")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("Scheduled task triggered.")
-                            .to_owned();
+                            .unwrap_or("Scheduled task triggered.");
+                        let prompt = sanitize_task_prompt(raw);
                         let _ = tx.try_send(prompt);
                         if let Err(e) = self.store.mark_done(&task.name).await {
                             tracing::warn!(task = %task.name, "failed to mark done: {e}");
