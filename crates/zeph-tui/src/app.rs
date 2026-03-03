@@ -863,6 +863,35 @@ impl App {
                     "Gateway status is not yet available in TUI mode.".to_owned(),
                 );
             }
+            TuiCommand::SchedulerList => {
+                let msg = if self.metrics.scheduled_tasks.is_empty() {
+                    "No scheduled tasks.".to_owned()
+                } else {
+                    let lines: Vec<String> = self
+                        .metrics
+                        .scheduled_tasks
+                        .iter()
+                        .map(|t| {
+                            let next = if t[3].is_empty() {
+                                "—".to_owned()
+                            } else {
+                                t[3].clone()
+                            };
+                            format!("  {:30}  {:15}  {:8}  {}", t[0], t[1], t[2], next)
+                        })
+                        .collect();
+                    format!(
+                        "Scheduled tasks ({}):\n  {:30}  {:15}  {:8}  {}\n{}",
+                        self.metrics.scheduled_tasks.len(),
+                        "NAME",
+                        "KIND",
+                        "MODE",
+                        "NEXT RUN",
+                        lines.join("\n")
+                    )
+                };
+                self.push_system_message(msg);
+            }
         }
     }
 

@@ -419,10 +419,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent.with_subagent_manager(mgr)
     };
 
+    #[cfg(all(feature = "scheduler", feature = "tui"))]
+    let mut sched_store_for_tui: Option<std::sync::Arc<zeph_scheduler::JobStore>> = None;
+
     #[cfg(feature = "scheduler")]
     let agent = {
         let (agent, sched_executor) = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
         if let Some(sched_exec) = sched_executor {
+            #[cfg(feature = "tui")]
+            {
+                sched_store_for_tui = Some(sched_exec.store());
+            }
             agent.add_tool_executor(sched_exec)
         } else {
             agent
@@ -462,6 +469,33 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             m.model_name.clone_from(&config.llm.model);
         });
         tui_metrics_rx = Some(rx);
+
+        #[cfg(feature = "scheduler")]
+        if let Some(store) = sched_store_for_tui.take() {
+            let tx_clone = tx.clone();
+            let mut shutdown = shutdown_rx.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if let Ok(jobs) = store.list_jobs().await {
+                                tx_clone.send_modify(|m| {
+                                    m.scheduled_tasks = jobs
+                                        .into_iter()
+                                        .map(|(name, kind, mode, next_run)| {
+                                            [name, kind, mode, next_run]
+                                        })
+                                        .collect();
+                                });
+                            }
+                        }
+                        _ = shutdown.changed() => break,
+                    }
+                }
+            });
+        }
+
         agent.with_metrics(tx)
     } else {
         tui_metrics_rx = None;

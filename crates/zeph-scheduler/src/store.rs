@@ -196,6 +196,23 @@ impl JobStore {
         Ok(row.and_then(|r| r.0))
     }
 
+    /// List all active (non-done) jobs. Returns `(name, kind, task_mode, next_run)` tuples.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query fails.
+    pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
+        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT name, kind, task_mode, next_run FROM scheduled_jobs WHERE done = 0 ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, kind, mode, next_run)| (name, kind, mode, next_run.unwrap_or_default()))
+            .collect())
+    }
+
     #[must_use]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool

@@ -29,6 +29,8 @@ pub enum TuiCommand {
     Ingest,
     // Gateway
     GatewayStatus,
+    // Scheduler
+    SchedulerList,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -186,6 +188,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GatewayStatus,
         },
+        CommandEntry {
+            id: "scheduler:list",
+            label: "List scheduled tasks",
+            category: "scheduler",
+            shortcut: None,
+            command: TuiCommand::SchedulerList,
+        },
     ];
     EXTRA
 }
@@ -261,8 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_three_commands() {
-        assert_eq!(extra_command_registry().len(), 3);
+    fn extra_registry_has_four_commands() {
+        assert_eq!(extra_command_registry().len(), 4);
     }
 
     #[test]
@@ -271,6 +280,7 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "view:filters"));
         assert!(all.iter().any(|e| e.id == "ingest"));
         assert!(all.iter().any(|e| e.id == "gateway:status"));
+        assert!(all.iter().any(|e| e.id == "scheduler:list"));
     }
 
     #[test]

@@ -62,6 +62,8 @@ pub struct MetricsSnapshot {
     pub cancellations: u64,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,
+    /// Scheduled task summaries: `[name, kind, mode, next_run]`.
+    pub scheduled_tasks: Vec<[String; 4]>,
 }
 
 pub struct MetricsCollector {

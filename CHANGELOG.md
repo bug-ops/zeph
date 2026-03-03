@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `SchedulerExecutor`: fenced-block dispatch (`InvocationHint::FencedBlock`) for Ollama legacy text-extraction path — model can now invoke scheduler tools without native function calling (#1141)
 - Scheduler enabled by default (`SchedulerConfig::default().enabled = true`); updated `config/default.toml` and snapshot (#1141)
 - Scheduler `custom` task injection prefixed with `[Scheduled task]`; `SKILL.md` documents reminder-for-user vs agent-action patterns (#1141)
+- TUI `scheduler:list` command palette entry: displays all active scheduled tasks (name, kind, mode, next run) from `MetricsSnapshot.scheduled_tasks`; `JobStore::list_jobs()` queries non-done jobs; a 30-second background refresh task populates the metrics when both `tui` and `scheduler` features are enabled (#1141)
 
 ## [0.12.5] - 2026-03-02
 
