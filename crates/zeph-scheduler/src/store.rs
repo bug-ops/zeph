@@ -203,7 +203,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
         let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT name, kind, task_mode, next_run FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
+            "SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -357,6 +357,29 @@ mod tests {
         assert!(
             jobs.iter().all(|(name, ..)| name != "done_job"),
             "list_jobs must not return done jobs"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_jobs_uses_run_at_for_oneshot_when_next_run_is_null() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job_with_mode(
+                "oneshot_job",
+                "",
+                "custom",
+                "oneshot",
+                Some("2026-06-01T10:00:00Z"),
+            )
+            .await
+            .unwrap();
+        let jobs = store.list_jobs().await.unwrap();
+        let (_, _, _, next_run) = jobs.iter().find(|(n, ..)| n == "oneshot_job").unwrap();
+        assert_eq!(
+            next_run, "2026-06-01T10:00:00Z",
+            "run_at must be shown as next_run for oneshot jobs"
         );
     }
 
