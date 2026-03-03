@@ -67,6 +67,18 @@ First matching rule wins. Default: `ask`.
 
 The `ToolExecutor` trait is made object-safe via `ErasedToolExecutor`, enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch. This allows `Agent<C>` to hold any tool executor combination without a generic type parameter, simplifying the agent signature and making it easier to compose executors at runtime.
 
+## Scheduler Tools
+
+When the `scheduler` feature is enabled, three tools are injected into the LLM tool catalog:
+
+| Tool | Description |
+|------|-------------|
+| `schedule_periodic` | Register a recurring task with a 6-field cron expression |
+| `schedule_deferred` | Register a one-shot task to fire at a specific ISO 8601 UTC time |
+| `cancel_task` | Cancel a scheduled task by name |
+
+These tools are backed by `SchedulerExecutor`, which forwards requests over an mpsc channel to the background scheduler loop. See [Scheduler](scheduler.md) for the full reference.
+
 ## Deep Dives
 
 - [Tool System](../advanced/tools.md) — full reference with filter pipeline, native tool use, iteration control

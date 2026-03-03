@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- PERF-SC-04: `Scheduler::tick()` `Ok(None)` branch now computes and persists `next_run` via the cron schedule instead of treating missing `next_run` as "due now" — cron expressions are now respected at runtime (#1133)
+- `tick_interval_secs` from `[scheduler]` config and `--scheduler-tick` CLI flag now control the actual tick interval; previously hardcoded to 60s; zero/sub-1s values are clamped to 1s (#1136)
+
+### Added
+
+- `TaskMode` enum (`Periodic`/`OneShot`) and `TaskDescriptor` + `SchedulerMessage` mpsc channel: `Scheduler::new()` returns `(Self, Sender<SchedulerMessage>)` eliminating `Arc<Mutex>` deadlock risk; oneshot tasks are removed from the task list after execution (#1134)
+- `CustomTaskHandler`: injects `config["task"]` as a new agent turn via a dedicated mpsc channel at the scheduled time (same pattern as update notifications) (#1134)
+- `SchedulerExecutor` in `zeph-core`: LLM-facing `ToolExecutor` exposing three tools — `schedule_periodic` (6-field cron), `schedule_deferred` (ISO 8601 UTC future timestamp), `cancel_task`; all `send` paths use `try_send` to avoid blocking agent turns (#1135)
+- `zeph_scheduler::sanitize::sanitize_task_prompt`: shared sanitization function — truncates at 512 chars (char boundary safe), strips control characters; prevents prompt injection via the `task` field (#1135)
+- `JobStore` extended: `mark_done`, `job_exists`, `delete_job`, `upsert_job_with_mode`; new SQLite migration adding `task_mode` and `run_at` columns; `max_tasks` enforced in `register_descriptor` (#1134)
+- `SchedulerConfig` extended with `tick_interval_secs` (default 60) and `max_tasks` (default 100) fields (#1136)
+- `ScheduledTaskConfig` extended with `run_at: Option<String>` for one-shot tasks; exactly one of `cron` or `run_at` must be set — invalid entries are skipped at bootstrap with a warning (#1136)
+- `--scheduler-tick <secs>` and `--scheduler-disable` CLI flags (#1136)
+- `--init` wizard scheduler section: enable/disable, tick interval, max tasks (#1136)
+- TUI `/schedule` input command and scheduler status line in footer (#1136)
+- `skills/scheduler/SKILL.md`: teaches the agent to create periodic and deferred tasks with `schedule_periodic`, `schedule_deferred`, and `cancel_task` tools; includes cron format reference, built-in kinds, validation rules, and trigger words (#1137)
+
 ## [0.12.5] - 2026-03-02
 
 ### Added

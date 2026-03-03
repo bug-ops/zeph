@@ -43,7 +43,7 @@ zeph        # start the agent
 | **Instruction files** | Drop `zeph.md` (or `CLAUDE.md` / `AGENTS.md`) in your project root. Zeph auto-detects and injects them into every system prompt — project rules, conventions, and domain knowledge applied automatically. [→ Instruction Files](https://bug-ops.github.io/zeph/concepts/instruction-files.html) |
 | **Defense-in-depth** | Shell sandbox, SSRF protection, skill trust quarantine, secret zeroization, audit logging, `unsafe_code = "deny"` workspace-wide. [→ Security](https://bug-ops.github.io/zeph/reference/security.html) |
 | **Document RAG** | `zeph ingest <path>` indexes `.txt`, `.md`, `.pdf` into Qdrant. Relevant chunks surface automatically on each turn. [→ Document loaders](https://bug-ops.github.io/zeph/advanced/document-loaders.html) |
-| **Daemon & scheduler** | HTTP webhook gateway with bearer auth, cron-based task scheduler with SQLite persistence, background mode. [→ Daemon](https://bug-ops.github.io/zeph/advanced/daemon.html) |
+| **Daemon & scheduler** | HTTP webhook gateway with bearer auth. Cron-based periodic tasks and one-shot deferred tasks with SQLite persistence — add, update, or cancel tasks at runtime via natural language using the built-in `scheduler` skill. Background mode. [→ Daemon](https://bug-ops.github.io/zeph/advanced/daemon.html) |
 | **Single binary** | ~15 MB, no runtime dependencies, ~50 ms startup, ~20 MB idle memory. |
 
 ```text
