@@ -66,6 +66,14 @@ pub struct SubAgentConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
+    /// User-level agents directory.
+    ///
+    /// Set to an absolute path to override the platform default (`~/.config/zeph/agents`
+    /// on Linux/macOS, `%APPDATA%/zeph/agents` on Windows). Note: tilde (`~`) expansion
+    /// is not supported — use an absolute path or omit this field to use the platform default.
+    /// Set to empty string to disable the user-level directory entirely.
+    #[serde(default)]
+    pub user_agents_dir: Option<PathBuf>,
     /// Default permission mode applied to sub-agents that do not specify one.
     ///
     /// Only takes effect when the sub-agent definition leaves `permission_mode` at its
@@ -91,6 +99,7 @@ impl Default for SubAgentConfig {
             enabled: false,
             max_concurrent: default_max_concurrent(),
             extra_dirs: Vec::new(),
+            user_agents_dir: None,
             default_permission_mode: None,
             default_disallowed_tools: Vec::new(),
             allow_bypass_permissions: false,

@@ -32,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `#[serde(deny_unknown_fields)]` on `RawSubAgentDef`: YAML frontmatter typos (e.g. `permisions:`) are now rejected with a clear parse error instead of being silently ignored (#1183)
 - Doc comment on `FilteredToolExecutor::is_allowed()` clarifying that tool ID matching is exact string equality and MCP compound IDs (e.g. `mcp__server__tool`) must be listed in full in `tools.except` (#1181)
 - `PermissionMode` re-exported from `zeph-core::subagent` public API
+- Sub-agent scope & priority system: agents loaded from four scopes with explicit priority — CLI (`--agents` flag) → project (`.zeph/agents/`) → user (`~/.config/zeph/agents/`) → config `extra_dirs`; first definition wins on name collision (#1145)
+- `--agents <path>` CLI flag: one or more `.md` files or directories for session-scoped sub-agent definitions; non-existent paths are a hard error
+- `SubAgentConfig.user_agents_dir`: configurable user-level agents directory; empty string disables user scope
+- `/agent list` now shows scope labels: `(cli)`, `(project)`, `(user)`, `(config)` per agent
+- `SubAgentDef.source`: scope label field on every loaded definition for diagnostics
+- `load_with_boundary()`: canonicalizes paths, enforces directory boundaries (symlink escape prevention), caps at 100 entries per directory
+- `--init` wizard: new prompt for user-level agents directory path
 
 - `serde_norway = "0.9.42"` dependency for YAML parsing in sub-agent definitions (replaces TOML-only parsing)
 - `FrontmatterFormat` enum in `zeph-core` routes sub-agent definitions to the correct deserializer based on detected delimiter

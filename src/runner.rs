@@ -485,13 +485,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let agent = {
         let mut mgr = zeph_core::subagent::SubAgentManager::new(config.agents.max_concurrent);
-        let mut agent_dirs: Vec<std::path::PathBuf> =
-            vec![std::path::PathBuf::from(".zeph/agents")];
-        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-            agent_dirs.push(home.join(".config/zeph/agents"));
-        }
-        agent_dirs.extend(config.agents.extra_dirs.clone());
-        if let Err(e) = mgr.load_definitions(&agent_dirs) {
+        let agent_paths = match zeph_core::subagent::resolve_agent_paths(
+            &cli.agents,
+            config.agents.user_agents_dir.as_ref(),
+            &config.agents.extra_dirs,
+        ) {
+            Ok(paths) => paths,
+            Err(e) => {
+                return Err(anyhow::anyhow!("{e}"));
+            }
+        };
+        if let Err(e) = mgr.load_definitions_with_sources(
+            &agent_paths,
+            &cli.agents,
+            config.agents.user_agents_dir.as_ref(),
+            &config.agents.extra_dirs,
+        ) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
         agent

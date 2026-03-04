@@ -1114,7 +1114,11 @@ impl<C: Channel> Agent<C> {
                 }
                 let mut out = String::from("Available sub-agents:\n");
                 for d in defs {
-                    let _ = writeln!(out, "  {} — {}", d.name, d.description);
+                    if let Some(ref src) = d.source {
+                        let _ = writeln!(out, "  {} — {} ({})", d.name, d.description, src);
+                    } else {
+                        let _ = writeln!(out, "  {} — {}", d.name, d.description);
+                    }
                 }
                 Some(out)
             }
@@ -2947,6 +2951,7 @@ pub(super) mod agent_tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: "You are helpful.".into(),
+            source: None,
         });
         agent.subagent_manager = Some(mgr);
         agent
@@ -3240,6 +3245,7 @@ mod compaction_e2e {
             },
             skills: SkillFilter::default(),
             system_prompt: "You are a worker.".into(),
+            source: None,
         });
         agent.subagent_manager = Some(mgr);
 
@@ -3348,6 +3354,7 @@ mod compaction_e2e {
             },
             skills: SkillFilter::default(),
             system_prompt: "You need a secret.".into(),
+            source: None,
         });
         agent.subagent_manager = Some(mgr);
 

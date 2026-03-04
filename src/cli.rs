@@ -74,6 +74,11 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "MODE")]
     pub(crate) thinking: Option<String>,
 
+    /// Additional sub-agent definition paths (file or directory containing .md files).
+    /// Can be specified multiple times. Takes highest priority over all other sources.
+    #[arg(long = "agents", value_name = "PATH")]
+    pub(crate) agents: Vec<PathBuf>,
+
     /// Override scheduler tick interval in seconds (requires scheduler feature)
     #[cfg(feature = "scheduler")]
     #[arg(long, value_name = "SECS")]

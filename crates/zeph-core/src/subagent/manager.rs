@@ -328,6 +328,31 @@ impl SubAgentManager {
         Ok(())
     }
 
+    /// Load definitions with full scope context for source tracking and security checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError`] if a CLI-sourced definition file fails to parse.
+    pub fn load_definitions_with_sources(
+        &mut self,
+        ordered_paths: &[PathBuf],
+        cli_agents: &[PathBuf],
+        config_user_dir: Option<&PathBuf>,
+        extra_dirs: &[PathBuf],
+    ) -> Result<(), SubAgentError> {
+        self.definitions = SubAgentDef::load_all_with_sources(
+            ordered_paths,
+            cli_agents,
+            config_user_dir,
+            extra_dirs,
+        )?;
+        tracing::info!(
+            count = self.definitions.len(),
+            "sub-agent definitions loaded"
+        );
+        Ok(())
+    }
+
     /// Return all loaded definitions.
     #[must_use]
     pub fn definitions(&self) -> &[SubAgentDef] {
