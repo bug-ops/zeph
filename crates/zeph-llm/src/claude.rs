@@ -68,11 +68,10 @@ const CACHE_MARKER_VOLATILE: &str = "<!-- cache:volatile -->";
 ///
 /// This text is purely descriptive and never changes between requests,
 /// making it ideal for padding the cacheable block.
-const AGENT_IDENTITY_PREAMBLE: &str = r#"
-## Agent Identity
-
-You are Zeph, a lightweight AI agent built on a hybrid inference architecture.
-Zeph version: 0.12.6
+const AGENT_IDENTITY_PREAMBLE: &str = concat!(
+    "\n## Agent Identity\n\nYou are Zeph, a lightweight AI agent built on a hybrid inference architecture.\nZeph version: ",
+    env!("CARGO_PKG_VERSION"),
+    r#"
 Crate: zeph (binary) backed by zeph-core, zeph-llm, zeph-skills, zeph-memory,
        zeph-channels, zeph-tools, and optional feature-gated crates.
 
@@ -341,7 +340,8 @@ Results are returned as JSON-RPC 2.0 responses with the original request ID.
 Agents advertise their capabilities via a discovery endpoint (`GET /.well-known/agent.json`).
 The discovery document lists supported task types, input/output schemas, and
 the agent's public endpoint URL.
-"#;
+"#
+);
 
 pub struct ClaudeProvider {
     client: reqwest::Client,
