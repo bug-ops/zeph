@@ -6108,6 +6108,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_norway"
+version = "0.9.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e408f29489b5fd500fab51ff1484fc859bb655f32c671f307dcd733b72e8168c"
+dependencies = [
+ "indexmap 2.13.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml-norway",
+]
+
+[[package]]
 name = "serde_path_to_error"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8040,6 +8053,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsafe-libyaml-norway"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9303,6 +9322,7 @@ dependencies = [
  "criterion",
  "dirs",
  "futures",
+ "indoc",
  "insta",
  "notify",
  "notify-debouncer-mini",
@@ -9312,6 +9332,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "serde_norway",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",

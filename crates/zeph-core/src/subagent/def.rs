@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use super::error::SubAgentError;
 
+/// Maximum allowed size for a sub-agent definition file (256 KiB).
+///
+/// Files larger than this are rejected before parsing to cap memory usage.
+const MAX_DEF_SIZE: usize = 256 * 1024;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +61,9 @@ pub struct SkillFilter {
     pub exclude: Vec<String>,
 }
 
-// ── Raw TOML deserialization structs ─────────────────────────────────────────
+// ── Raw deserialization structs ───────────────────────────────────────────────
+// These work for both YAML and TOML deserializers — only the deserializer call
+// differs based on detected frontmatter format.
 
 #[derive(Deserialize)]
 struct RawSubAgentDef {
@@ -121,11 +128,26 @@ fn default_ttl() -> u64 {
     300
 }
 
-// ── Parser ────────────────────────────────────────────────────────────────────
+// ── Frontmatter format detection ──────────────────────────────────────────────
 
-/// Split TOML frontmatter from markdown body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrontmatterFormat {
+    Yaml,
+    Toml,
+}
+
+/// Split frontmatter from markdown body, detecting format from opening delimiter.
 ///
-/// Expected format:
+/// YAML frontmatter (primary):
+/// ```text
+/// ---
+/// <yaml content>
+/// ---
+///
+/// <body>
+/// ```
+///
+/// TOML frontmatter (deprecated):
 /// ```text
 /// +++
 /// <toml content>
@@ -133,60 +155,125 @@ fn default_ttl() -> u64 {
 ///
 /// <body>
 /// ```
-fn split_toml_frontmatter<'a>(
+fn split_frontmatter<'a>(
     content: &'a str,
     path: &str,
-) -> Result<(&'a str, &'a str), SubAgentError> {
+) -> Result<(&'a str, &'a str, FrontmatterFormat), SubAgentError> {
     let make_err = |reason: &str| SubAgentError::Parse {
         path: path.to_owned(),
         reason: reason.to_owned(),
     };
 
-    let rest = content
+    if let Some(rest) = content
+        .strip_prefix("---")
+        .and_then(|s| s.strip_prefix('\n').or_else(|| s.strip_prefix("\r\n")))
+    {
+        // YAML: closing delimiter is \n---\n or \n--- at EOF.
+        // Note: `split_once("\n---")` matches `\r\n---` because `\r\n` contains `\n`.
+        // The leading `\r` is left in `yaml_str` but removed by CRLF normalization in
+        // `parse_with_path`. Do not remove that normalization without updating this search.
+        let (yaml_str, after) = rest
+            .split_once("\n---")
+            .ok_or_else(|| make_err("missing closing `---` delimiter for YAML frontmatter"))?;
+        let body = after
+            .strip_prefix('\n')
+            .or_else(|| after.strip_prefix("\r\n"))
+            .unwrap_or(after);
+        return Ok((yaml_str, body, FrontmatterFormat::Yaml));
+    }
+
+    if let Some(rest) = content
         .strip_prefix("+++")
         .and_then(|s| s.strip_prefix('\n').or_else(|| s.strip_prefix("\r\n")))
-        .ok_or_else(|| make_err("missing opening `+++` delimiter"))?;
+    {
+        // Same CRLF note as YAML branch above: trailing `\r` is cleaned by normalization.
+        let (toml_str, after) = rest
+            .split_once("\n+++")
+            .ok_or_else(|| make_err("missing closing `+++` delimiter for TOML frontmatter"))?;
+        let body = after
+            .strip_prefix('\n')
+            .or_else(|| after.strip_prefix("\r\n"))
+            .unwrap_or(after);
+        return Ok((toml_str, body, FrontmatterFormat::Toml));
+    }
 
-    let (toml_str, after) = rest
-        .split_once("\n+++")
-        .ok_or_else(|| make_err("missing closing `+++` delimiter"))?;
-
-    // body starts after optional newline following the closing +++
-    let body = after
-        .strip_prefix('\n')
-        .or_else(|| after.strip_prefix("\r\n"))
-        .unwrap_or(after);
-
-    Ok((toml_str, body))
+    Err(make_err(
+        "missing frontmatter delimiters: expected `---` (YAML) or `+++` (TOML, deprecated)",
+    ))
 }
 
 impl SubAgentDef {
-    /// Parse a sub-agent definition from its markdown+TOML frontmatter content.
+    /// Parse a sub-agent definition from its frontmatter+markdown content.
+    ///
+    /// The primary format uses YAML frontmatter delimited by `---`:
+    ///
+    /// ```text
+    /// ---
+    /// name: my-agent
+    /// description: Does something useful
+    /// model: claude-sonnet-4-20250514
+    /// tools:
+    ///   allow:
+    ///     - shell
+    /// permissions:
+    ///   max_turns: 10
+    /// skills:
+    ///   include:
+    ///     - "git-*"
+    /// ---
+    ///
+    /// You are a helpful agent.
+    /// ```
+    ///
+    /// TOML frontmatter (`+++`) is supported as a deprecated fallback and will emit a
+    /// `tracing::warn!` message. It will be removed in v1.0.0.
     ///
     /// # Errors
     ///
     /// Returns [`SubAgentError::Parse`] if the frontmatter delimiters are missing or the
-    /// TOML is malformed, and [`SubAgentError::Invalid`] if required fields are empty or
+    /// content is malformed, and [`SubAgentError::Invalid`] if required fields are empty or
     /// `tools.allow` and `tools.deny` are both specified.
     pub fn parse(content: &str) -> Result<Self, SubAgentError> {
         Self::parse_with_path(content, "<unknown>")
     }
 
     fn parse_with_path(content: &str, path: &str) -> Result<Self, SubAgentError> {
-        let (toml_str, body) = split_toml_frontmatter(content, path)?;
+        let (frontmatter_str, body, format) = split_frontmatter(content, path)?;
 
-        // Normalize CRLF in the TOML block — the `toml` crate rejects bare `\r`.
-        let toml_normalized;
-        let toml_str = if toml_str.contains('\r') {
-            toml_normalized = toml_str.replace("\r\n", "\n").replace('\r', "\n");
-            &toml_normalized
-        } else {
-            toml_str
+        let raw: RawSubAgentDef = match format {
+            FrontmatterFormat::Yaml => {
+                // Normalize CRLF so numeric/bool fields parse correctly on Windows line endings.
+                let yaml_normalized;
+                let yaml_str = if frontmatter_str.contains('\r') {
+                    yaml_normalized = frontmatter_str.replace("\r\n", "\n").replace('\r', "\n");
+                    &yaml_normalized
+                } else {
+                    frontmatter_str
+                };
+                serde_norway::from_str(yaml_str).map_err(|e| SubAgentError::Parse {
+                    path: path.to_owned(),
+                    reason: e.to_string(),
+                })?
+            }
+            FrontmatterFormat::Toml => {
+                tracing::warn!(
+                    path,
+                    "sub-agent definition uses deprecated +++ TOML frontmatter, migrate to --- YAML"
+                );
+                // Normalize CRLF — the `toml` crate rejects bare `\r`.
+                let toml_normalized;
+                let toml_str = if frontmatter_str.contains('\r') {
+                    toml_normalized = frontmatter_str.replace("\r\n", "\n").replace('\r', "\n");
+                    &toml_normalized
+                } else {
+                    frontmatter_str
+                };
+                toml::from_str(toml_str).map_err(|e| SubAgentError::Parse {
+                    path: path.to_owned(),
+                    reason: e.to_string(),
+                })?
+            }
         };
-        let raw: RawSubAgentDef = toml::from_str(toml_str).map_err(|e| SubAgentError::Parse {
-            path: path.to_owned(),
-            reason: e.to_string(),
-        })?;
 
         if raw.name.trim().is_empty() {
             return Err(SubAgentError::Invalid("name must not be empty".into()));
@@ -194,6 +281,24 @@ impl SubAgentDef {
         if raw.description.trim().is_empty() {
             return Err(SubAgentError::Invalid(
                 "description must not be empty".into(),
+            ));
+        }
+        if raw
+            .name
+            .chars()
+            .any(|c| (c < '\x20' && c != '\t') || c == '\x7F')
+        {
+            return Err(SubAgentError::Invalid(
+                "name must not contain control characters".into(),
+            ));
+        }
+        if raw
+            .description
+            .chars()
+            .any(|c| (c < '\x20' && c != '\t') || c == '\x7F')
+        {
+            return Err(SubAgentError::Invalid(
+                "description must not contain control characters".into(),
             ));
         }
 
@@ -233,13 +338,24 @@ impl SubAgentDef {
     ///
     /// # Errors
     ///
-    /// Returns [`SubAgentError::Parse`] if the file cannot be read or parsed.
+    /// Returns [`SubAgentError::Parse`] if the file cannot be read, exceeds 256 KiB, or fails
+    /// to parse.
     pub fn load(path: &Path) -> Result<Self, SubAgentError> {
+        let path_str = path.display().to_string();
         let content = std::fs::read_to_string(path).map_err(|e| SubAgentError::Parse {
-            path: path.display().to_string(),
+            path: path_str.clone(),
             reason: e.to_string(),
         })?;
-        Self::parse_with_path(&content, &path.display().to_string())
+        if content.len() > MAX_DEF_SIZE {
+            return Err(SubAgentError::Parse {
+                path: path_str.clone(),
+                reason: format!(
+                    "definition file exceeds maximum size of {} KiB",
+                    MAX_DEF_SIZE / 1024
+                ),
+            });
+        }
+        Self::parse_with_path(&content, &path_str)
     }
 
     /// Load all definitions from a list of directories.
@@ -291,36 +407,211 @@ impl SubAgentDef {
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
 
-    const FULL_DEF: &str = r#"+++
-name = "code-reviewer"
-description = "Reviews code changes for correctness and style"
-model = "claude-sonnet-4-20250514"
+    // ── YAML fixtures (primary format) ─────────────────────────────────────────
 
-[tools]
-allow = ["shell", "web_scrape"]
+    const FULL_DEF_YAML: &str = indoc! {"
+        ---
+        name: code-reviewer
+        description: Reviews code changes for correctness and style
+        model: claude-sonnet-4-20250514
+        tools:
+          allow:
+            - shell
+            - web_scrape
+        permissions:
+          secrets:
+            - github-token
+          max_turns: 10
+          background: false
+          timeout_secs: 300
+          ttl_secs: 120
+        skills:
+          include:
+            - \"git-*\"
+            - \"rust-*\"
+          exclude:
+            - \"deploy-*\"
+        ---
 
-[permissions]
-secrets = ["github-token"]
-max_turns = 10
-background = false
-timeout_secs = 300
-ttl_secs = 120
+        You are a code reviewer. Report findings with severity.
+    "};
 
-[skills]
-include = ["git-*", "rust-*"]
-exclude = ["deploy-*"]
-+++
+    const MINIMAL_DEF_YAML: &str = indoc! {"
+        ---
+        name: bot
+        description: A bot
+        ---
 
-You are a code reviewer. Report findings with severity.
-"#;
+        Do things.
+    "};
 
-    const MINIMAL_DEF: &str = "+++\nname = \"bot\"\ndescription = \"A bot\"\n+++\n\nDo things.\n";
+    // ── TOML fixtures (deprecated fallback) ────────────────────────────────────
+
+    const FULL_DEF_TOML: &str = indoc! {"
+        +++
+        name = \"code-reviewer\"
+        description = \"Reviews code changes for correctness and style\"
+        model = \"claude-sonnet-4-20250514\"
+
+        [tools]
+        allow = [\"shell\", \"web_scrape\"]
+
+        [permissions]
+        secrets = [\"github-token\"]
+        max_turns = 10
+        background = false
+        timeout_secs = 300
+        ttl_secs = 120
+
+        [skills]
+        include = [\"git-*\", \"rust-*\"]
+        exclude = [\"deploy-*\"]
+        +++
+
+        You are a code reviewer. Report findings with severity.
+    "};
+
+    const MINIMAL_DEF_TOML: &str = indoc! {"
+        +++
+        name = \"bot\"
+        description = \"A bot\"
+        +++
+
+        Do things.
+    "};
+
+    // ── YAML tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_yaml_full_definition() {
+        let def = SubAgentDef::parse(FULL_DEF_YAML).unwrap();
+        assert_eq!(def.name, "code-reviewer");
+        assert_eq!(
+            def.description,
+            "Reviews code changes for correctness and style"
+        );
+        assert_eq!(def.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert!(matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]));
+        assert_eq!(def.permissions.max_turns, 10);
+        assert_eq!(def.permissions.secrets, ["github-token"]);
+        assert_eq!(def.skills.include, ["git-*", "rust-*"]);
+        assert_eq!(def.skills.exclude, ["deploy-*"]);
+        assert!(def.system_prompt.contains("code reviewer"));
+    }
+
+    #[test]
+    fn parse_yaml_minimal_definition() {
+        let def = SubAgentDef::parse(MINIMAL_DEF_YAML).unwrap();
+        assert_eq!(def.name, "bot");
+        assert_eq!(def.description, "A bot");
+        assert!(def.model.is_none());
+        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_eq!(def.permissions.max_turns, 20);
+        assert_eq!(def.permissions.timeout_secs, 600);
+        assert_eq!(def.permissions.ttl_secs, 300);
+        assert!(!def.permissions.background);
+        assert_eq!(def.system_prompt, "Do things.");
+    }
+
+    #[test]
+    fn parse_yaml_with_dashes_in_body() {
+        // --- in the body after the closing --- delimiter must not break the parser
+        let content = "---\nname: agent\ndescription: desc\n---\n\nSome text\n---\nMore text\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.name, "agent");
+        assert!(def.system_prompt.contains("Some text"));
+        assert!(def.system_prompt.contains("More text"));
+    }
+
+    #[test]
+    fn parse_yaml_tool_deny_list() {
+        let content = "---\nname: a\ndescription: b\ntools:\n  deny:\n    - shell\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["shell"]));
+    }
+
+    #[test]
+    fn parse_yaml_tool_inherit_all() {
+        // Explicit tools section with neither allow nor deny also yields InheritAll.
+        let content = "---\nname: a\ndescription: b\ntools: {}\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+    }
+
+    #[test]
+    fn parse_yaml_tool_both_specified_is_error() {
+        let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - x\n  deny:\n    - y\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_missing_closing_delimiter() {
+        let err = SubAgentDef::parse("---\nname: a\ndescription: b\n").unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_yaml_crlf_line_endings() {
+        let content = "---\r\nname: bot\r\ndescription: A bot\r\n---\r\n\r\nDo things.\r\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.name, "bot");
+        assert_eq!(def.description, "A bot");
+        assert!(!def.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn parse_yaml_missing_required_field_name() {
+        let content = "---\ndescription: b\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_yaml_missing_required_field_description() {
+        let content = "---\nname: a\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_yaml_empty_name_is_invalid() {
+        let content = "---\nname: \"\"\ndescription: b\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_whitespace_only_description_is_invalid() {
+        let content = "---\nname: a\ndescription: \"   \"\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_crlf_with_numeric_fields() {
+        let content = "---\r\nname: bot\r\ndescription: A bot\r\npermissions:\r\n  max_turns: 5\r\n  timeout_secs: 120\r\n---\r\n\r\nDo things.\r\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.permissions.max_turns, 5);
+        assert_eq!(def.permissions.timeout_secs, 120);
+    }
+
+    #[test]
+    fn parse_yaml_no_trailing_newline() {
+        let content = "---\nname: a\ndescription: b\n---";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.system_prompt, "");
+    }
+
+    // ── TOML deprecated fallback tests ─────────────────────────────────────────
 
     #[test]
     fn parse_full_definition() {
-        let def = SubAgentDef::parse(FULL_DEF).unwrap();
+        let def = SubAgentDef::parse(FULL_DEF_TOML).unwrap();
         assert_eq!(def.name, "code-reviewer");
         assert_eq!(
             def.description,
@@ -337,7 +628,7 @@ You are a code reviewer. Report findings with severity.
 
     #[test]
     fn parse_minimal_definition() {
-        let def = SubAgentDef::parse(MINIMAL_DEF).unwrap();
+        let def = SubAgentDef::parse(MINIMAL_DEF_TOML).unwrap();
         assert_eq!(def.name, "bot");
         assert_eq!(def.description, "A bot");
         assert!(def.model.is_none());
@@ -359,7 +650,7 @@ You are a code reviewer. Report findings with severity.
 
     #[test]
     fn tool_policy_inherit_all() {
-        let def = SubAgentDef::parse(MINIMAL_DEF).unwrap();
+        let def = SubAgentDef::parse(MINIMAL_DEF_TOML).unwrap();
         assert!(matches!(def.tools, ToolPolicy::InheritAll));
     }
 
@@ -409,9 +700,8 @@ You are a code reviewer. Report findings with severity.
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
 
-        // Same name "bot" in both dirs — dir1 wins (higher priority)
-        let content1 = "+++\nname = \"bot\"\ndescription = \"from dir1\"\n+++\n\ndir1 prompt\n";
-        let content2 = "+++\nname = \"bot\"\ndescription = \"from dir2\"\n+++\n\ndir2 prompt\n";
+        let content1 = "---\nname: bot\ndescription: from dir1\n---\n\ndir1 prompt\n";
+        let content2 = "---\nname: bot\ndescription: from dir2\n---\n\ndir2 prompt\n";
 
         let mut f1 = std::fs::File::create(dir1.path().join("bot.md")).unwrap();
         f1.write_all(content1.as_bytes()).unwrap();
@@ -452,7 +742,6 @@ You are a code reviewer. Report findings with severity.
 
     #[test]
     fn parse_crlf_line_endings() {
-        // Windows-style CRLF line endings must be accepted without error.
         let content =
             "+++\r\nname = \"bot\"\r\ndescription = \"A bot\"\r\n+++\r\n\r\nDo things.\r\n";
         let def = SubAgentDef::parse(content).unwrap();
@@ -463,7 +752,6 @@ You are a code reviewer. Report findings with severity.
 
     #[test]
     fn parse_crlf_closing_delimiter() {
-        // Verify that \r\n after the closing +++ is stripped correctly.
         let content = "+++\r\nname = \"bot\"\r\ndescription = \"A bot\"\r\n+++\r\nPrompt here.\r\n";
         let def = SubAgentDef::parse(content).unwrap();
         assert!(def.system_prompt.contains("Prompt here"));
@@ -474,7 +762,7 @@ You are a code reviewer. Report findings with severity.
         use std::io::Write as _;
         let dir = tempfile::tempdir().unwrap();
 
-        let valid = "+++\nname = \"good\"\ndescription = \"ok\"\n+++\n\nbody\n";
+        let valid = "---\nname: good\ndescription: ok\n---\n\nbody\n";
         let invalid = "this is not valid frontmatter";
 
         let mut f1 = std::fs::File::create(dir.path().join("a_good.md")).unwrap();

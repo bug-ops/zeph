@@ -7,10 +7,10 @@ Sub-agents let you delegate tasks to specialized helpers that work in the backgr
 1. Create a definition file:
 
 ```markdown
-+++
-name = "code-reviewer"
-description = "Reviews code for correctness and style"
-+++
+---
+name: code-reviewer
+description: Reviews code for correctness and style
+---
 
 You are a code reviewer. Analyze the provided code for bugs, performance issues, and idiomatic style.
 ```
@@ -65,17 +65,19 @@ Cancelled sub-agent a1b2c3d4-...
 
 ## Writing Definitions
 
-A definition is a markdown file with TOML frontmatter between `+++` delimiters. The body after the closing `+++` becomes the sub-agent's system prompt.
+A definition is a markdown file with YAML frontmatter between `---` delimiters. The body after the closing `---` becomes the sub-agent's system prompt.
+
+> **Note:** Prior to v0.13, definitions used TOML frontmatter (`+++`). That format is still accepted but deprecated and will be removed in v1.0.0. Migrate by replacing `+++` delimiters with `---` and converting the body to YAML syntax.
 
 ### Minimal Definition
 
 Only `name` and `description` are required. Everything else has sensible defaults:
 
 ```markdown
-+++
-name = "helper"
-description = "General-purpose helper"
-+++
+---
+name: helper
+description: General-purpose helper
+---
 
 You are a helpful assistant. Complete the given task concisely.
 ```
@@ -83,24 +85,27 @@ You are a helpful assistant. Complete the given task concisely.
 ### Full Definition
 
 ```markdown
-+++
-name = "code-reviewer"
-description = "Reviews code changes for correctness and style"
-model = "claude-sonnet-4-20250514"
-
-[tools]
-allow = ["shell", "web_scrape"]
-
-[permissions]
-secrets = ["github-token"]
-max_turns = 10
-timeout_secs = 300
-ttl_secs = 120
-
-[skills]
-include = ["git-*", "rust-*"]
-exclude = ["deploy-*"]
-+++
+---
+name: code-reviewer
+description: Reviews code changes for correctness and style
+model: claude-sonnet-4-20250514
+tools:
+  allow:
+    - shell
+    - web_scrape
+permissions:
+  secrets:
+    - github-token
+  max_turns: 10
+  timeout_secs: 300
+  ttl_secs: 120
+skills:
+  include:
+    - "git-*"
+    - "rust-*"
+  exclude:
+    - "deploy-*"
+---
 
 You are a code reviewer. Analyze the provided code for:
 - Correctness bugs
@@ -142,8 +147,19 @@ If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits a
 
 Control which tools a sub-agent can use:
 
-- **Allow list** — only listed tools are available: `allow = ["shell", "web_scrape"]`
-- **Deny list** — all tools except listed: `deny = ["shell"]`
+- **Allow list** — only listed tools are available:
+  ```yaml
+  tools:
+    allow:
+      - shell
+      - web_scrape
+  ```
+- **Deny list** — all tools except listed:
+  ```yaml
+  tools:
+    deny:
+      - shell
+  ```
 - **Inherit all** — omit both `allow` and `deny`
 
 Filtering is enforced at the executor level. The sub-agent's LLM only sees tool definitions it can actually call. Blocked tool calls return an error.
@@ -152,10 +168,13 @@ Filtering is enforced at the executor level. The sub-agent's LLM only sees tool 
 
 Skills are filtered by glob patterns with `*` wildcard:
 
-```toml
-[skills]
-include = ["git-*", "rust-*"]   # only matching skills
-exclude = ["deploy-*"]          # always excluded
+```yaml
+skills:
+  include:
+    - "git-*"
+    - "rust-*"
+  exclude:
+    - "deploy-*"
 ```
 
 - Empty `include` = all skills pass (unless excluded)
@@ -167,7 +186,7 @@ Sub-agents follow a zero-trust principle: they start with **zero permissions** a
 
 ### How It Works
 
-1. **Definitions declare capabilities, not permissions.** Writing `secrets = ["github-token"]` means the agent _may request_ that secret — it doesn't get it automatically.
+1. **Definitions declare capabilities, not permissions.** Writing `secrets: [github-token]` means the agent _may request_ that secret — it doesn't get it automatically.
 
 2. **Secrets require your approval.** When a sub-agent needs a secret, Zeph prompts you:
 
@@ -259,7 +278,7 @@ manager.load_definitions(&[
     dirs::config_dir().unwrap().join("zeph/agents"),
 ])?;
 
-let task_id = manager.spawn("code-reviewer", "Review src/main.rs", provider, executor)?;
+let task_id = manager.spawn("code-reviewer", "Review src/main.rs", provider, executor, None)?;
 let statuses = manager.statuses();
 manager.cancel(&task_id)?;
 let result = manager.collect(&task_id).await?;
@@ -268,7 +287,7 @@ let result = manager.collect(&task_id).await?;
 | Method | Description |
 |--------|-------------|
 | `load_definitions(&[PathBuf])` | Load `.md` definitions (first-wins deduplication) |
-| `spawn(name, prompt, provider, executor)` | Spawn a sub-agent, returns task ID |
+| `spawn(name, prompt, provider, executor, skills)` | Spawn a sub-agent, returns task ID |
 | `cancel(task_id)` | Cancel and revoke all grants |
 | `collect(task_id)` | Await result and remove from active set |
 | `statuses()` | Snapshot of all active sub-agent states |
@@ -279,7 +298,7 @@ let result = manager.collect(&task_id).await?;
 
 | Variant | When |
 |---------|------|
-| `Parse` | Invalid frontmatter or TOML |
+| `Parse` | Invalid frontmatter or YAML/TOML |
 | `Invalid` | Validation failure (empty name, mutual exclusion) |
 | `NotFound` | Unknown definition name or task ID |
 | `Spawn` | Concurrency limit reached or task panic |
