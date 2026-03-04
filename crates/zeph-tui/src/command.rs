@@ -31,6 +31,11 @@ pub enum TuiCommand {
     GatewayStatus,
     // Scheduler
     SchedulerList,
+    // Sub-agents
+    AgentList,
+    AgentStatus,
+    AgentCancelPrompt,
+    AgentSpawnPrompt,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -195,6 +200,34 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::SchedulerList,
         },
+        CommandEntry {
+            id: "agent:list",
+            label: "List sub-agents (/agent list)",
+            category: "agent",
+            shortcut: None,
+            command: TuiCommand::AgentList,
+        },
+        CommandEntry {
+            id: "agent:status",
+            label: "Show sub-agent status (/agent status)",
+            category: "agent",
+            shortcut: None,
+            command: TuiCommand::AgentStatus,
+        },
+        CommandEntry {
+            id: "agent:cancel",
+            label: "Cancel a sub-agent (/agent cancel <id>)",
+            category: "agent",
+            shortcut: None,
+            command: TuiCommand::AgentCancelPrompt,
+        },
+        CommandEntry {
+            id: "agent:spawn",
+            label: "Spawn a sub-agent (/agent spawn <name>)",
+            category: "agent",
+            shortcut: None,
+            command: TuiCommand::AgentSpawnPrompt,
+        },
     ];
     EXTRA
 }
@@ -270,8 +303,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_four_commands() {
-        assert_eq!(extra_command_registry().len(), 4);
+    fn extra_registry_has_eight_commands() {
+        assert_eq!(extra_command_registry().len(), 8);
     }
 
     #[test]

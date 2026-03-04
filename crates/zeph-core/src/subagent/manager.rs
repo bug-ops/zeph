@@ -149,7 +149,19 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
 
         // Detect secret request protocol: sub-agent emits [REQUEST_SECRET: key_name]
         if let Some(rest) = response.strip_prefix(SECRET_REQUEST_PREFIX) {
-            let key_name = rest.split(']').next().unwrap_or("").trim().to_owned();
+            let raw_key = rest.split(']').next().unwrap_or("").trim().to_owned();
+            // SEC-P1-02: Validate key name to prevent prompt-injection via malformed keys.
+            // Only allow alphanumeric, hyphen, underscore — matches vault key naming conventions.
+            let key_name = if raw_key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !raw_key.is_empty()
+            {
+                raw_key
+            } else {
+                tracing::warn!("sub-agent emitted invalid secret key name — ignoring request");
+                String::new()
+            };
             if !key_name.is_empty() {
                 // WARNING-1: do not log key name to avoid audit trail exposure
                 tracing::debug!("sub-agent requested secret [key redacted]");

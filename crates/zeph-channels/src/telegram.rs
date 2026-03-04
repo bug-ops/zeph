@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
-use teloxide::types::{ChatAction, MessageId, ParseMode};
+use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
 use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
@@ -47,6 +47,21 @@ impl TelegramChannel {
         }
     }
 
+    /// Spawn a task that registers bot commands in the Telegram menu.
+    fn register_commands(bot: Bot) {
+        tokio::spawn(async move {
+            let commands = vec![
+                BotCommand::new("start", "Start a new conversation"),
+                BotCommand::new("reset", "Reset conversation history"),
+                BotCommand::new("skills", "List loaded skills"),
+                BotCommand::new("agent", "Manage sub-agents (list/spawn/status/cancel)"),
+            ];
+            if let Err(e) = bot.set_my_commands(commands).await {
+                tracing::warn!("failed to register bot commands: {e}");
+            }
+        });
+    }
+
     /// Spawn the teloxide update listener and return `self` ready for use.
     ///
     /// # Errors
@@ -65,6 +80,8 @@ impl TelegramChannel {
 
         let bot = self.bot.clone();
         let allowed = self.allowed_users.clone();
+
+        Self::register_commands(bot.clone());
 
         tokio::spawn(async move {
             let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
@@ -408,12 +425,19 @@ impl Channel for TelegramChannel {
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!("{prompt}\nReply 'yes' to confirm."))
+        self.send(&format!("{prompt}\nReply 'yes' to confirm (timeout: 30s)."))
             .await?;
-        let Some(incoming) = self.rx.recv().await else {
-            return Ok(false);
-        };
-        Ok(incoming.text.trim().eq_ignore_ascii_case("yes"))
+        match tokio::time::timeout(Duration::from_secs(30), self.rx.recv()).await {
+            Ok(Some(incoming)) => Ok(incoming.text.trim().eq_ignore_ascii_case("yes")),
+            Ok(None) => {
+                tracing::warn!("confirm channel closed — denying secret request");
+                Ok(false)
+            }
+            Err(_) => {
+                tracing::warn!("confirm timed out after 30s — denied");
+                Ok(false)
+            }
+        }
     }
 }
 

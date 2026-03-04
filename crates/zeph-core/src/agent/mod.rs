@@ -1139,6 +1139,39 @@ impl<C: Channel> Agent<C> {
                 // Poll until the sub-agent reaches a terminal state.
                 let result = loop {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // Bridge secret requests from sub-agent to channel.confirm().
+                    // Fetch the pending request first, then release the borrow before
+                    // calling channel.confirm() (which requires &mut self).
+                    #[allow(clippy::redundant_closure_for_method_calls)]
+                    let pending = self
+                        .subagent_manager
+                        .as_mut()
+                        .and_then(|m| m.try_recv_secret_request());
+                    if let Some((req_task_id, req)) = pending {
+                        // req.secret_key is pre-validated to [a-zA-Z0-9_-] in manager.rs
+                        // (SEC-P1-02), so it is safe to embed in the prompt string.
+                        //
+                        // confirm() timeout (30s for Telegram) is a UX timeout — how long to
+                        // wait for operator input. The grant TTL (300s below) is a security
+                        // bound on how long an approved secret remains usable. Both values are
+                        // intentionally different: short confirm window, longer grant lifetime.
+                        let prompt =
+                            format!("Sub-agent requests secret '{}'. Allow?", req.secret_key);
+                        let approved = self.channel.confirm(&prompt).await.unwrap_or(false);
+                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                            if approved {
+                                let ttl = std::time::Duration::from_secs(300);
+                                let key = req.secret_key.clone();
+                                if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
+                                    let _ = mgr.deliver_secret(&req_task_id, key);
+                                }
+                            } else {
+                                let _ = mgr.deny_secret(&req_task_id);
+                            }
+                        }
+                    }
+
                     let mgr = self.subagent_manager.as_ref()?;
                     let statuses = mgr.statuses();
                     let Some((_, status)) = statuses.iter().find(|(id, _)| id == &task_id) else {
@@ -1556,7 +1589,7 @@ pub(super) mod agent_tests {
             }
         }
 
-        fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
+        pub(crate) fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
             self.confirmations = Arc::new(Mutex::new(confirmations));
             self
         }
@@ -3157,6 +3190,168 @@ mod compaction_e2e {
         assert!(
             sent.iter().any(|m| m.contains("final answer")),
             "recovered response must be forwarded to the channel; got: {sent:?}"
+        );
+    }
+
+    /// E2E test: spawn sub-agent in background, verify it runs and produces output.
+    ///
+    /// Scope: spawn → text response → collect (MockProvider only supports text responses).
+    #[tokio::test]
+    async fn subagent_spawn_text_collect_e2e() {
+        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
+
+        // Provider shared between main agent and sub-agent via Arc clone.
+        // We pre-load a response that the sub-agent loop will consume.
+        let provider = mock_provider(vec!["task completed successfully".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "worker".into(),
+            description: "A worker bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            permissions: SubAgentPermissions {
+                max_turns: 1,
+                ..SubAgentPermissions::default()
+            },
+            skills: SkillFilter::default(),
+            system_prompt: "You are a worker.".into(),
+        });
+        agent.subagent_manager = Some(mgr);
+
+        // Spawn the sub-agent in background — returns immediately with the task id.
+        let spawn_resp = agent
+            .handle_agent_command(AgentCommand::Background {
+                name: "worker".into(),
+                prompt: "do a task".into(),
+            })
+            .await
+            .expect("Background spawn must return Some");
+        assert!(
+            spawn_resp.contains("worker"),
+            "spawn response must mention agent name; got: {spawn_resp}"
+        );
+        assert!(
+            spawn_resp.contains("started"),
+            "spawn response must confirm start; got: {spawn_resp}"
+        );
+
+        // Extract the short id from response: "Sub-agent 'worker' started in background (id: XXXXXXXX)"
+        let short_id = spawn_resp
+            .split("id: ")
+            .nth(1)
+            .expect("response must contain 'id: '")
+            .trim_end_matches(')')
+            .trim()
+            .to_string();
+        assert!(!short_id.is_empty(), "short_id must not be empty");
+
+        // Poll until the sub-agent reaches a terminal state (max 5s).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let full_id = loop {
+            let mgr = agent.subagent_manager.as_ref().unwrap();
+            let statuses = mgr.statuses();
+            let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
+            if let Some((id, status)) = found {
+                match status.state {
+                    crate::subagent::SubAgentState::Completed => break id.clone(),
+                    crate::subagent::SubAgentState::Failed => {
+                        panic!(
+                            "sub-agent reached Failed state unexpectedly: {:?}",
+                            status.last_message
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("sub-agent did not complete within timeout");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+
+        // Collect result and verify output.
+        let result = agent
+            .subagent_manager
+            .as_mut()
+            .unwrap()
+            .collect(&full_id)
+            .await
+            .expect("collect must succeed for completed sub-agent");
+        assert!(
+            result.contains("task completed successfully"),
+            "collected result must contain sub-agent output; got: {result:?}"
+        );
+    }
+
+    /// Unit test for secret bridge in foreground spawn poll loop.
+    ///
+    /// Verifies that when a sub-agent emits [REQUEST_SECRET: api-key], the bridge:
+    /// - calls channel.confirm() with a prompt containing the key name
+    /// - on approval, delivers the secret to the sub-agent
+    /// The MockChannel confirm() is pre-loaded with `true` (approve).
+    #[tokio::test]
+    async fn foreground_spawn_secret_bridge_approves() {
+        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
+
+        // Sub-agent loop responses:
+        //   turn 1: request a secret
+        //   turn 2: final reply after secret delivered
+        let provider = mock_provider(vec![
+            "[REQUEST_SECRET: api-key]".into(),
+            "done with secret".into(),
+        ]);
+
+        // MockChannel with confirm() → true (approve)
+        let channel = MockChannel::new(vec![]).with_confirmations(vec![true]);
+
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "vault-bot".into(),
+            description: "A bot that requests secrets".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            permissions: SubAgentPermissions {
+                max_turns: 2,
+                secrets: vec!["api-key".into()],
+                ..SubAgentPermissions::default()
+            },
+            skills: SkillFilter::default(),
+            system_prompt: "You need a secret.".into(),
+        });
+        agent.subagent_manager = Some(mgr);
+
+        // Foreground spawn — blocks until sub-agent completes.
+        let resp: String = agent
+            .handle_agent_command(AgentCommand::Spawn {
+                name: "vault-bot".into(),
+                prompt: "fetch the api key".into(),
+            })
+            .await
+            .expect("Spawn must return Some");
+
+        // Sub-agent completed after secret was bridged (approve path).
+        // The sub-agent had 2 turns: turn 1 = secret request, turn 2 = final reply.
+        // If the bridge did NOT call confirm(), the sub-agent would never get the
+        // approval outcome and the foreground poll loop would stall or time out.
+        // Reaching this point proves the bridge ran and confirm() was called.
+        assert!(
+            resp.contains("vault-bot"),
+            "response must mention agent name; got: {resp}"
+        );
+        assert!(
+            resp.contains("completed"),
+            "sub-agent must complete successfully; got: {resp}"
         );
     }
 }

@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Sub-agent definition format migrated from `+++` TOML frontmatter to `---` YAML frontmatter (Claude Code spec compatible); `+++` TOML remains supported as a deprecated fallback with a `tracing::warn!` log (#1146)
+- TUI command palette: `AgentStatus` now correctly dispatches `/agent status` (was `/agent list`)
+- Telegram `confirm()` timeout increased to 30s with distinct `tracing::warn!` logs for channel-close vs timeout (#1147)
 
 ### Added
 
@@ -20,6 +22,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `FrontmatterFormat` enum in `zeph-core` routes sub-agent definitions to the correct deserializer based on detected delimiter
 - 256 KiB file size cap in `SubAgentDef::load()` to prevent DoS via oversized definition files
 - Control character validation (ASCII < 0x20 excluding tab, plus DEL 0x7F) for `name` and `description` fields in sub-agent definitions
+- TUI command palette entries for sub-agent management: `AgentList`, `AgentStatus`, `AgentCancelPrompt`, `AgentSpawnPrompt` (#1147)
+- Sub-agent secret requests now automatically route to `channel.confirm()` in the foreground spawn poll loop, enabling interactive approval via TUI or Telegram (#1147)
+- Secret key name validation against `[a-zA-Z0-9_-]+` before `SecretRequest` creation to block prompt-injection via malformed key names (#1147)
+- Telegram bot command menu registration via `set_my_commands()` on startup: `/start`, `/reset`, `/skills`, `/agent` (#1147)
+- E2E integration tests for sub-agent lifecycle: background spawn+collect and foreground spawn+secret-bridge (#1147)
+
+### Fixed
+
+- Telegram `confirm()` was blocking indefinitely on `rx.recv().await` with no timeout — now denied after 30s (#1147)
 
 ## [0.12.6] - 2026-03-04
 

@@ -863,6 +863,24 @@ impl App {
                     "Gateway status is not yet available in TUI mode.".to_owned(),
                 );
             }
+            TuiCommand::AgentList => {
+                let _ = self.user_input_tx.try_send("/agent list".to_owned());
+            }
+            TuiCommand::AgentStatus => {
+                let _ = self.user_input_tx.try_send("/agent status".to_owned());
+            }
+            TuiCommand::AgentCancelPrompt => {
+                // Pre-fill the input buffer so the user can complete the command.
+                self.input.clear();
+                self.input.push_str("/agent cancel ");
+                self.cursor_position = self.input.len();
+            }
+            TuiCommand::AgentSpawnPrompt => {
+                // Pre-fill the input buffer so the user can complete the command.
+                self.input.clear();
+                self.input.push_str("/agent spawn ");
+                self.cursor_position = self.input.len();
+            }
             TuiCommand::SchedulerList => {
                 let msg = if self.metrics.scheduled_tasks.is_empty() {
                     "No scheduled tasks.".to_owned()
