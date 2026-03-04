@@ -9,6 +9,8 @@ use zeph_llm::ThinkingConfig;
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
+use crate::subagent::def::PermissionMode;
+
 use crate::vault::Secret;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,6 +66,11 @@ pub struct SubAgentConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
+    /// Default permission mode applied to sub-agents that do not specify one.
+    pub default_permission_mode: Option<PermissionMode>,
+    /// Global denylist applied to all sub-agents in addition to per-agent `tools.except`.
+    #[serde(default)]
+    pub default_disallowed_tools: Vec<String>,
 }
 
 impl Default for SubAgentConfig {
@@ -72,6 +79,8 @@ impl Default for SubAgentConfig {
             enabled: false,
             max_concurrent: default_max_concurrent(),
             extra_dirs: Vec::new(),
+            default_permission_mode: None,
+            default_disallowed_tools: Vec::new(),
         }
     }
 }
@@ -1763,5 +1772,26 @@ mod tests {
         assert_eq!(cfg.max_concurrent, 3);
         assert!(!cfg.enabled);
         assert!(cfg.extra_dirs.is_empty());
+    }
+
+    #[test]
+    fn subagent_config_default_permission_mode_is_none() {
+        let cfg = SubAgentConfig::default();
+        assert!(cfg.default_permission_mode.is_none());
+        assert!(cfg.default_disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn subagent_config_default_permission_mode_deserializes() {
+        use crate::subagent::def::PermissionMode;
+        let toml = r#"
+            enabled = true
+            max_concurrent = 2
+            default_permission_mode = "plan"
+            default_disallowed_tools = ["dangerous_tool", "other"]
+        "#;
+        let cfg: SubAgentConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.default_permission_mode, Some(PermissionMode::Plan));
+        assert_eq!(cfg.default_disallowed_tools, ["dangerous_tool", "other"]);
     }
 }

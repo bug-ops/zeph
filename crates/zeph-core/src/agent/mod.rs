@@ -2926,6 +2926,7 @@ pub(super) mod agent_tests {
             description: "A helper bot".into(),
             model: None,
             tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: "You are helpful.".into(),
@@ -3215,6 +3216,7 @@ mod compaction_e2e {
             description: "A worker bot".into(),
             model: None,
             tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
             permissions: SubAgentPermissions {
                 max_turns: 1,
                 ..SubAgentPermissions::default()
@@ -3321,6 +3323,7 @@ mod compaction_e2e {
             description: "A bot that requests secrets".into(),
             model: None,
             tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
             permissions: SubAgentPermissions {
                 max_turns: 2,
                 secrets: vec!["api-key".into()],

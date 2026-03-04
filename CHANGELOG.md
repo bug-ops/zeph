@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
+- `tools.except` list in sub-agent YAML frontmatter: additional denylist applied on top of `tools.allow`/`tools.deny`; deny wins over allow
+- `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`
+- `FilteredToolExecutor::with_disallowed()` constructor: accepts an extra denylist alongside the base `ToolPolicy`
+- `background` agents now auto-deny secret requests without blocking on the parent channel (CRIT-01 fix)
+- `SubAgentConfig.default_permission_mode` and `SubAgentConfig.default_disallowed_tools` global defaults in `[agents]` config section
+- `PermissionMode` re-exported from `zeph-core::subagent` public API
+
 - `serde_norway = "0.9.42"` dependency for YAML parsing in sub-agent definitions (replaces TOML-only parsing)
 - `FrontmatterFormat` enum in `zeph-core` routes sub-agent definitions to the correct deserializer based on detected delimiter
 - 256 KiB file size cap in `SubAgentDef::load()` to prevent DoS via oversized definition files

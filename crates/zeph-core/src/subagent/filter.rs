@@ -16,23 +16,51 @@ use super::error::SubAgentError;
 
 // ── Tool filtering ────────────────────────────────────────────────────────────
 
-/// Wraps an [`ErasedToolExecutor`] and enforces a [`ToolPolicy`].
+/// Wraps an [`ErasedToolExecutor`] and enforces a [`ToolPolicy`] plus an optional
+/// additional denylist (`disallowed`).
 ///
-/// All calls are checked against the policy before being forwarded to the inner
-/// executor. Rejected calls return a descriptive [`ToolError`].
+/// All calls are checked against the policy and the denylist before being forwarded
+/// to the inner executor. The denylist is evaluated first — a tool in `disallowed`
+/// is blocked even if `policy` would allow it (deny wins). Rejected calls return a
+/// descriptive [`ToolError`].
 pub struct FilteredToolExecutor {
     inner: Arc<dyn ErasedToolExecutor>,
     policy: ToolPolicy,
+    disallowed: Vec<String>,
 }
 
 impl FilteredToolExecutor {
     /// Create a new filtered executor.
     #[must_use]
     pub fn new(inner: Arc<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
-        Self { inner, policy }
+        Self {
+            inner,
+            policy,
+            disallowed: Vec::new(),
+        }
+    }
+
+    /// Create a new filtered executor with an additional denylist.
+    ///
+    /// Tools in `disallowed` are blocked regardless of the base `policy`
+    /// (deny wins over allow).
+    #[must_use]
+    pub fn with_disallowed(
+        inner: Arc<dyn ErasedToolExecutor>,
+        policy: ToolPolicy,
+        disallowed: Vec<String>,
+    ) -> Self {
+        Self {
+            inner,
+            policy,
+            disallowed,
+        }
     }
 
     fn is_allowed(&self, tool_id: &str) -> bool {
+        if self.disallowed.iter().any(|t| t == tool_id) {
+            return false;
+        }
         match &self.policy {
             ToolPolicy::InheritAll => true,
             ToolPolicy::AllowList(list) => list.iter().any(|t| t == tool_id),
@@ -96,6 +124,70 @@ impl ErasedToolExecutor for FilteredToolExecutor {
     }
 
     fn set_skill_env(&self, env: Option<HashMap<String, String>>) {
+        self.inner.set_skill_env(env);
+    }
+}
+
+// ── Plan mode executor ────────────────────────────────────────────────────────
+
+/// Wraps an [`ErasedToolExecutor`] for `Plan` permission mode.
+///
+/// Exposes the real tool catalog via `tool_definitions_erased()` so the LLM can
+/// reference existing tools in its plan, but blocks all execution methods with
+/// [`ToolError::Blocked`]. This implements read-only planning: the agent sees what
+/// tools exist but cannot invoke them.
+pub struct PlanModeExecutor {
+    inner: Arc<dyn ErasedToolExecutor>,
+}
+
+impl PlanModeExecutor {
+    /// Wrap `inner` with plan-mode restrictions.
+    #[must_use]
+    pub fn new(inner: Arc<dyn ErasedToolExecutor>) -> Self {
+        Self { inner }
+    }
+}
+
+impl ErasedToolExecutor for PlanModeExecutor {
+    fn execute_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Err(ToolError::Blocked {
+            command: "plan_mode".into(),
+        })))
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Err(ToolError::Blocked {
+            command: "plan_mode".into(),
+        })))
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+        self.inner.tool_definitions_erased()
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        tracing::debug!(
+            tool_id = %call.tool_id,
+            "tool execution blocked in plan mode"
+        );
+        Box::pin(std::future::ready(Err(ToolError::Blocked {
+            command: call.tool_id.clone(),
+        })))
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.inner.set_skill_env(env);
     }
 }
@@ -423,6 +515,101 @@ mod tests {
         let exec = FilteredToolExecutor::new(stub_box(&["shell"]), ToolPolicy::InheritAll);
         let res = exec.execute_confirmed_erased("```shell\nls\n```").await;
         assert!(res.is_err());
+    }
+
+    // ── disallowed_tools (tools.except) tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn disallowed_blocks_tool_from_allow_list() {
+        let exec = FilteredToolExecutor::with_disallowed(
+            stub_box(&["shell", "web"]),
+            ToolPolicy::AllowList(vec!["shell".into(), "web".into()]),
+            vec!["shell".into()],
+        );
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: Default::default(),
+        };
+        let res = exec.execute_tool_call_erased(&call).await;
+        assert!(
+            res.is_err(),
+            "disallowed tool must be blocked even if in allow list"
+        );
+    }
+
+    #[tokio::test]
+    async fn disallowed_allows_non_disallowed_tool() {
+        let exec = FilteredToolExecutor::with_disallowed(
+            stub_box(&["shell", "web"]),
+            ToolPolicy::AllowList(vec!["shell".into(), "web".into()]),
+            vec!["shell".into()],
+        );
+        let call = ToolCall {
+            tool_id: "web".into(),
+            params: Default::default(),
+        };
+        let res = exec.execute_tool_call_erased(&call).await;
+        assert!(res.is_ok(), "non-disallowed tool must be allowed");
+    }
+
+    #[test]
+    fn disallowed_empty_list_no_change() {
+        let exec = FilteredToolExecutor::with_disallowed(
+            stub_box(&["shell", "web"]),
+            ToolPolicy::InheritAll,
+            vec![],
+        );
+        let defs = exec.tool_definitions_erased();
+        assert_eq!(defs.len(), 2);
+    }
+
+    #[test]
+    fn tool_definitions_filters_disallowed_tools() {
+        let exec = FilteredToolExecutor::with_disallowed(
+            stub_box(&["shell", "web", "dangerous"]),
+            ToolPolicy::InheritAll,
+            vec!["dangerous".into()],
+        );
+        let defs = exec.tool_definitions_erased();
+        assert_eq!(defs.len(), 2);
+        assert!(!defs.iter().any(|d| d.id == "dangerous"));
+    }
+
+    // ── PlanModeExecutor tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn plan_mode_blocks_execute_erased() {
+        let exec = PlanModeExecutor::new(stub_box(&["shell"]));
+        let res = exec.execute_erased("response").await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_execute_confirmed_erased() {
+        let exec = PlanModeExecutor::new(stub_box(&["shell"]));
+        let res = exec.execute_confirmed_erased("response").await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_tool_call() {
+        let exec = PlanModeExecutor::new(stub_box(&["shell"]));
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: Default::default(),
+        };
+        let res = exec.execute_tool_call_erased(&call).await;
+        assert!(res.is_err(), "plan mode must block all tool execution");
+    }
+
+    #[test]
+    fn plan_mode_exposes_real_tool_definitions() {
+        let exec = PlanModeExecutor::new(stub_box(&["shell", "web"]));
+        let defs = exec.tool_definitions_erased();
+        // Real tool catalog exposed — LLM can reference tools in its plan.
+        assert_eq!(defs.len(), 2);
+        assert!(defs.iter().any(|d| d.id == "shell"));
+        assert!(defs.iter().any(|d| d.id == "web"));
     }
 
     // ── filter_skills tests ────────────────────────────────────────────────

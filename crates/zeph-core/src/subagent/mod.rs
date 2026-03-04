@@ -10,9 +10,9 @@ pub mod manager;
 pub mod state;
 
 pub use command::AgentCommand;
-pub use def::{SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy};
+pub use def::{PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy};
 pub use error::SubAgentError;
-pub use filter::{FilteredToolExecutor, filter_skills};
+pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
 pub use manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use state::SubAgentState;

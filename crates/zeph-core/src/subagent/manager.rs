@@ -14,9 +14,9 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_tools::executor::ErasedToolExecutor;
 
-use super::def::SubAgentDef;
+use super::def::{PermissionMode, SubAgentDef};
 use super::error::SubAgentError;
-use super::filter::FilteredToolExecutor;
+use super::filter::{FilteredToolExecutor, PlanModeExecutor};
 use super::grants::{PermissionGrants, SecretRequest};
 use super::state::SubAgentState;
 
@@ -36,6 +36,8 @@ struct AgentLoopArgs {
     secret_request_tx: mpsc::Sender<SecretRequest>,
     // None = denied, Some(value) = approved
     secret_rx: mpsc::Receiver<Option<String>>,
+    /// When true, secret requests are auto-denied without sending to the parent channel.
+    background: bool,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -92,6 +94,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         started_at,
         secret_request_tx,
         mut secret_rx,
+        background,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -165,6 +168,20 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             if !key_name.is_empty() {
                 // WARNING-1: do not log key name to avoid audit trail exposure
                 tracing::debug!("sub-agent requested secret [key redacted]");
+
+                // CRIT-01: background agents must not block on the secret channel —
+                // the parent may never poll try_recv_secret_request for them.
+                // Auto-deny inline without sending to the pending channel.
+                if background {
+                    tracing::debug!(
+                        "background sub-agent secret request auto-denied (no interactive prompt)"
+                    );
+                    let reply = format!("[secret:{key_name}] request denied");
+                    messages.push(make_message(Role::Assistant, response));
+                    messages.push(make_message(Role::User, reply));
+                    continue;
+                }
+
                 let req = SecretRequest {
                     secret_key: key_name.clone(),
                     reason: None,
@@ -369,11 +386,30 @@ impl SubAgentManager {
         };
         let (status_tx, status_rx) = watch::channel(initial_status);
 
-        let filtered_executor = FilteredToolExecutor::new(tool_executor, def.tools.clone());
+        let permission_mode = def.permissions.permission_mode;
+        let background = def.permissions.background;
         let max_turns = def.permissions.max_turns;
         let system_prompt = def.system_prompt.clone();
         let task_prompt = task_prompt.to_owned();
         let cancel_clone = cancel.clone();
+
+        let filtered_executor = FilteredToolExecutor::with_disallowed(
+            tool_executor.clone(),
+            def.tools.clone(),
+            def.disallowed_tools.clone(),
+        );
+
+        // Plan mode: wrap executor to expose real tool definitions but block execution.
+        let executor: FilteredToolExecutor = if permission_mode == PermissionMode::Plan {
+            let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
+            FilteredToolExecutor::with_disallowed(
+                plan_inner,
+                def.tools.clone(),
+                def.disallowed_tools.clone(),
+            )
+        } else {
+            filtered_executor
+        };
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
@@ -381,7 +417,7 @@ impl SubAgentManager {
         let join_handle: JoinHandle<anyhow::Result<String>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
                 provider,
-                executor: filtered_executor,
+                executor,
                 system_prompt,
                 task_prompt,
                 skills,
@@ -391,6 +427,7 @@ impl SubAgentManager {
                 started_at,
                 secret_request_tx,
                 secret_rx,
+                background,
             }));
 
         let handle = SubAgentHandle {
@@ -1150,5 +1187,100 @@ mod tests {
             mgr.statuses().is_empty(),
             "expected empty statuses after collect"
         );
+    }
+
+    #[tokio::test]
+    async fn background_agent_auto_denies_secret_request() {
+        use zeph_llm::mock::MockProvider;
+
+        // Background agent that requests a secret — the loop must auto-deny without blocking.
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: bg-bot
+            description: Background bot
+            permissions:
+              background: true
+              secrets:
+                - api-key
+            ---
+
+            [REQUEST_SECRET: api-key]
+        "})
+        .unwrap();
+
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let task_id = mgr
+            .spawn("bg-bot", "task", provider, noop_executor(), None)
+            .unwrap();
+
+        // Should complete without blocking — background auto-denies the secret.
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(2), mgr.collect(&task_id)).await;
+        assert!(
+            result.is_ok(),
+            "background agent must not block on secret request"
+        );
+        drop(recorded);
+    }
+
+    #[test]
+    fn spawn_with_plan_mode_definition_succeeds() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: planner
+            description: A planner bot
+            permissions:
+              permission_mode: plan
+            ---
+
+            Plan only.
+        "})
+        .unwrap();
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let task_id = do_spawn(&mut mgr, "planner", "make a plan").unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+    }
+
+    #[test]
+    fn spawn_with_disallowed_tools_definition_succeeds() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: safe-bot
+            description: Bot with disallowed tools
+            tools:
+              allow:
+                - shell
+                - web
+              except:
+                - shell
+            ---
+
+            Do safe things.
+        "})
+        .unwrap();
+
+        assert_eq!(def.disallowed_tools, ["shell"]);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let task_id = do_spawn(&mut mgr, "safe-bot", "task").unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
     }
 }

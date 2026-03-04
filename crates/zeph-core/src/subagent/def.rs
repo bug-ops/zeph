@@ -15,12 +15,39 @@ const MAX_DEF_SIZE: usize = 256 * 1024;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+/// Controls tool execution and prompt interactivity for a sub-agent.
+///
+/// For sub-agents (non-interactive), `Default`, `AcceptEdits`, `DontAsk`, and
+/// `BypassPermissions` are functionally equivalent — sub-agents never prompt the
+/// user. The meaningful differentiator is `Plan` mode, which suppresses all tool
+/// execution and returns only the plan text.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    /// Standard behavior — prompt for each action (sub-agents auto-approve).
+    #[default]
+    Default,
+    /// Auto-accept file edits without prompting.
+    AcceptEdits,
+    /// Auto-approve all tool calls without prompting.
+    DontAsk,
+    /// Unrestricted tool access; emits a warning when loaded.
+    BypassPermissions,
+    /// Read-only planning: tools are visible in the catalog but execution is blocked.
+    Plan,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentDef {
     pub name: String,
     pub description: String,
     pub model: Option<String>,
     pub tools: ToolPolicy,
+    /// Additional denylist applied after the base `tools` policy.
+    ///
+    /// Populated from `tools.except` in YAML frontmatter. Deny wins: tools listed
+    /// here are blocked even when they appear in `tools.allow`.
+    pub disallowed_tools: Vec<String>,
     pub permissions: SubAgentPermissions,
     pub skills: SkillFilter,
     pub system_prompt: String,
@@ -41,6 +68,7 @@ pub struct SubAgentPermissions {
     pub background: bool,
     pub timeout_secs: u64,
     pub ttl_secs: u64,
+    pub permission_mode: PermissionMode,
 }
 
 impl Default for SubAgentPermissions {
@@ -51,6 +79,7 @@ impl Default for SubAgentPermissions {
             background: false,
             timeout_secs: 600,
             ttl_secs: 300,
+            permission_mode: PermissionMode::Default,
         }
     }
 }
@@ -82,6 +111,10 @@ struct RawSubAgentDef {
 struct RawToolPolicy {
     allow: Option<Vec<String>>,
     deny: Option<Vec<String>>,
+    /// Additional denylist applied on top of `allow` or `deny`. Use `tools.except` to
+    /// block specific tools while still using an allow-list (deny wins over allow).
+    #[serde(default)]
+    except: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +129,8 @@ struct RawPermissions {
     timeout_secs: u64,
     #[serde(default = "default_ttl")]
     ttl_secs: u64,
+    #[serde(default)]
+    permission_mode: PermissionMode,
 }
 
 impl Default for RawPermissions {
@@ -106,6 +141,7 @@ impl Default for RawPermissions {
             background: false,
             timeout_secs: default_timeout(),
             ttl_secs: default_ttl(),
+            permission_mode: PermissionMode::Default,
         }
     }
 }
@@ -313,18 +349,28 @@ impl SubAgentDef {
             }
         };
 
+        let disallowed_tools = raw.tools.except;
+
         let p = raw.permissions;
+        if p.permission_mode == PermissionMode::BypassPermissions {
+            tracing::warn!(
+                name = %raw.name,
+                "sub-agent definition uses bypass_permissions mode — grants unrestricted tool access"
+            );
+        }
         Ok(Self {
             name: raw.name,
             description: raw.description,
             model: raw.model,
             tools,
+            disallowed_tools,
             permissions: SubAgentPermissions {
                 secrets: p.secrets,
                 max_turns: p.max_turns,
                 background: p.background,
                 timeout_secs: p.timeout_secs,
                 ttl_secs: p.ttl_secs,
+                permission_mode: p.permission_mode,
             },
             skills: SkillFilter {
                 include: raw.skills.include,
@@ -773,5 +819,94 @@ mod tests {
 
         let err = SubAgentDef::load_all(&[dir.path().to_path_buf()]).unwrap_err();
         assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    // ── PermissionMode tests ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_yaml_permission_mode_default_when_omitted() {
+        let def = SubAgentDef::parse(MINIMAL_DEF_YAML).unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn parse_yaml_permission_mode_dont_ask() {
+        let content = "---\nname: a\ndescription: b\npermissions:\n  permission_mode: dont_ask\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::DontAsk);
+    }
+
+    #[test]
+    fn parse_yaml_permission_mode_accept_edits() {
+        let content = "---\nname: a\ndescription: b\npermissions:\n  permission_mode: accept_edits\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn parse_yaml_permission_mode_bypass_permissions() {
+        let content = "---\nname: a\ndescription: b\npermissions:\n  permission_mode: bypass_permissions\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(
+            def.permissions.permission_mode,
+            PermissionMode::BypassPermissions
+        );
+    }
+
+    #[test]
+    fn parse_yaml_permission_mode_plan() {
+        let content =
+            "---\nname: a\ndescription: b\npermissions:\n  permission_mode: plan\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::Plan);
+    }
+
+    #[test]
+    fn parse_yaml_disallowed_tools_from_except() {
+        let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - shell\n    - web\n  except:\n    - shell\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(
+            matches!(def.tools, ToolPolicy::AllowList(ref v) if v.contains(&"shell".to_owned()))
+        );
+        assert_eq!(def.disallowed_tools, ["shell"]);
+    }
+
+    #[test]
+    fn parse_yaml_disallowed_tools_empty_when_no_except() {
+        let def = SubAgentDef::parse(MINIMAL_DEF_YAML).unwrap();
+        assert!(def.disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn parse_yaml_all_new_fields_together() {
+        let content = indoc! {"
+            ---
+            name: planner
+            description: Plans things
+            tools:
+              allow:
+                - shell
+                - web
+              except:
+                - dangerous
+            permissions:
+              max_turns: 5
+              background: true
+              permission_mode: plan
+            ---
+
+            You are a planner.
+        "};
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::Plan);
+        assert!(def.permissions.background);
+        assert_eq!(def.permissions.max_turns, 5);
+        assert_eq!(def.disallowed_tools, ["dangerous"]);
+    }
+
+    #[test]
+    fn default_permissions_includes_permission_mode_default() {
+        let p = SubAgentPermissions::default();
+        assert_eq!(p.permission_mode, PermissionMode::Default);
     }
 }

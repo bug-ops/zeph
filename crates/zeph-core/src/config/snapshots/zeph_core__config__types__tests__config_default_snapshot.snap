@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
+assertion_line: 1585
 expression: toml_str
 ---
 [agent]
@@ -224,3 +225,4 @@ discovery_enabled = true
 enabled = false
 max_concurrent = 1
 extra_dirs = []
+default_disallowed_tools = []
