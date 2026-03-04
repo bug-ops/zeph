@@ -89,14 +89,18 @@ You are a helpful assistant. Complete the given task concisely.
 name: code-reviewer
 description: Reviews code changes for correctness and style
 model: claude-sonnet-4-20250514
+background: false
+max_turns: 10
 tools:
   allow:
     - shell
     - web_scrape
+  except:
+    - shell_sudo
 permissions:
+  permission_mode: accept_edits
   secrets:
     - github-token
-  max_turns: 10
   timeout_secs: 300
   ttl_secs: 120
 skills:
@@ -122,17 +126,86 @@ Report findings as a structured list with severity (critical/warning/info).
 | `name` | string | required | Unique identifier |
 | `description` | string | required | Human-readable description |
 | `model` | string | inherited | LLM model override |
+| `background` | bool | `false` | Run as a background task; secret requests are auto-denied inline |
+| `max_turns` | u32 | `20` | Maximum LLM turns before the agent is stopped |
 | `tools.allow` | string[] | — | Only these tools are available (mutually exclusive with `deny`) |
 | `tools.deny` | string[] | — | All tools except these (mutually exclusive with `allow`) |
+| `tools.except` | string[] | `[]` | Additional denylist applied on top of `allow`/`deny`; deny always wins over allow; exact match on tool ID |
+| `permissions.permission_mode` | enum | `default` | Tool call approval policy (see below) |
 | `permissions.secrets` | string[] | `[]` | Vault keys the agent MAY request |
-| `permissions.max_turns` | u32 | `20` | Maximum LLM turns |
-| `permissions.background` | bool | `false` | Run in background (fire-and-forget) |
 | `permissions.timeout_secs` | u64 | `600` | Hard kill deadline |
 | `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |
 | `skills.include` | string[] | all | Glob patterns to include (`*` wildcard) |
 | `skills.exclude` | string[] | `[]` | Glob patterns to exclude (takes precedence) |
 
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
+
+### `permission_mode` Values
+
+| Value | Description |
+|-------|-------------|
+| `default` | Standard interactive prompts — the user is asked before each sensitive tool call |
+| `accept_edits` | File edit and write operations are auto-accepted without prompting |
+| `dont_ask` | All tool calls are auto-approved without any prompt |
+| `bypass_permissions` | Same as `dont_ask` but emits a warning at definition load time |
+| `plan` | The agent can see the tool catalog but cannot execute any tools; produces text-only output |
+
+> [!CAUTION]
+> `bypass_permissions` skips all tool-call approval prompts. Only use it in fully trusted, sandboxed environments.
+
+> [!TIP]
+> Use `plan` mode when you only need a structured action plan from the agent and want to review it before any tools are executed.
+
+### `tools.except` — Additional Denylist
+
+`tools.except` lets you block specific tool IDs regardless of what `allow` or `deny` says. Deny always wins over allow, so a tool listed in both `allow` and `except` is blocked.
+
+```yaml
+tools:
+  allow:
+    - shell
+    - web_scrape
+  except:
+    - shell_sudo    # blocked even though shell is in allow
+```
+
+Use `except` to tighten an existing allow list without rewriting it.
+
+### `background` — Fire-and-Forget Execution
+
+When `background: true`, the agent runs without blocking the conversation. Secret requests that would normally open an interactive prompt are auto-denied inline instead, so the main session is never paused waiting for user input.
+
+```yaml
+---
+name: nightly-linter
+description: Runs cargo clippy on the workspace nightly
+background: true
+max_turns: 5
+tools:
+  allow:
+    - shell
+---
+
+Run `cargo clippy --workspace -- -D warnings` and report any new warnings introduced since the last run.
+```
+
+Results appear in `/agent status` and the TUI panel when the task completes.
+
+### `max_turns` — Turn Limit
+
+`max_turns` caps the number of LLM turns the agent may take. The agent is stopped automatically when the limit is reached, preventing runaway inference loops.
+
+```yaml
+---
+name: summarizer
+description: Summarizes long documents
+max_turns: 3
+---
+
+Summarize the provided content in three bullet points.
+```
+
+The default is `20`. Set a lower value for narrow, well-defined tasks.
 
 ### Definition Locations
 
@@ -159,6 +232,15 @@ Control which tools a sub-agent can use:
   tools:
     deny:
       - shell
+  ```
+- **Except list** — additional block on top of allow or deny (deny always wins):
+  ```yaml
+  tools:
+    allow:
+      - shell
+      - web_scrape
+    except:
+      - shell_sudo
   ```
 - **Inherit all** — omit both `allow` and `deny`
 
@@ -215,8 +297,9 @@ stateDiagram-v2
 ### Safety Guarantees
 
 - Concurrency limit prevents resource exhaustion
-- `timeout_secs` provides a hard kill deadline
+- `permissions.timeout_secs` provides a hard kill deadline
 - `max_turns` prevents runaway LLM loops
+- Background agents auto-deny secret requests so the main session is never blocked
 - All grants are revoked on completion, cancellation, or crash
 - Secret key names are redacted in logs
 
