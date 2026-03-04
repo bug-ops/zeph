@@ -382,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn load_rejects_symlink_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -389,13 +390,7 @@ mod tests {
         std::fs::write(&target, "secret content").unwrap();
 
         let link = tmp.path().join("MEMORY.md");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        #[cfg(not(unix))]
-        {
-            // On non-unix, skip symlink test.
-            return;
-        }
 
         // The symlink points outside the tmp directory — should be rejected.
         assert!(load_memory_content(tmp.path()).is_none());
