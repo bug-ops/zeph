@@ -9,7 +9,7 @@ Core agent loop, configuration, context builder, metrics, vault, and sub-agent o
 
 ## Overview
 
-Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, background execution, filtered tool/skill access, A2A-based in-process communication channels, and `/agent` CLI commands for runtime management. All other workspace crates are coordinated through `zeph-core`.
+Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, background execution, filtered tool/skill access, lifecycle hooks, A2A-based in-process communication channels, and `/agent` CLI commands for runtime management. All other workspace crates are coordinated through `zeph-core`.
 
 ## Key modules
 
@@ -40,6 +40,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking |
+| `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
 
 **Re-exports:** `Agent`, `content_hash`, `DiffData`
 
@@ -145,6 +146,8 @@ In-session commands for managing sub-agents:
 | `@agent_name <prompt>` | Mention shorthand for `/agent spawn` (disambiguated from file references) |
 
 Sub-agents run as independent tokio tasks with their own LLM provider and filtered tool executor. Each sub-agent receives only explicitly granted tools, skills, and secrets via `PermissionGrants`.
+
+Lifecycle hooks can be attached at two levels: config-level `SubagentStart`/`SubagentStop` hooks (in `[agents.hooks]`) fire on spawn and completion, while per-agent `PreToolUse`/`PostToolUse` hooks (defined in the agent YAML frontmatter) fire around each tool call, matched by pipe-separated tool-name patterns. All hooks run as shell commands in an env-cleared sandbox with configurable timeout and fail-open/closed policy.
 
 ## Installation
 

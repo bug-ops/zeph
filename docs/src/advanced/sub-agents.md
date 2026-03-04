@@ -109,6 +109,17 @@ skills:
     - "rust-*"
   exclude:
     - "deploy-*"
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "./scripts/validate.sh"
+  PostToolUse:
+    - matcher: "Edit|Write"
+      hooks:
+        - type: command
+          command: "./scripts/lint.sh"
 ---
 
 You are a code reviewer. Analyze the provided code for:
@@ -137,6 +148,8 @@ Report findings as a structured list with severity (critical/warning/info).
 | `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |
 | `skills.include` | string[] | all | Glob patterns to include (`*` wildcard) |
 | `skills.exclude` | string[] | `[]` | Glob patterns to exclude (takes precedence) |
+| `hooks.PreToolUse` | HookMatcher[] | `[]` | Hooks fired before tool execution (see [Hooks](#hooks)) |
+| `hooks.PostToolUse` | HookMatcher[] | `[]` | Hooks fired after tool execution (see [Hooks](#hooks)) |
 
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
@@ -303,6 +316,102 @@ stateDiagram-v2
 - All grants are revoked on completion, cancellation, or crash
 - Secret key names are redacted in logs
 
+## Hooks
+
+Hooks let you run shell commands at specific points in a sub-agent's lifecycle. Use them to validate tool inputs, run linters after file edits, set up resources on agent start, or clean up on agent stop.
+
+There are two hook scopes:
+
+- **Per-agent hooks** — defined in the agent's YAML frontmatter, scoped to tool use events (`PreToolUse`, `PostToolUse`)
+- **Config-level hooks** — defined in `config.toml`, scoped to agent lifecycle events (`SubagentStart`, `SubagentStop`)
+
+### Per-Agent Hooks (PreToolUse / PostToolUse)
+
+Add a `hooks` section to the agent's YAML frontmatter. Each event contains a list of matchers, and each matcher specifies which tools it applies to and what commands to run:
+
+```yaml
+---
+name: code-reviewer
+description: Reviews code for correctness and style
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "./scripts/validate.sh"
+          timeout_secs: 10
+          fail_closed: true
+  PostToolUse:
+    - matcher: "Edit|Write"
+      hooks:
+        - type: command
+          command: "./scripts/lint.sh"
+---
+```
+
+**`PreToolUse`** fires before a tool is executed. Set `fail_closed: true` to block execution if the hook exits non-zero.
+
+**`PostToolUse`** fires after a tool finishes. Useful for linting, formatting, or auditing changes.
+
+### Matcher Syntax
+
+The `matcher` field is a pipe-separated list of tokens. A tool matches when its name contains any of the listed tokens (case-sensitive substring match):
+
+| Matcher | Matches | Does not match |
+|---------|---------|----------------|
+| `"Bash"` | `Bash` | `Edit`, `Write` |
+| `"Edit\|Write"` | `Edit`, `WriteFile` | `Bash`, `Read` |
+| `"Shell"` | `Shell`, `ShellExec` | `Bash` |
+
+### Hook Definition Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | required | Hook type — currently only `"command"` is supported |
+| `command` | string | required | Shell command to execute (passed to `sh -c`) |
+| `timeout_secs` | u64 | `30` | Maximum execution time before the hook is killed |
+| `fail_closed` | bool | `false` | When `true`, a non-zero exit or timeout causes the calling operation to fail; when `false`, errors are logged and execution continues |
+
+### Config-Level Hooks (SubagentStart / SubagentStop)
+
+Define lifecycle hooks in `config.toml` under `[agents.hooks]`. These run for every sub-agent:
+
+```toml
+[agents.hooks]
+
+[[agents.hooks.start]]
+type = "command"
+command = "echo agent started"
+timeout_secs = 10
+
+[[agents.hooks.stop]]
+type = "command"
+command = "./scripts/cleanup.sh"
+```
+
+**`start`** hooks fire after a sub-agent is spawned. **`stop`** hooks fire after a sub-agent finishes or is cancelled. Both are fire-and-forget — errors are logged but do not affect the agent's operation.
+
+### Environment Variables
+
+Hook processes receive a clean environment with only the `PATH` variable preserved from the parent process. The following Zeph-specific variables are set:
+
+| Variable | Description |
+|----------|-------------|
+| `ZEPH_AGENT_ID` | UUID of the sub-agent instance |
+| `ZEPH_AGENT_NAME` | Name from the agent definition |
+| `ZEPH_TOOL_NAME` | Tool name (only for `PreToolUse` / `PostToolUse`) |
+
+### Security
+
+Hooks follow a trust-boundary model:
+
+- **Project-level definitions** (`.zeph/agents/`) may contain hooks — they are trusted because they live in the project repository.
+- **User-level definitions** (`~/.config/zeph/agents/`) have all hooks stripped on load. This prevents untrusted global definitions from running arbitrary commands in any project.
+- Hook processes run with a **cleared environment** (`env_clear()`). Only `PATH` is preserved from the parent to prevent accidental secret leakage.
+- Child processes are **explicitly killed on timeout** to prevent orphan processes.
+
+> **Note:** If you need hooks on a globally shared agent, move the definition into the project's `.zeph/agents/` directory instead.
+
 ## Global Agent Defaults
 
 The `[agents]` section in `config.toml` sets defaults that apply to all sub-agents unless overridden by the individual definition:
@@ -324,6 +433,16 @@ default_disallowed_tools = []
 # When false (the default), spawning a definition with permission_mode: bypass_permissions
 # is rejected at load time with an error.
 allow_bypass_permissions = false
+
+# Lifecycle hooks — run for every sub-agent start/stop.
+# See the Hooks section above for the full schema.
+# [agents.hooks]
+# [[agents.hooks.start]]
+# type = "command"
+# command = "echo started"
+# [[agents.hooks.stop]]
+# type = "command"
+# command = "./scripts/cleanup.sh"
 ```
 
 > **Note:** `default_permission_mode = "default"` and omitting the field are equivalent — both leave per-agent prompting behavior unchanged.
