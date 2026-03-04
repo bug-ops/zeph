@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sub-agent scope & priority system: agents loaded from four scopes with explicit priority — CLI (`--agents` flag) → project (`.zeph/agents/`) → user (`~/.config/zeph/agents/`) → config `extra_dirs`; first definition wins on name collision (#1145)
 - `--agents <path>` CLI flag: one or more `.md` files or directories for session-scoped sub-agent definitions; non-existent paths are a hard error
 - `SubAgentConfig.user_agents_dir`: configurable user-level agents directory; empty string disables user scope
+- Persistent memory scopes for sub-agents: `memory` field in YAML frontmatter with `user`, `project`, and `local` scopes; memory directory created at spawn time; first 200 lines of `MEMORY.md` injected into sub-agent system prompt after behavioral prompt; Read/Write/Edit tools auto-enabled for AllowList agents when memory is set; `default_memory_scope` config in `[agents]` section; `/agent list` shows memory scope, `/agent status` shows memory dir path; `--init` wizard includes memory scope prompt (#1152)
 - `/agent list` now shows scope labels: `(cli)`, `(project)`, `(user)`, `(config)` per agent
 - `SubAgentDef.source`: scope label field on every loaded definition for diagnostics
 - `load_with_boundary()`: canonicalizes paths, enforces directory boundaries (symlink escape prevention), caps at 100 entries per directory

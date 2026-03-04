@@ -21,6 +21,9 @@ pub enum SubAgentError {
     #[error("invalid command: {0}")]
     InvalidCommand(String),
 
+    #[error("memory error for agent '{name}': {reason}")]
+    Memory { name: String, reason: String },
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
