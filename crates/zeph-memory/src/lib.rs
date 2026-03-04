@@ -33,7 +33,8 @@ pub use embedding_registry::{
 };
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
-pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy};
+pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
+pub use tokio_util::sync::CancellationToken;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};

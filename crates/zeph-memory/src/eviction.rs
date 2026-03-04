@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, interval};
+use tokio_util::sync::CancellationToken;
 
 use crate::error::MemoryError;
 use crate::sqlite::SqliteStore;
@@ -196,6 +197,7 @@ pub fn start_eviction_loop(
     store: Arc<SqliteStore>,
     config: &EvictionConfig,
     policy: Arc<dyn EvictionPolicy + 'static>,
+    cancel: CancellationToken,
 ) -> JoinHandle<()> {
     let config = config.clone();
     tokio::spawn(async move {
@@ -209,7 +211,14 @@ pub fn start_eviction_loop(
         ticker.tick().await;
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    tracing::debug!("eviction loop shutting down");
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
             tracing::debug!(max_entries = config.max_entries, "running eviction sweep");
 
             // Phase 1: score and soft-delete excess entries.
@@ -273,10 +282,18 @@ async fn run_eviction_phase2(store: &SqliteStore) -> Result<usize, MemoryError> 
     if ids.is_empty() {
         return Ok(0);
     }
-    // Mark as Qdrant-cleaned immediately (best-effort). The store sets qdrant_cleaned = 1
-    // so that even if the agent crashes here the IDs are not retried indefinitely.
-    // Actual Qdrant removal is a no-op in this implementation — the embedding_store
-    // handles vector lifecycle separately via point IDs linked to message IDs.
+
+    // TODO: call Qdrant delete-vectors API here before marking as cleaned.
+    // The embedding_store handles vector lifecycle separately; when that API
+    // is wired in, the call should happen here and mark_qdrant_cleaned should
+    // only be called on success. Tracked in issue: phase-2 Qdrant cleanup.
+    tracing::warn!(
+        count = ids.len(),
+        "eviction phase 2: Qdrant vector removal not yet wired — marking cleaned without actual deletion (MVP)"
+    );
+
+    // Mark as cleaned after the (future) Qdrant call succeeds. For now this
+    // prevents infinite retries on every sweep cycle.
     store.mark_qdrant_cleaned(&ids).await?;
     Ok(ids.len())
 }
