@@ -9168,7 +9168,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -9209,7 +9209,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -9234,7 +9234,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-acp"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -9270,7 +9270,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "axum 0.8.8",
  "criterion",
@@ -9295,7 +9295,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "age",
  "anyhow",
@@ -9332,7 +9332,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-gateway"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -9349,7 +9349,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "blake3",
  "ignore",
@@ -9379,7 +9379,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "base64 0.22.1",
  "candle-core",
@@ -9408,7 +9408,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "blake3",
  "qdrant-client",
@@ -9428,7 +9428,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -9453,7 +9453,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-scheduler"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "chrono",
  "cron",
@@ -9470,7 +9470,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "blake3",
  "criterion",
@@ -9494,7 +9494,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "dirs",
  "filetime",
@@ -9520,7 +9520,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "chrono",
  "crossterm",

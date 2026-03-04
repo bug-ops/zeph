@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-03-04
+
 ### Fixed
 
 - PERF-SC-04: `Scheduler::tick()` `Ok(None)` branch now computes and persists `next_run` via the cron schedule instead of treating missing `next_run` as "due now" — cron expressions are now respected at runtime (#1133)
@@ -1606,7 +1608,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.5...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.6...HEAD
+[0.12.6]: https://github.com/bug-ops/zeph/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/bug-ops/zeph/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/bug-ops/zeph/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/bug-ops/zeph/compare/v0.12.2...v0.12.3
