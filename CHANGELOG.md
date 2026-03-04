@@ -44,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Secret key name validation against `[a-zA-Z0-9_-]+` before `SecretRequest` creation to block prompt-injection via malformed key names (#1147)
 - Telegram bot command menu registration via `set_my_commands()` on startup: `/start`, `/reset`, `/skills`, `/agent` (#1147)
 - E2E integration tests for sub-agent lifecycle: background spawn+collect and foreground spawn+secret-bridge (#1147)
+- Memory eviction subsystem with Ebbinghaus forgetting curve policy, two-phase SQLite+Qdrant sweep, and configurable retention (`[memory.eviction]`) (1.1)
 
 ### Fixed
 
