@@ -177,6 +177,7 @@ pub struct Agent<C: Channel> {
     /// dispatched to in the current agent loop iteration; retained for
     /// forward-compatible multi-agent orchestration.
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
+    pub(crate) subagent_config: crate::config::SubAgentConfig,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
@@ -329,6 +330,7 @@ impl<C: Channel> Agent<C> {
             update_notify_rx: None,
             custom_task_rx: None,
             subagent_manager: None,
+            subagent_config: crate::config::SubAgentConfig::default(),
             response_cache: None,
             parent_tool_use_id: None,
             anomaly_detector: None,
@@ -1109,7 +1111,8 @@ impl<C: Channel> Agent<C> {
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
                 let mgr = self.subagent_manager.as_mut()?;
-                match mgr.spawn(&name, &prompt, provider, tool_executor, skills) {
+                let cfg = self.subagent_config.clone();
+                match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg) {
                     Ok(id) => Some(format!(
                         "Sub-agent '{name}' started in background (id: {short})",
                         short = &id[..8.min(id.len())]
@@ -1127,7 +1130,9 @@ impl<C: Channel> Agent<C> {
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
                 let mgr = self.subagent_manager.as_mut()?;
-                let task_id = match mgr.spawn(&name, &prompt, provider, tool_executor, skills) {
+                let cfg = self.subagent_config.clone();
+                let task_id = match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg)
+                {
                     Ok(id) => id,
                     Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
                 };

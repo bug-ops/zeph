@@ -104,6 +104,7 @@ pub struct SkillFilter {
 // differs based on detected frontmatter format.
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSubAgentDef {
     name: String,
     description: String,
@@ -116,6 +117,12 @@ struct RawSubAgentDef {
     skills: RawSkillFilter,
 }
 
+// Note: `RawToolPolicy` and `RawPermissions` intentionally do not carry
+// `#[serde(deny_unknown_fields)]`. They are nested under `RawSubAgentDef` (which does have
+// `deny_unknown_fields`), but serde does not propagate that attribute into nested structs.
+// Adding it here would reject currently-valid frontmatter that omits optional fields via
+// serde's default mechanism. A follow-up issue should evaluate whether strict rejection of
+// unknown nested keys is desirable before adding it.
 #[derive(Default, Deserialize)]
 struct RawToolPolicy {
     allow: Option<Vec<String>>,
@@ -917,5 +924,60 @@ mod tests {
     fn default_permissions_includes_permission_mode_default() {
         let p = SubAgentPermissions::default();
         assert_eq!(p.permission_mode, PermissionMode::Default);
+    }
+
+    // ── #1185: additional test gaps ────────────────────────────────────────
+
+    #[test]
+    fn parse_yaml_unknown_permission_mode_variant_is_error() {
+        // Unknown variant (e.g. "banana_mode") must fail with a parse error.
+        let content = "---\nname: a\ndescription: b\npermissions:\n  permission_mode: banana_mode\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_yaml_permission_mode_case_sensitive_camel_is_error() {
+        // "DontAsk" (camelCase) must not parse — only snake_case is accepted.
+        let content =
+            "---\nname: a\ndescription: b\npermissions:\n  permission_mode: DontAsk\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_yaml_explicit_empty_except_gives_empty_disallowed_tools() {
+        let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - shell\n  except: []\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(def.disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn parse_yaml_disallowed_tools_with_deny_list_deny_wins() {
+        // disallowed_tools (tools.except) blocks a tool even when DenyList base policy
+        // would otherwise allow it (deny wins).
+        let content = "---\nname: a\ndescription: b\ntools:\n  deny:\n    - dangerous\n  except:\n    - web\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        // base policy: DenyList blocks "dangerous", allows everything else
+        assert!(matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["dangerous"]));
+        // disallowed_tools: "web" is additionally blocked by except
+        assert!(def.disallowed_tools.contains(&"web".to_owned()));
+    }
+
+    #[test]
+    fn parse_toml_background_true_frontmatter() {
+        // background: true via TOML (+++) frontmatter must parse correctly.
+        let content = "+++\nname = \"bg-agent\"\ndescription = \"Runs in background\"\n[permissions]\nbackground = true\n+++\n\nSystem prompt.\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(def.permissions.background);
+        assert_eq!(def.name, "bg-agent");
+    }
+
+    #[test]
+    fn parse_yaml_unknown_top_level_field_is_error() {
+        // deny_unknown_fields on RawSubAgentDef: typos like "permisions:" must be rejected.
+        let content = "---\nname: a\ndescription: b\npermisions:\n  max_turns: 5\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
     }
 }

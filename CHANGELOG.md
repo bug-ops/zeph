@@ -23,7 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`
 - `FilteredToolExecutor::with_disallowed()` constructor: accepts an extra denylist alongside the base `ToolPolicy`
 - `background` agents now auto-deny secret requests without blocking on the parent channel (CRIT-01 fix)
-- `SubAgentConfig.default_permission_mode` and `SubAgentConfig.default_disallowed_tools` global defaults in `[agents]` config section
+- `SubAgentConfig.default_permission_mode` and `SubAgentConfig.default_disallowed_tools` global defaults in `[agents]` config section; both are now applied at spawn time — `default_permission_mode` overrides `Default` mode agents, `default_disallowed_tools` is merged into per-agent denylist (#1180)
+- `SubAgentConfig.allow_bypass_permissions: bool` (default: `false`) config gate — spawning a sub-agent with `permission_mode: bypass_permissions` is rejected with an error unless explicitly enabled (#1182)
+- `#[serde(deny_unknown_fields)]` on `RawSubAgentDef`: YAML frontmatter typos (e.g. `permisions:`) are now rejected with a clear parse error instead of being silently ignored (#1183)
+- Doc comment on `FilteredToolExecutor::is_allowed()` clarifying that tool ID matching is exact string equality and MCP compound IDs (e.g. `mcp__server__tool`) must be listed in full in `tools.except` (#1181)
 - `PermissionMode` re-exported from `zeph-core::subagent` public API
 
 - `serde_norway = "0.9.42"` dependency for YAML parsing in sub-agent definitions (replaces TOML-only parsing)

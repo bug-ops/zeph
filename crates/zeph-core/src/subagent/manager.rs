@@ -14,6 +14,8 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_tools::executor::ErasedToolExecutor;
 
+use crate::config::SubAgentConfig;
+
 use super::def::{PermissionMode, SubAgentDef};
 use super::error::SubAgentError;
 use super::filter::{FilteredToolExecutor, PlanModeExecutor};
@@ -345,7 +347,10 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if no definition with the given name exists,
-    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded.
+    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded, or
+    /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
+    /// does not allow it (`allow_bypass_permissions: false`).
+    #[allow(clippy::too_many_lines)]
     pub fn spawn(
         &mut self,
         def_name: &str,
@@ -353,13 +358,44 @@ impl SubAgentManager {
         provider: AnyProvider,
         tool_executor: Arc<dyn ErasedToolExecutor>,
         skills: Option<Vec<String>>,
+        config: &SubAgentConfig,
     ) -> Result<String, SubAgentError> {
-        let def = self
+        let mut def = self
             .definitions
             .iter()
             .find(|d| d.name == def_name)
             .cloned()
             .ok_or_else(|| SubAgentError::NotFound(def_name.to_owned()))?;
+
+        // Apply config-level defaults: if agent has Default permission mode, use the
+        // config default_permission_mode if set.
+        if def.permissions.permission_mode == PermissionMode::Default
+            && let Some(default_mode) = config.default_permission_mode
+        {
+            def.permissions.permission_mode = default_mode;
+        }
+
+        // Merge global disallowed_tools into per-agent disallowed_tools (deny wins).
+        if !config.default_disallowed_tools.is_empty() {
+            let mut merged = def.disallowed_tools.clone();
+            for tool in &config.default_disallowed_tools {
+                if !merged.contains(tool) {
+                    merged.push(tool.clone());
+                }
+            }
+            def.disallowed_tools = merged;
+        }
+
+        // Guard: bypass_permissions requires explicit opt-in at config level.
+        if def.permissions.permission_mode == PermissionMode::BypassPermissions
+            && !config.allow_bypass_permissions
+        {
+            return Err(SubAgentError::Invalid(format!(
+                "sub-agent '{}' requests bypass_permissions mode but it is not allowed by config \
+                 (set agents.allow_bypass_permissions = true to enable)",
+                def.name
+            )));
+        }
 
         let active = self
             .agents
@@ -624,6 +660,8 @@ mod tests {
     use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
     use zeph_tools::registry::ToolDef;
 
+    use crate::config::SubAgentConfig;
+
     use super::*;
 
     fn make_manager() -> SubAgentManager {
@@ -703,6 +741,7 @@ mod tests {
             mock_provider(vec!["done"]),
             noop_executor(),
             None,
+            &SubAgentConfig::default(),
         )
     }
 
@@ -880,6 +919,7 @@ mod tests {
                 mock_provider(vec!["final answer"]),
                 noop_executor(),
                 None,
+                &SubAgentConfig::default(),
             )
             .unwrap();
 
@@ -949,7 +989,14 @@ mod tests {
 
         let failing = AnyProvider::Mock(MockProvider::failing());
         let task_id = mgr
-            .spawn("bot", "do work", failing, noop_executor(), None)
+            .spawn(
+                "bot",
+                "do work",
+                failing,
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+            )
             .unwrap();
 
         // Wait for the background task to complete.
@@ -1051,7 +1098,14 @@ mod tests {
         });
 
         let task_id = mgr
-            .spawn("bot", "run two turns", provider, executor, None)
+            .spawn(
+                "bot",
+                "run two turns",
+                provider,
+                executor,
+                None,
+                &SubAgentConfig::default(),
+            )
             .unwrap();
 
         // Wait for background loop to finish.
@@ -1119,7 +1173,14 @@ mod tests {
 
         let skill_bodies = vec!["# skill-one\nDo something useful.".to_owned()];
         let task_id = mgr
-            .spawn("bot", "task", provider, noop_executor(), Some(skill_bodies))
+            .spawn(
+                "bot",
+                "task",
+                provider,
+                noop_executor(),
+                Some(skill_bodies),
+                &SubAgentConfig::default(),
+            )
             .unwrap();
 
         // Wait for the loop to call the provider at least once.
@@ -1153,7 +1214,14 @@ mod tests {
         mgr.definitions.push(sample_def());
 
         let task_id = mgr
-            .spawn("bot", "task", provider, noop_executor(), None)
+            .spawn(
+                "bot",
+                "task",
+                provider,
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+            )
             .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1215,7 +1283,14 @@ mod tests {
         mgr.definitions.push(def);
 
         let task_id = mgr
-            .spawn("bg-bot", "task", provider, noop_executor(), None)
+            .spawn(
+                "bg-bot",
+                "task",
+                provider,
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+            )
             .unwrap();
 
         // Should complete without blocking — background auto-denies the secret.
@@ -1280,6 +1355,179 @@ mod tests {
         mgr.definitions.push(def);
 
         let task_id = do_spawn(&mut mgr, "safe-bot", "task").unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+    }
+
+    // ── #1180: default_permission_mode / default_disallowed_tools applied at spawn ──
+
+    #[test]
+    fn spawn_applies_default_permission_mode_from_config() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        // Agent has Default permission mode — config sets Plan as default.
+        let def =
+            SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::Default);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let mut cfg = SubAgentConfig::default();
+        cfg.default_permission_mode = Some(PermissionMode::Plan);
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "prompt",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+    }
+
+    #[test]
+    fn spawn_does_not_override_explicit_permission_mode() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        // Agent explicitly sets DontAsk — config default must not override it.
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: bot
+            description: A bot
+            permissions:
+              permission_mode: dont_ask
+            ---
+
+            Do things.
+        "})
+        .unwrap();
+        assert_eq!(def.permissions.permission_mode, PermissionMode::DontAsk);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let mut cfg = SubAgentConfig::default();
+        cfg.default_permission_mode = Some(PermissionMode::Plan);
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "prompt",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+    }
+
+    #[test]
+    fn spawn_merges_global_disallowed_tools() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let def =
+            SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap();
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let mut cfg = SubAgentConfig::default();
+        cfg.default_disallowed_tools = vec!["dangerous".into()];
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "prompt",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+    }
+
+    // ── #1182: bypass_permissions blocked without config gate ─────────────
+
+    #[test]
+    fn spawn_bypass_permissions_without_config_gate_is_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: bypass-bot
+            description: A bot with bypass mode
+            permissions:
+              permission_mode: bypass_permissions
+            ---
+
+            Unrestricted.
+        "})
+        .unwrap();
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        // Default config: allow_bypass_permissions = false
+        let cfg = SubAgentConfig::default();
+        let err = mgr
+            .spawn(
+                "bypass-bot",
+                "prompt",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn spawn_bypass_permissions_with_config_gate_succeeds() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: bypass-bot
+            description: A bot with bypass mode
+            permissions:
+              permission_mode: bypass_permissions
+            ---
+
+            Unrestricted.
+        "})
+        .unwrap();
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+
+        let mut cfg = SubAgentConfig::default();
+        cfg.allow_bypass_permissions = true;
+
+        let task_id = mgr
+            .spawn(
+                "bypass-bot",
+                "prompt",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
         assert!(!task_id.is_empty());
         mgr.cancel(&task_id).unwrap();
     }

@@ -494,7 +494,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         if let Err(e) = mgr.load_definitions(&agent_dirs) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
-        agent.with_subagent_manager(mgr)
+        agent
+            .with_subagent_manager(mgr)
+            .with_subagent_config(config.agents.clone())
     };
 
     #[cfg(all(feature = "scheduler", feature = "tui"))]

@@ -67,10 +67,22 @@ pub struct SubAgentConfig {
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
     /// Default permission mode applied to sub-agents that do not specify one.
+    ///
+    /// Only takes effect when the sub-agent definition leaves `permission_mode` at its
+    /// default value (`Default`). If the definition sets an explicit mode, this field is
+    /// ignored. `Some(PermissionMode::Default)` behaves identically to `None` — both
+    /// result in `Default` mode. Prefer omitting the field over explicitly setting
+    /// `default_permission_mode = "default"` in config.
     pub default_permission_mode: Option<PermissionMode>,
     /// Global denylist applied to all sub-agents in addition to per-agent `tools.except`.
     #[serde(default)]
     pub default_disallowed_tools: Vec<String>,
+    /// Allow sub-agents to use `bypass_permissions` mode.
+    ///
+    /// When `false` (default), spawning a sub-agent with `permission_mode: bypass_permissions`
+    /// is rejected with an error. Set to `true` only in trusted, controlled environments.
+    #[serde(default)]
+    pub allow_bypass_permissions: bool,
 }
 
 impl Default for SubAgentConfig {
@@ -81,6 +93,7 @@ impl Default for SubAgentConfig {
             extra_dirs: Vec::new(),
             default_permission_mode: None,
             default_disallowed_tools: Vec::new(),
+            allow_bypass_permissions: false,
         }
     }
 }

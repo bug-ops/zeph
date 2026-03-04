@@ -57,6 +57,10 @@ impl FilteredToolExecutor {
         }
     }
 
+    /// Check whether `tool_id` is allowed under the current policy and denylist.
+    ///
+    /// Matching is exact string equality. MCP compound tool IDs (e.g. `mcp__server__tool`)
+    /// must be listed in full in `tools.except` — partial names or prefixes are not matched.
     fn is_allowed(&self, tool_id: &str) -> bool {
         if self.disallowed.iter().any(|t| t == tool_id) {
             return false;
@@ -573,6 +577,29 @@ mod tests {
         let defs = exec.tool_definitions_erased();
         assert_eq!(defs.len(), 2);
         assert!(!defs.iter().any(|d| d.id == "dangerous"));
+    }
+
+    // ── #1184: PlanModeExecutor + disallowed_tools catalog test ───────────
+
+    #[test]
+    fn plan_mode_with_disallowed_excludes_from_catalog() {
+        // FilteredToolExecutor wrapping PlanModeExecutor must exclude disallowed tools from
+        // tool_definitions_erased(), verifying that deny-list is enforced in plan mode catalog.
+        let inner = Arc::new(PlanModeExecutor::new(stub_box(&["shell", "web"])));
+        let exec = FilteredToolExecutor::with_disallowed(
+            inner,
+            ToolPolicy::InheritAll,
+            vec!["shell".into()],
+        );
+        let defs = exec.tool_definitions_erased();
+        assert!(
+            !defs.iter().any(|d| d.id == "shell"),
+            "shell must be excluded from catalog"
+        );
+        assert!(
+            defs.iter().any(|d| d.id == "web"),
+            "web must remain in catalog"
+        );
     }
 
     // ── PlanModeExecutor tests ─────────────────────────────────────────────
