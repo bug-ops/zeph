@@ -175,6 +175,54 @@ The model uses this when it identifies information worth preserving explicitly �
 
 `MemoryToolExecutor` is registered in the tool chain only when a memory backend is configured. If `[memory]` is absent or `[memory.semantic]` is disabled, neither tool appears in the model's tool list.
 
+## Query-Aware Memory Routing
+
+By default, semantic recall queries both SQLite FTS5 (keyword) and Qdrant (vector) backends and merges results via reciprocal rank fusion. Query-aware routing selects the optimal backend(s) per query, avoiding unnecessary work.
+
+```toml
+[memory.routing]
+strategy = "heuristic"   # Currently the only strategy (default)
+```
+
+The heuristic router classifies queries into three routes:
+
+| Route | Backend | When |
+|-------|---------|------|
+| Keyword | SQLite FTS5 | Code patterns (`::`, `/`), snake_case identifiers, short queries (<=3 words) |
+| Semantic | Qdrant vectors | Question words (`what`, `how`, `why`, ...), long natural language (>=6 words) |
+| Hybrid | Both + RRF merge | Medium-length queries without clear signals (4-5 words, no question word) |
+
+Question words override code pattern heuristics: `"how does error_handling work"` routes Semantic, not Keyword.
+
+The agent calls `recall_routed()` on `SemanticMemory`, which delegates to the configured router before querying. When Qdrant is unavailable, Semantic-route queries return empty results; Hybrid-route queries fall back to FTS5 only.
+
+## Active Context Compression
+
+Zeph supports two compression strategies for managing context growth:
+
+```toml
+[memory.compression]
+strategy = "reactive"    # Default — compress only when reactive compaction fires
+```
+
+**Reactive** (default) relies on the existing two-tier compaction pipeline (Tier 1 tool output pruning, Tier 2 chunked LLM compaction). No additional configuration needed.
+
+**Proactive** fires compression before reactive compaction when the current token count exceeds `threshold_tokens`:
+
+```toml
+[memory.compression]
+strategy = "proactive"
+threshold_tokens = 80000       # Fire when context exceeds this token count (>= 1000)
+max_summary_tokens = 4000      # Cap for the compressed summary (>= 128)
+# model = ""                   # Reserved for future per-compression model selection (currently unused)
+```
+
+Proactive and reactive compression are mutually exclusive per turn: if proactive compression fires, reactive compaction is skipped for that turn (and vice versa). The `compacted_this_turn` flag resets at the start of each turn.
+
+Proactive compression emits two metrics: `compression_events` (count) and `compression_tokens_saved` (cumulative tokens freed).
+
+> **Note:** Validation rejects `threshold_tokens < 1000` and `max_summary_tokens < 128` at startup.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide
