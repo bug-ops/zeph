@@ -41,7 +41,7 @@ Candidates are deduplicated by canonical path before loading. Symlinks that reso
 - **Path traversal protection**: the canonical path of each file must remain within the project root. Symlinks pointing outside the project directory are rejected with a warning.
 - **Null byte guard**: files containing null bytes are skipped (indicates binary or corrupted content).
 - **Size cap**: files exceeding `max_size_bytes` (default 256 KiB) are skipped. Configurable.
-- **No TOCTOU**: a single `File::open()` call is used; metadata and content are read from the same open file handle.
+- **No TOCTOU**: the canonical path is resolved before `File::open()` — canonicalization and open use the same path, eliminating the time-of-check/time-of-use race.
 
 ## Configuration
 
@@ -60,8 +60,28 @@ zeph --instruction-file /path/to/rules.md --instruction-file conventions.md
 > [!TIP]
 > Use `zeph.md` in your project root for rules that apply regardless of which LLM provider you use. Use `CLAUDE.md` or `AGENTS.md` alongside it for provider-specific overrides.
 
+## Hot reload
+
+Zeph watches all resolved instruction paths for filesystem changes and reloads them automatically — no restart required.
+
+When any watched `.md` file is created, modified, or deleted, Zeph re-runs the full file discovery and loads the updated content into the next inference call. Changes take effect within 500 ms (the debounce window).
+
+```
+# Edit your instruction file while the agent is running:
+echo "- Always use snake_case for variable names" >> zeph.md
+# Zeph picks up the change automatically on the next turn.
+```
+
+**What is watched:**
+
+- All directories containing auto-detected provider files (`zeph.md`, `CLAUDE.md`, `AGENTS.md`, etc.)
+- Parent directories of any explicit files supplied via `extra_files` or `--instruction-file`
+- Sub-provider config directories when using the orchestrator or router
+
+**Boundary check:** explicit files with absolute paths outside the project root are boundary-checked. Their parent directory is only watched if it passes the project-root constraint; content security is always enforced by the loader regardless.
+
 > [!NOTE]
-> Instruction files are loaded once at startup and held in memory. Editing a file while the agent is running has no effect until restart. See [issue #1124](https://github.com/bug-ops/zeph/issues/1124) for planned hot-reload support.
+> The watcher only starts when at least one instruction path is resolved. If no instruction files exist at startup, hot reload is disabled and a log message is emitted.
 
 ## Example: `zeph.md`
 
