@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Provider router: EMA-based and Thompson Sampling strategies.
+
+pub mod thompson;
+
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::any::AnyProvider;
@@ -8,12 +13,28 @@ use crate::ema::EmaTracker;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
+use thompson::ThompsonState;
+
+/// Routing strategy used by [`RouterProvider`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RouterStrategy {
+    /// Exponential moving average-based latency-aware ordering.
+    #[default]
+    Ema,
+    /// Thompson Sampling with Beta distributions.
+    Thompson,
+}
+
 #[derive(Debug, Clone)]
 pub struct RouterProvider {
     providers: Vec<AnyProvider>,
     status_tx: Option<StatusTx>,
     ema: Option<EmaTracker>,
     provider_order: Arc<Mutex<Vec<usize>>>,
+    strategy: RouterStrategy,
+    thompson: Option<Arc<Mutex<ThompsonState>>>,
+    /// Path for persisting Thompson state. `None` disables persistence.
+    thompson_state_path: Option<std::path::PathBuf>,
 }
 
 impl RouterProvider {
@@ -25,6 +46,9 @@ impl RouterProvider {
             status_tx: None,
             ema: None,
             provider_order: Arc::new(Mutex::new((0..n).collect())),
+            strategy: RouterStrategy::Ema,
+            thompson: None,
+            thompson_state_path: None,
         }
     }
 
@@ -35,7 +59,42 @@ impl RouterProvider {
         self
     }
 
+    /// Enable Thompson Sampling strategy.
+    ///
+    /// Loads existing state from `state_path` if present; falls back to uniform prior.
+    #[must_use]
+    pub fn with_thompson(mut self, state_path: Option<&Path>) -> Self {
+        self.strategy = RouterStrategy::Thompson;
+        let path = state_path.map_or_else(ThompsonState::default_path, Path::to_path_buf);
+        let state = ThompsonState::load(&path);
+        self.thompson = Some(Arc::new(Mutex::new(state)));
+        self.thompson_state_path = Some(path);
+        self
+    }
+
+    /// Persist current Thompson state to disk.
+    ///
+    /// No-op if Thompson strategy is not active.
+    pub fn save_thompson_state(&self) {
+        let (Some(thompson), Some(path)) = (&self.thompson, &self.thompson_state_path) else {
+            return;
+        };
+        let state = thompson
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(e) = state.save(path) {
+            tracing::warn!(error = %e, "failed to save Thompson router state");
+        }
+    }
+
     fn ordered_providers(&self) -> Vec<AnyProvider> {
+        match self.strategy {
+            RouterStrategy::Thompson => self.thompson_ordered_providers(),
+            RouterStrategy::Ema => self.ema_ordered_providers(),
+        }
+    }
+
+    fn ema_ordered_providers(&self) -> Vec<AnyProvider> {
         let order = self
             .provider_order
             .lock()
@@ -46,7 +105,42 @@ impl RouterProvider {
             .collect()
     }
 
-    fn record_and_maybe_reorder(&self, provider_name: &str, success: bool, latency_ms: u64) {
+    fn thompson_ordered_providers(&self) -> Vec<AnyProvider> {
+        let Some(ref thompson) = self.thompson else {
+            return self.providers.clone();
+        };
+        let state = thompson
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let selected = state.select(&names);
+        // Put selected provider first, keep rest in original order.
+        let mut ordered = self.providers.clone();
+        if let Some(selected_name) = selected
+            && let Some(pos) = ordered.iter().position(|p| p.name() == selected_name)
+        {
+            ordered.swap(0, pos);
+        }
+        ordered
+    }
+
+    fn record_outcome(&self, provider_name: &str, success: bool, latency_ms: u64) {
+        match self.strategy {
+            RouterStrategy::Thompson => {
+                if let Some(ref thompson) = self.thompson {
+                    let mut state = thompson
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.update(provider_name, success);
+                }
+            }
+            RouterStrategy::Ema => {
+                self.ema_record(provider_name, success, latency_ms);
+            }
+        }
+    }
+
+    fn ema_record(&self, provider_name: &str, success: bool, latency_ms: u64) {
         let Some(ref ema) = self.ema else {
             return;
         };
@@ -127,7 +221,7 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.chat(&messages).await {
                     Ok(r) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -135,7 +229,7 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -164,7 +258,7 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
                     Ok(r) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -172,7 +266,7 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -208,7 +302,7 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.embed(&text).await {
                     Ok(r) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -216,7 +310,7 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -272,7 +366,7 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.chat_with_tools(&messages, &tools).await {
                     Ok(r) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -280,7 +374,7 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_and_maybe_reorder(
+                        router.record_outcome(
                             p.name(),
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -414,5 +508,25 @@ mod tests {
     fn last_cache_usage_returns_none() {
         let r = RouterProvider::new(vec![]);
         assert!(r.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn thompson_strategy_is_set() {
+        let r = RouterProvider::new(vec![]).with_thompson(None);
+        assert_eq!(r.strategy, RouterStrategy::Thompson);
+        assert!(r.thompson.is_some());
+    }
+
+    #[test]
+    fn save_thompson_state_noop_without_thompson() {
+        let r = RouterProvider::new(vec![]);
+        r.save_thompson_state(); // should not panic
+    }
+
+    #[test]
+    fn thompson_ordered_providers_empty() {
+        let r = RouterProvider::new(vec![]).with_thompson(None);
+        let ordered = r.ordered_providers();
+        assert!(ordered.is_empty());
     }
 }

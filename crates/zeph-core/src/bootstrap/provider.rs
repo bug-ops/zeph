@@ -81,7 +81,14 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             if providers.is_empty() {
                 bail!("router chain is empty");
             }
-            let router = if config.llm.router_ema_enabled {
+            let strategy = router_cfg.strategy.as_str();
+            let router = if strategy == "thompson" {
+                let state_path = router_cfg
+                    .thompson_state_path
+                    .as_deref()
+                    .map(std::path::Path::new);
+                RouterProvider::new(providers).with_thompson(state_path)
+            } else if config.llm.router_ema_enabled {
                 let raw_alpha = config.llm.router_ema_alpha;
                 let alpha = raw_alpha.clamp(f64::MIN_POSITIVE, 1.0);
                 if (alpha - raw_alpha).abs() > f64::EPSILON {

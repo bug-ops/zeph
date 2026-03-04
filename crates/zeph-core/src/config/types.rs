@@ -294,6 +294,16 @@ pub struct CompatibleConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub chain: Vec<String>,
+    /// Routing strategy: `"ema"` (default) or `"thompson"`.
+    #[serde(default = "default_router_strategy")]
+    pub strategy: String,
+    /// Path for persisting Thompson Sampling state. Defaults to `~/.zeph/router_thompson_state.json`.
+    #[serde(default)]
+    pub thompson_state_path: Option<String>,
+}
+
+fn default_router_strategy() -> String {
+    "ema".to_owned()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -653,6 +663,8 @@ pub struct MemoryConfig {
     pub sessions: SessionsConfig,
     #[serde(default)]
     pub documents: DocumentConfig,
+    #[serde(default)]
+    pub eviction: zeph_memory::EvictionConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
@@ -1562,6 +1574,7 @@ impl Default for Config {
                 sqlite_pool_size: default_sqlite_pool_size(),
                 sessions: SessionsConfig::default(),
                 documents: DocumentConfig::default(),
+                eviction: zeph_memory::EvictionConfig::default(),
             },
             telegram: None,
             discord: None,

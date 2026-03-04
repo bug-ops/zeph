@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Doc comment on `FilteredToolExecutor::is_allowed()` clarifying that tool ID matching is exact string equality and MCP compound IDs (e.g. `mcp__server__tool`) must be listed in full in `tools.except` (#1181)
 - `PermissionMode` re-exported from `zeph-core::subagent` public API
 - MCP declarative policy layer (`zeph-mcp`): per-server `McpPolicy` with allowlist, denylist, and sliding-window rate limiting; `PolicyEnforcer` (backed by `DashMap` per-server mutexes) enforces policy before each `call_tool()` invocation; policy configured via `[mcp.servers.policy]` TOML sub-table; no-policy servers allow all tools (backward compatible)
+- Thompson Sampling router strategy in `zeph-llm`: `router/thompson.rs` adds `ThompsonState` with per-provider `BetaDist` (alpha/beta updated on each response); `RouterProvider` now supports `RouterStrategy::Thompson` via `with_thompson()`; state persisted atomically to `~/.zeph/router_thompson_state.json`; enabled via `strategy = "thompson"` in `[llm.router]` config; `rand_distr::Beta` used for numerically stable sampling with 1e-6 clamping
 - Sub-agent scope & priority system: agents loaded from four scopes with explicit priority — CLI (`--agents` flag) → project (`.zeph/agents/`) → user (`~/.config/zeph/agents/`) → config `extra_dirs`; first definition wins on name collision (#1145)
 - `--agents <path>` CLI flag: one or more `.md` files or directories for session-scoped sub-agent definitions; non-existent paths are a hard error
 - `SubAgentConfig.user_agents_dir`: configurable user-level agents directory; empty string disables user scope
@@ -49,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Secret key name validation against `[a-zA-Z0-9_-]+` before `SecretRequest` creation to block prompt-injection via malformed key names (#1147)
 - Telegram bot command menu registration via `set_my_commands()` on startup: `/start`, `/reset`, `/skills`, `/agent` (#1147)
 - E2E integration tests for sub-agent lifecycle: background spawn+collect and foreground spawn+secret-bridge (#1147)
+- Memory eviction subsystem with Ebbinghaus forgetting curve policy, two-phase SQLite+Qdrant sweep, and configurable retention (`[memory.eviction]`) (1.1)
 
 ### Fixed
 

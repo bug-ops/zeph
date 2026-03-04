@@ -134,8 +134,6 @@ pub fn scope_label(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
     use super::*;
 
     #[test]

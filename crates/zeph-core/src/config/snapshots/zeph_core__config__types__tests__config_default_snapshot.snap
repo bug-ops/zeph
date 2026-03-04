@@ -91,6 +91,11 @@ chunk_overlap = 100
 top_k = 3
 rag_enabled = false
 
+[memory.eviction]
+policy = "ebbinghaus"
+max_entries = 0
+sweep_interval_secs = 3600
+
 [tools]
 enabled = true
 summarize_output = true
