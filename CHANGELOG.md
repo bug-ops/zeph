@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - SEC-M22-001: fix bearer token timing side-channel in `zeph-gateway` auth middleware — both the submitted token and the expected token are now hashed with BLAKE3 (32-byte fixed-length output) before comparison via `subtle::ConstantTimeEq`, preventing length leaks and timing attacks; expected token hash is pre-computed at startup to eliminate per-request rehashing (#1173)
 
+### Performance
+
+- Pad Block 1 system prompt to exceed 2048-token cache minimum: when the base prompt is below the Sonnet threshold, `split_system_into_blocks()` appends a stable agent identity preamble (~3300 tokens) so Block 1 consistently receives `cache_control: ephemeral` (#1083)
+
 ### Changed
 
 - Sub-agent definition format migrated from `+++` TOML frontmatter to `---` YAML frontmatter (Claude Code spec compatible); `+++` TOML remains supported as a deprecated fallback with a `tracing::warn!` log (#1146)
