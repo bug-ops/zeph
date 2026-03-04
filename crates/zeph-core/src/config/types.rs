@@ -1131,6 +1131,9 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     #[serde(default = "default_mcp_timeout")]
     pub timeout: u64,
+    /// Optional declarative policy for this server (allowlist, denylist, rate limit).
+    #[serde(default)]
+    pub policy: zeph_mcp::McpPolicy,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -1147,6 +1150,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("env", &redacted)
             .field("url", &self.url)
             .field("timeout", &self.timeout)
+            .field("policy", &self.policy)
             .finish()
     }
 }

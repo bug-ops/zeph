@@ -174,9 +174,10 @@ fn default_args() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::PolicyEnforcer;
 
     fn make_executor() -> McpToolExecutor {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
         let tools = Arc::new(RwLock::new(vec![]));
         McpToolExecutor::new(mgr, tools)
     }
@@ -307,7 +308,7 @@ mod tests {
 
     #[test]
     fn tool_definitions_returns_qualified_names() {
-        let mgr = Arc::new(McpManager::new(vec![], vec![]));
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
         let tools = Arc::new(RwLock::new(vec![McpTool {
             server_id: "gh".into(),
             name: "create_issue".into(),

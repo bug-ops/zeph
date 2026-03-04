@@ -767,6 +767,7 @@ fn create_mcp_manager_with_http_transport() {
         args: vec![],
         env: HashMap::new(),
         timeout: 30,
+        policy: Default::default(),
     }];
 
     let manager = create_mcp_manager(&config);
@@ -786,6 +787,7 @@ fn create_mcp_manager_with_stdio_transport() {
         args: vec!["server.js".into()],
         env: HashMap::new(),
         timeout: 30,
+        policy: Default::default(),
     }];
 
     let manager = create_mcp_manager(&config);

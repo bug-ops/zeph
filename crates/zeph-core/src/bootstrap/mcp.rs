@@ -27,7 +27,14 @@ pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
             }
         })
         .collect();
-    zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone())
+    let policy_entries: Vec<(String, zeph_mcp::McpPolicy)> = config
+        .mcp
+        .servers
+        .iter()
+        .map(|s| (s.id.clone(), s.policy.clone()))
+        .collect();
+    let enforcer = zeph_mcp::PolicyEnforcer::new(policy_entries);
+    zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone(), enforcer)
 }
 
 pub async fn create_mcp_registry(

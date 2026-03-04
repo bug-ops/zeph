@@ -17,6 +17,7 @@ default = []
 
 [dependencies]
 blake3.workspace = true
+dashmap.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 schemars.workspace = true

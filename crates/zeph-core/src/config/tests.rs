@@ -1422,6 +1422,7 @@ fn mcp_server_config_debug_redacts_env() {
         env: HashMap::from([("SECRET".into(), "super-secret".into())]),
         url: None,
         timeout: 30,
+        policy: Default::default(),
     };
     let debug = format!("{mcp:?}");
     assert!(!debug.contains("super-secret"));
