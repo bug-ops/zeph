@@ -47,6 +47,15 @@ pub struct SubAgentDef {
     ///
     /// Populated from `tools.except` in YAML frontmatter. Deny wins: tools listed
     /// here are blocked even when they appear in `tools.allow`.
+    ///
+    /// # Serde asymmetry (IMP-CRIT-04)
+    ///
+    /// Deserialization reads this field from the nested `tools.except` key in YAML/TOML
+    /// frontmatter. Serialization (via `#[derive(Serialize)]`) writes it as a flat
+    /// top-level `disallowed_tools` key — not under `tools`. Round-trip serialization
+    /// is therefore not supported: a serialized `SubAgentDef` cannot be parsed back
+    /// as a valid frontmatter file. This is intentional for the current MVP but must
+    /// be addressed before v1.0.0 (see GitHub issue filed under IMP-CRIT-04).
     pub disallowed_tools: Vec<String>,
     pub permissions: SubAgentPermissions,
     pub skills: SkillFilter,

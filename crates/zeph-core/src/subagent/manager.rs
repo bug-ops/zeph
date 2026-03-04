@@ -173,7 +173,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                 // the parent may never poll try_recv_secret_request for them.
                 // Auto-deny inline without sending to the pending channel.
                 if background {
-                    tracing::debug!(
+                    tracing::warn!(
                         "background sub-agent secret request auto-denied (no interactive prompt)"
                     );
                     let reply = format!("[secret:{key_name}] request denied");
