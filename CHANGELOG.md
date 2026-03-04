@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- SEC-M22-001: fix bearer token timing side-channel in `zeph-gateway` auth middleware — both the submitted token and the expected token are now hashed with BLAKE3 (32-byte fixed-length output) before comparison via `subtle::ConstantTimeEq`, preventing length leaks and timing attacks; expected token hash is pre-computed at startup to eliminate per-request rehashing (#1173)
+
 ## [0.12.6] - 2026-03-04
 
 ### Added

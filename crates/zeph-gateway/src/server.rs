@@ -86,7 +86,12 @@ impl GatewayServer {
             );
         }
 
-        let router = build_router(state, self.auth_token, self.rate_limit, self.max_body_size);
+        let router = build_router(
+            state,
+            self.auth_token.as_deref(),
+            self.rate_limit,
+            self.max_body_size,
+        );
 
         let listener = tokio::net::TcpListener::bind(self.addr)
             .await

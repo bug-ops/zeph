@@ -22,7 +22,7 @@ use super::server::AppState;
 
 #[derive(Clone)]
 struct AuthConfig {
-    token: Option<String>,
+    token_hash: Option<blake3::Hash>,
 }
 
 const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
@@ -36,11 +36,13 @@ struct RateLimitState {
 
 pub(crate) fn build_router(
     state: AppState,
-    auth_token: Option<String>,
+    auth_token: Option<&str>,
     rate_limit: u32,
     max_body_size: usize,
 ) -> Router {
-    let auth_cfg = AuthConfig { token: auth_token };
+    let auth_cfg = AuthConfig {
+        token_hash: auth_token.map(|t| blake3::hash(t.as_bytes())),
+    };
     let rate_state = RateLimitState {
         limit: rate_limit,
         counters: Arc::new(Mutex::new(HashMap::new())),
@@ -66,7 +68,7 @@ async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if let Some(ref expected) = cfg.token {
+    if let Some(expected_hash) = cfg.token_hash {
         let auth_header = req
             .headers()
             .get("authorization")
@@ -76,9 +78,10 @@ async fn auth_middleware(
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
 
-        // Hash both values to fixed-length digests to avoid leaking token length
+        // Hash the submitted token to a fixed-length digest before comparing.
+        // Expected token hash is pre-computed at startup (stored in AuthConfig).
+        // ct_eq operates on two 32-byte arrays — constant time regardless of content.
         let token_hash = blake3::hash(token.as_bytes());
-        let expected_hash = blake3::hash(expected.as_bytes());
         if !bool::from(token_hash.as_bytes().ct_eq(expected_hash.as_bytes())) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
@@ -145,7 +148,10 @@ mod tests {
         rate_limit: u32,
     ) -> (Router, tokio::sync::mpsc::Receiver<String>) {
         let (state, rx) = test_state();
-        (build_router(state, auth, rate_limit, 1_048_576), rx)
+        (
+            build_router(state, auth.as_deref(), rate_limit, 1_048_576),
+            rx,
+        )
     }
 
     #[tokio::test]
@@ -294,5 +300,46 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 413);
+    }
+
+    /// Statistical timing test for SEC-M22-001.
+    ///
+    /// Verifies that `ct_eq` comparison time is constant regardless of token length.
+    /// Both inputs are hashed to 32-byte BLAKE3 digests before comparison, so
+    /// `ct_eq` always operates on identically-sized arrays — timing must not vary.
+    #[test]
+    fn bearer_ct_eq_is_constant_time() {
+        use std::time::Instant;
+
+        const ITERS: u32 = 100_000;
+        // Max allowed ratio between slowest and fastest measurement (10× is very conservative;
+        // in practice the ratio is < 2× on any machine, but CI can be noisy).
+        const MAX_RATIO: u128 = 10;
+
+        let expected_hash = blake3::hash(b"super-secret-gateway-token");
+
+        // Tokens of vastly different lengths whose hashes are all wrong (→ ct_eq returns false).
+        let candidates: &[&[u8]] = &[b"x", b"wrong_token_123", &[b'z'; 512]];
+        let mut times_ns: Vec<u128> = Vec::with_capacity(candidates.len());
+
+        for candidate in candidates {
+            let h = blake3::hash(candidate);
+            // Warm up to avoid first-call JIT / cache effects.
+            for _ in 0..1_000 {
+                let _ = h.as_bytes().ct_eq(expected_hash.as_bytes());
+            }
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                let _ = h.as_bytes().ct_eq(expected_hash.as_bytes());
+            }
+            times_ns.push(start.elapsed().as_nanos() / u128::from(ITERS));
+        }
+
+        let min = *times_ns.iter().min().unwrap();
+        let max = *times_ns.iter().max().unwrap();
+        assert!(
+            min > 0 && max / min < MAX_RATIO,
+            "ct_eq timing ratio {max}/{min} exceeds {MAX_RATIO}×; times per iter: {times_ns:?} ns"
+        );
     }
 }
