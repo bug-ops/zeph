@@ -62,6 +62,9 @@ pub(crate) struct WizardState {
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
     pub(crate) agents_default_disallowed_tools: Vec<String>,
     pub(crate) agents_allow_bypass_permissions: bool,
+    /// "regex" or "judge" — defaults to "regex" (no LLM calls).
+    pub(crate) detector_mode: Option<String>,
+    pub(crate) judge_model: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -98,6 +101,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_agents(&mut state)?;
+    step_learning(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -612,6 +616,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .clone_from(&state.agents_default_disallowed_tools);
     config.agents.allow_bypass_permissions = state.agents_allow_bypass_permissions;
 
+    if state.detector_mode.as_deref() == Some("judge") {
+        config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
+        if let Some(ref model) = state.judge_model {
+            config.skills.learning.judge_model.clone_from(model);
+        }
+    }
+
     config
 }
 
@@ -816,6 +827,38 @@ fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         .with_prompt("Allow sub-agents to use bypass_permissions mode?")
         .default(false)
         .interact()?;
+
+    println!();
+    Ok(())
+}
+
+fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 10b/11: Feedback Detector ==\n");
+
+    let detector_items = &[
+        "regex (default — pattern matching, no LLM)",
+        "judge (LLM-based verification)",
+    ];
+    let sel = Select::new()
+        .with_prompt("Feedback detector mode")
+        .items(detector_items)
+        .default(0)
+        .interact()?;
+
+    if sel == 1 {
+        state.detector_mode = Some("judge".into());
+        let judge_model: String = Input::new()
+            .with_prompt(
+                "Judge model name (e.g. claude-sonnet-4-6; leave empty to use primary provider)",
+            )
+            .default(String::new())
+            .interact_text()?;
+        if !judge_model.is_empty() {
+            state.judge_model = Some(judge_model);
+        }
+    } else {
+        state.detector_mode = Some("regex".into());
+    }
 
     println!();
     Ok(())

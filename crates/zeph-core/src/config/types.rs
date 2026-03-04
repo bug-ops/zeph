@@ -493,6 +493,22 @@ fn default_max_active_skills() -> usize {
     5
 }
 
+/// Strategy for detecting implicit user corrections.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DetectorMode {
+    /// Pattern-matching only — zero LLM calls. Default behavior.
+    #[default]
+    Regex,
+    /// LLM-based judge for borderline / missed cases. Invoked only when
+    /// regex confidence falls below `judge_adaptive_high` or regex returns None.
+    ///
+    /// Note: with current regex values (0.85/0.70/0.75) and `adaptive_high=0.80`,
+    /// this is effectively two-tier: `ExplicitRejection` (0.85) bypasses the judge,
+    /// while `AlternativeRequest` (0.70), `Repetition` (0.75), and regex misses go through it.
+    Judge,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LearningConfig {
     #[serde(default)]
@@ -515,6 +531,18 @@ pub struct LearningConfig {
     pub correction_detection: bool,
     #[serde(default = "default_correction_confidence_threshold")]
     pub correction_confidence_threshold: f32,
+    /// Detector strategy: "regex" (default) or "judge".
+    #[serde(default)]
+    pub detector_mode: DetectorMode,
+    /// Model for the judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
+    #[serde(default)]
+    pub judge_model: String,
+    /// Regex confidence below this value is treated as "not a correction" — judge not invoked.
+    #[serde(default = "default_judge_adaptive_low")]
+    pub judge_adaptive_low: f32,
+    /// Regex confidence at or above this value is accepted without judge confirmation.
+    #[serde(default = "default_judge_adaptive_high")]
+    pub judge_adaptive_high: f32,
     #[serde(default = "default_correction_recall_limit")]
     pub correction_recall_limit: u32,
     #[serde(default = "default_correction_min_similarity")]
@@ -542,6 +570,10 @@ impl Default for LearningConfig {
             cooldown_minutes: default_cooldown_minutes(),
             correction_detection: default_correction_detection(),
             correction_confidence_threshold: default_correction_confidence_threshold(),
+            detector_mode: DetectorMode::default(),
+            judge_model: String::new(),
+            judge_adaptive_low: default_judge_adaptive_low(),
+            judge_adaptive_high: default_judge_adaptive_high(),
             correction_recall_limit: default_correction_recall_limit(),
             correction_min_similarity: default_correction_min_similarity(),
             auto_promote_min_uses: default_auto_promote_min_uses(),
@@ -575,6 +607,12 @@ fn default_correction_detection() -> bool {
 }
 fn default_correction_confidence_threshold() -> f32 {
     0.6
+}
+fn default_judge_adaptive_low() -> f32 {
+    0.5
+}
+fn default_judge_adaptive_high() -> f32 {
+    0.8
 }
 fn default_correction_recall_limit() -> u32 {
     3
@@ -1823,5 +1861,42 @@ mod tests {
         let cfg: SubAgentConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.default_permission_mode, Some(PermissionMode::Plan));
         assert_eq!(cfg.default_disallowed_tools, ["dangerous_tool", "other"]);
+    }
+
+    #[test]
+    fn detector_mode_default_is_regex() {
+        assert_eq!(DetectorMode::default(), DetectorMode::Regex);
+    }
+
+    #[test]
+    fn learning_config_default_detector_mode_is_regex() {
+        let cfg = LearningConfig::default();
+        assert_eq!(cfg.detector_mode, DetectorMode::Regex);
+        assert!(cfg.judge_model.is_empty());
+        assert!((cfg.judge_adaptive_low - 0.5).abs() < f32::EPSILON);
+        assert!((cfg.judge_adaptive_high - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn learning_config_deserialize_judge_mode() {
+        let toml = r#"
+            enabled = true
+            detector_mode = "judge"
+            judge_model = "claude-sonnet-4-6"
+            judge_adaptive_low = 0.4
+            judge_adaptive_high = 0.9
+        "#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.detector_mode, DetectorMode::Judge);
+        assert_eq!(cfg.judge_model, "claude-sonnet-4-6");
+        assert!((cfg.judge_adaptive_low - 0.4).abs() < f32::EPSILON);
+        assert!((cfg.judge_adaptive_high - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn learning_config_detector_mode_defaults_to_regex_when_absent() {
+        let toml = "enabled = true";
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.detector_mode, DetectorMode::Regex);
     }
 }

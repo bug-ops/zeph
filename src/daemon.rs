@@ -303,6 +303,13 @@ pub(crate) async fn run_daemon(
         agent
     };
 
+    let judge_provider = app.build_judge_provider();
+    let agent = if let Some(jp) = judge_provider {
+        agent.with_judge_provider(jp)
+    } else {
+        agent
+    };
+
     let agent = if config.cost.enabled {
         let tracker =
             zeph_core::cost::CostTracker::new(true, f64::from(config.cost.max_daily_cents));

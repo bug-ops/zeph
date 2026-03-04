@@ -286,6 +286,35 @@ impl AppBuilder {
             },
         )
     }
+
+    /// Build a dedicated provider for the judge detector when `detector_mode = judge`.
+    ///
+    /// Returns `None` when mode is `Regex` or `judge_model` is empty (primary provider used).
+    /// Emits a `tracing::warn` when mode is `Judge` but no model is specified.
+    pub fn build_judge_provider(&self) -> Option<AnyProvider> {
+        use crate::config::DetectorMode;
+        let learning = &self.config.skills.learning;
+        if learning.detector_mode != DetectorMode::Judge {
+            return None;
+        }
+        if learning.judge_model.is_empty() {
+            tracing::warn!(
+                provider = ?self.config.llm.provider,
+                "detector_mode=judge but judge_model is empty — primary provider will be used for judging"
+            );
+            return None;
+        }
+        match create_named_provider(&learning.judge_model, &self.config) {
+            Ok(jp) => {
+                tracing::info!(model = %learning.judge_model, "judge provider configured");
+                Some(jp)
+            }
+            Err(e) => {
+                tracing::warn!("failed to create judge provider: {e:#}, using primary");
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]

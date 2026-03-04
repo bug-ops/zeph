@@ -60,6 +60,7 @@ struct AgentDeps {
     tool_call_cutoff: usize,
     secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
     summary_provider: Option<zeph_llm::any::AnyProvider>,
+    judge_provider: Option<zeph_llm::any::AnyProvider>,
     acp_agent_name: String,
     acp_agent_version: String,
     acp_max_sessions: usize,
@@ -205,6 +206,7 @@ async fn build_acp_deps(
             .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
             .collect(),
         summary_provider,
+        judge_provider: app.build_judge_provider(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -352,6 +354,10 @@ async fn spawn_acp_agent(
 
     if let Some(sp) = d.summary_provider {
         agent = agent.with_summary_provider(sp);
+    }
+
+    if let Some(jp) = d.judge_provider {
+        agent = agent.with_judge_provider(jp);
     }
 
     if let Err(e) = agent.load_history().await {
