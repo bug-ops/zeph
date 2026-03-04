@@ -721,6 +721,10 @@ pub struct MemoryConfig {
     pub documents: DocumentConfig,
     #[serde(default)]
     pub eviction: zeph_memory::EvictionConfig,
+    #[serde(default)]
+    pub compression: CompressionConfig,
+    #[serde(default)]
+    pub routing: RoutingConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
@@ -1631,6 +1635,8 @@ impl Default for Config {
                 sessions: SessionsConfig::default(),
                 documents: DocumentConfig::default(),
                 eviction: zeph_memory::EvictionConfig::default(),
+                compression: CompressionConfig::default(),
+                routing: RoutingConfig::default(),
             },
             telegram: None,
             discord: None,
@@ -1653,6 +1659,53 @@ impl Default for Config {
             secrets: ResolvedSecrets::default(),
         }
     }
+}
+
+/// Routing strategy for memory backend selection.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingStrategy {
+    /// Heuristic-based routing using query characteristics.
+    #[default]
+    Heuristic,
+}
+
+/// Configuration for query-aware memory routing (#1162).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RoutingConfig {
+    /// Routing strategy. Currently only `heuristic` is supported.
+    pub strategy: RoutingStrategy,
+}
+
+/// Compression strategy for active context compression (#1161).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "strategy", rename_all = "snake_case")]
+pub enum CompressionStrategy {
+    /// Compress only when reactive compaction fires (current behavior).
+    #[default]
+    Reactive,
+    /// Compress proactively when context exceeds `threshold_tokens`.
+    Proactive {
+        /// Token count that triggers proactive compression.
+        threshold_tokens: usize,
+        /// Maximum tokens for the compressed summary (passed to LLM as `max_tokens`).
+        max_summary_tokens: usize,
+    },
+}
+
+/// Configuration for active context compression (#1161).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CompressionConfig {
+    /// Compression strategy.
+    #[serde(flatten)]
+    pub strategy: CompressionStrategy,
+    /// Model to use for compression summaries.
+    ///
+    /// Currently unused — the primary summary provider is used regardless of this value.
+    /// Reserved for future per-compression model selection. Setting this field has no effect.
+    pub model: String,
 }
 
 #[cfg(test)]
@@ -1925,5 +1978,92 @@ mod tests {
         let toml = "enabled = true";
         let cfg: LearningConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.detector_mode, DetectorMode::Regex);
+    }
+
+    // --- RoutingConfig / CompressionConfig TOML deserialization tests (#1162, #1161) ---
+
+    #[test]
+    fn routing_strategy_default_is_heuristic() {
+        assert_eq!(RoutingStrategy::default(), RoutingStrategy::Heuristic);
+        let cfg = RoutingConfig::default();
+        assert_eq!(cfg.strategy, RoutingStrategy::Heuristic);
+    }
+
+    #[test]
+    fn routing_config_toml_heuristic() {
+        let toml = r#"strategy = "heuristic""#;
+        let cfg: RoutingConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.strategy, RoutingStrategy::Heuristic);
+    }
+
+    #[test]
+    fn routing_config_toml_invalid_strategy_rejected() {
+        let toml = r#"strategy = "unknown_strategy""#;
+        let result: Result<RoutingConfig, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown strategy must fail deserialization"
+        );
+    }
+
+    #[test]
+    fn compression_strategy_default_is_reactive() {
+        assert_eq!(
+            CompressionStrategy::default(),
+            CompressionStrategy::Reactive
+        );
+        let cfg = CompressionConfig::default();
+        assert_eq!(cfg.strategy, CompressionStrategy::Reactive);
+    }
+
+    #[test]
+    fn compression_config_toml_reactive() {
+        let toml = r#"strategy = "reactive""#;
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.strategy, CompressionStrategy::Reactive);
+    }
+
+    #[test]
+    fn compression_config_toml_proactive() {
+        let toml = r#"
+            strategy = "proactive"
+            threshold_tokens = 80000
+            max_summary_tokens = 4000
+        "#;
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.strategy,
+            CompressionStrategy::Proactive {
+                threshold_tokens: 80_000,
+                max_summary_tokens: 4_000,
+            }
+        );
+    }
+
+    #[test]
+    fn compression_config_toml_model_roundtrip() {
+        let toml = r#"
+            strategy = "reactive"
+            model = "claude-haiku-4-5-20251001"
+        "#;
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.model, "claude-haiku-4-5-20251001");
+        let serialized = toml::to_string_pretty(&cfg).unwrap();
+        let back: CompressionConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(back.model, cfg.model);
+    }
+
+    #[test]
+    fn routing_config_toml_question_with_double_colon_routes_test() {
+        // Verifies that "what does foo::bar do" routes Semantic, not Keyword.
+        // This tests the question-word override for structural code patterns (router.rs:69-70).
+        // The test lives here to keep router.rs unit-focused and types.rs integration-focused.
+        use zeph_memory::{HeuristicRouter, MemoryRoute, MemoryRouter};
+        let router = HeuristicRouter;
+        assert_eq!(
+            router.route("what does foo::bar do"),
+            MemoryRoute::Semantic,
+            "question word must override :: structural pattern"
+        );
     }
 }

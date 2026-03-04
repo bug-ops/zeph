@@ -50,6 +50,8 @@ pub struct MetricsSnapshot {
     pub model_name: String,
     pub summaries_count: u64,
     pub context_compactions: u64,
+    pub compression_events: u64,
+    pub compression_tokens_saved: u64,
     pub tool_output_prunes: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,

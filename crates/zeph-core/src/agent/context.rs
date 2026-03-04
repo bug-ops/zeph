@@ -70,6 +70,24 @@ pub(super) fn truncate_chars(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Cap an LLM summary to `max_chars` characters (SEC-02).
+///
+/// Prevents a misbehaving LLM backend from returning an arbitrarily large summary that
+/// would expand rather than shrink the context window after compaction.
+fn cap_summary(s: String, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => {
+            tracing::warn!(
+                original_chars = s.chars().count(),
+                cap = max_chars,
+                "LLM summary exceeded cap, truncating"
+            );
+            format!("{}…", &s[..byte_idx])
+        }
+        None => s,
+    }
+}
+
 impl<C: Channel> Agent<C> {
     pub(super) fn should_compact(&self) -> bool {
         self.context_manager
@@ -750,6 +768,10 @@ impl<C: Channel> Agent<C> {
         clippy::cast_sign_loss
     )]
     pub(super) async fn maybe_compact(&mut self) -> Result<(), super::error::AgentError> {
+        // Skip if proactive compression already ran this turn (CRIT-03).
+        if self.context_manager.compacted_this_turn {
+            return Ok(());
+        }
         if !self.should_compact() {
             return Ok(());
         }
@@ -771,6 +793,7 @@ impl<C: Channel> Agent<C> {
         let freed = self.prune_tool_outputs(min_to_free);
         if freed >= min_to_free {
             tracing::info!(freed, "tier-1 pruning sufficient");
+            self.context_manager.compacted_this_turn = true;
             return Ok(());
         }
 
@@ -779,7 +802,198 @@ impl<C: Channel> Agent<C> {
             min_to_free,
             "tier-1 insufficient, falling back to tier-2 compaction"
         );
-        self.compact_context().await
+        let result = self.compact_context().await;
+        if result.is_ok() {
+            self.context_manager.compacted_this_turn = true;
+        }
+        result
+    }
+
+    /// Proactive context compression: fires before reactive compaction when context exceeds
+    /// the configured `threshold_tokens`. Mutually exclusive with reactive compaction per turn
+    /// (guarded by `compacted_this_turn`).
+    pub(super) async fn maybe_proactive_compress(
+        &mut self,
+    ) -> Result<(), super::error::AgentError> {
+        let Some((_threshold, max_summary_tokens)) = self
+            .context_manager
+            .should_proactively_compress(self.cached_prompt_tokens)
+        else {
+            return Ok(());
+        };
+
+        let tokens_before = self.cached_prompt_tokens;
+        let _ = self.channel.send_status("compressing context...").await;
+        tracing::info!(
+            max_summary_tokens,
+            cached_tokens = tokens_before,
+            "proactive compression triggered"
+        );
+
+        let result = self
+            .compact_context_with_budget(Some(max_summary_tokens))
+            .await;
+
+        if result.is_ok() {
+            self.context_manager.compacted_this_turn = true;
+            let tokens_saved = tokens_before.saturating_sub(self.cached_prompt_tokens);
+            self.update_metrics(|m| {
+                m.compression_events += 1;
+                m.compression_tokens_saved += tokens_saved;
+            });
+        }
+
+        let _ = self.channel.send_status("").await;
+        result
+    }
+
+    /// Run LLM compaction with an optional chunk budget hint for the summary.
+    ///
+    /// When `max_summary_tokens` is `Some(n)`, the chunk budget used by `chunk_messages`
+    /// is capped at `n`, limiting how much context is summarized per LLM call.
+    async fn compact_context_with_budget(
+        &mut self,
+        max_summary_tokens: Option<usize>,
+    ) -> Result<(), super::error::AgentError> {
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+
+        if self.messages.len() <= preserve_tail + 1 {
+            return Ok(());
+        }
+
+        let compact_end = self.messages.len() - preserve_tail;
+        let to_compact = &self.messages[1..compact_end];
+        if to_compact.is_empty() {
+            return Ok(());
+        }
+
+        let summary = self
+            .summarize_messages_with_budget(to_compact, max_summary_tokens)
+            .await?;
+
+        let compacted_count = to_compact.len();
+        let summary_content =
+            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+        self.messages.drain(1..compact_end);
+        self.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: summary_content.clone(),
+                parts: vec![],
+                metadata: zeph_llm::provider::MessageMetadata::agent_only(),
+            },
+        );
+
+        tracing::info!(
+            compacted_count,
+            summary_tokens = self.token_counter.count_tokens(&summary),
+            "compacted context (with budget)"
+        );
+
+        self.recompute_prompt_tokens();
+        self.update_metrics(|m| {
+            m.context_compactions += 1;
+        });
+
+        if let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        {
+            let sqlite = memory.sqlite();
+            let ids = sqlite
+                .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
+                .await;
+            match ids {
+                Ok(ids) if ids.len() >= 2 => {
+                    let start = ids[1];
+                    let end = ids[compacted_count.min(ids.len() - 1)];
+                    if let Err(e) = sqlite
+                        .replace_conversation(cid, start..=end, "system", &summary_content)
+                        .await
+                    {
+                        tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                    }
+                }
+                Ok(_) => {
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to get message ids for compaction: {e:#}");
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Summarize messages with an optional chunk-size budget.
+    ///
+    /// When `chunk_budget` is `Some(n)`, the token budget per chunk is `n` instead of
+    /// the default 4096. This indirectly limits how long summaries are by reducing
+    /// how much context is fed to each LLM call.
+    async fn summarize_messages_with_budget(
+        &self,
+        messages: &[Message],
+        chunk_budget: Option<usize>,
+    ) -> Result<String, super::error::AgentError> {
+        // Try direct summarization first
+        let chunk_token_budget = chunk_budget.unwrap_or(4096);
+        let oversized_threshold = chunk_token_budget / 2;
+
+        let chunks = chunk_messages(
+            messages,
+            chunk_token_budget,
+            oversized_threshold,
+            &self.token_counter,
+        );
+
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+
+        let try_llm = |msgs: &[Message]| {
+            let prompt = Self::build_chunk_prompt(msgs);
+            let provider = self.summary_or_primary_provider().clone();
+            async move {
+                tokio::time::timeout(
+                    llm_timeout,
+                    provider.chat(&[Message {
+                        role: Role::User,
+                        content: prompt,
+                        parts: vec![],
+                        metadata: zeph_llm::provider::MessageMetadata::default(),
+                    }]),
+                )
+                .await
+                .map_err(|_| zeph_llm::LlmError::Timeout)?
+            }
+        };
+
+        // For single chunk, summarize directly
+        if chunks.len() <= 1 {
+            match try_llm(messages).await {
+                Ok(s) => {
+                    // SEC-02: cap summary length to avoid LLM output expanding context.
+                    // Estimate 4 chars per token; cap at 2× the requested budget or 8000 tokens.
+                    let cap_chars = chunk_budget.unwrap_or(8_000).saturating_mul(8);
+                    return Ok(cap_summary(s, cap_chars));
+                }
+                Err(e) if !e.is_context_length_error() => return Err(e.into()),
+                Err(_) => {
+                    tracing::warn!(
+                        "summarization hit context length error, using metadata fallback"
+                    );
+                }
+            }
+            return Ok(Self::build_metadata_summary(messages));
+        }
+
+        // Multi-chunk: use the existing summarize_messages logic (chunk_budget only applied to
+        // chunk splitting above; consolidated summary uses the default path)
+        self.summarize_messages(messages).await
     }
 
     pub(super) fn clear_history(&mut self) {
@@ -853,6 +1067,7 @@ impl<C: Channel> Agent<C> {
             query,
             token_budget,
             &self.token_counter,
+            None,
         )
         .await?
         {
@@ -869,6 +1084,7 @@ impl<C: Channel> Agent<C> {
         query: &str,
         token_budget: usize,
         tc: &TokenCounter,
+        router: Option<&dyn zeph_memory::MemoryRouter>,
     ) -> Result<Option<Message>, super::error::AgentError> {
         let Some(memory) = &memory_state.memory else {
             return Ok(None);
@@ -877,9 +1093,15 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         }
 
-        let recalled = memory
-            .recall(query, memory_state.recall_limit, None)
-            .await?;
+        let recalled = if let Some(r) = router {
+            memory
+                .recall_routed(query, memory_state.recall_limit, None, r)
+                .await?
+        } else {
+            memory
+                .recall(query, memory_state.recall_limit, None)
+                .await?
+        };
         if recalled.is_empty() {
             return Ok(None);
         }
@@ -1230,13 +1452,20 @@ impl<C: Channel> Agent<C> {
 
         // Fetch all context sources concurrently
         let tc = self.token_counter.clone();
+        let router = self.context_manager.build_router();
         #[cfg(not(feature = "index"))]
         let (summaries_msg, cross_session_msg, recall_msg, doc_rag_msg, corrections_msg) = {
             let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
             let result = tokio::try_join!(
                 Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
                 Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
-                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
+                Self::fetch_semantic_recall(
+                    &self.memory_state,
+                    &query,
+                    alloc.semantic_recall,
+                    &tc,
+                    Some(&router),
+                ),
                 Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
                 Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
             );
@@ -1262,7 +1491,13 @@ impl<C: Channel> Agent<C> {
             let result = tokio::try_join!(
                 Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
                 Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
-                Self::fetch_semantic_recall(&self.memory_state, &query, alloc.semantic_recall, &tc),
+                Self::fetch_semantic_recall(
+                    &self.memory_state,
+                    &query,
+                    alloc.semantic_recall,
+                    &tc,
+                    Some(&router),
+                ),
                 Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
                 Self::fetch_code_rag(&self.index, &query, alloc.code_context),
                 Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
@@ -4095,5 +4330,70 @@ mod tests {
             emitted.iter().any(|s| s == "recalling context..."),
             "expected 'recalling context...' in statuses, got: {emitted:?}"
         );
+    }
+
+    // cap_summary tests (SEC-02)
+
+    #[test]
+    fn cap_summary_short_string_unchanged() {
+        let s = "hello world".to_owned();
+        let result = cap_summary(s.clone(), 100);
+        assert_eq!(result, s);
+    }
+
+    #[test]
+    fn cap_summary_truncates_long_string() {
+        let s = "a".repeat(200);
+        let result = cap_summary(s, 10);
+        assert!(result.ends_with('…'));
+        assert_eq!(result.chars().count(), 11); // 10 chars + ellipsis
+    }
+
+    #[test]
+    fn cap_summary_exact_length_unchanged() {
+        let s = "hello".to_owned();
+        let result = cap_summary(s.clone(), 5);
+        assert_eq!(result, s);
+    }
+
+    // compacted_this_turn reset and mutual exclusion tests (#1161 — tester gap)
+
+    #[tokio::test]
+    async fn compacted_this_turn_reset_between_turns() {
+        let provider = mock_provider(vec!["turn1".to_owned(), "turn2".to_owned()]);
+        let channel = MockChannel::new(vec!["first".to_owned(), "second".to_owned()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Manually set the flag as if proactive compression fired
+        agent.context_manager.compacted_this_turn = true;
+
+        // Process a message — reset happens at turn start
+        let _ = agent.process_user_message("first".to_owned(), vec![]).await;
+
+        // After turn, flag should have been reset (reset at start) and may have been
+        // set again only if proactive compression fired. Since threshold is reactive
+        // by default, flag should be false after turn (no proactive).
+        // We can't inspect mid-turn, but we can check the default config doesn't trigger.
+        assert!(!agent.context_manager.compacted_this_turn);
+    }
+
+    #[tokio::test]
+    async fn maybe_proactive_compress_does_not_fire_with_reactive_strategy() {
+        // With default (Reactive) strategy, maybe_proactive_compress should be a no-op.
+        let provider = mock_provider(vec!["response".to_owned()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.cached_prompt_tokens = 200_000; // very high token count
+
+        // should_proactively_compress returns None for Reactive → no compression
+        let result = agent.maybe_proactive_compress().await;
+        assert!(result.is_ok());
+        assert!(!agent.context_manager.compacted_this_turn);
     }
 }

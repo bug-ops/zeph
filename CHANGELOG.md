@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Query-aware memory routing (`zeph-memory`): `MemoryRouter` trait with `HeuristicRouter` implementation that classifies queries as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid based on query structure; code-like patterns route to keyword search, natural language questions route to semantic search; configurable via `[memory.routing] strategy = "heuristic"` (#1162)
+- Active context compression (`zeph-core`): proactive compression fires before hitting capacity limits; `CompressionStrategy` enum (`reactive`/`proactive`) with configurable `threshold_tokens` and `max_summary_tokens`; mutual exclusion guard prevents double-compaction per turn; `compression_events` and `compression_tokens_saved` metrics; configurable via `[memory.compression]` (#1161)
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
 - `tools.except` list in sub-agent YAML frontmatter: additional denylist applied on top of `tools.allow`/`tools.deny`; deny wins over allow
 - `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`

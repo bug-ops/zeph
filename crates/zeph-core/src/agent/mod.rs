@@ -1034,6 +1034,14 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Reset per-turn compaction guard at the start of context management phase.
+        self.context_manager.compacted_this_turn = false;
+
+        // Proactive compression fires first (if configured); if it runs, reactive is skipped.
+        if let Err(e) = self.maybe_proactive_compress().await {
+            tracing::warn!("proactive compression failed: {e:#}");
+        }
+
         if let Err(e) = self.maybe_compact().await {
             tracing::warn!("context compaction failed: {e:#}");
         }
@@ -1640,6 +1648,8 @@ impl<C: Channel> Agent<C> {
         self.context_manager.compaction_threshold = config.memory.compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.context_manager.compression = config.memory.compression.clone();
+        self.context_manager.routing = config.memory.routing.clone();
         self.memory_state.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 
