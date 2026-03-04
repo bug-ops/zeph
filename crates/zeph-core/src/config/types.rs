@@ -10,6 +10,7 @@ use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::subagent::def::PermissionMode;
+use crate::subagent::hooks::HookDef;
 
 use crate::vault::Secret;
 
@@ -66,6 +67,14 @@ pub struct SubAgentConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
+    /// User-level agents directory.
+    ///
+    /// Set to an absolute path to override the platform default (`~/.config/zeph/agents`
+    /// on Linux/macOS, `%APPDATA%/zeph/agents` on Windows). Note: tilde (`~`) expansion
+    /// is not supported — use an absolute path or omit this field to use the platform default.
+    /// Set to empty string to disable the user-level directory entirely.
+    #[serde(default)]
+    pub user_agents_dir: Option<PathBuf>,
     /// Default permission mode applied to sub-agents that do not specify one.
     ///
     /// Only takes effect when the sub-agent definition leaves `permission_mode` at its
@@ -83,6 +92,12 @@ pub struct SubAgentConfig {
     /// is rejected with an error. Set to `true` only in trusted, controlled environments.
     #[serde(default)]
     pub allow_bypass_permissions: bool,
+    /// Lifecycle hooks executed when any sub-agent starts or stops.
+    ///
+    /// `start` hooks run after the agent is spawned (fire-and-forget).
+    /// `stop` hooks run after the agent finishes or is cancelled (fire-and-forget).
+    #[serde(default)]
+    pub hooks: SubAgentLifecycleHooks,
 }
 
 impl Default for SubAgentConfig {
@@ -91,11 +106,23 @@ impl Default for SubAgentConfig {
             enabled: false,
             max_concurrent: default_max_concurrent(),
             extra_dirs: Vec::new(),
+            user_agents_dir: None,
             default_permission_mode: None,
             default_disallowed_tools: Vec::new(),
             allow_bypass_permissions: false,
+            hooks: SubAgentLifecycleHooks::default(),
         }
     }
+}
+
+/// Config-level lifecycle hooks fired when any sub-agent starts or stops.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SubAgentLifecycleHooks {
+    /// Hooks run after a sub-agent is spawned (fire-and-forget).
+    pub start: Vec<HookDef>,
+    /// Hooks run after a sub-agent finishes or is cancelled (fire-and-forget).
+    pub stop: Vec<HookDef>,
 }
 
 fn default_max_concurrent() -> usize {

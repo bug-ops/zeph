@@ -262,6 +262,14 @@ max_dynamic_servers = 10
 enabled = false            # Enable sub-agent system (default: false)
 max_concurrent = 1         # Max concurrent sub-agents (default: 1)
 extra_dirs = []            # Additional directories to scan for agent definitions
+# Lifecycle hooks — see Sub-Agent Orchestration > Hooks for details
+# [agents.hooks]
+# [[agents.hooks.start]]
+# type = "command"
+# command = "echo started"
+# [[agents.hooks.stop]]
+# type = "command"
+# command = "./scripts/cleanup.sh"
 
 [gateway]
 enabled = false

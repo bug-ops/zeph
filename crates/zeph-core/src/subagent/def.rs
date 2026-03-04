@@ -7,11 +7,18 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::error::SubAgentError;
+use super::hooks::SubagentHooks;
 
 /// Maximum allowed size for a sub-agent definition file (256 KiB).
 ///
 /// Files larger than this are rejected before parsing to cap memory usage.
 const MAX_DEF_SIZE: usize = 256 * 1024;
+
+/// Maximum number of `.md` files scanned per directory.
+///
+/// Prevents accidental denial-of-service when `--agents /home` or similar large flat
+/// directories are passed. A warning is emitted when the cap is hit.
+const MAX_ENTRIES_PER_DIR: usize = 100;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -60,6 +67,18 @@ pub struct SubAgentDef {
     pub permissions: SubAgentPermissions,
     pub skills: SkillFilter,
     pub system_prompt: String,
+    /// Per-agent hooks (`PreToolUse` / `PostToolUse`) from frontmatter.
+    ///
+    /// Hooks are only honored for project-level and CLI-level definitions.
+    /// User-level definitions (~/.zeph/agents/) have hooks stripped on load.
+    pub hooks: SubagentHooks,
+    /// Scope label and filename of the definition file (populated by `load` / `load_all`).
+    ///
+    /// Stored as `"<scope>/<filename>"` (e.g., `"project/my-agent.md"`).
+    /// The full absolute path is intentionally not stored to avoid leaking local
+    /// filesystem layout in diagnostics and `/agent list` output.
+    #[serde(skip)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +134,8 @@ struct RawSubAgentDef {
     permissions: RawPermissions,
     #[serde(default)]
     skills: RawSkillFilter,
+    #[serde(default)]
+    hooks: SubagentHooks,
 }
 
 // Note: `RawToolPolicy` and `RawPermissions` intentionally do not carry
@@ -392,19 +413,53 @@ impl SubAgentDef {
                 include: raw.skills.include,
                 exclude: raw.skills.exclude,
             },
+            hooks: raw.hooks,
             system_prompt: body.trim().to_owned(),
+            source: None,
         })
     }
 
     /// Load a single definition from a `.md` file.
     ///
+    /// When `boundary` is provided, the file's canonical path must start with
+    /// `boundary` — this rejects symlinks that escape the allowed directory.
+    ///
     /// # Errors
     ///
-    /// Returns [`SubAgentError::Parse`] if the file cannot be read, exceeds 256 KiB, or fails
-    /// to parse.
+    /// Returns [`SubAgentError::Parse`] if the file cannot be read, exceeds 256 KiB,
+    /// escapes the boundary via symlink, or fails to parse.
     pub fn load(path: &Path) -> Result<Self, SubAgentError> {
+        Self::load_with_boundary(path, None, None)
+    }
+
+    /// Load with optional symlink boundary and scope label for the `source` field.
+    pub(crate) fn load_with_boundary(
+        path: &Path,
+        boundary: Option<&Path>,
+        scope: Option<&str>,
+    ) -> Result<Self, SubAgentError> {
         let path_str = path.display().to_string();
-        let content = std::fs::read_to_string(path).map_err(|e| SubAgentError::Parse {
+
+        // Canonicalize to resolve any symlinks before reading.
+        let canonical = std::fs::canonicalize(path).map_err(|e| SubAgentError::Parse {
+            path: path_str.clone(),
+            reason: format!("cannot resolve path: {e}"),
+        })?;
+
+        // Boundary check: reject symlinks that escape the allowed directory.
+        if let Some(boundary) = boundary
+            && !canonical.starts_with(boundary)
+        {
+            return Err(SubAgentError::Parse {
+                path: path_str.clone(),
+                reason: format!(
+                    "definition file escapes allowed directory boundary ({})",
+                    boundary.display()
+                ),
+            });
+        }
+
+        let content = std::fs::read_to_string(&canonical).map_err(|e| SubAgentError::Parse {
             path: path_str.clone(),
             reason: e.to_string(),
         })?;
@@ -417,26 +472,113 @@ impl SubAgentDef {
                 ),
             });
         }
-        Self::parse_with_path(&content, &path_str)
+        let mut def = Self::parse_with_path(&content, &path_str)?;
+
+        // Security: strip hooks from user-level definitions — only project-level
+        // (scope = "project") and CLI-level (scope = "cli" or None) definitions may
+        // carry hooks. User-level agents come from ~/.zeph/agents/ and are untrusted.
+        if scope == Some("user") {
+            if !def.hooks.pre_tool_use.is_empty() || !def.hooks.post_tool_use.is_empty() {
+                tracing::warn!(
+                    path = %path_str,
+                    "user-level agent definition contains hooks — stripping for security"
+                );
+            }
+            def.hooks = SubagentHooks::default();
+        }
+
+        // Populate source as "<scope>/<filename>" — no full path to avoid privacy leak.
+        let filename = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("<unknown>");
+        def.source = Some(if let Some(scope) = scope {
+            format!("{scope}/{filename}")
+        } else {
+            filename.to_owned()
+        });
+
+        Ok(def)
     }
 
-    /// Load all definitions from a list of directories.
+    /// Load all definitions from a list of paths (files or directories).
     ///
-    /// Directories are processed in order; when two files share the same agent
+    /// Paths are processed in order; when two entries share the same agent
     /// `name`, the first one wins (higher-priority path takes precedence).
     /// Non-existent directories are silently skipped.
     ///
+    /// For directory entries from user/extra dirs: parse errors are warned and skipped.
+    /// For CLI file entries (`is_cli_source = true`): parse errors are hard failures.
+    ///
     /// # Errors
     ///
-    /// Returns [`SubAgentError`] if any `.md` file fails to parse.
-    pub fn load_all(dirs: &[PathBuf]) -> Result<Vec<Self>, SubAgentError> {
+    /// Returns [`SubAgentError`] if a CLI-sourced `.md` file fails to parse.
+    pub fn load_all(paths: &[PathBuf]) -> Result<Vec<Self>, SubAgentError> {
+        Self::load_all_with_sources(paths, &[], None, &[])
+    }
+
+    /// Load all definitions with scope context for source tracking and security checks.
+    ///
+    /// `cli_agents` — CLI paths (hard errors on parse failure, no boundary check).
+    /// `config_user_dir` — optional user-level dir override.
+    /// `extra_dirs` — extra dirs from config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError`] if a CLI-sourced `.md` file fails to parse.
+    pub fn load_all_with_sources(
+        ordered_paths: &[PathBuf],
+        cli_agents: &[PathBuf],
+        config_user_dir: Option<&PathBuf>,
+        extra_dirs: &[PathBuf],
+    ) -> Result<Vec<Self>, SubAgentError> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut result = Vec::new();
 
-        for dir in dirs {
-            let Ok(read_dir) = std::fs::read_dir(dir) else {
+        for path in ordered_paths {
+            if path.is_file() {
+                // Single file path: only CLI --agents flag produces file entries in ordered_paths
+                // (project/user/extra_dirs are always directories). Scope label "cli" is
+                // therefore always correct here.
+                let is_cli = cli_agents.iter().any(|c| c == path);
+                match Self::load_with_boundary(path, None, Some("cli")) {
+                    Ok(def) => {
+                        if seen.contains(&def.name) {
+                            tracing::debug!(
+                                name = %def.name,
+                                path = %path.display(),
+                                "skipping duplicate sub-agent definition"
+                            );
+                        } else {
+                            seen.insert(def.name.clone());
+                            result.push(def);
+                        }
+                    }
+                    Err(e) if is_cli => return Err(e),
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "skipping malformed agent definition");
+                    }
+                }
+                continue;
+            }
+
+            let Ok(read_dir) = std::fs::read_dir(path) else {
                 continue; // directory doesn't exist — skip silently
             };
+
+            // Compute boundary for symlink protection on non-project directories.
+            // Project dir (.zeph/agents) is trusted; user/extra dirs get boundary checks.
+            let is_cli_dir = cli_agents.iter().any(|c| c == path);
+            let is_project_dir = path == &PathBuf::from(".zeph/agents");
+            let boundary = if is_cli_dir || is_project_dir {
+                None
+            } else {
+                // Canonicalize the directory itself as the boundary.
+                std::fs::canonicalize(path).ok()
+            };
+
+            let scope = super::resolve::scope_label(path, cli_agents, config_user_dir, extra_dirs);
+            let is_cli_scope = is_cli_dir;
 
             let mut entries: Vec<PathBuf> = read_dir
                 .filter_map(std::result::Result::ok)
@@ -446,12 +588,37 @@ impl SubAgentDef {
 
             entries.sort(); // deterministic order within a directory
 
-            for path in entries {
-                let def = Self::load(&path)?;
+            if entries.len() > MAX_ENTRIES_PER_DIR {
+                tracing::warn!(
+                    dir = %path.display(),
+                    count = entries.len(),
+                    cap = MAX_ENTRIES_PER_DIR,
+                    "agent directory exceeds entry cap; processing only first {MAX_ENTRIES_PER_DIR} files"
+                );
+                entries.truncate(MAX_ENTRIES_PER_DIR);
+            }
+
+            for entry_path in entries {
+                let load_result =
+                    Self::load_with_boundary(&entry_path, boundary.as_deref(), Some(scope));
+
+                let def = match load_result {
+                    Ok(d) => d,
+                    Err(e) if is_cli_scope => return Err(e),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %entry_path.display(),
+                            error = %e,
+                            "skipping malformed agent definition"
+                        );
+                        continue;
+                    }
+                };
+
                 if seen.contains(&def.name) {
                     tracing::debug!(
                         name = %def.name,
-                        path = %path.display(),
+                        path = %entry_path.display(),
                         "skipping duplicate sub-agent definition (shadowed by higher-priority path)"
                     );
                     continue;
@@ -820,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn load_all_stops_on_parse_error_mid_scan() {
+    fn load_all_warn_and_skip_on_parse_error_for_non_cli_source() {
         use std::io::Write as _;
         let dir = tempfile::tempdir().unwrap();
 
@@ -833,8 +1000,140 @@ mod tests {
         let mut f2 = std::fs::File::create(dir.path().join("b_bad.md")).unwrap();
         f2.write_all(invalid.as_bytes()).unwrap();
 
-        let err = SubAgentDef::load_all(&[dir.path().to_path_buf()]).unwrap_err();
+        // Non-CLI source: bad file is warned and skipped, good file is loaded.
+        let defs = SubAgentDef::load_all(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "good");
+    }
+
+    #[test]
+    fn load_all_with_sources_hard_error_for_cli_file() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+
+        let invalid = "this is not valid frontmatter";
+        let bad_path = dir.path().join("bad.md");
+        let mut f = std::fs::File::create(&bad_path).unwrap();
+        f.write_all(invalid.as_bytes()).unwrap();
+
+        // CLI source: bad file causes hard error.
+        let err = SubAgentDef::load_all_with_sources(&[bad_path.clone()], &[bad_path], None, &[])
+            .unwrap_err();
         assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn load_all_with_sources_max_entries_per_dir_cap() {
+        // Create MAX_ENTRIES_PER_DIR + 10 files; only first 100 should be loaded.
+        let dir = tempfile::tempdir().unwrap();
+        let total = MAX_ENTRIES_PER_DIR + 10;
+        for i in 0..total {
+            let content =
+                format!("---\nname: agent-{i:04}\ndescription: Agent {i}\n---\n\nBody {i}\n");
+            std::fs::write(dir.path().join(format!("agent-{i:04}.md")), &content).unwrap();
+        }
+        let defs = SubAgentDef::load_all(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(
+            defs.len(),
+            MAX_ENTRIES_PER_DIR,
+            "must cap at MAX_ENTRIES_PER_DIR=100"
+        );
+    }
+
+    #[test]
+    fn load_with_boundary_rejects_symlink_escape() {
+        // Create two separate dirs. Place a real file in dir_b, then create a symlink in
+        // dir_a pointing to the file in dir_b. Loading with dir_a as boundary must fail.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+
+        let real_file = dir_b.path().join("agent.md");
+        std::fs::write(
+            &real_file,
+            "---\nname: escape\ndescription: Escaped\n---\n\nBody\n",
+        )
+        .unwrap();
+
+        #[cfg(not(unix))]
+        {
+            // Symlink boundary test is unix-specific; skip on other platforms.
+            let _ = (dir_a, dir_b, real_file);
+            return;
+        }
+
+        #[cfg(unix)]
+        {
+            let link_path = dir_a.path().join("agent.md");
+            std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+            let boundary = std::fs::canonicalize(dir_a.path()).unwrap();
+            let err =
+                SubAgentDef::load_with_boundary(&link_path, Some(&boundary), None).unwrap_err();
+            assert!(
+                matches!(&err, SubAgentError::Parse { reason, .. } if reason.contains("escapes allowed directory boundary")),
+                "expected boundary violation error, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_all_with_sources_source_field_has_correct_scope_label() {
+        use std::io::Write as _;
+        // Create a dir that will be treated as the user-level dir.
+        let user_dir = tempfile::tempdir().unwrap();
+        let user_dir_path = user_dir.path().to_path_buf();
+        let content = "---\nname: my-agent\ndescription: test\n---\n\nBody\n";
+        let mut f = std::fs::File::create(user_dir_path.join("my-agent.md")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+
+        // Use user_dir as config_user_dir so scope_label returns "user".
+        let paths = vec![user_dir_path.clone()];
+        let defs =
+            SubAgentDef::load_all_with_sources(&paths, &[], Some(&user_dir_path), &[]).unwrap();
+
+        assert_eq!(defs.len(), 1);
+        let source = defs[0].source.as_deref().unwrap_or("");
+        assert!(
+            source.starts_with("user/"),
+            "expected source to start with 'user/', got: {source}"
+        );
+    }
+
+    #[test]
+    fn load_all_with_sources_priority_first_name_wins() {
+        use std::io::Write as _;
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+
+        // Both dirs contain an agent with the same name "bot".
+        let content1 = "---\nname: bot\ndescription: from dir1\n---\n\ndir1 prompt\n";
+        let content2 = "---\nname: bot\ndescription: from dir2\n---\n\ndir2 prompt\n";
+
+        let mut f1 = std::fs::File::create(dir1.path().join("bot.md")).unwrap();
+        f1.write_all(content1.as_bytes()).unwrap();
+        let mut f2 = std::fs::File::create(dir2.path().join("bot.md")).unwrap();
+        f2.write_all(content2.as_bytes()).unwrap();
+
+        // dir1 is first (higher priority), dir2 is second.
+        let paths = vec![dir1.path().to_path_buf(), dir2.path().to_path_buf()];
+        let defs = SubAgentDef::load_all_with_sources(&paths, &[], None, &[]).unwrap();
+
+        assert_eq!(defs.len(), 1, "name collision: only first wins");
+        assert_eq!(defs[0].description, "from dir1");
+    }
+
+    #[test]
+    fn load_all_with_sources_user_agents_dir_none_skips_gracefully() {
+        // When config_user_dir is not provided to load_all_with_sources (None),
+        // and the resolved ordered_paths has no user dir entry, loading must succeed.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nname: ok\ndescription: fine\n---\n\nBody\n";
+        std::fs::write(dir.path().join("ok.md"), content).unwrap();
+
+        // Pass only project-level-like path — no user dir at all.
+        let paths = vec![dir.path().to_path_buf()];
+        let defs = SubAgentDef::load_all_with_sources(&paths, &[], None, &[]).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "ok");
     }
 
     // ── PermissionMode tests ────────────────────────────────────────────────

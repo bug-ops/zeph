@@ -62,6 +62,8 @@ pub(crate) struct WizardState {
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
     pub(crate) agents_default_disallowed_tools: Vec<String>,
     pub(crate) agents_allow_bypass_permissions: bool,
+    /// Custom user-level agents directory (empty = use platform default).
+    pub(crate) agents_user_dir: Option<std::path::PathBuf>,
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
@@ -615,6 +617,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .default_disallowed_tools
         .clone_from(&state.agents_default_disallowed_tools);
     config.agents.allow_bypass_permissions = state.agents_allow_bypass_permissions;
+    config
+        .agents
+        .user_agents_dir
+        .clone_from(&state.agents_user_dir);
 
     if state.detector_mode.as_deref() == Some("judge") {
         config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
@@ -827,6 +833,18 @@ fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         .with_prompt("Allow sub-agents to use bypass_permissions mode?")
         .default(false)
         .interact()?;
+
+    let user_dir_raw: String = Input::new()
+        .with_prompt(
+            "User-level agents directory (absolute path, leave empty for platform default)",
+        )
+        .default(String::new())
+        .interact_text()?;
+    state.agents_user_dir = if user_dir_raw.trim().is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(user_dir_raw.trim()))
+    };
 
     println!();
     Ok(())
