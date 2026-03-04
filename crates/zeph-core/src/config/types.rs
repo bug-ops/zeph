@@ -285,6 +285,16 @@ pub struct CompatibleConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub chain: Vec<String>,
+    /// Routing strategy: `"ema"` (default) or `"thompson"`.
+    #[serde(default = "default_router_strategy")]
+    pub strategy: String,
+    /// Path for persisting Thompson Sampling state. Defaults to `~/.zeph/router_thompson_state.json`.
+    #[serde(default)]
+    pub thompson_state_path: Option<String>,
+}
+
+fn default_router_strategy() -> String {
+    "ema".to_owned()
 }
 
 #[derive(Debug, Deserialize, Serialize)]

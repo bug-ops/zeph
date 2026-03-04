@@ -24,6 +24,8 @@ metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/
 [dependencies]
 base64.workspace = true
 dirs.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
 thiserror.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
@@ -46,6 +48,7 @@ tracing.workspace = true
 [dev-dependencies]
 insta.workspace = true
 proptest.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true
 
