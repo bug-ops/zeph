@@ -1032,22 +1032,25 @@ mod tests {
         )
         .unwrap();
 
-        let link_path = dir_a.path().join("agent.md");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
         #[cfg(not(unix))]
         {
-            // On non-unix, just copy the file and manually verify boundary check with canonical path.
-            // Boundary test is unix-specific; skip gracefully on other platforms.
+            // Symlink boundary test is unix-specific; skip on other platforms.
+            let _ = (dir_a, dir_b, real_file);
             return;
         }
 
-        let boundary = std::fs::canonicalize(dir_a.path()).unwrap();
-        let err = SubAgentDef::load_with_boundary(&link_path, Some(&boundary), None).unwrap_err();
-        assert!(
-            matches!(&err, SubAgentError::Parse { reason, .. } if reason.contains("escapes allowed directory boundary")),
-            "expected boundary violation error, got: {err}"
-        );
+        #[cfg(unix)]
+        {
+            let link_path = dir_a.path().join("agent.md");
+            std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+            let boundary = std::fs::canonicalize(dir_a.path()).unwrap();
+            let err =
+                SubAgentDef::load_with_boundary(&link_path, Some(&boundary), None).unwrap_err();
+            assert!(
+                matches!(&err, SubAgentError::Parse { reason, .. } if reason.contains("escapes allowed directory boundary")),
+                "expected boundary violation error, got: {err}"
+            );
+        }
     }
 
     #[test]
