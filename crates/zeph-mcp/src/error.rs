@@ -55,6 +55,9 @@ pub enum McpError {
 
     #[error("env var '{var_name}' is blocked for MCP server processes")]
     EnvVarBlocked { var_name: String },
+
+    #[error("policy violation: {0}")]
+    PolicyViolation(String),
 }
 
 #[cfg(test)]

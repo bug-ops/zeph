@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::client::McpClient;
 use crate::error::McpError;
+use crate::policy::PolicyEnforcer;
 use crate::tool::McpTool;
 
 /// Transport type for MCP server connections.
@@ -38,6 +39,7 @@ pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
+    enforcer: Arc<PolicyEnforcer>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -50,11 +52,16 @@ impl std::fmt::Debug for McpManager {
 
 impl McpManager {
     #[must_use]
-    pub fn new(configs: Vec<ServerEntry>, allowed_commands: Vec<String>) -> Self {
+    pub fn new(
+        configs: Vec<ServerEntry>,
+        allowed_commands: Vec<String>,
+        enforcer: PolicyEnforcer,
+    ) -> Self {
         Self {
             configs,
             allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
+            enforcer: Arc::new(enforcer),
         }
     }
 
@@ -105,13 +112,18 @@ impl McpManager {
     ///
     /// # Errors
     ///
-    /// Returns `McpError::ServerNotFound` if the server is not connected.
+    /// Returns `McpError::PolicyViolation` if the enforcer rejects the call,
+    /// or `McpError::ServerNotFound` if the server is not connected.
     pub async fn call_tool(
         &self,
         server_id: &str,
         tool_name: &str,
         args: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        self.enforcer
+            .check(server_id, tool_name)
+            .map_err(|v| McpError::PolicyViolation(v.to_string()))?;
+
         let clients = self.clients.read().await;
         let client = clients
             .get(server_id)
@@ -253,13 +265,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_servers_empty() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         assert!(mgr.list_servers().await.is_empty());
     }
 
     #[tokio::test]
     async fn remove_server_not_found_returns_error() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         let err = mgr.remove_server("nonexistent").await.unwrap_err();
         assert!(
             matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent")
@@ -269,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_server_nonexistent_binary_returns_command_not_allowed() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         let entry = make_entry("test-server");
         let err = mgr.add_server(&entry).await.unwrap_err();
         assert!(matches!(err, McpError::CommandNotAllowed { .. }));
@@ -277,7 +289,11 @@ mod tests {
 
     #[tokio::test]
     async fn connect_all_skips_failing_servers() {
-        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")], vec![]);
+        let mgr = McpManager::new(
+            vec![make_entry("a"), make_entry("b")],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        );
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
@@ -285,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_server_not_found() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         let err = mgr
             .call_tool("missing", "some_tool", serde_json::json!({}))
             .await
@@ -312,7 +328,11 @@ mod tests {
 
     #[test]
     fn manager_debug() {
-        let mgr = McpManager::new(vec![make_entry("a"), make_entry("b")], vec![]);
+        let mgr = McpManager::new(
+            vec![make_entry("a"), make_entry("b")],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        );
         let dbg = format!("{mgr:?}");
         assert!(dbg.contains("server_count"));
         assert!(dbg.contains("2"));
@@ -323,6 +343,7 @@ mod tests {
         let mgr = McpManager::new(
             vec![make_entry("z"), make_entry("a"), make_entry("m")],
             vec![],
+            PolicyEnforcer::new(vec![]),
         );
         // No servers connected (all fail), so list is empty
         mgr.connect_all().await;
@@ -339,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_server_preserves_other_entries() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         // With no connected servers, remove always returns ServerNotFound
         assert!(mgr.remove_server("a").await.is_err());
         assert!(mgr.remove_server("b").await.is_err());
@@ -348,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_server_command_not_allowed_preserves_message() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         let entry = make_entry("my-server");
         let err = mgr.add_server(&entry).await.unwrap_err();
         let msg = err.to_string();
@@ -423,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_server_http_nonexistent_returns_connection_error() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         let entry = make_http_entry("http-test");
         let err = mgr.add_server(&entry).await.unwrap_err();
         assert!(matches!(
@@ -437,6 +458,7 @@ mod tests {
         let mgr = McpManager::new(
             vec![make_entry("a"), make_entry("b"), make_entry("c")],
             vec![],
+            PolicyEnforcer::new(vec![]),
         );
         let dbg = format!("{mgr:?}");
         assert!(dbg.contains("3"));
@@ -444,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_different_missing_servers() {
-        let mgr = McpManager::new(vec![], vec![]);
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         for id in &["server-a", "server-b", "server-c"] {
             let err = mgr
                 .call_tool(id, "tool", serde_json::json!({}))
@@ -460,7 +482,11 @@ mod tests {
 
     #[tokio::test]
     async fn connect_all_with_http_entries_skips_failing() {
-        let mgr = McpManager::new(vec![make_http_entry("x"), make_http_entry("y")], vec![]);
+        let mgr = McpManager::new(
+            vec![make_http_entry("x"), make_http_entry("y")],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        );
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());

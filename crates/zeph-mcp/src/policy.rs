@@ -1,0 +1,273 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! MCP declarative policy layer.
+//!
+//! Provides per-server tool allowlists, denylists, and optional per-server
+//! rate limiting. Policy enforcement runs synchronously before each
+//! `call_tool()` invocation in `McpManager`.
+//!
+//! Policy changes require an agent restart (hot-reload is a follow-up task).
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::time::Instant;
+
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// Rate limit configuration for a single MCP server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RateLimit {
+    /// Maximum number of tool calls allowed per minute across all tools on this server.
+    pub max_calls_per_minute: u32,
+}
+
+/// Per-server MCP policy.
+///
+/// No policy present = allow all (backward compatible default).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct McpPolicy {
+    /// Allowlist of tool names. `None` means all tools are allowed (subject to `denied_tools`).
+    pub allowed_tools: Option<Vec<String>>,
+    /// Denylist of tool names. Takes precedence over `allowed_tools`.
+    pub denied_tools: Vec<String>,
+    /// Optional rate limit for this server.
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// Policy violation reason.
+#[derive(Debug, thiserror::Error)]
+pub enum PolicyViolation {
+    #[error("tool '{tool_name}' is denied on server '{server_id}'")]
+    ToolDenied {
+        server_id: String,
+        tool_name: String,
+    },
+
+    #[error("tool '{tool_name}' is not in the allowlist for server '{server_id}'")]
+    ToolNotAllowed {
+        server_id: String,
+        tool_name: String,
+    },
+
+    #[error("rate limit exceeded for server '{server_id}' (max {max_calls_per_minute}/min)")]
+    RateLimitExceeded {
+        server_id: String,
+        max_calls_per_minute: u32,
+    },
+}
+
+/// Enforces MCP policies for all configured servers.
+///
+/// Uses a `DashMap` of per-server `Mutex<VecDeque<Instant>>` for sliding-window
+/// rate limiting, avoiding a global lock across servers.
+pub struct PolicyEnforcer {
+    /// Map from `server_id` → policy.
+    policies: DashMap<String, McpPolicy>,
+    /// Map from `server_id` → sliding window of call timestamps.
+    call_windows: DashMap<String, Mutex<VecDeque<Instant>>>,
+}
+
+impl PolicyEnforcer {
+    /// Create an enforcer from a list of `(server_id, policy)` pairs.
+    #[must_use]
+    pub fn new(entries: Vec<(String, McpPolicy)>) -> Self {
+        let policies = DashMap::new();
+        let call_windows = DashMap::new();
+        for (id, policy) in entries {
+            if policy.rate_limit.is_some() {
+                call_windows.insert(id.clone(), Mutex::new(VecDeque::new()));
+            }
+            policies.insert(id, policy);
+        }
+        Self {
+            policies,
+            call_windows,
+        }
+    }
+
+    /// Check whether `tool_name` may be called on `server_id`.
+    ///
+    /// Returns `Ok(())` if the call is permitted, or a `PolicyViolation` if not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PolicyViolation::ToolDenied` if the tool is in `denied_tools`,
+    /// `PolicyViolation::ToolNotAllowed` if an allowlist exists and the tool is absent,
+    /// or `PolicyViolation::RateLimitExceeded` if the sliding-window count is over the limit.
+    pub fn check(&self, server_id: &str, tool_name: &str) -> Result<(), PolicyViolation> {
+        let Some(policy) = self.policies.get(server_id) else {
+            // No policy configured — allow all.
+            return Ok(());
+        };
+
+        if policy.denied_tools.iter().any(|t| t == tool_name) {
+            return Err(PolicyViolation::ToolDenied {
+                server_id: server_id.into(),
+                tool_name: tool_name.into(),
+            });
+        }
+
+        if policy
+            .allowed_tools
+            .as_ref()
+            .is_some_and(|allowlist| !allowlist.iter().any(|t| t == tool_name))
+        {
+            return Err(PolicyViolation::ToolNotAllowed {
+                server_id: server_id.into(),
+                tool_name: tool_name.into(),
+            });
+        }
+
+        if let Some(rl) = &policy.rate_limit {
+            self.check_rate_limit(server_id, rl.max_calls_per_minute)?;
+        }
+
+        Ok(())
+    }
+
+    /// Sliding-window rate limit check. Records a new call timestamp on success.
+    fn check_rate_limit(
+        &self,
+        server_id: &str,
+        max_calls_per_minute: u32,
+    ) -> Result<(), PolicyViolation> {
+        let window_entry = self
+            .call_windows
+            .get(server_id)
+            .expect("call_windows entry created alongside rate_limit policy");
+
+        let mut window = window_entry.lock().expect("rate limit mutex not poisoned");
+        let now = Instant::now();
+        let cutoff = now
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap_or(now);
+
+        // Drain calls older than 60 seconds.
+        while window.front().is_some_and(|t| *t < cutoff) {
+            window.pop_front();
+        }
+
+        if window.len() >= max_calls_per_minute as usize {
+            return Err(PolicyViolation::RateLimitExceeded {
+                server_id: server_id.into(),
+                max_calls_per_minute,
+            });
+        }
+
+        window.push_back(now);
+        Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enforcer_with_policy(server_id: &str, policy: McpPolicy) -> PolicyEnforcer {
+        PolicyEnforcer::new(vec![(server_id.into(), policy)])
+    }
+
+    #[test]
+    fn no_policy_allows_any_tool() {
+        let enforcer = PolicyEnforcer::new(vec![]);
+        assert!(enforcer.check("any-server", "any-tool").is_ok());
+    }
+
+    #[test]
+    fn denied_tool_blocked() {
+        let policy = McpPolicy {
+            denied_tools: vec!["rm".into()],
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        let err = enforcer.check("srv", "rm").unwrap_err();
+        assert!(matches!(err, PolicyViolation::ToolDenied { .. }));
+    }
+
+    #[test]
+    fn deny_takes_precedence_over_allowlist() {
+        let policy = McpPolicy {
+            allowed_tools: Some(vec!["rm".into()]),
+            denied_tools: vec!["rm".into()],
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        let err = enforcer.check("srv", "rm").unwrap_err();
+        assert!(matches!(err, PolicyViolation::ToolDenied { .. }));
+    }
+
+    #[test]
+    fn allowlist_blocks_unlisted_tool() {
+        let policy = McpPolicy {
+            allowed_tools: Some(vec!["read_file".into()]),
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        let err = enforcer.check("srv", "write_file").unwrap_err();
+        assert!(matches!(err, PolicyViolation::ToolNotAllowed { .. }));
+    }
+
+    #[test]
+    fn allowlist_permits_listed_tool() {
+        let policy = McpPolicy {
+            allowed_tools: Some(vec!["read_file".into()]),
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        assert!(enforcer.check("srv", "read_file").is_ok());
+    }
+
+    #[test]
+    fn rate_limit_blocks_after_threshold() {
+        let policy = McpPolicy {
+            rate_limit: Some(RateLimit {
+                max_calls_per_minute: 2,
+            }),
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        assert!(enforcer.check("srv", "tool").is_ok());
+        assert!(enforcer.check("srv", "tool").is_ok());
+        let err = enforcer.check("srv", "tool").unwrap_err();
+        assert!(matches!(err, PolicyViolation::RateLimitExceeded { .. }));
+    }
+
+    #[test]
+    fn unknown_server_is_allowed() {
+        let policy = McpPolicy {
+            denied_tools: vec!["rm".into()],
+            ..Default::default()
+        };
+        let enforcer = enforcer_with_policy("srv", policy);
+        // different server — no policy → allowed
+        assert!(enforcer.check("other-srv", "rm").is_ok());
+    }
+
+    #[test]
+    fn policy_violation_messages_are_descriptive() {
+        let denied = PolicyViolation::ToolDenied {
+            server_id: "s".into(),
+            tool_name: "t".into(),
+        };
+        assert!(denied.to_string().contains("denied"));
+
+        let not_allowed = PolicyViolation::ToolNotAllowed {
+            server_id: "s".into(),
+            tool_name: "t".into(),
+        };
+        assert!(not_allowed.to_string().contains("allowlist"));
+
+        let rate = PolicyViolation::RateLimitExceeded {
+            server_id: "s".into(),
+            max_calls_per_minute: 10,
+        };
+        assert!(rate.to_string().contains("rate limit"));
+    }
+}

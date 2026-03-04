@@ -9432,6 +9432,7 @@ name = "zeph-mcp"
 version = "0.12.6"
 dependencies = [
  "blake3",
+ "dashmap",
  "qdrant-client",
  "rmcp",
  "schemars 1.2.1",
