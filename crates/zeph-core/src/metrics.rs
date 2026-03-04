@@ -22,6 +22,9 @@ pub struct SubAgentMetrics {
     pub max_turns: u32,
     pub background: bool,
     pub elapsed_secs: u64,
+    /// Stringified `PermissionMode`: `"default"`, `"accept_edits"`, `"dont_ask"`,
+    /// `"bypass_permissions"`, `"plan"`. Empty string when mode is `Default`.
+    pub permission_mode: String,
 }
 
 #[derive(Debug, Clone, Default)]

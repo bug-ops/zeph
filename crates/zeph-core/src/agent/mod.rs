@@ -456,6 +456,18 @@ impl<C: Channel> Agent<C> {
                             max_turns: def.map_or(20, |d| d.permissions.max_turns),
                             background: def.is_some_and(|d| d.permissions.background),
                             elapsed_secs: s.started_at.elapsed().as_secs(),
+                            permission_mode: def.map_or_else(String::new, |d| {
+                                use crate::subagent::def::PermissionMode;
+                                match d.permissions.permission_mode {
+                                    PermissionMode::Default => String::new(),
+                                    PermissionMode::AcceptEdits => "accept_edits".into(),
+                                    PermissionMode::DontAsk => "dont_ask".into(),
+                                    PermissionMode::BypassPermissions => {
+                                        "bypass_permissions".into()
+                                    }
+                                    PermissionMode::Plan => "plan".into(),
+                                }
+                            }),
                         }
                     })
                     .collect();

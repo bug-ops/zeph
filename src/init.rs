@@ -9,6 +9,7 @@ use zeph_core::config::{
     OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SessionsConfig,
     SlackConfig, TelegramConfig, VaultConfig,
 };
+use zeph_core::subagent::def::PermissionMode;
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[derive(Default)]
@@ -58,6 +59,9 @@ pub(crate) struct WizardState {
     pub(crate) acp_agent_name: String,
     pub(crate) acp_agent_version: String,
     pub(crate) thinking: Option<ThinkingConfig>,
+    pub(crate) agents_default_permission_mode: Option<PermissionMode>,
+    pub(crate) agents_default_disallowed_tools: Vec<String>,
+    pub(crate) agents_allow_bypass_permissions: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -93,6 +97,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_scheduler(&mut state)?;
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
+    step_agents(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -180,7 +185,7 @@ fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
 }
 
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 2/9: LLM Provider ==\n");
+    println!("== Step 2/10: LLM Provider ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -349,7 +354,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
 }
 
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 3/9: Memory ==\n");
+    println!("== Step 3/10: Memory ==\n");
 
     state.sqlite_path = Some(
         Input::new()
@@ -387,7 +392,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 4/9: Channel ==\n");
+    println!("== Step 4/10: Channel ==\n");
 
     let use_age = state.vault_backend == "age";
 
@@ -454,7 +459,7 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 1/9: Secrets Backend ==\n");
+    println!("== Step 1/10: Secrets Backend ==\n");
 
     let backends = ["env (environment variables)", "age (encrypted file)"];
     let selection = Select::new()
@@ -600,6 +605,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         tasks: Vec::new(),
     };
 
+    config.agents.default_permission_mode = state.agents_default_permission_mode;
+    config
+        .agents
+        .default_disallowed_tools
+        .clone_from(&state.agents_default_disallowed_tools);
+    config.agents.allow_bypass_permissions = state.agents_allow_bypass_permissions;
+
     config
 }
 
@@ -686,7 +698,7 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
 }
 
 fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 5/9: Update Check ==\n");
+    println!("== Step 5/10: Update Check ==\n");
 
     state.auto_update_check = Confirm::new()
         .with_prompt("Enable automatic update checks?")
@@ -698,7 +710,7 @@ fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_scheduler(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 6/9: Scheduler ==\n");
+    println!("== Step 6/10: Scheduler ==\n");
 
     state.scheduler_enabled = Confirm::new()
         .with_prompt("Enable background task scheduler?")
@@ -722,7 +734,7 @@ fn step_scheduler(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 7/9: Daemon / A2A Server ==\n");
+    println!("== Step 7/10: Daemon / A2A Server ==\n");
 
     state.daemon_enabled = Confirm::new()
         .with_prompt("Enable A2A daemon server?")
@@ -752,7 +764,7 @@ fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 8/9: ACP Server (IDE Embedding) ==\n");
+    println!("== Step 8/10: ACP Server (IDE Embedding) ==\n");
 
     state.acp_enabled = Confirm::new()
         .with_prompt("Enable ACP server for IDE embedding?")
@@ -775,8 +787,42 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 9/10: Sub-Agent Defaults ==\n");
+
+    let modes = ["default", "accept_edits", "dont_ask"];
+    let sel = Select::new()
+        .with_prompt("Default permission mode for sub-agents")
+        .items(modes)
+        .default(0)
+        .interact()?;
+    state.agents_default_permission_mode = match sel {
+        1 => Some(PermissionMode::AcceptEdits),
+        2 => Some(PermissionMode::DontAsk),
+        _ => None,
+    };
+
+    let tools_raw: String = Input::new()
+        .with_prompt("Globally disallowed tools (comma-separated, leave empty for none)")
+        .default(String::new())
+        .interact_text()?;
+    state.agents_default_disallowed_tools = tools_raw
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    state.agents_allow_bypass_permissions = Confirm::new()
+        .with_prompt("Allow sub-agents to use bypass_permissions mode?")
+        .default(false)
+        .interact()?;
+
+    println!();
+    Ok(())
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
-    println!("== Step 9/9: Review & Write ==\n");
+    println!("== Step 10/10: Review & Write ==\n");
 
     let config = build_config(state);
     let toml_str = toml::to_string_pretty(&config)?;

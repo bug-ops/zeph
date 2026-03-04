@@ -303,20 +303,47 @@ stateDiagram-v2
 - All grants are revoked on completion, cancellation, or crash
 - Secret key names are redacted in logs
 
+## Global Agent Defaults
+
+The `[agents]` section in `config.toml` sets defaults that apply to all sub-agents unless overridden by the individual definition:
+
+```toml
+[agents]
+# Default permission mode for sub-agents that do not set one explicitly.
+# "default" and omitting this field are equivalent — both result in standard
+# interactive prompts.
+# Valid values: "default", "accept_edits", "dont_ask"
+# (bypass_permissions and plan are not useful as global defaults)
+default_permission_mode = "default"
+
+# Tool IDs blocked for all sub-agents, regardless of what their definition allows.
+# Appended on top of any per-definition tool filtering.
+default_disallowed_tools = []
+
+# Must be true to allow any sub-agent definition to use bypass_permissions mode.
+# When false (the default), spawning a definition with permission_mode: bypass_permissions
+# is rejected at load time with an error.
+allow_bypass_permissions = false
+```
+
+> **Note:** `default_permission_mode = "default"` and omitting the field are equivalent — both leave per-agent prompting behavior unchanged.
+
+> **Caution:** Set `allow_bypass_permissions = true` only in fully trusted, sandboxed environments. Without this flag, any definition requesting `bypass_permissions` mode is rejected at load time.
+
 ## TUI Dashboard Panel
 
 When the `tui` feature is enabled, a Sub-Agents panel appears in the sidebar showing active agents with color-coded status:
 
 ```
-┌ Sub-Agents (2) ──────────┐
-│  code-reviewer  WORKING  │
-│    3/20  42s             │
-│  test-writer [bg]  COMPLETED │
-│    10/20  100s           │
-└──────────────────────────┘
+┌ Sub-Agents (2) ─────────────────────────┐
+│  code-reviewer [plan]  WORKING  3/20  42s │
+│  test-writer [bg] [bypass!]  COMPLETED 10/20  100s │
+└─────────────────────────────────────────┘
 ```
 
 Colors: yellow = working, green = completed, red = failed, cyan = input required.
+
+Permission mode badges: `[plan]`, `[accept_edits]`, `[dont_ask]`, `[bypass!]`. The `default` mode shows no badge.
 
 ## Architecture
 
