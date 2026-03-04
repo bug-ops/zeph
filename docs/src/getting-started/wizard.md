@@ -60,11 +60,20 @@ When prompted, enter a secret name and value. The wizard stores each secret with
 
 Skip this step if your skills do not require external API credentials.
 
-## Step 7: Update Check
+## Step 7: Feedback Detector
+
+Choose the correction detection strategy:
+
+- **regex** (default) — pattern matching only, zero LLM calls. Detects explicit rejections, alternative requests, and message repetition.
+- **judge** — LLM-backed classifier for borderline or missed cases. When selected, you can specify a dedicated model (e.g. `claude-sonnet-4-6`) or leave empty to use the primary provider.
+
+The judge does not replace regex — it supplements it for cases where regex confidence is borderline. A rate limiter caps judge calls at 5 per 60 seconds.
+
+## Step 8: Update Check
 
 Enable or disable automatic version checks against GitHub Releases (default: enabled).
 
-## Step 8: Review and Save
+## Step 9: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

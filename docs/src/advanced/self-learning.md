@@ -59,28 +59,63 @@ This is equivalent to `min_failures` consecutive failures — the improvement lo
 
 ## Phase 2 — Implicit Feedback Detection
 
-`FeedbackDetector` inspects each user turn for implicit corrections without requiring an explicit `/feedback` command.
+Zeph inspects each user turn for implicit corrections without requiring an explicit `/feedback` command. Two detection strategies are available, selected via `detector_mode`:
 
-**Detection strategy:**
+### Regex Detector (default)
 
-1. **Regex patterns** — phrases like "that's wrong", "try again", "actually you should", "no, I meant" trigger immediate correction recording.
-2. **Jaccard token overlap** — if the user's message shares fewer than 30% tokens with the agent's previous response, the turn is treated as a correction candidate and passed to Wilson scoring.
+`FeedbackDetector` uses pattern matching only — zero LLM calls.
+
+**Detection signals:**
+
+1. **Explicit rejection** (confidence 0.85) — phrases like "no", "wrong", "that didn't work", "bad answer".
+2. **Alternative request** (confidence 0.70) — "instead use…", "try a different approach", "can you do it differently".
+3. **Repetition** (confidence 0.75) — Jaccard token overlap > 0.8 against the last 3 user messages.
+
+### Judge Detector (LLM-backed)
+
+`JudgeDetector` uses an LLM call to classify borderline or missed cases. It is invoked only when regex confidence falls in the adaptive zone or regex returns no signal at all.
+
+**How the adaptive zone works:**
+
+| Regex result | Action |
+|---|---|
+| Confidence >= `judge_adaptive_high` (0.80) | Accepted without judge |
+| Confidence in `[judge_adaptive_low, judge_adaptive_high)` | Judge invoked to confirm/override |
+| Confidence < `judge_adaptive_low` (0.50) | Treated as "no correction" |
+| No regex match | Judge invoked as fallback |
+
+The judge call runs in a background `tokio::spawn` task and does not block the agent response loop. A sliding-window rate limiter caps judge calls at 5 per 60 seconds to control cost.
+
+**Judge prompt design:**
+- System prompt classifies user satisfaction into `explicit_rejection`, `alternative_request`, `repetition`, or `neutral`.
+- User message content is XML-escaped to mitigate prompt injection via `</user_message>` tags.
+- Response is parsed as structured JSON (`JudgeVerdict`) with confidence clamping to `[0.0, 1.0]`.
+
+### Storage
 
 Detected corrections are stored as `UserCorrection` records in:
 - SQLite (`zeph_corrections` table) — persistent, queryable
 - Qdrant (`zeph_corrections` collection) — vector-indexed for similarity recall
 
-On each subsequent query, the top-3 most similar corrections (cosine similarity ≥ 0.75) are injected into the system prompt to steer the agent away from repeating the same mistake.
+On each subsequent query, the top-3 most similar corrections (cosine similarity >= 0.75) are injected into the system prompt to steer the agent away from repeating the same mistake.
 
 ### Configuration
 
 ```toml
+[skills.learning]
+detector_mode = "regex"              # "regex" (default) or "judge"
+judge_model = ""                     # Model for judge calls (empty = use primary provider)
+judge_adaptive_low = 0.5            # Below this, regex "no correction" is trusted (default: 0.5)
+judge_adaptive_high = 0.8           # At or above, regex result accepted without judge (default: 0.8)
+
 [agent.learning]
 correction_detection = true           # Enable FeedbackDetector (default: true)
-correction_confidence_threshold = 0.7 # Jaccard threshold to accept a candidate (default: 0.7)
+correction_confidence_threshold = 0.7 # Confidence threshold to accept a candidate (default: 0.7)
 correction_recall_limit = 3           # Max corrections injected into system prompt (default: 3)
 correction_min_similarity = 0.75      # Minimum cosine similarity for correction recall (default: 0.75)
 ```
+
+> Setting `detector_mode = "judge"` does not disable regex — regex always runs first. The judge is invoked only for borderline or missed cases, keeping LLM costs minimal.
 
 ## Phase 3 — Bayesian Re-Ranking and Trust Transitions
 
@@ -193,6 +228,10 @@ rollback_threshold = 0.5  # Auto-rollback when success rate drops below this
 min_evaluations = 5       # Minimum evaluations before rollback decision
 max_versions = 10         # Max auto-generated versions per skill
 cooldown_minutes = 60     # Cooldown between improvements for same skill
+detector_mode = "regex"   # "regex" (default) or "judge"
+judge_model = ""          # Model for judge calls (empty = primary provider)
+judge_adaptive_low = 0.5  # Regex confidence floor for judge bypass (default: 0.5)
+judge_adaptive_high = 0.8 # Regex confidence ceiling for judge bypass (default: 0.8)
 ```
 
 ## Chat Commands
