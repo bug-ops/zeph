@@ -30,6 +30,11 @@ pub enum AgentCommand {
         agent: String,
         prompt: String,
     },
+    /// Resume a previously completed sub-agent session by ID prefix.
+    Resume {
+        id: String,
+        prompt: String,
+    },
 }
 
 impl AgentCommand {
@@ -63,7 +68,7 @@ impl AgentCommand {
 
         if rest.is_empty() {
             return Err(SubAgentError::InvalidCommand(
-                "usage: /agent <list|spawn|bg|status|cancel|approve|deny> [args]".into(),
+                "usage: /agent <list|spawn|bg|resume|status|cancel|approve|deny> [args]".into(),
             ));
         }
 
@@ -126,8 +131,33 @@ impl AgentCommand {
                     id: args.to_owned(),
                 })
             }
+            "resume" => {
+                let (id, prompt) = args.split_once(' ').ok_or_else(|| {
+                    SubAgentError::InvalidCommand("usage: /agent resume <id> <prompt>".into())
+                })?;
+                let id = id.trim().to_owned();
+                let prompt = prompt.trim().to_owned();
+                if id.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "agent id must not be empty".into(),
+                    ));
+                }
+                // Require at least 4 characters to prevent accidental mass-match or session
+                // enumeration via very short prefixes.
+                if id.len() < 4 {
+                    return Err(SubAgentError::InvalidCommand(
+                        "agent id prefix must be at least 4 characters".into(),
+                    ));
+                }
+                if prompt.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "prompt must not be empty".into(),
+                    ));
+                }
+                Ok(Self::Resume { id, prompt })
+            }
             other => Err(SubAgentError::InvalidCommand(format!(
-                "unknown subcommand '{other}'; try: list, spawn, bg, status, cancel, approve, deny"
+                "unknown subcommand '{other}'; try: list, spawn, bg, resume, status, cancel, approve, deny"
             ))),
         }
     }
@@ -414,6 +444,88 @@ mod tests {
     #[test]
     fn parse_at_with_empty_known_returns_error() {
         let err = AgentCommand::parse("@reviewer test", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+    }
+
+    // ── parse resume ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_resume() {
+        let cmd = AgentCommand::parse("/agent resume deadbeef continue the analysis", &[]).unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "deadbeef".into(),
+                prompt: "continue the analysis".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_missing_prompt_returns_error() {
+        let err = AgentCommand::parse("/agent resume deadbeef", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+    }
+
+    #[test]
+    fn parse_resume_missing_id_and_prompt_returns_error() {
+        let err = AgentCommand::parse("/agent resume", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+    }
+
+    #[test]
+    fn parse_resume_unknown_subcommand_hint() {
+        let err = AgentCommand::parse("/agent frobnicate", &[]).unwrap_err();
+        if let SubAgentError::InvalidCommand(msg) = err {
+            assert!(
+                msg.contains("resume"),
+                "hint should mention 'resume': {msg}"
+            );
+        } else {
+            panic!("expected InvalidCommand");
+        }
+    }
+
+    #[test]
+    fn parse_resume_prompt_with_spaces_preserved() {
+        let cmd = AgentCommand::parse("/agent resume abc123 do more work and fix the issue", &[])
+            .unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "abc123".into(),
+                prompt: "do more work and fix the issue".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_id_too_short_returns_error() {
+        // id "abc" has only 3 chars — below the 4-char minimum.
+        let err = AgentCommand::parse("/agent resume abc continue", &[]).unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("4 characters")),
+            "expected min-length error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_resume_id_exactly_four_chars_is_accepted() {
+        let cmd = AgentCommand::parse("/agent resume abcd continue the work", &[]).unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "abcd".into(),
+                prompt: "continue the work".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_whitespace_only_prompt_returns_error() {
+        // After split_once, prompt is "   " which trims to "".
+        let err = AgentCommand::parse("/agent resume deadbeef    ", &[]).unwrap_err();
+        // Either split_once returns None (no space after id) or prompt trims to empty.
         assert!(matches!(err, SubAgentError::InvalidCommand(_)));
     }
 }

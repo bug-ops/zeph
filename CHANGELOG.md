@@ -22,6 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Sub-agent transcript persistence: JSONL append-only transcripts written per session under `.zeph/subagents/`; each session gets a UUID-named `.jsonl` file and a `.meta.json` sidecar with status, turn count, and lineage (`resumed_from`) (#1153)
+- `/agent resume <id> <prompt>` command: resumes a completed, failed, or cancelled sub-agent session by loading its full message history and spawning a new foreground loop with a fresh UUID; supports 8-char prefix matching (#1153)
+- `TranscriptWriter` / `TranscriptReader` / `TranscriptEntry` / `TranscriptMeta` types in `zeph-core::subagent::transcript` (#1153)
+- `SubAgentManager::resume()` method for loading transcript history and spawning resumed agent loops (#1153)
+- `SubAgentError::Transcript`, `SubAgentError::AmbiguousId`, `SubAgentError::StillRunning` error variants (#1153)
+- `SubAgentConfig` transcript fields: `transcript_enabled` (default: `true`), `transcript_dir` (default: `.zeph/subagents`), `transcript_max_files` (default: `50`); cooperative sweep-on-access deletes oldest `.jsonl` files when limit exceeded (#1153)
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
 - `tools.except` list in sub-agent YAML frontmatter: additional denylist applied on top of `tools.allow`/`tools.deny`; deny wins over allow
 - `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`
