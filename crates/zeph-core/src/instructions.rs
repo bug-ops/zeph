@@ -4,11 +4,92 @@
 use std::collections::HashSet;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
+use tokio::sync::mpsc;
 
 use crate::config::ProviderKind;
 
+pub enum InstructionEvent {
+    Changed,
+}
+
+pub struct InstructionWatcher {
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+impl InstructionWatcher {
+    /// Start watching directories for instruction file (.md) changes.
+    ///
+    /// Sends `InstructionEvent::Changed` on any `.md` filesystem change (debounced 500ms).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filesystem watcher cannot be initialized.
+    pub fn start(
+        paths: &[PathBuf],
+        tx: mpsc::Sender<InstructionEvent>,
+    ) -> Result<Self, notify::Error> {
+        let (notify_tx, mut notify_rx) = mpsc::channel(16);
+
+        let mut debouncer = new_debouncer(
+            Duration::from_millis(500),
+            move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+                let events = match events {
+                    Ok(events) => events,
+                    Err(e) => {
+                        tracing::warn!("instruction watcher error: {e}");
+                        return;
+                    }
+                };
+
+                let has_md_change = events.iter().any(|e| {
+                    e.kind == DebouncedEventKind::Any
+                        && e.path.extension().is_some_and(|ext| ext == "md")
+                });
+
+                if has_md_change {
+                    let _ = notify_tx.try_send(());
+                }
+            },
+        )?;
+
+        for path in paths {
+            if path.exists()
+                && let Err(e) = debouncer
+                    .watcher()
+                    .watch(path, notify::RecursiveMode::NonRecursive)
+            {
+                tracing::warn!(path = %path.display(), error = %e, "failed to watch instruction path");
+            }
+        }
+
+        tracing::debug!(paths = paths.len(), "starting instruction watcher");
+        let handle = tokio::spawn(async move {
+            let _debouncer = debouncer;
+            while notify_rx.recv().await.is_some() {
+                tracing::debug!("instruction file change detected, signaling reload");
+                if tx.send(InstructionEvent::Changed).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self { _handle: handle })
+    }
+}
+
+/// Parameters needed to re-run `load_instructions()` on hot-reload.
+pub struct InstructionReloadState {
+    pub base_dir: PathBuf,
+    pub provider_kinds: Vec<ProviderKind>,
+    pub explicit_files: Vec<PathBuf>,
+    pub auto_detect: bool,
+}
+
 /// Maximum size of a single instruction file. Files exceeding this limit are skipped.
-const MAX_FILE_SIZE: u64 = 512 * 1024; // 512 KB
+const MAX_FILE_SIZE: u64 = 256 * 1024; // 256 KiB
 
 /// A loaded instruction block from a single file.
 #[derive(Debug, Clone)]
@@ -74,17 +155,10 @@ pub fn load_instructions(
     let mut result: Vec<InstructionBlock> = Vec::new();
 
     for path in candidates {
-        let Ok(file) = std::fs::File::open(&path) else {
-            // Nonexistent or unreadable paths are silently skipped.
+        // Canonicalize first to resolve symlinks before opening — eliminates TOCTOU race.
+        // Nonexistent or unreadable paths are silently skipped.
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
             continue;
-        };
-
-        let canonical = match std::fs::canonicalize(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to canonicalize instruction file path, skipping");
-                continue;
-            }
         };
 
         if !canonical.starts_with(&canonical_base) {
@@ -92,10 +166,15 @@ pub fn load_instructions(
             continue;
         }
 
-        if !seen.insert(canonical) {
+        if !seen.insert(canonical.clone()) {
             // Already loaded this path via a different candidate or symlink.
             continue;
         }
+
+        // Open the canonical path after boundary check — no TOCTOU window for symlink swap.
+        let Ok(file) = std::fs::File::open(&canonical) else {
+            continue;
+        };
 
         let meta = match file.metadata() {
             Ok(m) => m,
@@ -114,7 +193,7 @@ pub fn load_instructions(
                 path = %path.display(),
                 size = meta.len(),
                 limit = MAX_FILE_SIZE,
-                "instruction file exceeds 512 KB size limit, skipping"
+                "instruction file exceeds 256 KiB size limit, skipping"
             );
             continue;
         }
@@ -181,6 +260,116 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
         // Router and Orchestrator delegate to their sub-providers; detection
         // is handled by the caller collecting sub-provider kinds separately.
         ProviderKind::Router | ProviderKind::Orchestrator => vec![],
+    }
+}
+
+#[cfg(test)]
+mod watcher_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn start_with_valid_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        let result = InstructionWatcher::start(&[dir.path().to_path_buf()], tx);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn start_with_empty_paths() {
+        let (tx, _rx) = mpsc::channel(16);
+        let result = InstructionWatcher::start(&[], tx);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn detects_md_file_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+
+        let md_path = dir.path().join("zeph.md");
+        std::fs::write(&md_path, "initial").unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::write(&md_path, "updated").unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
+        assert!(
+            result.is_ok(),
+            "expected InstructionEvent::Changed within timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn ignores_non_md_file_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+
+        let other_path = dir.path().join("notes.txt");
+        std::fs::write(&other_path, "content").unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(1500), rx.recv()).await;
+        assert!(result.is_err(), "should not receive event for non-.md file");
+    }
+
+    #[tokio::test]
+    async fn detects_md_file_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("zeph.md");
+        std::fs::write(&md_path, "content").unwrap();
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::remove_file(&md_path).unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
+        assert!(
+            result.is_ok(),
+            "expected InstructionEvent::Changed on .md deletion"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    #[test]
+    fn reload_returns_updated_blocks_when_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("zeph.md");
+        std::fs::write(&md_path, "initial content").unwrap();
+
+        let blocks = load_instructions(dir.path(), &[], &[], false);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].content, "initial content");
+
+        std::fs::write(&md_path, "updated content").unwrap();
+        let blocks2 = load_instructions(dir.path(), &[], &[], false);
+        assert_eq!(blocks2.len(), 1);
+        assert_eq!(blocks2[0].content, "updated content");
+    }
+
+    #[test]
+    fn reload_returns_empty_when_file_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("zeph.md");
+        std::fs::write(&md_path, "content").unwrap();
+
+        let blocks = load_instructions(dir.path(), &[], &[], false);
+        assert_eq!(blocks.len(), 1);
+
+        std::fs::remove_file(&md_path).unwrap();
+        let blocks2 = load_instructions(dir.path(), &[], &[], false);
+        assert!(
+            blocks2.is_empty(),
+            "deleted file should not be loaded on reload"
+        );
     }
 }
 

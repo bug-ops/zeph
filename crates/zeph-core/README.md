@@ -34,7 +34,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `project` | Project-level context detection |
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); secrets stored as `BTreeMap` for deterministic JSON serialization on every `vault.save()` call; scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
-| `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap |
+| `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap. `InstructionWatcher` subscribes to filesystem events via `notify-debouncer-mini` (500 ms debounce) and reloads `instruction_blocks` in-place on any `.md` change — no agent restart required |
 | `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` that exposes the `load_skill` tool to the LLM; accepts a skill name, looks it up in the shared `Arc<RwLock<SkillRegistry>>`, and returns the full SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); skill name is capped at 128 characters; unknown names return a human-readable error message rather than a hard error |
 | `scheduler_executor` | `SchedulerExecutor` — `ToolExecutor` that exposes three LLM-callable tools: `schedule_periodic` (add a recurring cron task), `schedule_deferred` (add a one-shot task at a specific ISO 8601 UTC time), and `cancel_task` (remove a task by name); communicates with the scheduler via `mpsc::Sender<SchedulerMessage>` and validates input lengths and cron expressions before forwarding; only present when the `scheduler` feature is enabled |
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
@@ -64,6 +64,9 @@ Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
 
 > [!NOTE]
 > `zeph.md` and `.zeph/zeph.md` are always loaded regardless of `auto_detect`. Use `--instruction-file <path>` at the CLI to supply extra files at startup without modifying the config file.
+
+> [!TIP]
+> Instruction files support hot reload — edit any watched `.md` file while the agent is running and the updated content is applied within 500 ms on the next inference turn. The watcher starts automatically when at least one instruction path is resolved.
 
 Key `DocumentConfig` fields (TOML section `[memory.documents]`):
 

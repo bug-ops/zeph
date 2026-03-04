@@ -360,13 +360,91 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
     }
+    let (instruction_reload_tx, instruction_reload_rx) = tokio::sync::mpsc::channel(1);
+
+    // Collect sub-provider kinds for Router/Orchestrator so detection_paths() works.
+    let mut provider_kinds: Vec<zeph_core::config::ProviderKind> = vec![config.llm.provider];
+    if matches!(
+        config.llm.provider,
+        zeph_core::config::ProviderKind::Orchestrator
+    ) && let Some(ref orch) = config.llm.orchestrator
+    {
+        for pcfg in orch.providers.values() {
+            match pcfg.provider_type.as_str() {
+                "claude" => provider_kinds.push(zeph_core::config::ProviderKind::Claude),
+                "openai" => provider_kinds.push(zeph_core::config::ProviderKind::OpenAi),
+                "ollama" => provider_kinds.push(zeph_core::config::ProviderKind::Ollama),
+                "compatible" => {
+                    provider_kinds.push(zeph_core::config::ProviderKind::Compatible);
+                }
+                "candle" => provider_kinds.push(zeph_core::config::ProviderKind::Candle),
+                _ => {}
+            }
+        }
+    }
+    provider_kinds.sort_unstable_by_key(|k| k.as_str());
+    provider_kinds.dedup_by_key(|k| k.as_str());
+
     let instruction_blocks = zeph_core::instructions::load_instructions(
         &instruction_base,
-        &[config.llm.provider],
+        &provider_kinds,
         &explicit_instruction_files,
         config.agent.instruction_auto_detect,
     );
-    let agent = agent.with_instruction_blocks(instruction_blocks);
+
+    let instruction_reload_state = zeph_core::instructions::InstructionReloadState {
+        base_dir: instruction_base.clone(),
+        provider_kinds: provider_kinds.clone(),
+        explicit_files: explicit_instruction_files.clone(),
+        auto_detect: config.agent.instruction_auto_detect,
+    };
+
+    // Collect parent directories of candidate instruction files to watch.
+    // Only include dirs within the canonical project root to avoid watching external paths.
+    let canonical_base =
+        std::fs::canonicalize(&instruction_base).unwrap_or_else(|_| instruction_base.clone());
+    let mut watch_dirs: Vec<std::path::PathBuf> = Vec::new();
+    watch_dirs.push(instruction_base.clone());
+    watch_dirs.push(instruction_base.join(".zeph"));
+    if config.agent.instruction_auto_detect {
+        watch_dirs.push(instruction_base.join(".claude"));
+        watch_dirs.push(instruction_base.join(".claude").join("rules"));
+    }
+    for p in &explicit_instruction_files {
+        let abs = if p.is_absolute() {
+            p.clone()
+        } else {
+            instruction_base.join(p)
+        };
+        // Boundary-check: only watch dirs within the project root.
+        if let Some(parent) = abs.parent()
+            && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+            && canonical_parent.starts_with(&canonical_base)
+        {
+            watch_dirs.push(parent.to_path_buf());
+        }
+    }
+    watch_dirs.sort();
+    watch_dirs.dedup();
+
+    let _instruction_watcher = if watch_dirs.is_empty() {
+        tracing::debug!("no instruction watch dirs, hot-reload disabled");
+        let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+        zeph_core::instructions::InstructionWatcher::start(&[], tx2)
+            .expect("empty-path watcher always succeeds")
+    } else {
+        zeph_core::instructions::InstructionWatcher::start(&watch_dirs, instruction_reload_tx)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "instruction watcher failed, hot-reload disabled");
+                let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+                zeph_core::instructions::InstructionWatcher::start(&[], tx2)
+                    .expect("empty-path watcher always succeeds")
+            })
+    };
+
+    let agent = agent
+        .with_instruction_blocks(instruction_blocks)
+        .with_instruction_reload(instruction_reload_rx, instruction_reload_state);
 
     let agent = agent_setup::apply_response_cache(
         agent,
