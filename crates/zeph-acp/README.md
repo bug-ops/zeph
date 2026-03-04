@@ -7,13 +7,6 @@
 
 ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environments.
 
-## Installation
-
-```toml
-[dependencies]
-zeph-acp = "*"
-```
-
 ## Overview
 
 Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`.
@@ -22,10 +15,10 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 
 ```toml
 [dependencies]
-zeph-acp = "0.1"
+zeph-acp = "0.12.5"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.1", features = ["acp-http"] }
+zeph-acp = { version = "0.12.5", features = ["acp-http"] }
 ```
 
 > [!IMPORTANT]

@@ -174,9 +174,9 @@ ollama pull qwen3-embedding
 
 If the embedding model is unavailable, Zeph falls back to using all skills for every query.
 
-## Self-Learning (Optional)
+## Self-Learning
 
-When built with `--features self-learning`, Zeph tracks skill execution outcomes and automatically generates improved versions of underperforming skills.
+Zeph tracks skill execution outcomes and automatically generates improved versions of underperforming skills. Self-learning is always enabled (no feature flag required).
 
 **How it works:**
 1. Each skill invocation is tracked as success or failure
@@ -194,8 +194,8 @@ When built with `--features self-learning`, Zeph tracks skill execution outcomes
 - `/skill reset <name>` — revert to original
 - `/feedback` — provide explicit quality feedback
 
-> [!IMPORTANT]
-> Self-learning requires the `self-learning` feature flag: `cargo build --features self-learning`. Skill versions and outcomes are stored in SQLite (`skill_versions` and `skill_outcomes` tables).
+> [!NOTE]
+> Skill versions and outcomes are stored in SQLite (`skill_versions` and `skill_outcomes` tables).
 
 ## Hot Reload
 

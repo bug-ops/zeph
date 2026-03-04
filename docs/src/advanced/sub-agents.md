@@ -532,3 +532,180 @@ let result = manager.collect(&task_id).await?;
 | `NotFound` | Unknown definition name or task ID |
 | `Spawn` | Concurrency limit reached or task panic |
 | `Cancelled` | Sub-agent was cancelled |
+
+## Background Lifecycle (Phase 5 — Planned)
+
+> **Planned** — The features in this section are part of Phase 5 (#1145) and not yet available.
+
+Phase 5 closes the gap between fire-and-forget background agents and a full lifecycle model with timeout enforcement, result persistence, completion notifications, and new CLI commands for inspecting agent output.
+
+### Timeout Enforcement
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+The `permissions.timeout_secs` field is currently parsed from agent definitions but **not enforced at runtime**. A runaway background agent can consume resources indefinitely.
+
+Phase 5 wraps the agent loop in `tokio::time::timeout` so agents are killed when the deadline expires:
+
+```rust
+let timeout_dur = Duration::from_secs(def.permissions.timeout_secs);
+let join_handle = tokio::spawn(async move {
+    match tokio::time::timeout(timeout_dur, run_agent_loop(args)).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!("sub-agent timed out after {timeout_dur:?}");
+            Err(anyhow::anyhow!("sub-agent timed out after {}s", timeout_dur.as_secs()))
+        }
+    }
+});
+```
+
+The default timeout is **600 seconds** (10 minutes). Override it per agent:
+
+```yaml
+---
+name: long-running-task
+description: Agent with a custom timeout
+permissions:
+  timeout_secs: 1800  # 30 minutes
+---
+```
+
+Timeout is wall-clock time, independent of `max_turns`. Both limits are enforced simultaneously — whichever fires first stops the agent.
+
+### Completion Notifications
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+Currently the parent agent must poll `/agent status` to discover when a background agent finishes. Phase 5 introduces a `CompletionEvent` that fires when any agent reaches a terminal state (completed, failed, cancelled, or timed out):
+
+```rust
+pub struct CompletionEvent {
+    pub task_id: String,
+    pub agent_name: String,
+    pub state: SubAgentState,
+    pub elapsed: Duration,
+}
+```
+
+The event carries only metadata — no result summary. Consumers read the full output from the persisted output file or SQLite table.
+
+Delivery uses a **cooperative sweep-on-access** model rather than a background task. The manager's `reap_completed()` method is called from the agent loop, collects all finished handles, persists results, and returns completion events. This avoids shared-ownership complexity since `SubAgentManager` is not behind `Arc<Mutex>`.
+
+### Result Persistence
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+Background agent results are currently ephemeral — stored as in-memory strings, lost if not explicitly collected or on process exit. Phase 5 adds dual persistence:
+
+**Output files** — The final result is written to `.zeph/agent-output/<task_id>.txt` with a 1 MiB cap and 24-hour retention. Files are cleaned up by the reaper on the next sweep.
+
+**SQLite table** — A `background_results` table stores structured metadata:
+
+```sql
+CREATE TABLE IF NOT EXISTS background_results (
+    task_id     TEXT PRIMARY KEY,
+    agent_name  TEXT NOT NULL,
+    success     INTEGER NOT NULL,
+    result_text TEXT NOT NULL,
+    turns_used  INTEGER NOT NULL,
+    elapsed_ms  INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+Configure persistence in `config.toml`:
+
+```toml
+[agents]
+output_dir = ".zeph/agent-output"       # default
+output_retention_secs = 86400           # 24h, default
+output_max_bytes = 1048576              # 1 MiB, default
+```
+
+### New CLI Commands
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+| Command | Description |
+|---------|-------------|
+| `/agent output <id>` | Print the persisted output file for a completed agent |
+| `/agent collect <id>` | Collect a specific agent's result |
+| `/agent collect` | Collect all completed agents at once |
+
+`/agent collect` without arguments collects all agents in a terminal state (completed, failed, timed out). Active agents are skipped — the command never blocks waiting for a running agent to finish. `/agent collect <id>` collects a specific agent by ID prefix.
+
+Example workflow:
+
+```
+> /agent bg code-reviewer Review the auth module
+Sub-agent 'code-reviewer' started (id: a1b2c3d4)
+
+> /agent status
+Active sub-agents:
+  [a1b2c3d4] completed  turns=5  elapsed=38s
+
+> /agent output a1b2
+--- Output for a1b2c3d4 (code-reviewer) ---
+Found 2 issues in the auth module:
+1. [critical] Token expiry check missing in refresh_token()
+2. [warning] Redundant clone on line 42
+---
+
+> /agent collect
+Collected 1 completed agent(s).
+```
+
+### Structured Result Type
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+The current `run_agent_loop` returns a raw `String`. Phase 5 replaces it with a structured `AgentResult`:
+
+```rust
+pub struct AgentResult {
+    pub final_response: String,
+    pub conversation: Vec<Message>,  // full message history
+    pub turns_used: u32,
+    pub elapsed: Duration,
+    pub timed_out: bool,
+}
+```
+
+This enables `/agent output` to show the full result, and `collect()` to return structured data for programmatic use. The `JoinHandle` type changes from `Result<String>` to `Result<AgentResult>`.
+
+### Progress Streaming
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+The `last_message` field in `SubAgentStatus` is currently truncated to 120 characters, providing minimal visibility into agent progress. Phase 5 makes two improvements:
+
+1. **Increased truncation limit** — `last_message` truncation increases from 120 to 500 characters for immediate benefit without breaking changes.
+
+2. **Dedicated progress channel** — A separate `mpsc::Sender<ProgressUpdate>` channel carries full per-turn output alongside the existing `watch` channel:
+
+```rust
+pub struct ProgressUpdate {
+    pub turn: u32,
+    pub content: String,            // full LLM response for this turn
+    pub tool_output: Option<String>, // tool result if applicable
+}
+```
+
+The `watch` channel remains for lightweight status polling (no breaking change to `SubAgentStatus`). The progress channel has a capacity of 32 messages — unread messages are dropped when the buffer is full to prevent OOM.
+
+Access progress updates via `SubAgentManager::drain_progress(task_id) -> Vec<ProgressUpdate>`.
+
+### Hook Improvements
+
+> **Planned** — This feature is part of Phase 5 (#1145) and not yet available.
+
+Phase 5 adds a new environment variable to `SubagentStop` hooks:
+
+| Variable | Description |
+|----------|-------------|
+| `ZEPH_AGENT_EXIT_REASON` | Exit reason: `completed`, `failed`, `canceled`, or `timed_out` |
+
+This allows stop hooks to take different actions based on how the agent ended — for example, sending a notification only on failure or cleaning up resources only on timeout.
+
+Phase 5 also fixes a bug where `SubagentStop` hooks fire twice when a running agent is cancelled and then collected. The fix ensures the hook fires exactly once at the first terminal state transition.

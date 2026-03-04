@@ -9,7 +9,7 @@ MCP client with multi-server lifecycle and Qdrant tool registry for Zeph.
 
 ## Overview
 
-Implements the Model Context Protocol client for Zeph, managing connections to multiple MCP servers, discovering their tools at startup, and routing tool calls through a unified executor. Built on rmcp 0.15.
+Implements the Model Context Protocol client for Zeph, managing connections to multiple MCP servers, discovering their tools at startup, and routing tool calls through a unified executor. Built on rmcp 0.17.
 
 ## Key Modules
 
