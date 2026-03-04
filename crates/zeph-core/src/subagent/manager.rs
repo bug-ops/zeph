@@ -568,6 +568,7 @@ impl SubAgentManager {
 mod tests {
     use std::pin::Pin;
 
+    use indoc::indoc;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_tools::ToolCall;
@@ -581,13 +582,12 @@ mod tests {
     }
 
     fn sample_def() -> SubAgentDef {
-        SubAgentDef::parse("+++\nname = \"bot\"\ndescription = \"A bot\"\n+++\n\nDo things.\n")
-            .unwrap()
+        SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap()
     }
 
     fn def_with_secrets() -> SubAgentDef {
         SubAgentDef::parse(
-            "+++\nname = \"bot\"\ndescription = \"A bot\"\n[permissions]\nsecrets = [\"api-key\"]\n+++\n\nDo things.\n",
+            "---\nname: bot\ndescription: A bot\npermissions:\n  secrets:\n    - api-key\n---\n\nDo things.\n",
         )
         .unwrap()
     }
@@ -661,7 +661,7 @@ mod tests {
     fn load_definitions_populates_vec() {
         use std::io::Write as _;
         let dir = tempfile::tempdir().unwrap();
-        let content = "+++\nname = \"helper\"\ndescription = \"A helper\"\n+++\n\nHelp.\n";
+        let content = "---\nname: helper\ndescription: A helper\n---\n\nHelp.\n";
         let mut f = std::fs::File::create(dir.path().join("helper.md")).unwrap();
         f.write_all(content.as_bytes()).unwrap();
 
@@ -811,9 +811,16 @@ mod tests {
     async fn max_turns_terminates_agent_loop() {
         let mut mgr = make_manager();
         // max_turns = 1, mock returns empty (no tool call), so loop ends after 1 turn
-        let def = SubAgentDef::parse(
-            "+++\nname = \"limited\"\ndescription = \"A bot\"\n[permissions]\nmax_turns = 1\n+++\n\nDo one thing.\n",
-        )
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: limited
+            description: A bot
+            permissions:
+              max_turns: 1
+            ---
+
+            Do one thing.
+        "})
         .unwrap();
         mgr.definitions.push(def);
 

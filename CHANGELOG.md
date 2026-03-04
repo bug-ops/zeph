@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Sub-agent definition format migrated from `+++` TOML frontmatter to `---` YAML frontmatter (Claude Code spec compatible); `+++` TOML remains supported as a deprecated fallback with a `tracing::warn!` log (#1146)
+
+### Added
+
+- `serde_norway = "0.9.42"` dependency for YAML parsing in sub-agent definitions (replaces TOML-only parsing)
+- `FrontmatterFormat` enum in `zeph-core` routes sub-agent definitions to the correct deserializer based on detected delimiter
+- 256 KiB file size cap in `SubAgentDef::load()` to prevent DoS via oversized definition files
+- Control character validation (ASCII < 0x20 excluding tab, plus DEL 0x7F) for `name` and `description` fields in sub-agent definitions
+
 ## [0.12.6] - 2026-03-04
 
 ### Added

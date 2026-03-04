@@ -34,6 +34,7 @@ schemars.workspace = true
 dirs.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_norway.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
@@ -56,6 +57,7 @@ harness = false
 
 [dev-dependencies]
 criterion.workspace = true
+indoc.workspace = true
 insta.workspace = true
 proptest.workspace = true
 schemars.workspace = true
