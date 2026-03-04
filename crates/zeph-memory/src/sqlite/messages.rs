@@ -562,6 +562,96 @@ impl SqliteStore {
 
         Ok(rows)
     }
+
+    // ── Eviction helpers ──────────────────────────────────────────────────────
+
+    /// Return all non-deleted message IDs with their eviction metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_eviction_candidates(
+        &self,
+    ) -> Result<Vec<crate::eviction::EvictionEntry>, crate::error::MemoryError> {
+        let rows: Vec<(MessageId, String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT id, created_at, last_accessed, access_count \
+             FROM messages WHERE deleted_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, created_at, last_accessed, access_count)| crate::eviction::EvictionEntry {
+                    id,
+                    created_at,
+                    last_accessed,
+                    access_count: access_count.try_into().unwrap_or(0),
+                },
+            )
+            .collect())
+    }
+
+    /// Soft-delete a set of messages by marking `deleted_at`.
+    ///
+    /// Soft-deleted messages are excluded from all history queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn soft_delete_messages(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<(), crate::error::MemoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // SQLite does not support array binding natively. Batch via individual updates.
+        for &id in ids {
+            sqlx::query(
+                "UPDATE messages SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Return IDs of soft-deleted messages that have not yet been cleaned from Qdrant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_soft_deleted_message_ids(
+        &self,
+    ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
+        let rows: Vec<(MessageId,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = 0",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Mark a set of soft-deleted messages as Qdrant-cleaned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn mark_qdrant_cleaned(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<(), crate::error::MemoryError> {
+        for &id in ids {
+            sqlx::query("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
