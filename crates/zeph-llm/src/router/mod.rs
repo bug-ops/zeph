@@ -25,7 +25,6 @@ pub enum RouterStrategy {
     Thompson,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct RouterProvider {
     providers: Vec<AnyProvider>,
