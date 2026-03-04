@@ -1240,10 +1240,20 @@ impl<C: Channel> Agent<C> {
                 }
                 let mut out = String::from("Available sub-agents:\n");
                 for d in defs {
+                    let memory_label = match d.memory {
+                        Some(crate::subagent::MemoryScope::User) => " [memory:user]",
+                        Some(crate::subagent::MemoryScope::Project) => " [memory:project]",
+                        Some(crate::subagent::MemoryScope::Local) => " [memory:local]",
+                        None => "",
+                    };
                     if let Some(ref src) = d.source {
-                        let _ = writeln!(out, "  {} — {} ({})", d.name, d.description, src);
+                        let _ = writeln!(
+                            out,
+                            "  {}{} — {} ({})",
+                            d.name, memory_label, d.description, src
+                        );
                     } else {
-                        let _ = writeln!(out, "  {} — {}", d.name, d.description);
+                        let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
                     }
                 }
                 Some(out)
@@ -1373,6 +1383,14 @@ impl<C: Channel> Agent<C> {
                         t = s.turns_used,
                         msg = s.last_message.as_deref().unwrap_or(""),
                     );
+                    // Show memory directory path for agents with memory enabled.
+                    if let Some(def) = mgr.agents_def(id)
+                        && let Some(scope) = def.memory
+                        && let Ok(dir) =
+                            crate::subagent::memory::resolve_memory_dir(scope, &def.name)
+                    {
+                        let _ = writeln!(out, "       memory: {}", dir.display());
+                    }
                 }
                 Some(out)
             }
@@ -3081,6 +3099,7 @@ pub(super) mod agent_tests {
             skills: SkillFilter::default(),
             system_prompt: "You are helpful.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3377,6 +3396,7 @@ mod compaction_e2e {
             skills: SkillFilter::default(),
             system_prompt: "You are a worker.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3488,6 +3508,7 @@ mod compaction_e2e {
             skills: SkillFilter::default(),
             system_prompt: "You need a secret.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);

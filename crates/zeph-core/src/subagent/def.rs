@@ -3,11 +3,18 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::error::SubAgentError;
 use super::hooks::SubagentHooks;
+
+/// Validated agent name pattern: ASCII alphanumeric, hyphen, underscore.
+/// Must start with alphanumeric, max 64 chars. Rejects unicode homoglyphs.
+pub(super) static AGENT_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$").unwrap());
 
 /// Maximum allowed size for a sub-agent definition file (256 KiB).
 ///
@@ -44,6 +51,28 @@ pub enum PermissionMode {
     Plan,
 }
 
+/// Persistence scope for sub-agent memory files.
+///
+/// Determines where the agent's `MEMORY.md` and topic files are stored across sessions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryScope {
+    /// User-level: `~/.zeph/agent-memory/<name>/`.
+    ///
+    /// Persists across all projects. Memory is shared between same-named agents from
+    /// different projects — do not store project-specific secrets here.
+    User,
+    /// Project-level: `.zeph/agent-memory/<name>/`.
+    ///
+    /// Scoped to the current project. Intended for version-controlled memory.
+    Project,
+    /// Local-only: `.zeph/agent-memory-local/<name>/`.
+    ///
+    /// Scoped to the current project and not committed. Add `.zeph/agent-memory-local/`
+    /// to `.gitignore` to prevent accidental commits.
+    Local,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentDef {
     pub name: String,
@@ -72,6 +101,9 @@ pub struct SubAgentDef {
     /// Hooks are only honored for project-level and CLI-level definitions.
     /// User-level definitions (~/.zeph/agents/) have hooks stripped on load.
     pub hooks: SubagentHooks,
+    /// Persistent memory scope. When set, a memory directory is created at spawn time
+    /// and `MEMORY.md` content is injected into the system prompt.
+    pub memory: Option<MemoryScope>,
     /// Scope label and filename of the definition file (populated by `load` / `load_all`).
     ///
     /// Stored as `"<scope>/<filename>"` (e.g., `"project/my-agent.md"`).
@@ -136,6 +168,8 @@ struct RawSubAgentDef {
     skills: RawSkillFilter,
     #[serde(default)]
     hooks: SubagentHooks,
+    #[serde(default)]
+    memory: Option<MemoryScope>,
 }
 
 // Note: `RawToolPolicy` and `RawPermissions` intentionally do not carry
@@ -356,14 +390,14 @@ impl SubAgentDef {
                 "description must not be empty".into(),
             ));
         }
-        if raw
-            .name
-            .chars()
-            .any(|c| (c < '\x20' && c != '\t') || c == '\x7F')
-        {
-            return Err(SubAgentError::Invalid(
-                "name must not contain control characters".into(),
-            ));
+        // CRIT-01: unified name validation — ASCII-only, path-safe, max 64 chars.
+        // Rejects unicode homoglyphs, full-width chars, path separators, and control chars.
+        if !AGENT_NAME_RE.is_match(&raw.name) {
+            return Err(SubAgentError::Invalid(format!(
+                "name '{}' is invalid: must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{{0,63}}$ \
+                 (ASCII only, no spaces or special characters)",
+                raw.name
+            )));
         }
         if raw
             .description
@@ -414,6 +448,7 @@ impl SubAgentDef {
                 exclude: raw.skills.exclude,
             },
             hooks: raw.hooks,
+            memory: raw.memory,
             system_prompt: body.trim().to_owned(),
             source: None,
         })
@@ -1278,5 +1313,91 @@ mod tests {
         let content = "---\nname: a\ndescription: b\npermisions:\n  max_turns: 5\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
         assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    // ── MemoryScope / memory field tests ────────────────────────────────────
+
+    #[test]
+    fn parse_yaml_memory_scope_project() {
+        let content =
+            "---\nname: reviewer\ndescription: A reviewer\nmemory: project\n---\n\nBody.\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.memory, Some(MemoryScope::Project));
+    }
+
+    #[test]
+    fn parse_yaml_memory_scope_user() {
+        let content = "---\nname: reviewer\ndescription: A reviewer\nmemory: user\n---\n\nBody.\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.memory, Some(MemoryScope::User));
+    }
+
+    #[test]
+    fn parse_yaml_memory_scope_local() {
+        let content = "---\nname: reviewer\ndescription: A reviewer\nmemory: local\n---\n\nBody.\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.memory, Some(MemoryScope::Local));
+    }
+
+    #[test]
+    fn parse_yaml_memory_absent_gives_none() {
+        let content = "---\nname: reviewer\ndescription: A reviewer\n---\n\nBody.\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert!(def.memory.is_none());
+    }
+
+    #[test]
+    fn parse_yaml_memory_invalid_value_is_error() {
+        let content =
+            "---\nname: reviewer\ndescription: A reviewer\nmemory: global\n---\n\nBody.\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Parse { .. }));
+    }
+
+    #[test]
+    fn memory_scope_serde_roundtrip() {
+        for scope in [MemoryScope::User, MemoryScope::Project, MemoryScope::Local] {
+            let json = serde_json::to_string(&scope).unwrap();
+            let parsed: MemoryScope = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, scope);
+        }
+    }
+
+    // ── Agent name validation tests (CRIT-01) ────────────────────────────────
+
+    #[test]
+    fn parse_yaml_name_with_unicode_is_invalid() {
+        // Cyrillic 'а' (U+0430) looks like Latin 'a' but is rejected.
+        let content = "---\nname: аgent\ndescription: b\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_name_with_space_is_invalid() {
+        let content = "---\nname: my agent\ndescription: b\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_name_with_dot_is_invalid() {
+        let content = "---\nname: my.agent\ndescription: b\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert!(matches!(err, SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn parse_yaml_name_single_char_is_valid() {
+        let content = "---\nname: a\ndescription: b\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.name, "a");
+    }
+
+    #[test]
+    fn parse_yaml_name_with_underscore_and_hyphen_is_valid() {
+        let content = "---\nname: my_agent-v2\ndescription: b\n---\n\nbody\n";
+        let def = SubAgentDef::parse(content).unwrap();
+        assert_eq!(def.name, "my_agent-v2");
     }
 }

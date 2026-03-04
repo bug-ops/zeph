@@ -9,7 +9,7 @@ use zeph_llm::ThinkingConfig;
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
-use crate::subagent::def::PermissionMode;
+use crate::subagent::def::{MemoryScope, PermissionMode};
 use crate::subagent::hooks::HookDef;
 
 use crate::vault::Secret;
@@ -92,6 +92,16 @@ pub struct SubAgentConfig {
     /// is rejected with an error. Set to `true` only in trusted, controlled environments.
     #[serde(default)]
     pub allow_bypass_permissions: bool,
+    /// Default memory scope applied to sub-agents that do not set `memory` in their definition.
+    ///
+    /// When set, all agents without an explicit `memory` field will use this scope.
+    /// Set to `None` (omit from config) to disable memory by default.
+    ///
+    /// **Note**: Setting this affects ALL agents without an explicit `memory` field.
+    /// Agents can opt out by setting `memory: ~` in their frontmatter (not yet supported — None
+    /// means "not specified", which falls back to this default).
+    #[serde(default)]
+    pub default_memory_scope: Option<MemoryScope>,
     /// Lifecycle hooks executed when any sub-agent starts or stops.
     ///
     /// `start` hooks run after the agent is spawned (fire-and-forget).
@@ -110,6 +120,7 @@ impl Default for SubAgentConfig {
             default_permission_mode: None,
             default_disallowed_tools: Vec::new(),
             allow_bypass_permissions: false,
+            default_memory_scope: None,
             hooks: SubAgentLifecycleHooks::default(),
         }
     }

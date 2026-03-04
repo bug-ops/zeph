@@ -9,7 +9,7 @@ use zeph_core::config::{
     OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SessionsConfig,
     SlackConfig, TelegramConfig, VaultConfig,
 };
-use zeph_core::subagent::def::PermissionMode;
+use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[derive(Default)]
@@ -64,6 +64,8 @@ pub(crate) struct WizardState {
     pub(crate) agents_allow_bypass_permissions: bool,
     /// Custom user-level agents directory (empty = use platform default).
     pub(crate) agents_user_dir: Option<std::path::PathBuf>,
+    /// Default memory scope for sub-agents (None = no memory by default).
+    pub(crate) agents_default_memory_scope: Option<MemoryScope>,
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
@@ -621,6 +623,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .agents
         .user_agents_dir
         .clone_from(&state.agents_user_dir);
+    config.agents.default_memory_scope = state.agents_default_memory_scope;
 
     if state.detector_mode.as_deref() == Some("judge") {
         config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
@@ -844,6 +847,19 @@ fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         None
     } else {
         Some(std::path::PathBuf::from(user_dir_raw.trim()))
+    };
+
+    let memory_scopes = ["none", "local", "project", "user"];
+    let memory_sel = Select::new()
+        .with_prompt("Default memory scope for sub-agents (none = no memory by default)")
+        .items(memory_scopes)
+        .default(0)
+        .interact()?;
+    state.agents_default_memory_scope = match memory_sel {
+        1 => Some(MemoryScope::Local),
+        2 => Some(MemoryScope::Project),
+        3 => Some(MemoryScope::User),
+        _ => None,
     };
 
     println!();

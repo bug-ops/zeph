@@ -91,6 +91,7 @@ description: Reviews code changes for correctness and style
 model: claude-sonnet-4-20250514
 background: false
 max_turns: 10
+memory: project
 tools:
   allow:
     - shell
@@ -139,6 +140,7 @@ Report findings as a structured list with severity (critical/warning/info).
 | `model` | string | inherited | LLM model override |
 | `background` | bool | `false` | Run as a background task; secret requests are auto-denied inline |
 | `max_turns` | u32 | `20` | Maximum LLM turns before the agent is stopped |
+| `memory` | string | — | Persistent memory scope: `user`, `project`, or `local` (see [Persistent Memory](#persistent-memory)) |
 | `tools.allow` | string[] | — | Only these tools are available (mutually exclusive with `deny`) |
 | `tools.deny` | string[] | — | All tools except these (mutually exclusive with `allow`) |
 | `tools.except` | string[] | `[]` | Additional denylist applied on top of `allow`/`deny`; deny always wins over allow; exact match on tool ID |
@@ -226,6 +228,77 @@ The default is `20`. Set a lower value for narrow, well-defined tasks.
 |------|-------|----------|
 | `.zeph/agents/` | Project | Higher (wins on name conflict) |
 | `~/.config/zeph/agents/` | User (global) | Lower |
+
+## Persistent Memory
+
+Sub-agents can maintain persistent state across sessions via a `MEMORY.md` file and topic-specific files in a dedicated memory directory. This lets agents build knowledge over time without starting from scratch on every spawn.
+
+### Enabling Memory
+
+Add the `memory` field to a definition's YAML frontmatter:
+
+```yaml
+---
+name: code-reviewer
+description: Reviews code for correctness and style
+memory: project
+---
+```
+
+Or set a global default in `config.toml` (applies to all agents without an explicit `memory` field):
+
+```toml
+[agents]
+default_memory_scope = "project"
+```
+
+### Memory Scopes
+
+| Scope | Directory | Use Case |
+|-------|-----------|----------|
+| `user` | `~/.zeph/agent-memory/<name>/` | Cross-project memory shared between same-named agents. Do not store project-specific secrets here. |
+| `project` | `.zeph/agent-memory/<name>/` | Project-scoped memory, suitable for version control. |
+| `local` | `.zeph/agent-memory-local/<name>/` | Project-scoped but not committed. Add `.zeph/agent-memory-local/` to `.gitignore`. |
+
+The memory directory is created automatically on first spawn. If the directory already exists, its contents are preserved.
+
+### How It Works
+
+1. **Directory creation** — At spawn time, Zeph creates the memory directory if it does not exist.
+2. **MEMORY.md injection** — The first 200 lines of `MEMORY.md` are loaded and injected into the system prompt after the behavioral prompt, wrapped in `<agent-memory>` tags. Lines beyond 200 are truncated with a pointer to the full file.
+3. **File tool access** — The agent uses Read, Write, and Edit tools to maintain `MEMORY.md` and create topic-specific files (e.g., `patterns.md`, `debugging.md`).
+4. **Prompt ordering** — The behavioral system prompt (from the definition body) always takes precedence over memory content.
+
+### Auto-Enabled File Tools
+
+When an agent uses `tools.allow` (allowlist mode) and has memory enabled, Zeph automatically adds `Read`, `Write`, and `Edit` to the allowed tool list. A warning is logged so you know the tools were implicitly added:
+
+```
+WARN auto-enabled file tools for memory access — add ["Read", "Write", "Edit"]
+     to tools.allow to suppress this warning
+```
+
+To silence the warning, explicitly include the file tools in your allowlist:
+
+```yaml
+tools:
+  allow:
+    - shell
+    - Read
+    - Write
+    - Edit
+```
+
+If all three file tools are blocked (via `tools.except` or `tools.deny`), memory is silently disabled — the directory is not created and no content is injected.
+
+### Security
+
+- **Agent name validation** — Names must match `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`. Path traversal attempts (e.g., `../etc/passwd`) are rejected.
+- **Symlink boundary check** — `MEMORY.md` is canonicalized before reading. If the resolved path escapes the memory directory (e.g., via a symlink), the file is silently skipped.
+- **Size cap** — Files larger than 256 KiB are rejected.
+- **Null byte guard** — Files containing null bytes are rejected.
+- **Tag escaping** — `<agent-memory>` tags in memory content are escaped to prevent prompt injection. Since `MEMORY.md` is agent-written (not user-written), this stricter escaping is applied by default.
+- **Local scope .gitignore check** — When using `local` scope, Zeph warns if `.zeph/agent-memory-local/` is not in `.gitignore`.
 
 ## Tool and Skill Access
 
@@ -433,6 +506,11 @@ default_disallowed_tools = []
 # When false (the default), spawning a definition with permission_mode: bypass_permissions
 # is rejected at load time with an error.
 allow_bypass_permissions = false
+
+# Default memory scope for agents that do not set `memory` in their frontmatter.
+# Valid values: "user", "project", "local"
+# Omit or set to null to disable memory by default.
+# default_memory_scope = "project"
 
 # Lifecycle hooks — run for every sub-agent start/stop.
 # See the Hooks section above for the full schema.
