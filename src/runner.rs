@@ -470,6 +470,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_learning(config.skills.learning.clone());
+    let judge_provider = app.build_judge_provider();
+    let agent = if let Some(jp) = judge_provider {
+        agent.with_judge_provider(jp)
+    } else {
+        agent
+    };
 
     let agent = if config.tools.anomaly.enabled {
         agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(

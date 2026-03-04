@@ -19,6 +19,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `agent::context_manager` | `ContextManager` — owns token budget, compaction threshold, and safety margin; `should_compact()` is O(1) — reads `cached_prompt_tokens` set by the LLM response rather than scanning the message list |
 | `agent::tool_orchestrator` | `ToolOrchestrator` — owns max iteration limit, doom-loop detection (rolling hash window with in-place hashing, no intermediate `String` allocation), summarization flag, and overflow config |
 | `agent::learning_engine` | `LearningEngine` — owns `LearningConfig`, tracks per-turn reflection state; delegates self-learning decisions to `is_enabled()` / `mark_reflection_used()` |
+| `agent::feedback_detector` | `FeedbackDetector` (regex) and `JudgeDetector` (LLM-backed) — implicit correction detection from user messages; `JudgeDetector` runs in background via `tokio::spawn` with sliding-window rate limiter (5 calls / 60 s) and XML-escaped adversarial-defense prompt; adaptive threshold gates judge invocation to the regex uncertainty zone |
 | `agent::tool_execution` | Tool call handling, redaction, result processing; both the fenced-block path (`handle_tool_result`) and the structured tool-call path unconditionally emit `LoopbackEvent::ToolStart` (UUID generated per call) before execution and `LoopbackEvent::ToolOutput` (matching UUID, `is_error` flag) after; `call_llm_with_retry()` / `call_chat_with_tools_retry()` — auto-detect `ContextLengthExceeded`, compact context, and retry (max 2 attempts); `prune_stale_tool_outputs` invokes `count_tokens` once per `ToolResult` part |
 | `agent::message_queue` | Message queue management |
 | `agent::builder` | Agent builder API |
@@ -121,6 +122,10 @@ Key `AgentConfig.learning` fields (TOML section `[agent.learning]`):
 | `correction_confidence_threshold` | f64 | `0.7` | Minimum detector confidence to persist a `UserCorrection` |
 | `correction_recall_limit` | usize | `5` | Max corrections retrieved per context-build turn |
 | `correction_min_similarity` | f64 | `0.75` | Minimum embedding similarity for correction recall |
+| `detector_mode` | `"regex"` / `"judge"` | `"regex"` | Detection strategy: regex-only or LLM-backed judge with adaptive regex fallback |
+| `judge_model` | string | `""` | Model for the judge detector (e.g. `"claude-sonnet-4-6"`); empty = use primary provider |
+| `judge_adaptive_low` | f32 | `0.5` | Regex confidence below this value skips judge invocation (treated as "not a correction") |
+| `judge_adaptive_high` | f32 | `0.8` | Regex confidence above this value skips judge invocation (high-confidence regex match accepted) |
 
 Key `LlmConfig` fields for EMA routing (TOML section `[llm]`):
 

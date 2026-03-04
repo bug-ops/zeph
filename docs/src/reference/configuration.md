@@ -119,6 +119,20 @@ prompt_mode = "auto"               # Skill prompt format: "full", "compact", or 
 cosine_weight = 0.7                # Cosine signal weight in BM25+cosine fusion (default: 0.7)
 hybrid_search = false              # Enable BM25+cosine hybrid skill matching (default: false)
 
+[skills.learning]
+enabled = true                     # Enable self-learning skill improvement (default: true)
+auto_activate = false              # Require manual approval for new versions (default: false)
+min_failures = 3                   # Failures before triggering improvement (default: 3)
+improve_threshold = 0.7            # Success rate below which improvement starts (default: 0.7)
+rollback_threshold = 0.5           # Auto-rollback when success rate drops below this (default: 0.5)
+min_evaluations = 5                # Minimum evaluations before rollback decision (default: 5)
+max_versions = 10                  # Max auto-generated versions per skill (default: 10)
+cooldown_minutes = 60              # Cooldown between improvements for same skill (default: 60)
+detector_mode = "regex"            # Correction detector: "regex" (default) or "judge" (LLM-backed)
+judge_model = ""                   # Model for judge calls; empty = use primary provider
+judge_adaptive_low = 0.5           # Regex confidence below this bypasses judge (default: 0.5)
+judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8)
+
 [memory]
 sqlite_path = "./data/zeph.db"
 history_limit = 50

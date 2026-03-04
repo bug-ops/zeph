@@ -150,6 +150,8 @@ pub struct Agent<C: Channel> {
     pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
     pub(super) learning_engine: learning_engine::LearningEngine,
     pub(super) feedback_detector: feedback_detector::FeedbackDetector,
+    pub(super) judge_detector: Option<feedback_detector::JudgeDetector>,
+    pub(super) judge_provider: Option<AnyProvider>,
     config_path: Option<PathBuf>,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
@@ -289,6 +291,8 @@ impl<C: Channel> Agent<C> {
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
             feedback_detector: feedback_detector::FeedbackDetector::new(0.6),
+            judge_detector: None,
+            judge_provider: None,
             config_path: None,
             config_reload_rx: None,
             shutdown: rx,
@@ -866,13 +870,127 @@ impl<C: Channel> Agent<C> {
                 .filter(|m| m.role == Role::User)
                 .map(|m| m.content.as_str())
                 .collect();
-            if let Some(signal) = self
+            let regex_signal = self
                 .feedback_detector
-                .detect(trimmed, &previous_user_messages)
-            {
+                .detect(trimmed, &previous_user_messages);
+
+            // Judge mode: invoke LLM in background if regex is borderline or missed.
+            //
+            // The judge call is decoupled from the response pipeline — it records the
+            // correction asynchronously via tokio::spawn and returns None immediately
+            // so the user response is not blocked.
+            //
+            // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
+            // on runtime shutdown before store_user_correction completes. This is
+            // acceptable for the learning subsystem at MVP. Future: collect handles in
+            // Agent and drain on graceful shutdown.
+            // Check rate limit synchronously before deciding to spawn.
+            // The judge_detector is &mut self so check_rate_limit() can update call_times.
+            let judge_should_run = self
+                .judge_detector
+                .as_ref()
+                .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
+                && self
+                    .judge_detector
+                    .as_mut()
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
+
+            let signal = if judge_should_run {
+                let judge_provider = self
+                    .judge_provider
+                    .clone()
+                    .unwrap_or_else(|| self.provider.clone());
+                let assistant_snippet = self.last_assistant_response();
+                let user_msg_owned = trimmed.to_owned();
+                let memory_arc = self.memory_state.memory.clone();
+                let skill_name = self
+                    .skill_state
+                    .active_skill_names
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                let conv_id_bg = conv_id;
+                // Extract only the scalar config values needed by the spawned task.
+                let confidence_threshold = self
+                    .learning_engine
+                    .config
+                    .as_ref()
+                    .map_or(0.6, |c| c.correction_confidence_threshold);
+
+                tokio::spawn(async move {
+                    match feedback_detector::JudgeDetector::evaluate(
+                        &judge_provider,
+                        &user_msg_owned,
+                        &assistant_snippet,
+                        confidence_threshold,
+                    )
+                    .await
+                    {
+                        Ok(verdict) => {
+                            if let Some(signal) = verdict.into_signal(&user_msg_owned) {
+                                tracing::info!(
+                                    kind = signal.kind.as_str(),
+                                    confidence = signal.confidence,
+                                    source = "judge",
+                                    "implicit correction detected"
+                                );
+                                if let Some(memory) = memory_arc {
+                                    let correction_text =
+                                        context::truncate_chars(&user_msg_owned, 500);
+                                    match memory
+                                        .sqlite()
+                                        .store_user_correction(
+                                            conv_id_bg.map(|c| c.0),
+                                            &assistant_snippet,
+                                            &correction_text,
+                                            if skill_name.is_empty() {
+                                                None
+                                            } else {
+                                                Some(skill_name.as_str())
+                                            },
+                                            signal.kind.as_str(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(correction_id) => {
+                                            if let Err(e) = memory
+                                                .store_correction_embedding(
+                                                    correction_id,
+                                                    &correction_text,
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    "failed to store correction embedding: {e:#}"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "failed to store judge correction: {e:#}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("judge detector failed: {e:#}");
+                        }
+                    }
+                });
+
+                // Judge runs in background — return None so the response pipeline continues.
+                None
+            } else {
+                regex_signal
+            };
+
+            if let Some(signal) = signal {
                 tracing::info!(
                     kind = signal.kind.as_str(),
                     confidence = signal.confidence,
+                    source = "regex",
                     "implicit correction detected"
                 );
                 // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)

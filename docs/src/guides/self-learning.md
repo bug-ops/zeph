@@ -38,6 +38,22 @@ correction_min_similarity = 0.75
 
 Corrections are stored in both SQLite and the `zeph_corrections` Qdrant collection. The top-3 most similar corrections are injected into the system prompt on relevant queries.
 
+## Step 2b — Enable LLM-Backed Judge (Optional)
+
+By default, correction detection uses regex patterns only. If you want higher recall for ambiguous or non-English corrections, enable the judge detector:
+
+```toml
+[skills.learning]
+detector_mode = "judge"
+judge_model = "claude-sonnet-4-6"   # leave empty to use the primary provider
+judge_adaptive_low = 0.5            # regex confidence floor (default: 0.5)
+judge_adaptive_high = 0.8           # regex confidence ceiling (default: 0.8)
+```
+
+The judge only fires when regex confidence is borderline or when regex finds nothing — it does not replace regex. A rate limiter caps judge calls at 5 per 60 seconds. Judge calls run in the background and do not block the response.
+
+> Start with `detector_mode = "regex"` (the default) and switch to `"judge"` only if you notice corrections being missed. The judge adds LLM cost per borderline detection.
+
 ## Step 3 — Switch to Hybrid Skill Matching
 
 BM25+cosine hybrid matching improves recall for skills with distinctive trigger keywords while keeping semantic matching for paraphrased queries.
@@ -108,6 +124,7 @@ rollback_threshold = 0.5
 min_evaluations = 5
 max_versions = 10
 cooldown_minutes = 60
+detector_mode = "regex"   # switch to "judge" for LLM-backed detection
 
 [agent.learning]
 correction_detection = true

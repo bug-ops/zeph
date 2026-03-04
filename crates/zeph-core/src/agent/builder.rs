@@ -224,8 +224,20 @@ impl<C: Channel> Agent<C> {
             self.feedback_detector = super::feedback_detector::FeedbackDetector::new(
                 config.correction_confidence_threshold,
             );
+            if config.detector_mode == crate::config::DetectorMode::Judge {
+                self.judge_detector = Some(super::feedback_detector::JudgeDetector::new(
+                    config.judge_adaptive_low,
+                    config.judge_adaptive_high,
+                ));
+            }
         }
         self.learning_engine.config = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn with_judge_provider(mut self, provider: AnyProvider) -> Self {
+        self.judge_provider = Some(provider);
         self
     }
 
@@ -289,6 +301,16 @@ impl<C: Channel> Agent<C> {
 
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
         self.summary_provider.as_ref().unwrap_or(&self.provider)
+    }
+
+    /// Extract the last assistant message, truncated to 500 chars, for the judge prompt.
+    pub(super) fn last_assistant_response(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zeph_llm::provider::Role::Assistant)
+            .map(|m| super::context::truncate_chars(&m.content, 500))
+            .unwrap_or_default()
     }
 
     #[must_use]
