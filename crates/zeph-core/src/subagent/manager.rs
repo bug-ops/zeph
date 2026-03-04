@@ -320,7 +320,49 @@ impl SubAgentManager {
     ///
     /// Returns [`SubAgentError`] if any definition file fails to parse.
     pub fn load_definitions(&mut self, dirs: &[PathBuf]) -> Result<(), SubAgentError> {
-        self.definitions = SubAgentDef::load_all(dirs)?;
+        let defs = SubAgentDef::load_all(dirs)?;
+
+        // Security gate: non-Default permission_mode is forbidden when the user-level
+        // agents directory (~/.zeph/agents/) is one of the load sources. This prevents
+        // a crafted agent file from escalating its own privileges.
+        // Validation happens here (in the manager) because this is the only place
+        // that has full context about which directories were searched.
+        //
+        // FIX-5: fail-closed — if user_agents_dir is in dirs and a definition has
+        // non-Default permission_mode, we cannot verify it did not originate from the
+        // user-level dir (SubAgentDef no longer stores source_path), so we reject it.
+        let user_agents_dir = dirs::home_dir().map(|h| h.join(".zeph").join("agents"));
+        let loads_user_dir = user_agents_dir.as_ref().is_some_and(|user_dir| {
+            // FIX-8: log and treat as non-user-level if canonicalize fails.
+            match std::fs::canonicalize(user_dir) {
+                Ok(canonical_user) => dirs
+                    .iter()
+                    .filter_map(|d| std::fs::canonicalize(d).ok())
+                    .any(|d| d == canonical_user),
+                Err(e) => {
+                    tracing::warn!(
+                        dir = %user_dir.display(),
+                        error = %e,
+                        "could not canonicalize user agents dir, treating as non-user-level"
+                    );
+                    false
+                }
+            }
+        });
+
+        if loads_user_dir {
+            for def in &defs {
+                if def.permissions.permission_mode != PermissionMode::Default {
+                    return Err(SubAgentError::Invalid(format!(
+                        "sub-agent '{}': non-default permission_mode is not allowed for \
+                         user-level definitions (~/.zeph/agents/)",
+                        def.name
+                    )));
+                }
+            }
+        }
+
+        self.definitions = defs;
         tracing::info!(
             count = self.definitions.len(),
             "sub-agent definitions loaded"
@@ -480,7 +522,14 @@ impl SubAgentManager {
         };
 
         self.agents.insert(task_id.clone(), handle);
-        tracing::info!(task_id, def_name, "sub-agent spawned");
+        // FIX-6: log permission_mode so operators can audit privilege escalation at spawn time.
+        // TODO: enforce permission_mode at runtime (restrict tool access based on mode).
+        tracing::info!(
+            task_id,
+            def_name,
+            permission_mode = ?self.agents[&task_id].def.permissions.permission_mode,
+            "sub-agent spawned"
+        );
         Ok(task_id)
     }
 
