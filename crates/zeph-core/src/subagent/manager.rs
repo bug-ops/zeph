@@ -20,6 +20,7 @@ use super::def::{PermissionMode, SubAgentDef};
 use super::error::SubAgentError;
 use super::filter::{FilteredToolExecutor, PlanModeExecutor};
 use super::grants::{PermissionGrants, SecretRequest};
+use super::hooks::{HookDef, fire_hooks, matching_hooks};
 use super::state::SubAgentState;
 
 /// Marker in LLM output that triggers the secret request protocol.
@@ -40,6 +41,12 @@ struct AgentLoopArgs {
     secret_rx: mpsc::Receiver<Option<String>>,
     /// When true, secret requests are auto-denied without sending to the parent channel.
     background: bool,
+    /// Per-agent frontmatter hooks (`PreToolUse` / `PostToolUse`).
+    hooks: super::hooks::SubagentHooks,
+    /// Task ID for hook environment variables.
+    task_id: String,
+    /// Agent definition name for hook environment variables.
+    agent_name: String,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -56,8 +63,28 @@ async fn handle_tool_step(
     executor: &FilteredToolExecutor,
     response: String,
     messages: &mut Vec<Message>,
+    hooks: &super::hooks::SubagentHooks,
+    task_id: &str,
+    agent_name: &str,
 ) -> bool {
-    match executor.execute_erased(&response).await {
+    // Extract tool name from response for hook matching (best-effort; empty = no match).
+    let tool_name = extract_tool_name(&response);
+
+    // Build hook environment once for both pre and post hooks.
+    let hook_env = make_hook_env(task_id, agent_name, tool_name.as_deref().unwrap_or(""));
+
+    // PreToolUse: fire matching hooks before execution.
+    if let Some(ref name) = tool_name {
+        let pre_hooks: Vec<&HookDef> = matching_hooks(&hooks.pre_tool_use, name);
+        if !pre_hooks.is_empty() {
+            let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
+            if let Err(e) = fire_hooks(&pre_owned, &hook_env).await {
+                tracing::warn!(error = %e, tool = %name, "PreToolUse hook failed");
+            }
+        }
+    }
+
+    let result = match executor.execute_erased(&response).await {
         Ok(Some(output)) => {
             messages.push(make_message(Role::Assistant, response));
             messages.push(make_message(
@@ -79,7 +106,50 @@ async fn handle_tool_step(
             messages.push(make_message(Role::User, format!("[tool error]: {e}")));
             false
         }
+    };
+
+    // PostToolUse: fire matching hooks after execution (only when a tool was called).
+    if !result
+        && let Some(ref name) = tool_name
+        && !hooks.post_tool_use.is_empty()
+    {
+        let post_hooks: Vec<&HookDef> = matching_hooks(&hooks.post_tool_use, name);
+        if !post_hooks.is_empty() {
+            let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
+            if let Err(e) = fire_hooks(&post_owned, &hook_env).await {
+                tracing::warn!(error = %e, tool = %name, "PostToolUse hook failed");
+            }
+        }
     }
+
+    result
+}
+
+/// Extract the tool name from an LLM response string.
+///
+/// Looks for JSON-like `"tool_name": "SomeTool"` or `"name": "SomeTool"` patterns.
+/// Returns `None` if no tool call pattern is found.
+fn extract_tool_name(response: &str) -> Option<String> {
+    for key in [r#""tool_name": ""#, r#""name": ""#] {
+        if let Some(pos) = response.find(key) {
+            let after = &response[pos + key.len()..];
+            if let Some(end) = after.find('"') {
+                let name = after[..end].to_owned();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
+    env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
+    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
+    env
 }
 
 #[allow(clippy::too_many_lines)]
@@ -97,6 +167,9 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         secret_request_tx,
         mut secret_rx,
         background,
+        hooks,
+        task_id: loop_task_id,
+        agent_name,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -213,7 +286,16 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             }
         }
 
-        if handle_tool_step(&executor, response, &mut messages).await {
+        if handle_tool_step(
+            &executor,
+            response,
+            &mut messages,
+            &hooks,
+            &loop_task_id,
+            &agent_name,
+        )
+        .await
+        {
             break;
         }
     }
@@ -288,6 +370,8 @@ pub struct SubAgentManager {
     definitions: Vec<SubAgentDef>,
     agents: HashMap<String, SubAgentHandle>,
     max_concurrent: usize,
+    /// Config-level `SubagentStop` hooks, cached so `cancel()` and `collect()` can fire them.
+    stop_hooks: Vec<super::hooks::HookDef>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -296,6 +380,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("definitions_count", &self.definitions.len())
             .field("active_agents", &self.agents.len())
             .field("max_concurrent", &self.max_concurrent)
+            .field("stop_hooks_count", &self.stop_hooks.len())
             .finish()
     }
 }
@@ -308,7 +393,13 @@ impl SubAgentManager {
             definitions: Vec::new(),
             agents: HashMap::new(),
             max_concurrent,
+            stop_hooks: Vec::new(),
         }
+    }
+
+    /// Set config-level lifecycle stop hooks (fired when any agent finishes or is cancelled).
+    pub fn set_stop_hooks(&mut self, hooks: Vec<super::hooks::HookDef>) {
+        self.stop_hooks = hooks;
     }
 
     /// Load sub-agent definitions from the given directories.
@@ -495,6 +586,8 @@ impl SubAgentManager {
         let system_prompt = def.system_prompt.clone();
         let task_prompt = task_prompt.to_owned();
         let cancel_clone = cancel.clone();
+        let agent_hooks = def.hooks.clone();
+        let agent_name_clone = def.name.clone();
 
         let filtered_executor = FilteredToolExecutor::with_disallowed(
             tool_executor.clone(),
@@ -517,6 +610,7 @@ impl SubAgentManager {
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 
+        let task_id_for_loop = task_id.clone();
         let join_handle: JoinHandle<anyhow::Result<String>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
                 provider,
@@ -531,6 +625,9 @@ impl SubAgentManager {
                 secret_request_tx,
                 secret_rx,
                 background,
+                hooks: agent_hooks,
+                task_id: task_id_for_loop,
+                agent_name: agent_name_clone,
             }));
 
         let handle = SubAgentHandle {
@@ -555,6 +652,25 @@ impl SubAgentManager {
             permission_mode = ?self.agents[&task_id].def.permissions.permission_mode,
             "sub-agent spawned"
         );
+
+        // Cache stop hooks from config so cancel() and collect() can fire them
+        // without needing a config reference. Only update when non-empty to avoid
+        // overwriting a previously configured stop hook list with an empty default.
+        if !config.hooks.stop.is_empty() && self.stop_hooks.is_empty() {
+            self.stop_hooks.clone_from(&config.hooks.stop);
+        }
+
+        // Fire SubagentStart lifecycle hooks (fire-and-forget).
+        if !config.hooks.start.is_empty() {
+            let start_hooks = config.hooks.start.clone();
+            let start_env = make_hook_env(&task_id, def_name, "");
+            tokio::spawn(async move {
+                if let Err(e) = fire_hooks(&start_hooks, &start_env).await {
+                    tracing::warn!(error = %e, "SubagentStart hook failed");
+                }
+            });
+        }
+
         Ok(task_id)
     }
 
@@ -580,6 +696,18 @@ impl SubAgentManager {
         handle.state = SubAgentState::Canceled;
         handle.grants.revoke_all();
         tracing::info!(task_id, "sub-agent cancelled");
+
+        // Fire SubagentStop lifecycle hooks (fire-and-forget).
+        if !self.stop_hooks.is_empty() {
+            let stop_hooks = self.stop_hooks.clone();
+            let stop_env = make_hook_env(task_id, &handle.def.name, "");
+            tokio::spawn(async move {
+                if let Err(e) = fire_hooks(&stop_hooks, &stop_env).await {
+                    tracing::warn!(error = %e, "SubagentStop hook failed");
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -688,6 +816,17 @@ impl SubAgentManager {
             .agents
             .remove(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
+
+        // Fire SubagentStop lifecycle hooks (fire-and-forget) before cleanup.
+        if !self.stop_hooks.is_empty() {
+            let stop_hooks = self.stop_hooks.clone();
+            let stop_env = make_hook_env(task_id, &handle.def.name, "");
+            tokio::spawn(async move {
+                if let Err(e) = fire_hooks(&stop_hooks, &stop_env).await {
+                    tracing::warn!(error = %e, "SubagentStop hook failed");
+                }
+            });
+        }
 
         handle.grants.revoke_all();
 

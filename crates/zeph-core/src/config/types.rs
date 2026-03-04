@@ -10,6 +10,7 @@ use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::subagent::def::PermissionMode;
+use crate::subagent::hooks::HookDef;
 
 use crate::vault::Secret;
 
@@ -91,6 +92,12 @@ pub struct SubAgentConfig {
     /// is rejected with an error. Set to `true` only in trusted, controlled environments.
     #[serde(default)]
     pub allow_bypass_permissions: bool,
+    /// Lifecycle hooks executed when any sub-agent starts or stops.
+    ///
+    /// `start` hooks run after the agent is spawned (fire-and-forget).
+    /// `stop` hooks run after the agent finishes or is cancelled (fire-and-forget).
+    #[serde(default)]
+    pub hooks: SubAgentLifecycleHooks,
 }
 
 impl Default for SubAgentConfig {
@@ -103,8 +110,19 @@ impl Default for SubAgentConfig {
             default_permission_mode: None,
             default_disallowed_tools: Vec::new(),
             allow_bypass_permissions: false,
+            hooks: SubAgentLifecycleHooks::default(),
         }
     }
+}
+
+/// Config-level lifecycle hooks fired when any sub-agent starts or stops.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SubAgentLifecycleHooks {
+    /// Hooks run after a sub-agent is spawned (fire-and-forget).
+    pub start: Vec<HookDef>,
+    /// Hooks run after a sub-agent finishes or is cancelled (fire-and-forget).
+    pub stop: Vec<HookDef>,
 }
 
 fn default_max_concurrent() -> usize {

@@ -231,3 +231,7 @@ max_concurrent = 1
 extra_dirs = []
 default_disallowed_tools = []
 allow_bypass_permissions = false
+
+[agents.hooks]
+start = []
+stop = []

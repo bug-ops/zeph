@@ -2933,6 +2933,7 @@ pub(super) mod agent_tests {
 
     fn make_agent_with_manager() -> Agent<MockChannel> {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::hooks::SubagentHooks;
         use crate::subagent::{SubAgentDef, SubAgentManager};
 
         let provider = mock_provider(vec![]);
@@ -2951,6 +2952,7 @@ pub(super) mod agent_tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: "You are helpful.".into(),
+            hooks: SubagentHooks::default(),
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3222,6 +3224,7 @@ mod compaction_e2e {
     #[tokio::test]
     async fn subagent_spawn_text_collect_e2e() {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::hooks::SubagentHooks;
         use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
 
         // Provider shared between main agent and sub-agent via Arc clone.
@@ -3245,6 +3248,7 @@ mod compaction_e2e {
             },
             skills: SkillFilter::default(),
             system_prompt: "You are a worker.".into(),
+            hooks: SubagentHooks::default(),
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3323,6 +3327,7 @@ mod compaction_e2e {
     #[tokio::test]
     async fn foreground_spawn_secret_bridge_approves() {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::hooks::SubagentHooks;
         use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
 
         // Sub-agent loop responses:
@@ -3354,6 +3359,7 @@ mod compaction_e2e {
             },
             skills: SkillFilter::default(),
             system_prompt: "You need a secret.".into(),
+            hooks: SubagentHooks::default(),
             source: None,
         });
         agent.subagent_manager = Some(mgr);

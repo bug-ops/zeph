@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::error::SubAgentError;
+use super::hooks::SubagentHooks;
 
 /// Maximum allowed size for a sub-agent definition file (256 KiB).
 ///
@@ -66,6 +67,11 @@ pub struct SubAgentDef {
     pub permissions: SubAgentPermissions,
     pub skills: SkillFilter,
     pub system_prompt: String,
+    /// Per-agent hooks (`PreToolUse` / `PostToolUse`) from frontmatter.
+    ///
+    /// Hooks are only honored for project-level and CLI-level definitions.
+    /// User-level definitions (~/.zeph/agents/) have hooks stripped on load.
+    pub hooks: SubagentHooks,
     /// Scope label and filename of the definition file (populated by `load` / `load_all`).
     ///
     /// Stored as `"<scope>/<filename>"` (e.g., `"project/my-agent.md"`).
@@ -128,6 +134,8 @@ struct RawSubAgentDef {
     permissions: RawPermissions,
     #[serde(default)]
     skills: RawSkillFilter,
+    #[serde(default)]
+    hooks: SubagentHooks,
 }
 
 // Note: `RawToolPolicy` and `RawPermissions` intentionally do not carry
@@ -405,6 +413,7 @@ impl SubAgentDef {
                 include: raw.skills.include,
                 exclude: raw.skills.exclude,
             },
+            hooks: raw.hooks,
             system_prompt: body.trim().to_owned(),
             source: None,
         })
@@ -464,6 +473,19 @@ impl SubAgentDef {
             });
         }
         let mut def = Self::parse_with_path(&content, &path_str)?;
+
+        // Security: strip hooks from user-level definitions — only project-level
+        // (scope = "project") and CLI-level (scope = "cli" or None) definitions may
+        // carry hooks. User-level agents come from ~/.zeph/agents/ and are untrusted.
+        if scope == Some("user") {
+            if !def.hooks.pre_tool_use.is_empty() || !def.hooks.post_tool_use.is_empty() {
+                tracing::warn!(
+                    path = %path_str,
+                    "user-level agent definition contains hooks — stripping for security"
+                );
+            }
+            def.hooks = SubagentHooks::default();
+        }
 
         // Populate source as "<scope>/<filename>" — no full path to avoid privacy leak.
         let filename = path

@@ -6,6 +6,7 @@ pub mod def;
 pub mod error;
 pub mod filter;
 pub mod grants;
+pub mod hooks;
 pub mod manager;
 pub mod resolve;
 pub mod state;
@@ -15,6 +16,9 @@ pub use def::{PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, Too
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
+pub use hooks::{
+    HookDef, HookError, HookMatcher, HookType, SubagentHooks, fire_hooks, matching_hooks,
+};
 pub use manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
