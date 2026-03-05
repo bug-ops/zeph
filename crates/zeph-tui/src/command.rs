@@ -36,6 +36,8 @@ pub enum TuiCommand {
     AgentStatus,
     AgentCancelPrompt,
     AgentSpawnPrompt,
+    // Router
+    RouterStats,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -228,6 +230,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::AgentSpawnPrompt,
         },
+        CommandEntry {
+            id: "router:stats",
+            label: "Show Thompson router alpha/beta per provider",
+            category: "router",
+            shortcut: None,
+            command: TuiCommand::RouterStats,
+        },
     ];
     EXTRA
 }
@@ -303,8 +312,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_eight_commands() {
-        assert_eq!(extra_command_registry().len(), 8);
+    fn extra_registry_has_nine_commands() {
+        assert_eq!(extra_command_registry().len(), 9);
     }
 
     #[test]

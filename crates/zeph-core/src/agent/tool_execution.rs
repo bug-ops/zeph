@@ -978,6 +978,7 @@ impl<C: Channel> Agent<C> {
                 u64::try_from(text_len + calls_len).unwrap_or(0) / 4
             }
         };
+        let router_stats = self.provider.router_thompson_stats();
         self.update_metrics(|m| {
             m.api_calls += 1;
             m.last_llm_latency_ms = latency;
@@ -985,6 +986,9 @@ impl<C: Channel> Agent<C> {
             m.prompt_tokens += prompt_estimate;
             m.completion_tokens += completion_estimate;
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
+            if !router_stats.is_empty() {
+                m.router_thompson_stats = router_stats;
+            }
         });
         self.record_cache_usage();
         self.record_cost(prompt_estimate, completion_estimate);

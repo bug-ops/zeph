@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, SemanticConfig, SessionsConfig,
-    SlackConfig, TelegramConfig, VaultConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, RouterConfig,
+    RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
@@ -69,6 +69,10 @@ pub(crate) struct WizardState {
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
+    /// Router strategy: None = no router, "ema", or "thompson".
+    pub(crate) router_strategy: Option<String>,
+    /// Custom path for Thompson state file (None = use default).
+    pub(crate) router_thompson_state_path: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -105,6 +109,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_agents(&mut state)?;
+    step_router(&mut state)?;
     step_learning(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -539,12 +544,19 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         } else {
             None
         },
-        router: None,
+        router: state.router_strategy.as_deref().map(|s| RouterConfig {
+            chain: vec![],
+            strategy: match s {
+                "thompson" => RouterStrategyConfig::Thompson,
+                _ => RouterStrategyConfig::Ema,
+            },
+            thompson_state_path: state.router_thompson_state_path.clone(),
+        }),
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
         response_cache_enabled: false,
         response_cache_ttl_secs: 3600,
-        router_ema_enabled: false,
+        router_ema_enabled: state.router_strategy.as_deref().is_some_and(|s| s == "ema"),
         router_ema_alpha: 0.1,
         router_reorder_interval: 10,
         instruction_file: None,
@@ -866,8 +878,51 @@ fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 10/12: Provider Router ==\n");
+    println!("Configure adaptive routing when using multiple LLM providers.");
+    println!("Note: routing only takes effect when [llm.router].chain has 2+ providers.");
+    println!("Skip this step if you use a single provider.\n");
+
+    let strategy_items = &[
+        "None (single provider, no routing)",
+        "EMA (latency-aware exponential moving average)",
+        "Thompson (probabilistic exploration/exploitation)",
+    ];
+    let sel = Select::new()
+        .with_prompt("Router strategy")
+        .items(strategy_items)
+        .default(0)
+        .interact()?;
+
+    match sel {
+        0 => {
+            state.router_strategy = None;
+        }
+        1 => {
+            state.router_strategy = Some("ema".into());
+        }
+        2 => {
+            state.router_strategy = Some("thompson".into());
+            let custom_path: String = Input::new()
+                .with_prompt(
+                    "Thompson state file path (leave empty for default ~/.zeph/router_thompson_state.json)",
+                )
+                .default(String::new())
+                .interact_text()?;
+            if !custom_path.is_empty() {
+                state.router_thompson_state_path = Some(custom_path);
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    println!();
+    Ok(())
+}
+
 fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Step 10b/11: Feedback Detector ==\n");
+    println!("== Step 11/12: Feedback Detector ==\n");
 
     let detector_items = &[
         "regex (default — pattern matching, no LLM)",

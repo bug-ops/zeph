@@ -105,6 +105,11 @@ router_ema_enabled = false         # EMA-based provider latency routing (default
 router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
 router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
 
+# [llm.router]
+# chain = ["claude", "openai", "ollama"]  # Ordered fallback chain (required when provider = "router")
+# strategy = "ema"                        # "ema" (default) or "thompson"
+# thompson_state_path = "~/.zeph/router_thompson_state.json"  # Thompson state persistence path
+
 [llm.stt]
 provider = "whisper"
 model = "whisper-1"

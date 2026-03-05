@@ -81,8 +81,7 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             if providers.is_empty() {
                 bail!("router chain is empty");
             }
-            let strategy = router_cfg.strategy.as_str();
-            let router = if strategy == "thompson" {
+            let router = if router_cfg.strategy == crate::config::RouterStrategyConfig::Thompson {
                 let state_path = router_cfg
                     .thompson_state_path
                     .as_deref()

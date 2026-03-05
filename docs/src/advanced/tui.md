@@ -128,6 +128,7 @@ Available commands:
 | `daemon:connect` | Connect to remote daemon | |
 | `daemon:disconnect` | Disconnect from daemon | |
 | `daemon:status` | Show connection status | |
+| `router:stats` | Show Thompson router alpha/beta per provider | |
 
 View commands are read-only. Action commands (`session:new`, `app:quit`, `app:theme`) modify application state. Daemon commands manage the remote connection (see [Daemon Mode](../guides/daemon-mode.md)). The palette supports fuzzy matching on both command IDs and labels.
 

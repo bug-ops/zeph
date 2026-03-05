@@ -1,5 +1,7 @@
 # Model Orchestrator
 
+> **Tip:** For simple fallback chains with adaptive routing (Thompson Sampling or EMA), use `provider = "router"` instead. See [Adaptive Inference](adaptive-inference.md).
+
 Route tasks to different LLM providers based on content classification. Each task type maps to a provider chain with automatic fallback. Use the orchestrator to combine local and cloud models — for example, embeddings via Ollama and chat via Claude.
 
 ## Configuration

@@ -61,4 +61,5 @@ See [Memory and Context — LLM Response Cache](memory.md#llm-response-cache) fo
 
 - [Use a Cloud Provider](../guides/cloud-provider.md) — Claude, OpenAI, and compatible API setup
 - [Model Orchestrator](../advanced/orchestrator.md) — multi-provider routing with fallback chains
+- [Adaptive Inference](../advanced/adaptive-inference.md) — Thompson Sampling and EMA-based provider routing
 - [Local Inference (Candle)](../advanced/candle.md) — HuggingFace GGUF models

@@ -34,6 +34,7 @@
 # Advanced
 
 - [Model Orchestrator](advanced/orchestrator.md)
+- [Adaptive Inference](advanced/adaptive-inference.md)
 - [Self-Learning Skills](advanced/self-learning.md)
 - [Skill Trust & Security](advanced/skill-trust.md)
 - [Sub-Agent Orchestration](advanced/sub-agents.md)

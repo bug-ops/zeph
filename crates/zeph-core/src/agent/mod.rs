@@ -385,6 +385,9 @@ impl<C: Channel> Agent<C> {
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
 
+        // CRIT-1: persist Thompson state accumulated during this session.
+        self.provider.save_router_state();
+
         if let Some(ref mut mgr) = self.subagent_manager {
             mgr.shutdown_all();
         }

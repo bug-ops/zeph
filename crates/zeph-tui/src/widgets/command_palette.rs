@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn new_state_has_all_commands() {
         let state = CommandPaletteState::new();
-        assert!(state.filtered.len() >= 11);
+        assert!(state.filtered.len() >= 12);
         assert_eq!(state.selected, 0);
         assert!(state.query.is_empty());
         assert_eq!(state.cursor, 0);
