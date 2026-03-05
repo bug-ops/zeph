@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add graph-aware retrieval with BFS traversal: `graph_recall` function with fuzzy word-split entity matching, depth-tracked BFS expansion, composite scoring, and deduplication (#1226)
+- Add `MemoryRoute::Graph` variant to memory router with `RELATIONSHIP_PATTERNS` heuristic for relationship-style queries (#1226)
+- Add `BudgetAllocation.graph_facts` (4% when graph-memory enabled) and `ContextBudget.graph_enabled` for graph-aware context budget allocation (#1226)
+- Add `recall_graph` method to `SemanticMemory` with `graph_store: Option<Arc<GraphStore>>` field (#1226)
+- Add graph facts context injection with `[known facts]` prefix, fact-by-fact token budget enforcement, and sanitization via `sanitize_memory_message` (#1226)
+- Add `GraphConfig` to `MemoryState` for runtime access to `recall_limit`/`max_hops` configuration (#1226)
+- Add `bfs_with_depth` to `GraphStore` returning per-entity hop distances, `MAX_FRONTIER=300` guard against SQLite bind variable limit (#1226)
 - Add task orchestration core types (`TaskGraph`, `TaskNode`, `TaskId`, `GraphId`, `TaskStatus`, `GraphStatus`, `FailureStrategy`, `TaskResult`), DAG algorithms (`validate`, `toposort`, `ready_tasks`, `propagate_failure`), `OrchestrationConfig`, `OrchestrationError`, and SQLite persistence via `RawGraphStore`/`GraphPersistence` (Phase 1, #1236)
 - Add `orchestration` feature flag in root, `zeph-core`, and `zeph-memory` crates (included in `full`) (#1236)
 - Add `[orchestration]` TOML config section: `enabled`, `max_tasks`, `max_parallel`, `default_failure_strategy`, `default_max_retries`, `task_timeout_secs` (#1236)

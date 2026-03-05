@@ -42,6 +42,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
 | `graph` | `GraphStore`, `Entity`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal (feature-gated: `graph-memory`) |
+| `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching, BFS from seed entities, composite scoring, deduplication (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
@@ -132,8 +133,11 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 - **Communities** — groups of related entities with LLM-generated summaries
 - **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
 - **GraphFact** — retrieval-side type with composite scoring for context injection
+- **`graph_recall`** — query-time retrieval: splits the query into words, fuzzy-matches seed entities via LIKE, runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates, and returns the top-K facts for context injection
 
 `GraphStore` provides 18 CRUD methods over four SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migration 021 and is always present regardless of feature flag.
+
+The `HeuristicRouter` in `zeph-memory` includes a `Graph` route variant: relationship queries (e.g., "related to", "connection between", "opinion on") are automatically routed to `graph_recall` when the `graph-memory` feature is enabled.
 
 Configure via `[memory.graph]` in `config.toml`:
 
