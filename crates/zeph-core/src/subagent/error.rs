@@ -21,6 +21,15 @@ pub enum SubAgentError {
     #[error("invalid command: {0}")]
     InvalidCommand(String),
 
+    #[error("transcript error: {0}")]
+    Transcript(String),
+
+    #[error("ambiguous id prefix '{0}': matches {1} agents")]
+    AmbiguousId(String, usize),
+
+    #[error("agent '{0}' is still running; cancel it first or wait for completion")]
+    StillRunning(String),
+
     #[error("memory error for agent '{name}': {reason}")]
     Memory { name: String, reason: String },
 

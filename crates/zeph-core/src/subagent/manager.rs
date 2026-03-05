@@ -23,6 +23,9 @@ use super::grants::{PermissionGrants, SecretRequest};
 use super::hooks::{HookDef, fire_hooks, matching_hooks};
 use super::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
 use super::state::SubAgentState;
+use super::transcript::{
+    TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts,
+};
 
 /// Marker in LLM output that triggers the secret request protocol.
 const SECRET_REQUEST_PREFIX: &str = "[REQUEST_SECRET:";
@@ -48,6 +51,10 @@ struct AgentLoopArgs {
     task_id: String,
     /// Agent definition name for hook environment variables.
     agent_name: String,
+    /// Pre-loaded message history (for resumed sessions).
+    initial_messages: Vec<Message>,
+    /// Optional transcript writer for appending messages during the loop.
+    transcript_writer: Option<TranscriptWriter>,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -153,6 +160,15 @@ fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<St
     env
 }
 
+fn append_transcript(writer: &mut Option<TranscriptWriter>, seq: &mut u32, msg: &Message) {
+    if let Some(w) = writer {
+        if let Err(e) = w.append(*seq, msg) {
+            tracing::warn!(error = %e, seq, "failed to write transcript entry");
+        }
+        *seq += 1;
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
     let AgentLoopArgs {
@@ -171,6 +187,8 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         hooks,
         task_id: loop_task_id,
         agent_name,
+        initial_messages,
+        mut transcript_writer,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -186,10 +204,26 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         system_prompt
     };
 
-    let mut messages = vec![
-        make_message(Role::System, effective_system_prompt),
-        make_message(Role::User, task_prompt),
-    ];
+    // Build initial message list: system prompt, any resumed history, then new task prompt.
+    let mut messages = vec![make_message(Role::System, effective_system_prompt)];
+    let history_len = initial_messages.len();
+    messages.extend(initial_messages);
+    messages.push(make_message(Role::User, task_prompt));
+
+    // Sequence counter starts after history so new messages get sequential IDs.
+    // history_len is bounded by max_turns (u32::MAX at most) in practice.
+    #[allow(clippy::cast_possible_truncation)]
+    let mut seq: u32 = history_len as u32;
+
+    // Append the new task prompt to the transcript (history messages are already on disk).
+    if let Some(writer) = &mut transcript_writer {
+        let task_msg = messages.last().unwrap();
+        if let Err(e) = writer.append(seq, task_msg) {
+            tracing::warn!(error = %e, "failed to write transcript entry");
+        }
+        seq += 1;
+    }
+
     let mut turns: u32 = 0;
     let mut last_result = String::new();
 
@@ -253,8 +287,12 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                         "background sub-agent secret request auto-denied (no interactive prompt)"
                     );
                     let reply = format!("[secret:{key_name}] request denied");
-                    messages.push(make_message(Role::Assistant, response));
-                    messages.push(make_message(Role::User, reply));
+                    let assistant_msg = make_message(Role::Assistant, response);
+                    let user_msg = make_message(Role::User, reply);
+                    append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
+                    append_transcript(&mut transcript_writer, &mut seq, &user_msg);
+                    messages.push(assistant_msg);
+                    messages.push(user_msg);
                     continue;
                 }
 
@@ -280,13 +318,18 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                             format!("[secret:{key_name}] request denied")
                         }
                     };
-                    messages.push(make_message(Role::Assistant, response));
-                    messages.push(make_message(Role::User, reply));
+                    let assistant_msg = make_message(Role::Assistant, response);
+                    let user_msg = make_message(Role::User, reply);
+                    append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
+                    append_transcript(&mut transcript_writer, &mut seq, &user_msg);
+                    messages.push(assistant_msg);
+                    messages.push(user_msg);
                     continue;
                 }
             }
         }
 
+        let prev_len = messages.len();
         if handle_tool_step(
             &executor,
             response,
@@ -297,7 +340,16 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         )
         .await
         {
+            // handle_tool_step returned true (no tool call) — loop will break.
+            // Write the last assistant message to transcript.
+            for msg in &messages[prev_len..] {
+                append_transcript(&mut transcript_writer, &mut seq, msg);
+            }
             break;
+        }
+        // Write any newly pushed messages to the transcript.
+        for msg in &messages[prev_len..] {
+            append_transcript(&mut transcript_writer, &mut seq, msg);
         }
     }
 
@@ -338,6 +390,10 @@ pub struct SubAgentHandle {
     pub(crate) pending_secret_rx: mpsc::Receiver<SecretRequest>,
     /// Delivers approval outcome to the sub-agent loop: None = denied, Some(_) = approved.
     pub(crate) secret_tx: mpsc::Sender<Option<String>>,
+    /// ISO 8601 UTC timestamp recorded when the agent was spawned or resumed.
+    pub(crate) started_at_str: String,
+    /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.
+    pub(crate) transcript_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SubAgentHandle {
@@ -373,6 +429,10 @@ pub struct SubAgentManager {
     max_concurrent: usize,
     /// Config-level `SubagentStop` hooks, cached so `cancel()` and `collect()` can fire them.
     stop_hooks: Vec<super::hooks::HookDef>,
+    /// Directory for JSONL transcripts and meta sidecars.
+    transcript_dir: Option<PathBuf>,
+    /// Maximum number of transcript files to keep (0 = unlimited).
+    transcript_max_files: usize,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -382,6 +442,8 @@ impl std::fmt::Debug for SubAgentManager {
             .field("active_agents", &self.agents.len())
             .field("max_concurrent", &self.max_concurrent)
             .field("stop_hooks_count", &self.stop_hooks.len())
+            .field("transcript_dir", &self.transcript_dir)
+            .field("transcript_max_files", &self.transcript_max_files)
             .finish()
     }
 }
@@ -498,7 +560,15 @@ impl SubAgentManager {
             agents: HashMap::new(),
             max_concurrent,
             stop_hooks: Vec::new(),
+            transcript_dir: None,
+            transcript_max_files: 50,
         }
+    }
+
+    /// Configure transcript storage settings.
+    pub fn set_transcript_config(&mut self, dir: Option<PathBuf>, max_files: usize) {
+        self.transcript_dir = dir;
+        self.transcript_max_files = max_files;
     }
 
     /// Set config-level lifecycle stop hooks (fired when any agent finishes or is cancelled).
@@ -722,6 +792,43 @@ impl SubAgentManager {
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 
+        // Transcript setup: create writer if enabled, run sweep.
+        let transcript_writer = if config.transcript_enabled {
+            let dir = self.effective_transcript_dir(config);
+            if self.transcript_max_files > 0
+                && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
+            {
+                tracing::warn!(error = %e, "transcript sweep failed");
+            }
+            let path = dir.join(format!("{task_id}.jsonl"));
+            match TranscriptWriter::new(&path) {
+                Ok(w) => {
+                    // Write initial meta with status=Submitted so running agents are
+                    // discoverable even before completion.
+                    let meta = TranscriptMeta {
+                        agent_id: task_id.clone(),
+                        agent_name: def.name.clone(),
+                        def_name: def.name.clone(),
+                        status: SubAgentState::Submitted,
+                        started_at: crate::subagent::transcript::utc_now_pub(),
+                        finished_at: None,
+                        resumed_from: None,
+                        turns_used: 0,
+                    };
+                    if let Err(e) = TranscriptWriter::write_meta(&dir, &task_id, &meta) {
+                        tracing::warn!(error = %e, "failed to write initial transcript meta");
+                    }
+                    Some(w)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create transcript writer");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let task_id_for_loop = task_id.clone();
         let join_handle: JoinHandle<anyhow::Result<String>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
@@ -740,7 +847,15 @@ impl SubAgentManager {
                 hooks: agent_hooks,
                 task_id: task_id_for_loop,
                 agent_name: agent_name_clone,
+                initial_messages: vec![],
+                transcript_writer,
             }));
+
+        let handle_transcript_dir = if config.transcript_enabled {
+            Some(self.effective_transcript_dir(config))
+        } else {
+            None
+        };
 
         let handle = SubAgentHandle {
             id: task_id.clone(),
@@ -753,6 +868,8 @@ impl SubAgentManager {
             grants: PermissionGrants::default(),
             pending_secret_rx,
             secret_tx,
+            started_at_str: crate::subagent::transcript::utc_now_pub(),
+            transcript_dir: handle_transcript_dir,
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -919,6 +1036,8 @@ impl SubAgentManager {
 
     /// Collect the result from a completed sub-agent, removing it from the active set.
     ///
+    /// Writes a final `TranscriptMeta` sidecar with the terminal state and turn count.
+    ///
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if the task ID is unknown,
@@ -942,12 +1061,308 @@ impl SubAgentManager {
 
         handle.grants.revoke_all();
 
-        if let Some(jh) = handle.join_handle.take() {
-            let result = jh.await.map_err(|e| SubAgentError::Spawn(e.to_string()))?;
-            result.map_err(|e| SubAgentError::Spawn(e.to_string()))
+        let result = if let Some(jh) = handle.join_handle.take() {
+            let r = jh.await.map_err(|e| SubAgentError::Spawn(e.to_string()))?;
+            r.map_err(|e| SubAgentError::Spawn(e.to_string()))
         } else {
             Ok(String::new())
+        };
+
+        // Write terminal meta sidecar if transcripts were enabled at spawn time.
+        if let Some(ref dir) = handle.transcript_dir.clone() {
+            let status = handle.status_rx.borrow();
+            let final_status = if result.is_err() {
+                SubAgentState::Failed
+            } else if status.state == SubAgentState::Canceled {
+                SubAgentState::Canceled
+            } else {
+                SubAgentState::Completed
+            };
+            let turns_used = status.turns_used;
+            drop(status);
+
+            let meta = TranscriptMeta {
+                agent_id: task_id.to_owned(),
+                agent_name: handle.def.name.clone(),
+                def_name: handle.def.name.clone(),
+                status: final_status,
+                started_at: handle.started_at_str.clone(),
+                finished_at: Some(crate::subagent::transcript::utc_now_pub()),
+                resumed_from: None,
+                turns_used,
+            };
+            if let Err(e) = TranscriptWriter::write_meta(dir, task_id, &meta) {
+                tracing::warn!(error = %e, task_id, "failed to write final transcript meta");
+            }
         }
+
+        result
+    }
+
+    /// Resume a previously completed (or failed/cancelled) sub-agent session.
+    ///
+    /// Loads the transcript from the original session into memory and spawns a new
+    /// agent loop with that history prepended. The new session gets a fresh UUID.
+    ///
+    /// Returns `(new_task_id, def_name)` on success so the caller can resolve skills by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::StillRunning`] if the agent is still active,
+    /// [`SubAgentError::NotFound`] if no transcript with the given prefix exists,
+    /// [`SubAgentError::AmbiguousId`] if the prefix matches multiple agents,
+    /// [`SubAgentError::Transcript`] on I/O or parse failure,
+    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    pub fn resume(
+        &mut self,
+        id_prefix: &str,
+        task_prompt: &str,
+        provider: AnyProvider,
+        tool_executor: Arc<dyn ErasedToolExecutor>,
+        skills: Option<Vec<String>>,
+        config: &SubAgentConfig,
+    ) -> Result<(String, String), SubAgentError> {
+        let dir = self.effective_transcript_dir(config);
+        // Resolve full original ID first so the StillRunning check is precise
+        // (avoids false positives from very short prefixes matching unrelated active agents).
+        let original_id = TranscriptReader::find_by_prefix(&dir, id_prefix)?;
+
+        // Check if the resolved original agent ID is still active in memory.
+        if self.agents.contains_key(&original_id) {
+            return Err(SubAgentError::StillRunning(original_id));
+        }
+        let meta = TranscriptReader::load_meta(&dir, &original_id)?;
+
+        // Only terminal states can be resumed.
+        match meta.status {
+            SubAgentState::Completed | SubAgentState::Failed | SubAgentState::Canceled => {}
+            other => {
+                return Err(SubAgentError::StillRunning(format!(
+                    "{original_id} (status: {other:?})"
+                )));
+            }
+        }
+
+        let jsonl_path = dir.join(format!("{original_id}.jsonl"));
+        let initial_messages = TranscriptReader::load(&jsonl_path)?;
+
+        // Resolve the definition from the original meta and apply config-level defaults,
+        // identical to spawn() so that config policy is always enforced.
+        let mut def = self
+            .definitions
+            .iter()
+            .find(|d| d.name == meta.def_name)
+            .cloned()
+            .ok_or_else(|| SubAgentError::NotFound(meta.def_name.clone()))?;
+
+        if def.permissions.permission_mode == PermissionMode::Default
+            && let Some(default_mode) = config.default_permission_mode
+        {
+            def.permissions.permission_mode = default_mode;
+        }
+
+        if !config.default_disallowed_tools.is_empty() {
+            let mut merged = def.disallowed_tools.clone();
+            for tool in &config.default_disallowed_tools {
+                if !merged.contains(tool) {
+                    merged.push(tool.clone());
+                }
+            }
+            def.disallowed_tools = merged;
+        }
+
+        if def.permissions.permission_mode == PermissionMode::BypassPermissions
+            && !config.allow_bypass_permissions
+        {
+            return Err(SubAgentError::Invalid(format!(
+                "sub-agent '{}' requests bypass_permissions mode but it is not allowed by config",
+                def.name
+            )));
+        }
+
+        // Check concurrency limit.
+        let active = self
+            .agents
+            .values()
+            .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
+            .count();
+        if active >= self.max_concurrent {
+            return Err(SubAgentError::Spawn(format!(
+                "concurrency limit {} reached",
+                self.max_concurrent
+            )));
+        }
+
+        let new_task_id = Uuid::new_v4().to_string();
+        let cancel = CancellationToken::new();
+        let started_at = Instant::now();
+        let initial_status = SubAgentStatus {
+            state: SubAgentState::Submitted,
+            last_message: None,
+            turns_used: 0,
+            started_at,
+        };
+        let (status_tx, status_rx) = watch::channel(initial_status);
+
+        let permission_mode = def.permissions.permission_mode;
+        let background = def.permissions.background;
+        let max_turns = def.permissions.max_turns;
+        let system_prompt = def.system_prompt.clone();
+        let task_prompt_owned = task_prompt.to_owned();
+        let cancel_clone = cancel.clone();
+        let agent_hooks = def.hooks.clone();
+        let agent_name_clone = def.name.clone();
+
+        let filtered_executor = FilteredToolExecutor::with_disallowed(
+            tool_executor.clone(),
+            def.tools.clone(),
+            def.disallowed_tools.clone(),
+        );
+        let executor: FilteredToolExecutor = if permission_mode == PermissionMode::Plan {
+            let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
+            FilteredToolExecutor::with_disallowed(
+                plan_inner,
+                def.tools.clone(),
+                def.disallowed_tools.clone(),
+            )
+        } else {
+            filtered_executor
+        };
+
+        let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
+
+        // Transcript writer for the new (resumed) session.
+        let transcript_writer = if config.transcript_enabled {
+            if self.transcript_max_files > 0
+                && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
+            {
+                tracing::warn!(error = %e, "transcript sweep failed");
+            }
+            let new_path = dir.join(format!("{new_task_id}.jsonl"));
+            let init_meta = TranscriptMeta {
+                agent_id: new_task_id.clone(),
+                agent_name: def.name.clone(),
+                def_name: def.name.clone(),
+                status: SubAgentState::Submitted,
+                started_at: crate::subagent::transcript::utc_now_pub(),
+                finished_at: None,
+                resumed_from: Some(original_id.clone()),
+                turns_used: 0,
+            };
+            if let Err(e) = TranscriptWriter::write_meta(&dir, &new_task_id, &init_meta) {
+                tracing::warn!(error = %e, "failed to write resumed transcript meta");
+            }
+            match TranscriptWriter::new(&new_path) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create resumed transcript writer");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let new_task_id_for_loop = new_task_id.clone();
+        let join_handle: JoinHandle<anyhow::Result<String>> =
+            tokio::spawn(run_agent_loop(AgentLoopArgs {
+                provider,
+                executor,
+                system_prompt,
+                task_prompt: task_prompt_owned,
+                skills,
+                max_turns,
+                cancel: cancel_clone,
+                status_tx,
+                started_at,
+                secret_request_tx,
+                secret_rx,
+                background,
+                hooks: agent_hooks,
+                task_id: new_task_id_for_loop,
+                agent_name: agent_name_clone,
+                initial_messages,
+                transcript_writer,
+            }));
+
+        let resume_handle_transcript_dir = if config.transcript_enabled {
+            Some(dir.clone())
+        } else {
+            None
+        };
+
+        let handle = SubAgentHandle {
+            id: new_task_id.clone(),
+            def,
+            task_id: new_task_id.clone(),
+            state: SubAgentState::Submitted,
+            join_handle: Some(join_handle),
+            cancel,
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: crate::subagent::transcript::utc_now_pub(),
+            transcript_dir: resume_handle_transcript_dir,
+        };
+
+        self.agents.insert(new_task_id.clone(), handle);
+        tracing::info!(
+            task_id = %new_task_id,
+            original_id = %original_id,
+            "sub-agent resumed"
+        );
+
+        // Cache stop hooks from config if not already cached.
+        if !config.hooks.stop.is_empty() && self.stop_hooks.is_empty() {
+            self.stop_hooks.clone_from(&config.hooks.stop);
+        }
+
+        // Fire SubagentStart lifecycle hooks (fire-and-forget).
+        if !config.hooks.start.is_empty() {
+            let start_hooks = config.hooks.start.clone();
+            let def_name = meta.def_name.clone();
+            let start_env = make_hook_env(&new_task_id, &def_name, "");
+            tokio::spawn(async move {
+                if let Err(e) = fire_hooks(&start_hooks, &start_env).await {
+                    tracing::warn!(error = %e, "SubagentStart hook failed");
+                }
+            });
+        }
+
+        Ok((new_task_id, meta.def_name))
+    }
+
+    /// Resolve the effective transcript directory from config or default.
+    fn effective_transcript_dir(&self, config: &SubAgentConfig) -> PathBuf {
+        if let Some(ref dir) = self.transcript_dir {
+            dir.clone()
+        } else if let Some(ref dir) = config.transcript_dir {
+            dir.clone()
+        } else {
+            PathBuf::from(".zeph/subagents")
+        }
+    }
+
+    /// Look up the definition name for a resumable transcript without spawning.
+    ///
+    /// Used by callers that need to resolve skills before calling `resume()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`TranscriptReader::find_by_prefix`] and
+    /// [`TranscriptReader::load_meta`].
+    pub fn def_name_for_resume(
+        &self,
+        id_prefix: &str,
+        config: &SubAgentConfig,
+    ) -> Result<String, SubAgentError> {
+        let dir = self.effective_transcript_dir(config);
+        let original_id = TranscriptReader::find_by_prefix(&dir, id_prefix)?;
+        let meta = TranscriptReader::load_meta(&dir, &original_id)?;
+        Ok(meta.def_name)
     }
 
     /// Return a snapshot of all active sub-agent statuses.
@@ -1858,6 +2273,297 @@ mod tests {
         mgr.cancel(&task_id).unwrap();
     }
 
+    // ── resume() tests ────────────────────────────────────────────────────────
+
+    /// Write a minimal completed meta file and empty JSONL so resume() has something to load.
+    fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
+        use crate::subagent::transcript::{TranscriptMeta, TranscriptWriter};
+        let meta = TranscriptMeta {
+            agent_id: agent_id.to_owned(),
+            agent_name: def_name.to_owned(),
+            def_name: def_name.to_owned(),
+            status: SubAgentState::Completed,
+            started_at: "2026-01-01T00:00:00Z".to_owned(),
+            finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
+            resumed_from: None,
+            turns_used: 1,
+        };
+        TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
+        // Create the empty JSONL so TranscriptReader::load succeeds.
+        std::fs::write(dir.join(format!("{agent_id}.jsonl")), b"").unwrap();
+    }
+
+    fn make_cfg_with_dir(dir: &std::path::Path) -> SubAgentConfig {
+        let mut cfg = SubAgentConfig::default();
+        cfg.transcript_dir = Some(dir.to_path_buf());
+        cfg
+    }
+
+    #[test]
+    fn resume_not_found_returns_not_found_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let err = mgr
+            .resume(
+                "deadbeef",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::NotFound(_)));
+    }
+
+    #[test]
+    fn resume_ambiguous_id_returns_ambiguous_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_completed_meta(tmp.path(), "aabb0001-0000-0000-0000-000000000000", "bot");
+        write_completed_meta(tmp.path(), "aabb0002-0000-0000-0000-000000000000", "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let err = mgr
+            .resume(
+                "aabb",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::AmbiguousId(_, 2)));
+    }
+
+    #[test]
+    fn resume_still_running_via_active_agents_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "cafebabe-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        // Manually insert a fake active handle so resume() thinks it's still running.
+        let (status_tx, status_rx) = watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: std::time::Instant::now(),
+        });
+        let (_secret_request_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
+        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let fake_def = sample_def();
+        mgr.agents.insert(
+            agent_id.to_owned(),
+            SubAgentHandle {
+                id: agent_id.to_owned(),
+                def: fake_def,
+                task_id: agent_id.to_owned(),
+                state: SubAgentState::Working,
+                join_handle: None,
+                cancel,
+                status_rx,
+                grants: PermissionGrants::default(),
+                pending_secret_rx,
+                secret_tx,
+                started_at_str: "2026-01-01T00:00:00Z".to_owned(),
+                transcript_dir: None,
+            },
+        );
+        drop(status_tx);
+
+        let cfg = make_cfg_with_dir(tmp.path());
+        let err = mgr
+            .resume(
+                agent_id,
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::StillRunning(_)));
+    }
+
+    #[test]
+    fn resume_def_not_found_returns_not_found_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "feedface-0000-0000-0000-000000000000";
+        // Meta points to "unknown-agent" which is not in definitions.
+        write_completed_meta(tmp.path(), agent_id, "unknown-agent");
+
+        let mut mgr = make_manager();
+        // Do NOT push any definition — so def_name "unknown-agent" won't be found.
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let err = mgr
+            .resume(
+                "feedface",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::NotFound(_)));
+    }
+
+    #[test]
+    fn resume_concurrency_limit_reached_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "babe0000-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = SubAgentManager::new(1); // limit of 1
+        mgr.definitions.push(sample_def());
+
+        // Occupy the single slot.
+        let _running_id = do_spawn(&mut mgr, "bot", "occupying slot").unwrap();
+
+        let cfg = make_cfg_with_dir(tmp.path());
+        let err = mgr
+            .resume(
+                "babe0000",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            "expected concurrency limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resume_happy_path_returns_new_task_id() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "deadcode-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let (new_id, def_name) = mgr
+            .resume(
+                "deadcode",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+
+        assert!(!new_id.is_empty(), "new task id must not be empty");
+        assert_ne!(
+            new_id, agent_id,
+            "resumed session must have a fresh task id"
+        );
+        assert_eq!(def_name, "bot");
+        // New agent must be tracked.
+        assert!(mgr.agents.contains_key(&new_id));
+
+        mgr.cancel(&new_id).unwrap();
+    }
+
+    #[test]
+    fn resume_populates_resumed_from_in_meta() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let original_id = "0000abcd-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), original_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let (new_id, _) = mgr
+            .resume(
+                "0000abcd",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+
+        // The new meta sidecar must have resumed_from = original_id.
+        let new_meta =
+            crate::subagent::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
+        assert_eq!(
+            new_meta.resumed_from.as_deref(),
+            Some(original_id),
+            "resumed_from must point to original agent id"
+        );
+
+        mgr.cancel(&new_id).unwrap();
+    }
+
+    #[test]
+    fn def_name_for_resume_returns_def_name() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "aaaabbbb-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mgr = make_manager();
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let name = mgr.def_name_for_resume("aaaabbbb", &cfg).unwrap();
+        assert_eq!(name, "bot");
+    }
+
+    #[test]
+    fn def_name_for_resume_not_found_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = make_manager();
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let err = mgr.def_name_for_resume("notexist", &cfg).unwrap_err();
+        assert!(matches!(err, SubAgentError::NotFound(_)));
+    }
+
     // ── Memory scope tests ────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -2040,11 +2746,11 @@ mod tests {
         assert!(!task_id.is_empty());
         mgr.cancel(&task_id).unwrap();
 
-        // No memory directory should exist.
-        let zeph_dir = tmp.path().join(".zeph");
+        // No agent-memory directory should exist (transcript dirs may be created separately).
+        let mem_dir = tmp.path().join(".zeph").join("agent-memory");
         assert!(
-            !zeph_dir.exists(),
-            "no .zeph directory should be created without memory scope"
+            !mem_dir.exists(),
+            "no agent-memory directory should be created without memory scope"
         );
 
         std::env::set_current_dir(orig_dir).unwrap();

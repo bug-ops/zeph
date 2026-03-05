@@ -1477,6 +1477,94 @@ impl<C: Channel> Agent<C> {
                     Err(e) => Some(format!("Deny failed: {e}")),
                 }
             }
+            AgentCommand::Resume { id, prompt } => {
+                let cfg = self.subagent_config.clone();
+                // Resolve definition name from transcript meta before spawning so we can
+                // look up skills by definition name rather than the UUID prefix (S1 fix).
+                let def_name = {
+                    let mgr = self.subagent_manager.as_ref()?;
+                    match mgr.def_name_for_resume(&id, &cfg) {
+                        Ok(name) => name,
+                        Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+                    }
+                };
+                let skills = self.filtered_skills_for(&def_name);
+                let provider = self.provider.clone();
+                let tool_executor = Arc::clone(&self.tool_executor);
+                let mgr = self.subagent_manager.as_mut()?;
+                let (task_id, _) =
+                    match mgr.resume(&id, &prompt, provider, tool_executor, skills, &cfg) {
+                        Ok(pair) => pair,
+                        Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+                    };
+                let short = task_id[..8.min(task_id.len())].to_owned();
+                let _ = self
+                    .channel
+                    .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
+                    .await;
+                // Poll until the sub-agent reaches a terminal state (same as Spawn).
+                let result = loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    #[allow(clippy::redundant_closure_for_method_calls)]
+                    let pending = self
+                        .subagent_manager
+                        .as_mut()
+                        .and_then(|m| m.try_recv_secret_request());
+                    if let Some((req_task_id, req)) = pending {
+                        let confirm_prompt =
+                            format!("Sub-agent requests secret '{}'. Allow?", req.secret_key);
+                        let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
+                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                            if approved {
+                                let ttl = std::time::Duration::from_secs(300);
+                                let key = req.secret_key.clone();
+                                if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
+                                    let _ = mgr.deliver_secret(&req_task_id, key);
+                                }
+                            } else {
+                                let _ = mgr.deny_secret(&req_task_id);
+                            }
+                        }
+                    }
+
+                    let mgr = self.subagent_manager.as_ref()?;
+                    let statuses = mgr.statuses();
+                    let Some((_, status)) = statuses.iter().find(|(tid, _)| tid == &task_id) else {
+                        break "Sub-agent resume completed (no status available).".to_owned();
+                    };
+                    match status.state {
+                        SubAgentState::Completed => {
+                            let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
+                            break format!("Resumed sub-agent completed: {msg}");
+                        }
+                        SubAgentState::Failed => {
+                            let msg = status
+                                .last_message
+                                .clone()
+                                .unwrap_or_else(|| "unknown error".into());
+                            break format!("Resumed sub-agent failed: {msg}");
+                        }
+                        SubAgentState::Canceled => {
+                            break "Resumed sub-agent was cancelled.".to_owned();
+                        }
+                        _ => {
+                            let _ = self
+                                .channel
+                                .send_status(&format!(
+                                    "resumed sub-agent: turn {}/{}",
+                                    status.turns_used,
+                                    self.subagent_manager
+                                        .as_ref()
+                                        .and_then(|m| m.agents_def(&task_id))
+                                        .map_or(20, |d| d.permissions.max_turns)
+                                ))
+                                .await;
+                        }
+                    }
+                };
+                Some(result)
+            }
         }
     }
 

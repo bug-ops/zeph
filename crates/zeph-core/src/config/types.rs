@@ -108,6 +108,22 @@ pub struct SubAgentConfig {
     /// `stop` hooks run after the agent finishes or is cancelled (fire-and-forget).
     #[serde(default)]
     pub hooks: SubAgentLifecycleHooks,
+    /// Directory where transcript JSONL files and meta sidecars are stored.
+    ///
+    /// Defaults to `.zeph/subagents` relative to the working directory when `None`.
+    #[serde(default)]
+    pub transcript_dir: Option<PathBuf>,
+    /// Enable writing JSONL transcripts for sub-agent sessions.
+    ///
+    /// When `false`, no transcript files are written and `/agent resume` is unavailable.
+    #[serde(default = "default_transcript_enabled")]
+    pub transcript_enabled: bool,
+    /// Maximum number of `.jsonl` transcript files to keep.
+    ///
+    /// When the count exceeds this limit, the oldest files are deleted on each spawn or
+    /// resume. `0` means unlimited (no cleanup performed).
+    #[serde(default = "default_transcript_max_files")]
+    pub transcript_max_files: usize,
 }
 
 impl Default for SubAgentConfig {
@@ -122,6 +138,9 @@ impl Default for SubAgentConfig {
             allow_bypass_permissions: false,
             default_memory_scope: None,
             hooks: SubAgentLifecycleHooks::default(),
+            transcript_dir: None,
+            transcript_enabled: default_transcript_enabled(),
+            transcript_max_files: default_transcript_max_files(),
         }
     }
 }
@@ -138,6 +157,14 @@ pub struct SubAgentLifecycleHooks {
 
 fn default_max_concurrent() -> usize {
     1
+}
+
+fn default_transcript_enabled() -> bool {
+    true
+}
+
+fn default_transcript_max_files() -> usize {
+    50
 }
 
 fn default_max_tool_iterations() -> usize {

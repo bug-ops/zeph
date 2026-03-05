@@ -242,6 +242,8 @@ max_concurrent = 1
 extra_dirs = []
 default_disallowed_tools = []
 allow_bypass_permissions = false
+transcript_enabled = true
+transcript_max_files = 50
 
 [agents.hooks]
 start = []

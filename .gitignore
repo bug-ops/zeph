@@ -5,5 +5,6 @@
 .env
 data/
 .local/
+.zeph/
 docs/book/
 *.log
