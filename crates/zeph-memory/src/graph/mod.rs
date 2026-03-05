@@ -4,5 +4,15 @@
 pub mod store;
 pub mod types;
 
+#[cfg(feature = "graph-memory")]
+pub mod extractor;
+#[cfg(feature = "graph-memory")]
+pub mod resolver;
+
 pub use store::GraphStore;
 pub use types::{Community, Edge, Entity, EntityType, GraphFact};
+
+#[cfg(feature = "graph-memory")]
+pub use extractor::{ExtractedEdge, ExtractedEntity, ExtractionResult, GraphExtractor};
+#[cfg(feature = "graph-memory")]
+pub use resolver::EntityResolver;

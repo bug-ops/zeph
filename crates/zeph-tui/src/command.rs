@@ -43,6 +43,8 @@ pub enum TuiCommand {
     AgentsCreate,
     AgentsEdit,
     AgentsDelete,
+    // Security
+    SecurityEvents,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -177,6 +179,7 @@ pub fn daemon_command_registry() -> &'static [CommandEntry] {
 
 /// Extended command registry: filter/ingest/gateway entries.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn extra_command_registry() -> &'static [CommandEntry] {
     static EXTRA: &[CommandEntry] = &[
         CommandEntry {
@@ -270,6 +273,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::AgentsDelete,
         },
+        CommandEntry {
+            id: "security:events",
+            label: "Show security event history",
+            category: "security",
+            shortcut: None,
+            command: TuiCommand::SecurityEvents,
+        },
     ];
     EXTRA
 }
@@ -345,8 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_thirteen_commands() {
-        assert_eq!(extra_command_registry().len(), 13);
+    fn extra_registry_has_fourteen_commands() {
+        assert_eq!(extra_command_registry().len(), 14);
     }
 
     #[test]
@@ -356,6 +366,7 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "ingest"));
         assert!(all.iter().any(|e| e.id == "gateway:status"));
         assert!(all.iter().any(|e| e.id == "scheduler:list"));
+        assert!(all.iter().any(|e| e.id == "security:events"));
     }
 
     #[test]
@@ -439,5 +450,14 @@ mod tests {
         let help = registry.iter().find(|e| e.id == "app:help").unwrap();
         assert_eq!(quit.shortcut, Some("q"));
         assert_eq!(help.shortcut, Some("?"));
+    }
+
+    #[test]
+    fn filter_security_returns_security_events_entry() {
+        let results = filter_commands("security");
+        assert!(
+            results.iter().any(|e| e.id == "security:events"),
+            "security:events must appear when searching 'security'"
+        );
     }
 }

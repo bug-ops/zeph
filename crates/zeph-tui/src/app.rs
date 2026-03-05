@@ -644,7 +644,11 @@ impl App {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
         widgets::resources::render(&self.metrics, frame, layout.resources);
-        widgets::subagents::render(&self.metrics, frame, layout.subagents);
+        if self.has_recent_security_events() {
+            widgets::security::render(&self.metrics, frame, layout.subagents);
+        } else {
+            widgets::subagents::render(&self.metrics, frame, layout.subagents);
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -962,6 +966,9 @@ impl App {
                 };
                 self.push_system_message(msg);
             }
+            TuiCommand::SecurityEvents => {
+                self.push_system_message(format_security_report(&self.metrics));
+            }
         }
     }
 
@@ -970,6 +977,19 @@ impl App {
         self.messages
             .push(ChatMessage::new(MessageRole::System, content));
         self.scroll_offset = 0;
+    }
+
+    /// Returns true if there are security events within the last 60 seconds.
+    #[must_use]
+    pub fn has_recent_security_events(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.metrics
+            .security_events
+            .back()
+            .is_some_and(|ev| now.saturating_sub(ev.timestamp) <= 60)
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) {
@@ -1306,6 +1326,52 @@ impl App {
 
 fn format_local_time() -> String {
     chrono::Local::now().format("%H:%M").to_string()
+}
+
+fn format_security_report(metrics: &MetricsSnapshot) -> String {
+    use crate::metrics::SecurityEventCategory;
+
+    let n = metrics.security_events.len();
+    if n == 0 {
+        return "Security event history (0 events)\n\nNo events recorded.".to_owned();
+    }
+
+    let mut lines = vec![format!("Security event history ({n} events):")];
+    for ev in &metrics.security_events {
+        #[allow(clippy::cast_possible_wrap)]
+        let ts = chrono::DateTime::from_timestamp(ev.timestamp as i64, 0).map_or_else(
+            || "??:??:??".to_owned(),
+            |dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            },
+        );
+        let cat = match ev.category {
+            SecurityEventCategory::InjectionFlag => "INJECTION_FLAG ",
+            SecurityEventCategory::ExfiltrationBlock => "EXFIL_BLOCK    ",
+            SecurityEventCategory::Quarantine => "QUARANTINE     ",
+            SecurityEventCategory::Truncation => "TRUNCATION     ",
+        };
+        lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
+    }
+    lines.push(String::new());
+    lines.push("Totals:".to_owned());
+    lines.push(format!(
+        "  Sanitizer runs: {}  |  Flags: {}  |  Truncations: {}",
+        metrics.sanitizer_runs, metrics.sanitizer_injection_flags, metrics.sanitizer_truncations,
+    ));
+    lines.push(format!(
+        "  Quarantine: {} ({} failures)",
+        metrics.quarantine_invocations, metrics.quarantine_failures,
+    ));
+    lines.push(format!(
+        "  Exfiltration: {} images  |  {} URLs  |  {} memory",
+        metrics.exfiltration_images_blocked,
+        metrics.exfiltration_tool_urls_flagged,
+        metrics.exfiltration_memory_guards,
+    ));
+    lines.join("\n")
 }
 
 fn is_tool_use_only(content: &str) -> bool {
@@ -2725,6 +2791,66 @@ mod tests {
 
             assert_eq!(app.messages().len(), 1);
             assert!(app.messages()[0].content.contains("no command channel"));
+        }
+
+        #[test]
+        fn execute_security_events_no_events_shows_history_header() {
+            let (mut app, _rx, _tx) = make_app();
+            app.execute_command(TuiCommand::SecurityEvents);
+            assert_eq!(app.messages().len(), 1);
+            assert!(app.messages()[0].content.contains("Security event history"));
+        }
+
+        #[test]
+        fn execute_security_events_with_events_shows_all() {
+            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+
+            let (mut app, _rx, _tx) = make_app();
+            app.metrics.security_events.push_back(SecurityEvent::new(
+                SecurityEventCategory::InjectionFlag,
+                "web_scrape",
+                "Detected pattern: ignore previous",
+            ));
+            app.execute_command(TuiCommand::SecurityEvents);
+            let content = &app.messages()[0].content;
+            assert!(content.contains("web_scrape"));
+            assert!(content.contains("INJECTION_FLAG"));
+        }
+
+        #[test]
+        fn has_recent_security_events_false_when_no_events() {
+            let (app, _rx, _tx) = make_app();
+            assert!(!app.has_recent_security_events());
+        }
+
+        #[test]
+        fn has_recent_security_events_true_when_recent() {
+            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+
+            let (mut app, _rx, _tx) = make_app();
+            // Event with current timestamp is recent
+            app.metrics.security_events.push_back(SecurityEvent::new(
+                SecurityEventCategory::Truncation,
+                "tool",
+                "truncated",
+            ));
+            assert!(app.has_recent_security_events());
+        }
+
+        #[test]
+        fn has_recent_security_events_false_when_event_older_than_60s() {
+            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+
+            let (mut app, _rx, _tx) = make_app();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut ev = SecurityEvent::new(SecurityEventCategory::Truncation, "tool", "old");
+            // Backdate the event by 120 seconds.
+            ev.timestamp = now.saturating_sub(120);
+            app.metrics.security_events.push_back(ev);
+            assert!(!app.has_recent_security_events());
         }
     }
 

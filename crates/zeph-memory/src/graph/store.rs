@@ -240,6 +240,31 @@ impl GraphStore {
         Ok(rows.into_iter().map(edge_from_row).collect())
     }
 
+    /// Get active edges from `source` to `target` in the exact direction (no reverse).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edges_exact(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+    ) -> Result<Vec<Edge>, MemoryError> {
+        let rows: Vec<EdgeRow> = sqlx::query_as(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NULL
+               AND source_entity_id = ?1
+               AND target_entity_id = ?2",
+        )
+        .bind(source_entity_id)
+        .bind(target_entity_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
     /// Count active (non-invalidated) edges.
     ///
     /// # Errors

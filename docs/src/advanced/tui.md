@@ -48,9 +48,9 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 ```
 
 - **Chat panel** (left 70%): bottom-up message feed with full markdown rendering (bold, italic, code blocks, lists, headings), scrollbar with proportional thumb, and scroll indicators (▲/▼). Mouse wheel scrolling supported
-- **Side panels** (right 30%): skills, memory, and resources metrics — hidden on terminals < 80 cols
+- **Side panels** (right 30%): skills, memory, resources, and security metrics — hidden on terminals < 80 cols. The security panel replaces the sub-agents panel when recent events exist (see [Security Indicators](#security-indicators))
 - **Input line**: always visible, supports multiline input via Shift+Enter. Shows `[+N queued]` badge when messages are pending
-- **Status bar**: mode indicator, skill count, token usage, uptime
+- **Status bar**: mode indicator, skill count, token usage, [security indicators](#security-indicators), uptime
 - **Splash screen**: colored block-letter "ZEPH" banner on startup
 
 ## Keybindings
@@ -129,6 +129,7 @@ Available commands:
 | `daemon:disconnect` | Disconnect from daemon | |
 | `daemon:status` | Show connection status | |
 | `router:stats` | Show Thompson router alpha/beta per provider | |
+| `security:events` | Show security event history | |
 
 View commands are read-only. Action commands (`session:new`, `app:quit`, `app:theme`) modify application state. Daemon commands manage the remote connection (see [Daemon Mode](../guides/daemon-mode.md)). The palette supports fuzzy matching on both command IDs and labels.
 
@@ -265,6 +266,7 @@ The TUI dashboard displays real-time metrics collected from the agent loop via `
 | **Skills** | Active/total skill count, matched skill names per query |
 | **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count, tool output prunes |
 | **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name, prompt cache read/write tokens, filter stats |
+| **Security** | Sanitizer runs/flags/truncations, quarantine calls/failures, exfiltration blocks (images/URLs/memory), recent event log. Shown in place of sub-agents panel when events are recent (< 60s) |
 
 Metrics are updated at key instrumentation points in the agent loop:
 - After each LLM call (api_calls, latency, prompt tokens)
@@ -273,6 +275,7 @@ Metrics are updated at key instrumentation points in the agent loop:
 - After message persistence (sqlite message count)
 - After summarization (summaries count)
 - After each tool execution with filter applied (filter metrics)
+- After content sanitization, quarantine, or exfiltration guard activation (security events)
 
 Token counts use a `chars/4` estimation (sufficient for dashboard display).
 
@@ -309,6 +312,78 @@ Each filter reports how confident it is in the result. The `Confidence: F/1 P/0 
 **Example:** `Confidence: F/1 P/0 B/3` means 1 command was filtered with Full confidence (e.g. `cargo test` — 99% savings) and 3 commands fell through to Fallback (e.g. `cargo audit`, `cargo doc`, `cargo tree` — matched the filter pattern but output was passed through as-is).
 
 When multiple filters compose in a [pipeline](tools.md#output-filter-pipeline), the worst confidence across stages is propagated. A `Full` + `Partial` composition yields `Partial`.
+
+## Security Indicators
+
+The TUI surfaces the [untrusted content isolation](../reference/security/untrusted-content-isolation.md) pipeline activity through three integration points: a status bar badge, a dedicated side panel, and a command palette entry.
+
+### Status Bar SEC Badge
+
+When the content isolation pipeline detects injection patterns or blocks exfiltration attempts, a `SEC` badge appears in the status bar:
+
+```text
+[Insert] | Skills: 3 | Tokens: 4.2k | SEC: 2 flags 1 blocked | API: 12 | 5m 30s
+```
+
+| Indicator | Color | Meaning |
+|-----------|-------|---------|
+| `SEC: N flags` | Yellow | Number of injection patterns detected by the sanitizer |
+| `N blocked` | Red | Sum of exfiltration blocks (markdown images stripped + suspicious tool URLs flagged + memory writes guarded) |
+
+The badge is hidden when all security counters are zero.
+
+### Security Side Panel
+
+When security events occur within the last 60 seconds, the bottom-right side panel switches from the sub-agents view to a security view. The panel shows all eight security counters and the five most recent events:
+
+```text
++--------------------+
+| Security           |
+| Sanitizer runs:  14|
+| Inj flags:        3|
+| Truncations:      1|
+| Quarantine calls:  0|
+| Quarantine fails:  0|
+| Exfil images:      1|
+| Exfil URLs:        0|
+| Memory guards:     0|
+| Recent events:     |
+| 14:32 [inj]  web.. |
+|   Detected pattern |
+| 14:33 [exfil] llm..|
+|   1 image blocked  |
++--------------------+
+```
+
+Event categories use color coding:
+
+| Badge | Color | Category |
+|-------|-------|----------|
+| `[inj]` | Yellow | Injection pattern detected |
+| `[exfil]` | Red | Exfiltration attempt blocked |
+| `[quar]` | Cyan | Content quarantined |
+| `[trunc]` | Dimmed | Content truncated to size limit |
+
+Each event line shows the local time (HH:MM), the category badge, and the source (e.g., `web_scrape`, `mcp_response`, `llm_output`). A second line shows the event detail.
+
+When no events have occurred in the last 60 seconds, the panel reverts to the sub-agents view. When all counters are zero and no events exist, the panel displays "No security events."
+
+### Security Event History
+
+Use the `security:events` command palette entry (`Ctrl+P` then type "security") to print the full event history to the chat panel. The output includes every event in the ring buffer (up to 100 entries) with its category, source, timestamp, and detail. This is useful for reviewing events that have scrolled out of the side panel's 5-event window or that occurred more than 60 seconds ago.
+
+### Event Ring Buffer
+
+Security events are stored in a FIFO ring buffer (capacity 100) within `MetricsSnapshot`. When the buffer is full, the oldest event is evicted. Each event records:
+
+| Field | Constraints |
+|-------|-------------|
+| `timestamp` | Unix seconds (UTC) |
+| `category` | `InjectionFlag`, `ExfiltrationBlock`, `Quarantine`, or `Truncation` |
+| `source` | Originating subsystem, capped at 64 characters |
+| `detail` | Human-readable description, capped at 128 characters |
+
+Events are emitted by the sanitizer, quarantine, and exfiltration guard subsystems during the agent loop and flow to the TUI via the metrics watch channel.
 
 ## Deferred Model Warmup
 
