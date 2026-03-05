@@ -332,6 +332,14 @@ extra_dirs = []            # Additional directories to scan for agent definition
 # type = "command"
 # command = "./scripts/cleanup.sh"
 
+[orchestration]
+enabled = false                          # Enable task orchestration (default: false, requires `orchestration` feature)
+max_tasks = 20                           # Max tasks per graph (default: 20)
+max_parallel = 4                         # Max concurrent task executions (default: 4)
+default_failure_strategy = "abort"       # abort, retry, skip, or ask (default: "abort")
+default_max_retries = 3                  # Retries for the "retry" strategy (default: 3)
+task_timeout_secs = 300                  # Per-task timeout in seconds, 0 = no timeout (default: 300)
+
 [gateway]
 enabled = false
 bind = "127.0.0.1"

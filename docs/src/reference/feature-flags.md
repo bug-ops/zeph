@@ -32,6 +32,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring. Combined with `a2a`, enables `--daemon` headless mode ([guide](../guides/daemon-mode.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
 | `stt` | Speech-to-text transcription via OpenAI Whisper API ([guide](../advanced/multimodal.md#audio-input)) |
+| `orchestration` | Task orchestration with DAG-based execution, failure strategies, and SQLite persistence ([guide](../concepts/task-orchestration.md)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `mock` | Mock providers and channels for testing |

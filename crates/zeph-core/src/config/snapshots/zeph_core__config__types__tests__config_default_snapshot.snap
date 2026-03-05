@@ -279,3 +279,11 @@ transcript_max_files = 50
 [agents.hooks]
 start = []
 stop = []
+
+[orchestration]
+enabled = false
+max_tasks = 20
+max_parallel = 4
+default_failure_strategy = "abort"
+default_max_retries = 3
+task_timeout_secs = 300

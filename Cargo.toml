@@ -149,7 +149,7 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "acp-http", "acp-unstable", "daemon", "discord", "gateway", "graph-memory", "index", "mock", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "acp-unstable", "daemon", "discord", "gateway", "graph-memory", "index", "mock", "orchestration", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
@@ -168,6 +168,7 @@ scheduler = ["dep:zeph-scheduler", "dep:cron", "dep:schemars", "dep:chrono", "de
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 mock = ["zeph-llm/mock", "zeph-memory/mock", "zeph-core/mock"]
+orchestration = ["zeph-core/orchestration", "zeph-memory/orchestration"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
 
 [dependencies]

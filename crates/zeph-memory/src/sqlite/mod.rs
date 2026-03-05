@@ -3,6 +3,8 @@
 
 mod acp_sessions;
 pub mod corrections;
+#[cfg(feature = "orchestration")]
+pub mod graph_store;
 mod history;
 mod messages;
 mod skills;

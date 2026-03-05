@@ -59,6 +59,8 @@ pub struct Config {
     pub acp: AcpConfig,
     #[serde(default)]
     pub agents: SubAgentConfig,
+    #[serde(default)]
+    pub orchestration: OrchestrationConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -1723,6 +1725,7 @@ impl Default for Config {
             tui: TuiConfig::default(),
             acp: AcpConfig::default(),
             agents: SubAgentConfig::default(),
+            orchestration: OrchestrationConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
@@ -1813,6 +1816,55 @@ impl Default for GraphConfig {
     }
 }
 
+/// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OrchestrationConfig {
+    /// Enable the orchestration subsystem.
+    pub enabled: bool,
+    /// Maximum number of tasks in a single graph.
+    pub max_tasks: u32,
+    /// Maximum number of tasks that can run in parallel.
+    pub max_parallel: u32,
+    /// Default failure strategy for all tasks unless overridden per-task.
+    pub default_failure_strategy: String,
+    /// Default number of retries for the `retry` failure strategy.
+    pub default_max_retries: u32,
+    /// Timeout in seconds for a single task. `0` means no timeout.
+    pub task_timeout_secs: u64,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_tasks: 20,
+            max_parallel: 4,
+            default_failure_strategy: "abort".to_string(),
+            default_max_retries: 3,
+            task_timeout_secs: 300,
+        }
+    }
+}
+
+#[cfg(feature = "orchestration")]
+impl OrchestrationConfig {
+    /// Parse and validate `default_failure_strategy` as a typed `FailureStrategy`.
+    ///
+    /// Called at orchestration startup to validate the config value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::InvalidGraph` if the string is not one of
+    /// `abort`, `retry`, `skip`, `ask`.
+    pub fn failure_strategy(
+        &self,
+    ) -> Result<crate::orchestration::FailureStrategy, crate::orchestration::OrchestrationError>
+    {
+        self.default_failure_strategy.parse()
+    }
+}
+
 /// Compression strategy for active context compression (#1161).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
@@ -1866,6 +1918,43 @@ mod tests {
         let config = Config::default();
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
         insta::assert_snapshot!(toml_str);
+    }
+
+    #[test]
+    fn orchestration_config_defaults() {
+        let cfg = OrchestrationConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.max_tasks, 20);
+        assert_eq!(cfg.max_parallel, 4);
+        assert_eq!(cfg.default_failure_strategy, "abort");
+        assert_eq!(cfg.default_max_retries, 3);
+    }
+
+    #[test]
+    fn orchestration_config_serde_roundtrip() {
+        let toml_str = "enabled = true\nmax_tasks = 10\ndefault_failure_strategy = \"skip\"\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_str).expect("parse");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_tasks, 10);
+        assert_eq!(cfg.default_failure_strategy, "skip");
+    }
+
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn orchestration_config_failure_strategy_valid() {
+        let cfg = OrchestrationConfig::default(); // "abort"
+        let fs = cfg.failure_strategy().expect("should parse");
+        assert_eq!(fs, crate::orchestration::FailureStrategy::Abort);
+    }
+
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn orchestration_config_failure_strategy_invalid() {
+        let cfg = OrchestrationConfig {
+            default_failure_strategy: "abort_all".to_string(),
+            ..Default::default()
+        };
+        assert!(cfg.failure_strategy().is_err());
     }
 
     #[test]

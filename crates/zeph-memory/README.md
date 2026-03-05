@@ -40,6 +40,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
+| `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
 | `graph` | `GraphStore`, `Entity`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
 
@@ -148,6 +149,7 @@ recall_limit = 10
 | Feature | Description |
 |---------|-------------|
 | `graph-memory` | Knowledge graph with entity-relationship tracking and BFS traversal |
+| `orchestration` | Task graph persistence via `SqliteGraphStore` (used by `zeph-core` orchestration) |
 | `pdf` | PDF document loading via `pdf-extract` |
 | `mock` | In-memory `VectorStore` implementation for testing |
 

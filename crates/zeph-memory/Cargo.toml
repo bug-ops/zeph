@@ -35,6 +35,7 @@ zeph-llm.workspace = true
 default = []
 graph-memory = []
 mock = []
+orchestration = []
 pdf = ["dep:pdf-extract"]
 
 [[bench]]

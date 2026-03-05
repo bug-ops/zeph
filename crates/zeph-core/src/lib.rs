@@ -20,6 +20,9 @@ pub mod project;
 pub mod redact;
 pub mod vault;
 
+#[cfg(feature = "orchestration")]
+pub mod orchestration;
+
 pub mod hash;
 pub mod http;
 pub mod memory_tools;

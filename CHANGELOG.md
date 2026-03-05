@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add task orchestration core types (`TaskGraph`, `TaskNode`, `TaskId`, `GraphId`, `TaskStatus`, `GraphStatus`, `FailureStrategy`, `TaskResult`), DAG algorithms (`validate`, `toposort`, `ready_tasks`, `propagate_failure`), `OrchestrationConfig`, `OrchestrationError`, and SQLite persistence via `RawGraphStore`/`GraphPersistence` (Phase 1, #1236)
+- Add `orchestration` feature flag in root, `zeph-core`, and `zeph-memory` crates (included in `full`) (#1236)
+- Add `[orchestration]` TOML config section: `enabled`, `max_tasks`, `max_parallel`, `default_failure_strategy`, `default_max_retries`, `task_timeout_secs` (#1236)
+- Add migration `022_task_graphs.sql` with JSON blob persistence for task graphs (#1236)
 - Add graph memory schema with SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`) and `messages.graph_processed` flag (migration 021) (#1224)
 - Add `GraphStore` CRUD with 18 methods: entity/edge/community upsert, BFS traversal with cycle-safe iterative algorithm, metadata persistence (#1224)
 - Add `EntityType` enum (8 variants), `Entity`, `Edge`, `Community`, `GraphFact` types in `zeph-memory::graph` module (#1224)
