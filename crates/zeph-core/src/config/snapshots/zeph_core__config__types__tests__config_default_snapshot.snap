@@ -107,6 +107,18 @@ model = ""
 [memory.routing]
 strategy = "heuristic"
 
+[memory.graph]
+enabled = false
+extract_model = ""
+max_entities_per_message = 10
+max_edges_per_message = 15
+community_refresh_interval = 100
+entity_similarity_threshold = 0.85
+extraction_timeout_secs = 15
+use_embedding_resolution = false
+max_hops = 2
+recall_limit = 10
+
 [tools]
 enabled = true
 summarize_output = true

@@ -30,6 +30,9 @@ pub enum MemoryError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("graph store error: {0}")]
+    GraphStore(String),
+
     #[error("{0}")]
     Other(String),
 }

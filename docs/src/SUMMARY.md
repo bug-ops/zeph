@@ -13,6 +13,7 @@
 
 - [Skills](concepts/skills.md)
 - [Memory & Context](concepts/memory.md)
+- [Graph Memory](concepts/graph-memory.md)
 - [LLM Providers](concepts/providers.md)
 - [Tools](concepts/tools.md)
 - [Instruction Files](concepts/instruction-files.md)

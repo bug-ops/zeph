@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Add graph memory schema with SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`) and `messages.graph_processed` flag (migration 021) (#1224)
+- Add `GraphStore` CRUD with 18 methods: entity/edge/community upsert, BFS traversal with cycle-safe iterative algorithm, metadata persistence (#1224)
+- Add `EntityType` enum (8 variants), `Entity`, `Edge`, `Community`, `GraphFact` types in `zeph-memory::graph` module (#1224)
+- Add `GraphConfig` to `[memory.graph]` TOML section: `enabled`, `extract_model`, `max_hops`, `recall_limit`, and 7 more tuning knobs (#1224)
+- Add `graph-memory` feature flag in root, `zeph-core`, and `zeph-memory` crates (included in `full`) (#1224)
+
 ### Changed
 
 - Arc-wrap `EmbeddingStore` in `SemanticMemory` for shared access in future background tasks (#1223)

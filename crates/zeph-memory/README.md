@@ -40,6 +40,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
+| `graph` | `GraphStore`, `Entity`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
@@ -121,10 +122,32 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 > [!NOTE]
 > Event cascade delete is handled at the SQL level: deleting a session via `delete_acp_session` removes all associated events.
 
+## Graph memory
+
+When the `graph-memory` feature is enabled, the `graph` module provides SQLite-backed entity-relationship tracking:
+
+- **Entities** — named nodes with 8 types (person, tool, concept, project, language, file, config, organization)
+- **Edges** — directed relationships with bi-temporal timestamps (`valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion)
+- **Communities** — groups of related entities with LLM-generated summaries
+- **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
+- **GraphFact** — retrieval-side type with composite scoring for context injection
+
+`GraphStore` provides 18 CRUD methods over four SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migration 021 and is always present regardless of feature flag.
+
+Configure via `[memory.graph]` in `config.toml`:
+
+```toml
+[memory.graph]
+enabled = true
+max_hops = 2
+recall_limit = 10
+```
+
 ## Features
 
 | Feature | Description |
 |---------|-------------|
+| `graph-memory` | Knowledge graph with entity-relationship tracking and BFS traversal |
 | `pdf` | PDF document loading via `pdf-extract` |
 | `mock` | In-memory `VectorStore` implementation for testing |
 
