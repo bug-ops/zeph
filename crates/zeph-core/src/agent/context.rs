@@ -1598,9 +1598,25 @@ impl<C: Channel> Agent<C> {
                 self.update_metrics(|m| {
                     m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
                 });
+                let detail = sanitized
+                    .injection_flags
+                    .first()
+                    .map_or_else(String::new, |f| {
+                        format!("Detected pattern: {}", f.pattern_name)
+                    });
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::InjectionFlag,
+                    "code_rag",
+                    detail,
+                );
             }
             if sanitized.was_truncated {
                 self.update_metrics(|m| m.sanitizer_truncations += 1);
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::Truncation,
+                    "code_rag",
+                    "Content truncated to max_content_size",
+                );
             }
             self.inject_code_context(&sanitized.body);
         }
@@ -1640,9 +1656,25 @@ impl<C: Channel> Agent<C> {
             self.update_metrics(|m| {
                 m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
             });
+            let detail = sanitized
+                .injection_flags
+                .first()
+                .map_or_else(String::new, |f| {
+                    format!("Detected pattern: {}", f.pattern_name)
+                });
+            self.push_security_event(
+                crate::metrics::SecurityEventCategory::InjectionFlag,
+                "memory_retrieval",
+                detail,
+            );
         }
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
+            self.push_security_event(
+                crate::metrics::SecurityEventCategory::Truncation,
+                "memory_retrieval",
+                "Content truncated to max_content_size",
+            );
         }
 
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
@@ -1653,6 +1685,11 @@ impl<C: Channel> Agent<C> {
             match qs.extract_facts(&sanitized, &self.sanitizer).await {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
+                    self.push_security_event(
+                        crate::metrics::SecurityEventCategory::Quarantine,
+                        "memory_retrieval",
+                        "Content quarantined, facts extracted",
+                    );
                     let escaped = crate::sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
                     msg.content = crate::sanitizer::ContentSanitizer::apply_spotlight(
                         &escaped,
@@ -1667,6 +1704,11 @@ impl<C: Channel> Agent<C> {
                         "quarantine failed for memory retrieval, using original sanitized content"
                     );
                     self.update_metrics(|m| m.quarantine_failures += 1);
+                    self.push_security_event(
+                        crate::metrics::SecurityEventCategory::Quarantine,
+                        "memory_retrieval",
+                        format!("Quarantine failed: {e}"),
+                    );
                 }
             }
         }

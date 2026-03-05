@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add TUI security integration (Phase 5, #1195): security indicator in status bar (yellow "SEC: N flags", red "N blocked"), security side panel widget with aggregate metrics and recent events, `security:events` command palette entry for full event history (#1195)
+- Add `SecurityEvent` and `SecurityEventCategory` types in `zeph-core::metrics` with ring buffer (VecDeque, cap 100) in `MetricsSnapshot` for security event transport via existing watch channel (#1195)
+- Add `SecurityEvent` emission at Agent call sites (context.rs, tool_execution.rs, persistence.rs) for injection flags, truncations, quarantine successes/failures, exfiltration blocks, and memory write guards (#1195)
+- Add time-based Security/Subagents panel toggle (60s recency window) to avoid permanently hiding subagent visibility after a single security event (#1195)
+- Add UTF-8-safe truncation for `SecurityEvent` detail (128 chars) and source (64 chars) fields with ASCII control character stripping (#1195)
+
 - Add graph memory schema with SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`) and `messages.graph_processed` flag (migration 021) (#1224)
 - Add `GraphStore` CRUD with 18 methods: entity/edge/community upsert, BFS traversal with cycle-safe iterative algorithm, metadata persistence (#1224)
 - Add `EntityType` enum (8 variants), `Entity`, `Edge`, `Community`, `GraphFact` types in `zeph-memory::graph` module (#1224)

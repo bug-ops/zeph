@@ -10,6 +10,7 @@ pub mod help;
 pub mod input;
 pub mod memory;
 pub mod resources;
+pub mod security;
 pub mod skills;
 pub mod splash;
 pub mod status;

@@ -95,6 +95,11 @@ impl<C: Channel> Agent<C> {
                 "exfiltration guard: skipping Qdrant embedding for flagged content"
             );
             self.update_metrics(|m| m.exfiltration_memory_guards += 1);
+            self.push_security_event(
+                crate::metrics::SecurityEventCategory::ExfiltrationBlock,
+                "memory_write",
+                "Qdrant embedding skipped: flagged content",
+            );
         }
 
         let skip_embedding = guard_event.is_some();

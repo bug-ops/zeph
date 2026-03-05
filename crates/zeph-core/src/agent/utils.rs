@@ -5,7 +5,7 @@ use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 
 use super::{Agent, CODE_CONTEXT_PREFIX};
 use crate::channel::Channel;
-use crate::metrics::MetricsSnapshot;
+use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent, SecurityEventCategory};
 
 impl<C: Channel> Agent<C> {
     /// Perform a real health check on the vector store and update metrics.
@@ -27,6 +27,25 @@ impl<C: Channel> Agent<C> {
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 f(m);
+            });
+        }
+    }
+
+    pub(super) fn push_security_event(
+        &self,
+        category: SecurityEventCategory,
+        source: &str,
+        detail: impl Into<String>,
+    ) {
+        if let Some(ref tx) = self.metrics_tx {
+            let event = SecurityEvent::new(category, source, detail);
+            let elapsed = self.start_time.elapsed().as_secs();
+            tx.send_modify(|m| {
+                m.uptime_seconds = elapsed;
+                if m.security_events.len() >= SECURITY_EVENT_CAP {
+                    m.security_events.pop_front();
+                }
+                m.security_events.push_back(event);
             });
         }
     }

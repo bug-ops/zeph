@@ -3,6 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -49,15 +50,46 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         String::new()
     };
 
-    let text = format!(
-        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment} | API: {api} | {uptime}{cancel_hint}",
+    let main_text = format!(
+        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),
-        api = metrics.api_calls,
     );
 
-    let line = Line::from(Span::styled(text, theme.status_bar));
+    let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
+
+    let injection_flags = metrics.sanitizer_injection_flags;
+    let exfil_total = metrics.exfiltration_images_blocked
+        + metrics.exfiltration_tool_urls_flagged
+        + metrics.exfiltration_memory_guards;
+
+    if injection_flags > 0 || exfil_total > 0 {
+        spans.push(Span::styled(" | ", theme.status_bar));
+        if injection_flags > 0 {
+            spans.push(Span::styled(
+                format!("SEC: {injection_flags} flags"),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        if exfil_total > 0 {
+            if injection_flags > 0 {
+                spans.push(Span::styled(" ", theme.status_bar));
+            }
+            spans.push(Span::styled(
+                format!("{exfil_total} blocked"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
+
+    let suffix = format!(
+        " | API: {api} | {uptime}{cancel_hint}",
+        api = metrics.api_calls,
+    );
+    spans.push(Span::styled(suffix, theme.status_bar));
+
+    let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(theme.status_bar);
     frame.render_widget(paragraph, area);
 }
@@ -137,5 +169,73 @@ mod tests {
             super::render(&app, &metrics, frame, area);
         });
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_shows_sec_flags_when_injection_flags_nonzero() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let mut metrics = MetricsSnapshot::default();
+        metrics.sanitizer_injection_flags = 2;
+
+        let output = render_to_string(120, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+        assert!(
+            output.contains("SEC: 2 flags"),
+            "expected SEC indicator with flag count"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_blocked_when_exfiltration_nonzero() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let mut metrics = MetricsSnapshot::default();
+        metrics.exfiltration_images_blocked = 1;
+
+        let output = render_to_string(120, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+        assert!(
+            output.contains("1 blocked"),
+            "expected blocked count in status bar"
+        );
+    }
+
+    #[test]
+    fn status_bar_omits_sec_when_all_zero() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let metrics = MetricsSnapshot::default();
+
+        let output = render_to_string(120, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+        assert!(
+            !output.contains("SEC:"),
+            "SEC indicator must be hidden when all counters are zero"
+        );
     }
 }

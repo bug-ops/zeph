@@ -1,7 +1,79 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::VecDeque;
+
 use tokio::sync::watch;
+
+/// Category of a security event for TUI display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityEventCategory {
+    InjectionFlag,
+    ExfiltrationBlock,
+    Quarantine,
+    Truncation,
+}
+
+impl SecurityEventCategory {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InjectionFlag => "injection",
+            Self::ExfiltrationBlock => "exfil",
+            Self::Quarantine => "quarantine",
+            Self::Truncation => "truncation",
+        }
+    }
+}
+
+/// A single security event record for TUI display.
+#[derive(Debug, Clone)]
+pub struct SecurityEvent {
+    /// Unix timestamp (seconds since epoch).
+    pub timestamp: u64,
+    pub category: SecurityEventCategory,
+    /// Source that triggered the event (e.g., `web_scrape`, `mcp_response`).
+    pub source: String,
+    /// Short description, capped at 128 chars.
+    pub detail: String,
+}
+
+impl SecurityEvent {
+    #[must_use]
+    pub fn new(
+        category: SecurityEventCategory,
+        source: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        // IMP-1: cap source at 64 chars and strip ASCII control chars.
+        let source: String = source
+            .into()
+            .chars()
+            .filter(|c| !c.is_ascii_control())
+            .take(64)
+            .collect();
+        // CR-1: UTF-8 safe truncation using floor_char_boundary (stable since Rust 1.82).
+        let detail = detail.into();
+        let detail = if detail.len() > 128 {
+            let end = detail.floor_char_boundary(127);
+            format!("{}…", &detail[..end])
+        } else {
+            detail
+        };
+        Self {
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            category,
+            source,
+            detail,
+        }
+    }
+}
+
+/// Ring buffer capacity for security events.
+pub const SECURITY_EVENT_CAP: usize = 100;
 
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.
 #[derive(Debug, Clone, Default)]
@@ -79,6 +151,8 @@ pub struct MetricsSnapshot {
     pub scheduled_tasks: Vec<[String; 4]>,
     /// Thompson Sampling distribution snapshots: `(provider, alpha, beta)`.
     pub router_thompson_stats: Vec<(String, f64, f64)>,
+    /// Ring buffer of recent security events (cap 100, FIFO eviction).
+    pub security_events: VecDeque<SecurityEvent>,
 }
 
 pub struct MetricsCollector {
@@ -196,5 +270,85 @@ mod tests {
         collector.update(|m| m.cancellations += 1);
         collector.update(|m| m.cancellations += 1);
         assert_eq!(rx.borrow().cancellations, 2);
+    }
+
+    #[test]
+    fn security_event_detail_exact_128_not_truncated() {
+        let s = "a".repeat(128);
+        let ev = SecurityEvent::new(SecurityEventCategory::InjectionFlag, "src", s.clone());
+        assert_eq!(ev.detail, s, "128-char string must not be truncated");
+    }
+
+    #[test]
+    fn security_event_detail_129_is_truncated() {
+        let s = "a".repeat(129);
+        let ev = SecurityEvent::new(SecurityEventCategory::InjectionFlag, "src", s);
+        assert!(
+            ev.detail.ends_with('…'),
+            "129-char string must end with ellipsis"
+        );
+        assert!(
+            ev.detail.len() <= 130,
+            "truncated detail must be at most 130 bytes"
+        );
+    }
+
+    #[test]
+    fn security_event_detail_multibyte_utf8_no_panic() {
+        // Each '中' is 3 bytes. 43 chars = 129 bytes — triggers truncation at a multi-byte boundary.
+        let s = "中".repeat(43);
+        let ev = SecurityEvent::new(SecurityEventCategory::InjectionFlag, "src", s);
+        assert!(ev.detail.ends_with('…'));
+    }
+
+    #[test]
+    fn security_event_source_capped_at_64_chars() {
+        let long_source = "x".repeat(200);
+        let ev = SecurityEvent::new(SecurityEventCategory::InjectionFlag, long_source, "detail");
+        assert_eq!(ev.source.len(), 64);
+    }
+
+    #[test]
+    fn security_event_source_strips_control_chars() {
+        let source = "tool\x00name\x1b[31m";
+        let ev = SecurityEvent::new(SecurityEventCategory::InjectionFlag, source, "detail");
+        assert!(!ev.source.contains('\x00'));
+        assert!(!ev.source.contains('\x1b'));
+    }
+
+    #[test]
+    fn security_event_category_as_str() {
+        assert_eq!(SecurityEventCategory::InjectionFlag.as_str(), "injection");
+        assert_eq!(SecurityEventCategory::ExfiltrationBlock.as_str(), "exfil");
+        assert_eq!(SecurityEventCategory::Quarantine.as_str(), "quarantine");
+        assert_eq!(SecurityEventCategory::Truncation.as_str(), "truncation");
+    }
+
+    #[test]
+    fn ring_buffer_respects_cap_via_update() {
+        let (collector, rx) = MetricsCollector::new();
+        for i in 0..110u64 {
+            let event = SecurityEvent::new(
+                SecurityEventCategory::InjectionFlag,
+                "src",
+                format!("event {i}"),
+            );
+            collector.update(|m| {
+                if m.security_events.len() >= SECURITY_EVENT_CAP {
+                    m.security_events.pop_front();
+                }
+                m.security_events.push_back(event);
+            });
+        }
+        let snap = rx.borrow();
+        assert_eq!(snap.security_events.len(), SECURITY_EVENT_CAP);
+        // FIFO: earliest events evicted, last one present
+        assert!(snap.security_events.back().unwrap().detail.contains("109"));
+    }
+
+    #[test]
+    fn security_events_empty_by_default() {
+        let m = MetricsSnapshot::default();
+        assert!(m.security_events.is_empty());
     }
 }
