@@ -156,7 +156,7 @@ fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> Strin
 
 pub struct SemanticMemory {
     sqlite: SqliteStore,
-    qdrant: Option<EmbeddingStore>,
+    qdrant: Option<Arc<EmbeddingStore>>,
     provider: AnyProvider,
     embedding_model: String,
     vector_weight: f64,
@@ -228,7 +228,7 @@ impl SemanticMemory {
         let pool = sqlite.pool().clone();
 
         let qdrant = match EmbeddingStore::new(qdrant_url, pool) {
-            Ok(store) => Some(store),
+            Ok(store) => Some(Arc::new(store)),
             Err(e) => {
                 tracing::warn!("Qdrant unavailable, semantic search disabled: {e:#}");
                 None
@@ -273,7 +273,7 @@ impl SemanticMemory {
     #[must_use]
     pub fn from_parts(
         sqlite: SqliteStore,
-        qdrant: Option<EmbeddingStore>,
+        qdrant: Option<Arc<EmbeddingStore>>,
         provider: AnyProvider,
         embedding_model: impl Into<String>,
         vector_weight: f64,
@@ -337,7 +337,7 @@ impl SemanticMemory {
 
         Ok(Self {
             sqlite,
-            qdrant: Some(store),
+            qdrant: Some(Arc::new(store)),
             provider,
             embedding_model: embedding_model.into(),
             vector_weight,
@@ -1753,7 +1753,9 @@ mod tests {
 
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
         let pool = sqlite.pool().clone();
-        let qdrant = Some(crate::embedding_store::EmbeddingStore::new_sqlite(pool));
+        let qdrant = Some(Arc::new(
+            crate::embedding_store::EmbeddingStore::new_sqlite(pool),
+        ));
 
         let memory = SemanticMemory {
             sqlite,

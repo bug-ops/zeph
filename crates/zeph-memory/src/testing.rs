@@ -40,10 +40,10 @@ pub async fn mock_semantic_memory() -> Result<Arc<SemanticMemory>, MemoryError> 
     let pool = sqlite.pool().clone();
 
     // InMemoryVectorStore satisfies the VectorStore trait without Qdrant.
-    let qdrant = Some(EmbeddingStore::with_store(
+    let qdrant = Some(Arc::new(EmbeddingStore::with_store(
         Box::new(InMemoryVectorStore::new()),
         pool,
-    ));
+    )));
 
     Ok(Arc::new(SemanticMemory::from_parts(
         sqlite,

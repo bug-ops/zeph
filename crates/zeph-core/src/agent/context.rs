@@ -3,8 +3,11 @@
 
 use std::borrow::Cow;
 use std::fmt::Write;
+use std::future::Future;
+use std::pin::Pin;
 
 use futures::StreamExt as _;
+use futures::stream::FuturesUnordered;
 
 use zeph_llm::provider::{MessageMetadata, MessagePart};
 use zeph_memory::TokenCounter;
@@ -87,6 +90,20 @@ fn cap_summary(s: String, max_chars: usize) -> String {
         }
         None => s,
     }
+}
+
+/// Tagged output of each concurrent context-fetch future.
+///
+/// Using an enum instead of a tuple allows individual sources to be added or
+/// removed (including cfg-gated ones) without rewriting the join combinator.
+enum ContextSlot {
+    Summaries(Option<Message>),
+    CrossSession(Option<Message>),
+    SemanticRecall(Option<Message>),
+    DocumentRag(Option<Message>),
+    Corrections(Option<Message>),
+    #[cfg(feature = "index")]
+    CodeContext(Option<String>),
 }
 
 impl<C: Channel> Agent<C> {
@@ -1410,6 +1427,8 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    // FuturesUnordered is chosen for extensibility (graph-memory, future sources) rather
+    // than performance. The overhead of ~7 heap allocations is negligible vs. network I/O.
     #[allow(clippy::too_many_lines)]
     pub(super) async fn prepare_context(
         &mut self,
@@ -1451,66 +1470,90 @@ impl<C: Channel> Agent<C> {
                 )
             });
 
-        // Fetch all context sources concurrently
-        let tc = self.token_counter.clone();
-        let router = self.context_manager.build_router();
-        #[cfg(not(feature = "index"))]
-        let (summaries_msg, cross_session_msg, recall_msg, doc_rag_msg, corrections_msg) = {
-            let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
-            let result = tokio::try_join!(
-                Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
-                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
-                Self::fetch_semantic_recall(
-                    &self.memory_state,
-                    &query,
-                    alloc.semantic_recall,
-                    &tc,
-                    Some(&router),
-                ),
-                Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
-                Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
-            );
-            match result {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = self.channel.send_status("").await;
-                    return Err(e);
-                }
-            }
-        };
-
+        // Fetch all context sources concurrently via FuturesUnordered.
+        // All immutable field borrows are scoped to the block below, so they are released
+        // before mutable self access (insert, trim, recompute) below.
+        let mut summaries_msg: Option<Message> = None;
+        let mut cross_session_msg: Option<Message> = None;
+        let mut recall_msg: Option<Message> = None;
+        let mut doc_rag_msg: Option<Message> = None;
+        let mut corrections_msg: Option<Message> = None;
         #[cfg(feature = "index")]
-        let (
-            summaries_msg,
-            cross_session_msg,
-            recall_msg,
-            doc_rag_msg,
-            code_rag_text,
-            corrections_msg,
-        ) = {
+        let mut code_rag_text: Option<String> = None;
+
+        {
+            type CtxFuture<'a> = Pin<
+                Box<dyn Future<Output = Result<ContextSlot, super::error::AgentError>> + Send + 'a>,
+            >;
+
+            let tc = self.token_counter.clone();
+            let router = self.context_manager.build_router();
+            let memory_state = &self.memory_state;
+            #[cfg(feature = "index")]
+            let index = &self.index;
+
             let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
-            let result = tokio::try_join!(
-                Self::fetch_summaries(&self.memory_state, alloc.summaries, &tc),
-                Self::fetch_cross_session(&self.memory_state, &query, alloc.cross_session, &tc),
+
+            let mut fetchers: FuturesUnordered<CtxFuture<'_>> = FuturesUnordered::new();
+
+            fetchers.push(Box::pin(async {
+                Self::fetch_summaries(memory_state, alloc.summaries, &tc)
+                    .await
+                    .map(ContextSlot::Summaries)
+            }));
+            fetchers.push(Box::pin(async {
+                Self::fetch_cross_session(memory_state, &query, alloc.cross_session, &tc)
+                    .await
+                    .map(ContextSlot::CrossSession)
+            }));
+            fetchers.push(Box::pin(async {
                 Self::fetch_semantic_recall(
-                    &self.memory_state,
+                    memory_state,
                     &query,
                     alloc.semantic_recall,
                     &tc,
                     Some(&router),
-                ),
-                Self::fetch_document_rag(&self.memory_state, &query, alloc.semantic_recall, &tc),
-                Self::fetch_code_rag(&self.index, &query, alloc.code_context),
-                Self::fetch_corrections(&self.memory_state, &query, recall_limit, min_sim),
-            );
-            match result {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = self.channel.send_status("").await;
-                    return Err(e);
+                )
+                .await
+                .map(ContextSlot::SemanticRecall)
+            }));
+            fetchers.push(Box::pin(async {
+                Self::fetch_document_rag(memory_state, &query, alloc.semantic_recall, &tc)
+                    .await
+                    .map(ContextSlot::DocumentRag)
+            }));
+            fetchers.push(Box::pin(async {
+                Self::fetch_corrections(memory_state, &query, recall_limit, min_sim)
+                    .await
+                    .map(ContextSlot::Corrections)
+            }));
+            #[cfg(feature = "index")]
+            fetchers.push(Box::pin(async {
+                Self::fetch_code_rag(index, &query, alloc.code_context)
+                    .await
+                    .map(ContextSlot::CodeContext)
+            }));
+
+            while let Some(result) = fetchers.next().await {
+                match result {
+                    Ok(slot) => match slot {
+                        ContextSlot::Summaries(msg) => summaries_msg = msg,
+                        ContextSlot::CrossSession(msg) => cross_session_msg = msg,
+                        ContextSlot::SemanticRecall(msg) => recall_msg = msg,
+                        ContextSlot::DocumentRag(msg) => doc_rag_msg = msg,
+                        ContextSlot::Corrections(msg) => corrections_msg = msg,
+                        #[cfg(feature = "index")]
+                        ContextSlot::CodeContext(text) => code_rag_text = text,
+                    },
+                    Err(e) => {
+                        // Drop fetchers (releases immutable borrows) before &mut self below
+                        drop(fetchers);
+                        let _ = self.channel.send_status("").await;
+                        return Err(e);
+                    }
                 }
             }
-        };
+        }
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).

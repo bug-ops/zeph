@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Arc-wrap `EmbeddingStore` in `SemanticMemory` for shared access in future background tasks (#1223)
+- Replace dual cfg-gated `try_join!` blocks in `prepare_context` with `FuturesUnordered` + `ContextSlot` enum for extensible concurrent context fetching (#1223)
+
 ### Security
 
 - Add `ContentSanitizer` pipeline in `zeph-core` that wraps untrusted content (tool results, web scrape, MCP responses, A2A messages, memory retrieval) in spotlighting XML delimiters before it enters the LLM message history, defending against indirect prompt injection (#1196, #1197, #1198, #1199)
