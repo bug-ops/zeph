@@ -202,6 +202,11 @@ sources = [
 ]
 model = "claude"
 
+[security.exfiltration_guard]
+block_markdown_images = true
+validate_tool_urls = true
+guard_memory_writes = true
+
 [timeouts]
 llm_seconds = 120
 llm_request_timeout_secs = 600

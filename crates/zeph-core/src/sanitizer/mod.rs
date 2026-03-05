@@ -9,6 +9,7 @@
 //! and wraps content in spotlighting delimiters that signal to the LLM that the
 //! enclosed text is data to analyze, not instructions to follow.
 
+pub mod exfiltration;
 pub mod quarantine;
 
 use std::sync::LazyLock;

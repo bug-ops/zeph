@@ -39,6 +39,9 @@ pub use channel::{
 };
 pub use config::{Config, ConfigError};
 pub use hash::content_hash;
+pub use sanitizer::exfiltration::{
+    ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,
+};
 pub use sanitizer::{
     ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, InjectionFlag,
     QuarantineConfig, SanitizedContent, TrustLevel,

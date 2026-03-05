@@ -196,6 +196,11 @@ pub struct Agent<C: Channel> {
     pub(super) sanitizer: ContentSanitizer,
     /// Optional quarantine summarizer for routing high-risk content through an isolated LLM.
     pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
+    /// Guards LLM output and tool calls against data exfiltration.
+    pub(super) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
+    /// URLs extracted from untrusted tool outputs that had injection flags.
+    /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
+    pub(super) flagged_urls: std::collections::HashSet<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -349,6 +354,10 @@ impl<C: Channel> Agent<C> {
             instruction_reload_state: None,
             sanitizer: ContentSanitizer::new(&crate::sanitizer::ContentIsolationConfig::default()),
             quarantine_summarizer: None,
+            exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard::new(
+                crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
+            ),
+            flagged_urls: std::collections::HashSet::new(),
         }
     }
 
@@ -1082,7 +1091,7 @@ impl<C: Channel> Agent<C> {
             }
         };
         self.push_message(user_msg);
-        self.persist_message(Role::User, &text).await;
+        self.persist_message(Role::User, &text, false).await;
 
         if let Err(e) = self.process_response().await {
             tracing::error!("Response processing failed: {e:#}");

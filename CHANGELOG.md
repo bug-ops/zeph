@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Add `ExfiltrationGuard` in `zeph-core::sanitizer::exfiltration` (Phase 4, #1195): three independently toggleable guards under `[security.exfiltration_guard]` — `block_markdown_images` strips external-URL markdown images from LLM output before channel send and persistence (inline `![alt](url)` and reference-style `![alt][ref]` with percent-decode); `validate_tool_urls` cross-references tool call arguments (JSON-parsed for unescaping) against URLs flagged in untrusted content, emitting warnings (flag-only, no blocking); `guard_memory_writes` skips Qdrant embedding for messages with injection flags to prevent semantic-search poisoning while preserving SQLite history
+- Add `exfiltration_images_blocked`, `exfiltration_tool_urls_flagged`, `exfiltration_memory_guards` counters to `MetricsSnapshot`
+- Apply exfiltration output scan to native tool-use text path, ToolUse text field, legacy non-streaming path, accumulated streaming response, and response cache hits
+- Add `ExfiltrationGuardConfig` to `SecurityConfig`; all three guards default to enabled
+- Clear `flagged_urls` per-turn (at start of `process_response`) to prevent false-positives from previous turns
+- Pass `has_injection_flags` explicitly to `persist_message` parameter instead of mutable agent state to avoid stale-flag bugs (critic finding M2)
+
 - Add `ContentSanitizer` pipeline in `zeph-core` that wraps untrusted content (tool results, web scrape, MCP responses, A2A messages, memory retrieval) in spotlighting XML delimiters before it enters the LLM message history, defending against indirect prompt injection (#1196, #1197, #1198, #1199)
 - Add 17 compiled injection detection patterns covering common prompt injection techniques; detected patterns are flagged (not removed) and trigger a `[WARNING]` addendum in the spotlighting wrapper (#1197)
 - Apply sanitizer to both `Ok(Some(output))` and `ConfirmationRequired` branches of `handle_tool_result`, and to all memory retrieval messages in `prepare_context` (recall, cross-session, corrections, document RAG, summaries) (#1196)

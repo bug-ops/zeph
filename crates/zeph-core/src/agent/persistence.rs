@@ -59,7 +59,17 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    pub(crate) async fn persist_message(&mut self, role: Role, content: &str) {
+    /// Persist a message to memory.
+    ///
+    /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
+    /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
+    /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
+    pub(crate) async fn persist_message(
+        &mut self,
+        role: Role,
+        content: &str,
+        has_injection_flags: bool,
+    ) {
         let (Some(memory), Some(cid)) =
             (&self.memory_state.memory, self.memory_state.conversation_id)
         else {
@@ -73,12 +83,32 @@ impl<C: Channel> Agent<C> {
             .and_then(|m| serde_json::to_string(&m.parts).ok())
             .unwrap_or_else(|| "[]".to_string());
 
-        let should_embed = match role {
-            Role::Assistant => {
-                self.memory_state.autosave_assistant
-                    && content.len() >= self.memory_state.autosave_min_length
+        // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
+        // When has_injection_flags=true, skip embedding to prevent poisoned content from
+        // polluting Qdrant semantic search results.
+        let guard_event = self
+            .exfiltration_guard
+            .should_guard_memory_write(has_injection_flags);
+        if let Some(ref event) = guard_event {
+            tracing::warn!(
+                ?event,
+                "exfiltration guard: skipping Qdrant embedding for flagged content"
+            );
+            self.update_metrics(|m| m.exfiltration_memory_guards += 1);
+        }
+
+        let skip_embedding = guard_event.is_some();
+
+        let should_embed = if skip_embedding {
+            false
+        } else {
+            match role {
+                Role::Assistant => {
+                    self.memory_state.autosave_assistant
+                        && content.len() >= self.memory_state.autosave_min_length
+                }
+                _ => true,
             }
-            _ => true,
         };
 
         let embedding_stored = if should_embed {
@@ -286,7 +316,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // Must not panic and must complete
-        agent.persist_message(Role::User, "hello").await;
+        agent.persist_message(Role::User, "hello", false).await;
     }
 
     #[tokio::test]
@@ -306,7 +336,7 @@ mod tests {
             .with_autosave_config(false, 20);
 
         agent
-            .persist_message(Role::Assistant, "short assistant reply")
+            .persist_message(Role::Assistant, "short assistant reply", false)
             .await;
 
         let history = agent
@@ -341,7 +371,9 @@ mod tests {
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
             .with_autosave_config(true, 1000);
 
-        agent.persist_message(Role::Assistant, "too short").await;
+        agent
+            .persist_message(Role::Assistant, "too short", false)
+            .await;
 
         let history = agent
             .memory_state
@@ -379,7 +411,7 @@ mod tests {
         let content_at_boundary = "A".repeat(min_length);
         assert_eq!(content_at_boundary.len(), min_length);
         agent
-            .persist_message(Role::Assistant, &content_at_boundary)
+            .persist_message(Role::Assistant, &content_at_boundary, false)
             .await;
 
         // sqlite_message_count must be incremented regardless of embedding success.
@@ -408,7 +440,7 @@ mod tests {
         let content_below_boundary = "A".repeat(min_length - 1);
         assert_eq!(content_below_boundary.len(), min_length - 1);
         agent
-            .persist_message(Role::Assistant, &content_below_boundary)
+            .persist_message(Role::Assistant, &content_below_boundary, false)
             .await;
 
         let history = agent
@@ -446,10 +478,10 @@ mod tests {
 
         assert_eq!(agent.memory_state.unsummarized_count, 0);
 
-        agent.persist_message(Role::User, "first").await;
+        agent.persist_message(Role::User, "first", false).await;
         assert_eq!(agent.memory_state.unsummarized_count, 1);
 
-        agent.persist_message(Role::User, "second").await;
+        agent.persist_message(Role::User, "second", false).await;
         assert_eq!(agent.memory_state.unsummarized_count, 2);
     }
 
@@ -472,8 +504,8 @@ mod tests {
             1,
         );
 
-        agent.persist_message(Role::User, "msg1").await;
-        agent.persist_message(Role::User, "msg2").await;
+        agent.persist_message(Role::User, "msg1", false).await;
+        agent.persist_message(Role::User, "msg2", false).await;
 
         // After summarization attempt (summarize returns Ok(None) since no messages qualify),
         // the counter is NOT reset to 0 — only reset on Ok(Some(_)).
@@ -490,7 +522,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.persist_message(Role::User, "hello").await;
+        agent.persist_message(Role::User, "hello", false).await;
         // No memory configured — persist_message returns early, counter must stay 0.
         assert_eq!(agent.memory_state.unsummarized_count, 0);
     }
@@ -513,7 +545,9 @@ mod tests {
             .with_autosave_config(false, 20);
 
         let long_user_msg = "A".repeat(100);
-        agent.persist_message(Role::User, &long_user_msg).await;
+        agent
+            .persist_message(Role::User, &long_user_msg, false)
+            .await;
 
         let history = agent
             .memory_state

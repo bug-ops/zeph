@@ -70,6 +70,9 @@ pub struct MetricsSnapshot {
     pub sanitizer_truncations: u64,
     pub quarantine_invocations: u64,
     pub quarantine_failures: u64,
+    pub exfiltration_images_blocked: u64,
+    pub exfiltration_tool_urls_flagged: u64,
+    pub exfiltration_memory_guards: u64,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.

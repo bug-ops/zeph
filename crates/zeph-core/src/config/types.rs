@@ -10,6 +10,7 @@ use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
 use crate::sanitizer::ContentIsolationConfig;
+use crate::sanitizer::exfiltration::ExfiltrationGuardConfig;
 
 use crate::subagent::def::{MemoryScope, PermissionMode};
 use crate::subagent::hooks::HookDef;
@@ -1207,6 +1208,8 @@ pub struct SecurityConfig {
     pub autonomy_level: AutonomyLevel,
     #[serde(default)]
     pub content_isolation: ContentIsolationConfig,
+    #[serde(default)]
+    pub exfiltration_guard: ExfiltrationGuardConfig,
 }
 
 impl Default for SecurityConfig {
@@ -1215,6 +1218,7 @@ impl Default for SecurityConfig {
             redact_secrets: true,
             autonomy_level: AutonomyLevel::default(),
             content_isolation: ContentIsolationConfig::default(),
+            exfiltration_guard: ExfiltrationGuardConfig::default(),
         }
     }
 }

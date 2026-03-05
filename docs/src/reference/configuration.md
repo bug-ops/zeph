@@ -258,6 +258,11 @@ enabled = false             # Opt-in: route high-risk sources through quarantine
 sources = ["web_scrape", "a2a_message"]  # Source kinds to quarantine
 model = "claude"            # Provider/model for quarantine extraction
 
+[security.exfiltration_guard]
+block_markdown_images = true  # Strip external markdown images from LLM output
+validate_tool_urls = true     # Flag tool calls using URLs from injection-flagged content
+guard_memory_writes = true    # Skip Qdrant embedding for injection-flagged content
+
 [timeouts]
 llm_seconds = 120           # LLM chat completion timeout
 embedding_seconds = 30      # Embedding generation timeout

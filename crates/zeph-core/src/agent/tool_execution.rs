@@ -139,6 +139,12 @@ fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
 
 impl<C: Channel> Agent<C> {
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
+        // S3: clear flagged_urls at the start of each turn. Per-turn clearing means
+        // cross-turn attack chains evade detection, but this is acceptable for MVP since
+        // the guard is flag-only (no blocking). Accumulating across turns causes false
+        // positives for legitimately reused URLs.
+        self.flagged_urls.clear();
+
         if self.provider.supports_tool_use() {
             tracing::debug!(
                 provider = self.provider.name(),
@@ -211,7 +217,8 @@ impl<C: Channel> Agent<C> {
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             });
-            self.persist_message(Role::Assistant, &response).await;
+            self.persist_message(Role::Assistant, &response, false)
+                .await;
 
             self.inject_active_skill_env();
             let tool_name = first_tool_name(&response);
@@ -307,7 +314,9 @@ impl<C: Channel> Agent<C> {
                 // Redact secrets from the full accumulated response before it is persisted to
                 // history. Per-chunk redaction is applied during streaming (see send_chunk above).
                 let redacted = self.maybe_redact(&raw).into_owned();
-                Ok(Some(redacted))
+                // S2: scan accumulated streaming response. Per-chunk scanning not feasible
+                // (markdown may split across chunk boundaries); persistence is guarded here.
+                Ok(Some(self.scan_output_and_warn(&redacted)))
             } else {
                 self.channel
                     .send("LLM request timed out. Please try again.")
@@ -340,10 +349,12 @@ impl<C: Channel> Agent<C> {
                     });
                     self.record_cache_usage();
                     self.record_cost(prompt_estimate, completion_estimate);
-                    let display = self.maybe_redact(&resp);
+                    // S2: scan for markdown image exfiltration in non-streaming path.
+                    let cleaned = self.scan_output_and_warn(&resp);
+                    let display = self.maybe_redact(&cleaned);
                     self.channel.send(&display).await?;
-                    self.store_response_in_cache(&resp).await;
-                    Ok(Some(resp))
+                    self.store_response_in_cache(&cleaned).await;
+                    Ok(Some(cleaned))
                 }
                 Ok(Err(e)) => Err(e.into()),
                 Err(_) => {
@@ -613,7 +624,10 @@ impl<C: Channel> Agent<C> {
                         compacted_at: None,
                     }],
                 ));
-                self.persist_message(Role::User, &formatted_output).await;
+                // C1: use flagged_urls state from sanitize_tool_output (may have just been
+                // populated) to guard Qdrant embedding for injection-flagged tool output.
+                self.persist_message(Role::User, &formatted_output, !self.flagged_urls.is_empty())
+                    .await;
                 let outcome = if output.summary.contains("[error]")
                     || output.summary.contains("[exit code")
                 {
@@ -679,7 +693,9 @@ impl<C: Channel> Agent<C> {
                                 compacted_at: None,
                             }],
                         ));
-                        self.persist_message(Role::User, &formatted).await;
+                        // C1: same as above — use flagged_urls state from sanitize_tool_output.
+                        self.persist_message(Role::User, &formatted, !self.flagged_urls.is_empty())
+                            .await;
                     }
                 } else {
                     self.channel.send("Command cancelled.").await?;
@@ -738,7 +754,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
-    async fn sanitize_tool_output(&self, body: &str, tool_name: &str) -> String {
+    async fn sanitize_tool_output(&mut self, body: &str, tool_name: &str) -> String {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
         // Everything else is local shell/file output.
@@ -751,7 +767,8 @@ impl<C: Channel> Agent<C> {
         };
         let source = ContentSource::new(kind).with_identifier(tool_name);
         let sanitized = self.sanitizer.sanitize(body, source);
-        if !sanitized.injection_flags.is_empty() {
+        let has_injection_flags = !sanitized.injection_flags.is_empty();
+        if has_injection_flags {
             tracing::warn!(
                 tool = %tool_name,
                 flags = sanitized.injection_flags.len(),
@@ -760,6 +777,11 @@ impl<C: Channel> Agent<C> {
             self.update_metrics(|m| {
                 m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
             });
+            // Collect URLs from the SANITIZED content (not raw body) for validate_tool_call.
+            // Using sanitized.body ensures only URLs the LLM actually sees are tracked,
+            // avoiding false-positive SuspiciousToolUrl warnings for truncated/stripped content.
+            let urls = crate::sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
+            self.flagged_urls.extend(urls);
         }
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
@@ -839,6 +861,21 @@ impl<C: Channel> Agent<C> {
         Ok(response)
     }
 
+    /// Apply exfiltration guard scan to `text`, log and count any blocked images.
+    fn scan_output_and_warn(&mut self, text: &str) -> String {
+        let (cleaned, events) = self.exfiltration_guard.scan_output(text);
+        if !events.is_empty() {
+            tracing::warn!(
+                count = events.len(),
+                "exfiltration guard: markdown images blocked"
+            );
+            self.update_metrics(|m| {
+                m.exfiltration_images_blocked += events.len() as u64;
+            });
+        }
+        cleaned
+    }
+
     pub(super) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         if self.runtime.security.redact_secrets {
             let redacted = redact_secrets(text);
@@ -882,9 +919,11 @@ impl<C: Channel> Agent<C> {
                 zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
             if let Ok(Some(cached)) = cache.get(&key).await {
                 tracing::debug!("response cache hit");
-                let display = self.maybe_redact(&cached);
+                // M4: scan cached responses before sending to channel.
+                let cleaned = self.scan_output_and_warn(&cached);
+                let display = self.maybe_redact(&cleaned);
                 self.channel.send(&display).await?;
-                return Ok(Some(cached));
+                return Ok(Some(cleaned));
             }
         }
         Ok(None)
@@ -958,13 +997,15 @@ impl<C: Channel> Agent<C> {
 
             // Text → display and return
             if let ChatResponse::Text(text) = &chat_result {
-                if !text.is_empty() {
-                    let display = self.maybe_redact(text);
+                // S4 / M4: scan LLM text output for markdown image exfiltration.
+                let cleaned = self.scan_output_and_warn(text);
+                if !cleaned.is_empty() {
+                    let display = self.maybe_redact(&cleaned);
                     self.channel.send(&display).await?;
                 }
                 self.messages
-                    .push(Message::from_legacy(Role::Assistant, text.as_str()));
-                self.persist_message(Role::Assistant, text).await;
+                    .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+                self.persist_message(Role::Assistant, &cleaned, false).await;
                 self.channel.flush_chunks().await?;
                 return Ok(());
             }
@@ -1120,7 +1161,16 @@ impl<C: Channel> Agent<C> {
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) -> Result<(), super::error::AgentError> {
-        if let Some(t) = text
+        // S4: scan text accompanying ToolUse responses for markdown image exfiltration.
+        let cleaned_text: Option<String> = if let Some(t) = text
+            && !t.is_empty()
+        {
+            Some(self.scan_output_and_warn(t))
+        } else {
+            None
+        };
+
+        if let Some(ref t) = cleaned_text
             && !t.is_empty()
         {
             let display = self.maybe_redact(t);
@@ -1128,10 +1178,10 @@ impl<C: Channel> Agent<C> {
         }
 
         let mut parts: Vec<MessagePart> = Vec::new();
-        if let Some(t) = text
+        if let Some(ref t) = cleaned_text
             && !t.is_empty()
         {
-            parts.push(MessagePart::Text { text: t.to_owned() });
+            parts.push(MessagePart::Text { text: t.clone() });
         }
         for tc in tool_calls {
             parts.push(MessagePart::ToolUse {
@@ -1141,7 +1191,7 @@ impl<C: Channel> Agent<C> {
             });
         }
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
-        self.persist_message(Role::Assistant, &assistant_msg.content)
+        self.persist_message(Role::Assistant, &assistant_msg.content, false)
             .await;
         self.push_message(assistant_msg);
 
@@ -1181,6 +1231,26 @@ impl<C: Channel> Agent<C> {
                     self.parent_tool_use_id.clone(),
                 )
                 .await?;
+        }
+
+        // Validate tool call arguments against URLs seen in flagged untrusted content (flag-only).
+        for tc in tool_calls {
+            let args_json = tc.input.to_string();
+            let url_events = self.exfiltration_guard.validate_tool_call(
+                &tc.name,
+                &args_json,
+                &self.flagged_urls,
+            );
+            if !url_events.is_empty() {
+                tracing::warn!(
+                    tool = %tc.name,
+                    count = url_events.len(),
+                    "exfiltration guard: suspicious URLs in tool arguments (flag-only, not blocked)"
+                );
+                self.update_metrics(|m| {
+                    m.exfiltration_tool_urls_flagged += url_events.len() as u64;
+                });
+            }
         }
 
         // Inject active skill secrets before tool execution
@@ -1322,7 +1392,15 @@ impl<C: Channel> Agent<C> {
         }
 
         let user_msg = Message::from_parts(Role::User, result_parts);
-        self.persist_message(Role::User, &user_msg.content).await;
+        // flagged_urls accumulates across ALL tools in this batch (cross-tool trust boundary).
+        // A URL from tool N's output can flag tool M's arguments even if tool M returned clean
+        // output. This is intentional: the batch shares a trust context — if any tool in the
+        // batch was injection-flagged, we apply conservative memory write guarding to the entire
+        // batch result. Individual per-tool granularity would require separate persist_message
+        // calls per result, which would change message history structure.
+        let tool_results_have_flags = !self.flagged_urls.is_empty();
+        self.persist_message(Role::User, &user_msg.content, tool_results_have_flags)
+            .await;
         self.push_message(user_msg);
 
         Ok(())
