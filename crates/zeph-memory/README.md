@@ -13,6 +13,8 @@ Provides durable conversation storage via SQLite and semantic retrieval through 
 
 Recall quality is enhanced by MMR (Maximal Marginal Relevance) re-ranking for result diversity and temporal decay scoring for recency bias. Both are configurable via `SemanticConfig`.
 
+Query-aware memory routing (`MemoryRouter` trait, `HeuristicRouter` default) classifies each query as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid and dispatches accordingly. Configure via `[memory.routing]`.
+
 Includes a document ingestion subsystem for loading, chunking, and storing user documents (text, Markdown, PDF) into Qdrant for RAG workflows.
 
 ## Key modules
@@ -37,6 +39,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
+| `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`

@@ -100,6 +100,13 @@ policy = "ebbinghaus"
 max_entries = 0
 sweep_interval_secs = 3600
 
+[memory.compression]
+strategy = "reactive"
+model = ""
+
+[memory.routing]
+strategy = "heuristic"
+
 [tools]
 enabled = true
 summarize_output = true

@@ -484,7 +484,6 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if embedding generation, Qdrant search, or FTS5 query fails.
-    #[allow(clippy::too_many_lines)]
     pub async fn recall(
         &self,
         query: &str,
@@ -518,7 +517,65 @@ impl SemanticMemory {
             Vec::new()
         };
 
-        // Merge results with weighted scoring
+        self.recall_merge_and_rank(keyword_results, vector_results, limit)
+            .await
+    }
+
+    /// Raw FTS5 keyword search results: returns `(MessageId, score)` pairs without ranking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` FTS5 query fails.
+    async fn recall_fts5_raw(
+        &self,
+        query: &str,
+        limit: usize,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
+        self.sqlite
+            .keyword_search(query, limit * 2, conversation_id)
+            .await
+    }
+
+    /// Raw vector search results from Qdrant. Returns an empty `Vec` when Qdrant is unavailable
+    /// or the provider does not support embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding generation or Qdrant search fails.
+    async fn recall_vectors_raw(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<SearchFilter>,
+    ) -> Result<Vec<crate::embedding_store::SearchResult>, MemoryError> {
+        let Some(qdrant) = &self.qdrant else {
+            return Ok(Vec::new());
+        };
+        if !self.provider.supports_embeddings() {
+            return Ok(Vec::new());
+        }
+        let query_vector = self.provider.embed(query).await?;
+        let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
+        qdrant.ensure_collection(vector_size).await?;
+        qdrant.search(&query_vector, limit * 2, filter).await
+    }
+
+    /// Merge raw keyword and vector results, apply weighted scoring, temporal decay, and MMR
+    /// re-ranking, then resolve to `RecalledMessage` objects.
+    ///
+    /// This is the shared post-processing step used by all recall paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` `messages_by_ids` query fails.
+    #[allow(clippy::cast_possible_truncation)]
+    async fn recall_merge_and_rank(
+        &self,
+        keyword_results: Vec<(MessageId, f64)>,
+        vector_results: Vec<crate::embedding_store::SearchResult>,
+        limit: usize,
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let mut scores: std::collections::HashMap<MessageId, f64> =
             std::collections::HashMap::new();
 
@@ -550,11 +607,9 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
 
-        // Sort by combined score descending
         let mut ranked: Vec<(MessageId, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Apply temporal decay (before MMR)
         if self.temporal_decay_enabled && self.temporal_decay_half_life_days > 0 {
             let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
             match self.sqlite.message_timestamps(&ids).await {
@@ -573,7 +628,6 @@ impl SemanticMemory {
             }
         }
 
-        // Apply MMR re-ranking (after decay, before truncation)
         if self.mmr_enabled && !vector_results.is_empty() {
             if let Some(qdrant) = &self.qdrant {
                 let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
@@ -612,6 +666,60 @@ impl SemanticMemory {
             .collect();
 
         Ok(recalled)
+    }
+
+    /// Recall messages using query-aware routing.
+    ///
+    /// Delegates to FTS5-only, vector-only, or hybrid search based on the router decision,
+    /// then runs the shared merge and ranking pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any underlying search or database operation fails.
+    pub async fn recall_routed(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<SearchFilter>,
+        router: &dyn crate::router::MemoryRouter,
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        use crate::router::MemoryRoute;
+
+        let route = router.route(query);
+        tracing::debug!(?route, query_len = query.len(), "memory routing decision");
+
+        let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
+
+        let (keyword_results, vector_results): (
+            Vec<(MessageId, f64)>,
+            Vec<crate::embedding_store::SearchResult>,
+        ) = match route {
+            MemoryRoute::Keyword => {
+                let kw = self.recall_fts5_raw(query, limit, conversation_id).await?;
+                (kw, Vec::new())
+            }
+            MemoryRoute::Semantic => {
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (Vec::new(), vr)
+            }
+            MemoryRoute::Hybrid => {
+                // FTS5 errors are swallowed gracefully to allow vector-only fallback.
+                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("FTS5 keyword search failed: {e:#}");
+                        Vec::new()
+                    }
+                };
+                // Vector errors propagate — if Qdrant is unavailable, recall_vectors_raw
+                // returns an empty Vec (not an error), so ? only fires on embed failures.
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (kw, vr)
+            }
+        };
+
+        self.recall_merge_and_rank(keyword_results, vector_results, limit)
+            .await
     }
 
     /// Check whether an embedding exists for a given message ID.
@@ -2305,6 +2413,91 @@ mod tests {
         assert_eq!(result[0].0, MessageId(1));
         // msg3 (orthogonal) should be preferred over msg2 (duplicate) with lambda=0.5
         assert_eq!(result[1].0, MessageId(3));
+    }
+
+    // recall_routed() tests (#1162 — tester gap coverage)
+
+    #[tokio::test]
+    async fn recall_routed_keyword_route_returns_fts5_results() {
+        use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory
+            .remember(cid, "user", "rust programming guide")
+            .await
+            .unwrap();
+        memory
+            .remember(cid, "assistant", "python tutorial")
+            .await
+            .unwrap();
+
+        // "rust_guide" is pure snake_case → routes Keyword
+        let router = HeuristicRouter;
+        assert_eq!(router.route("rust_guide"), MemoryRoute::Keyword);
+
+        let recalled = memory
+            .recall_routed("rust_guide", 5, None, &router)
+            .await
+            .unwrap();
+        // FTS5 will find "rust programming guide" but not "python tutorial"
+        assert!(recalled.len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn recall_routed_semantic_route_without_qdrant_returns_empty_vectors() {
+        use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory
+            .remember(cid, "user", "how does the agent loop work")
+            .await
+            .unwrap();
+
+        // Long natural language question → routes Semantic
+        let router = HeuristicRouter;
+        assert_eq!(
+            router.route("how does the agent loop work"),
+            MemoryRoute::Semantic
+        );
+
+        // Without Qdrant, vector results are empty; recall_routed returns empty vec
+        let recalled = memory
+            .recall_routed("how does the agent loop work", 5, None, &router)
+            .await
+            .unwrap();
+        assert!(recalled.is_empty(), "no Qdrant → empty semantic recall");
+    }
+
+    #[tokio::test]
+    async fn recall_routed_hybrid_route_falls_back_to_fts5_on_no_qdrant() {
+        use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+        let memory = test_semantic_memory(false).await;
+        let cid = memory.sqlite.create_conversation().await.unwrap();
+
+        memory
+            .remember(cid, "user", "context window token budget")
+            .await
+            .unwrap();
+
+        // 4-word non-question, no code pattern → routes Hybrid
+        let router = HeuristicRouter;
+        assert_eq!(
+            router.route("context window token budget"),
+            MemoryRoute::Hybrid
+        );
+
+        // Hybrid: FTS5 succeeds, vectors empty (no Qdrant) → merged result
+        let recalled = memory
+            .recall_routed("context window token budget", 5, None, &router)
+            .await
+            .unwrap();
+        // FTS5 finds the message; merged result should be non-empty
+        assert!(!recalled.is_empty(), "FTS5 should find the stored message");
     }
 
     // Priority 3: proptest

@@ -8,12 +8,15 @@ pub mod filter;
 pub mod grants;
 pub mod hooks;
 pub mod manager;
+pub mod memory;
 pub mod resolve;
 pub mod state;
 pub mod transcript;
 
 pub use command::AgentCommand;
-pub use def::{PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy};
+pub use def::{
+    MemoryScope, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy,
+};
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
@@ -21,6 +24,7 @@ pub use hooks::{
     HookDef, HookError, HookMatcher, HookType, SubagentHooks, fire_hooks, matching_hooks,
 };
 pub use manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
+pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
 pub use transcript::{TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts};

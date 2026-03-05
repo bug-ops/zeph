@@ -27,6 +27,8 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 |-------|-----------|
 | `memory.history_limit` | <= 10,000 |
 | `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
+| `memory.compression.threshold_tokens` | >= 1,000 (proactive only) |
+| `memory.compression.max_summary_tokens` | >= 128 (proactive only) |
 | `memory.token_safety_margin` | > 0.0 |
 | `agent.max_tool_iterations` | <= 100 |
 | `a2a.rate_limit` | > 0 |
@@ -159,6 +161,16 @@ temporal_decay_half_life_days = 30    # Half-life for temporal decay in days (de
 mmr_enabled = false                   # MMR re-ranking for result diversity (default: false)
 mmr_lambda = 0.7                      # MMR relevance-diversity trade-off, 0.0-1.0 (default: 0.7)
 
+[memory.routing]
+strategy = "heuristic"        # Routing strategy for memory backend selection (default: "heuristic")
+
+[memory.compression]
+strategy = "reactive"         # "reactive" (default) or "proactive"
+# Proactive strategy fields (required when strategy = "proactive"):
+# threshold_tokens = 80000   # Fire compression when context exceeds this token count (>= 1000)
+# max_summary_tokens = 4000  # Cap for the compressed summary (>= 128)
+# model = ""                 # Reserved — currently unused
+
 [tools]
 enabled = true
 summarize_output = false      # LLM-based summarization for long tool outputs
@@ -276,6 +288,8 @@ max_dynamic_servers = 10
 enabled = false            # Enable sub-agent system (default: false)
 max_concurrent = 1         # Max concurrent sub-agents (default: 1)
 extra_dirs = []            # Additional directories to scan for agent definitions
+# default_memory_scope = "project"  # Default memory scope for agents without explicit `memory` field
+                                    # Valid: "user", "project", "local". Omit to disable.
 # Lifecycle hooks — see Sub-Agent Orchestration > Hooks for details
 # [agents.hooks]
 # [[agents.hooks.start]]

@@ -95,6 +95,22 @@ impl Config {
                 "tool_call_cutoff must be >= 1".into(),
             ));
         }
+        if let crate::config::CompressionStrategy::Proactive {
+            threshold_tokens,
+            max_summary_tokens,
+        } = &self.memory.compression.strategy
+        {
+            if *threshold_tokens < 1_000 {
+                return Err(ConfigError::Validation(format!(
+                    "compression.threshold_tokens must be >= 1000, got {threshold_tokens}"
+                )));
+            }
+            if *max_summary_tokens < 128 {
+                return Err(ConfigError::Validation(format!(
+                    "compression.max_summary_tokens must be >= 128, got {max_summary_tokens}"
+                )));
+            }
+        }
         Ok(())
     }
 

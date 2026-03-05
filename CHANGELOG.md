@@ -22,12 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+<<<<<<< HEAD
 - Sub-agent transcript persistence: JSONL append-only transcripts written per session under `.zeph/subagents/`; each session gets a UUID-named `.jsonl` file and a `.meta.json` sidecar with status, turn count, and lineage (`resumed_from`) (#1153)
 - `/agent resume <id> <prompt>` command: resumes a completed, failed, or cancelled sub-agent session by loading its full message history and spawning a new foreground loop with a fresh UUID; supports 8-char prefix matching (#1153)
 - `TranscriptWriter` / `TranscriptReader` / `TranscriptEntry` / `TranscriptMeta` types in `zeph-core::subagent::transcript` (#1153)
 - `SubAgentManager::resume()` method for loading transcript history and spawning resumed agent loops (#1153)
 - `SubAgentError::Transcript`, `SubAgentError::AmbiguousId`, `SubAgentError::StillRunning` error variants (#1153)
 - `SubAgentConfig` transcript fields: `transcript_enabled` (default: `true`), `transcript_dir` (default: `.zeph/subagents`), `transcript_max_files` (default: `50`); cooperative sweep-on-access deletes oldest `.jsonl` files when limit exceeded (#1153)
+=======
+- Query-aware memory routing (`zeph-memory`): `MemoryRouter` trait with `HeuristicRouter` implementation that classifies queries as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid based on query structure; code-like patterns route to keyword search, natural language questions route to semantic search; configurable via `[memory.routing] strategy = "heuristic"` (#1162)
+- Active context compression (`zeph-core`): proactive compression fires before hitting capacity limits; `CompressionStrategy` enum (`reactive`/`proactive`) with configurable `threshold_tokens` and `max_summary_tokens`; mutual exclusion guard prevents double-compaction per turn; `compression_events` and `compression_tokens_saved` metrics; configurable via `[memory.compression]` (#1161)
+>>>>>>> origin/main
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
 - `tools.except` list in sub-agent YAML frontmatter: additional denylist applied on top of `tools.allow`/`tools.deny`; deny wins over allow
 - `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`
@@ -45,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sub-agent scope & priority system: agents loaded from four scopes with explicit priority — CLI (`--agents` flag) → project (`.zeph/agents/`) → user (`~/.config/zeph/agents/`) → config `extra_dirs`; first definition wins on name collision (#1145)
 - `--agents <path>` CLI flag: one or more `.md` files or directories for session-scoped sub-agent definitions; non-existent paths are a hard error
 - `SubAgentConfig.user_agents_dir`: configurable user-level agents directory; empty string disables user scope
+- Persistent memory scopes for sub-agents: `memory` field in YAML frontmatter with `user`, `project`, and `local` scopes; memory directory created at spawn time; first 200 lines of `MEMORY.md` injected into sub-agent system prompt after behavioral prompt; Read/Write/Edit tools auto-enabled for AllowList agents when memory is set; `default_memory_scope` config in `[agents]` section; `/agent list` shows memory scope, `/agent status` shows memory dir path; `--init` wizard includes memory scope prompt (#1152)
 - `/agent list` now shows scope labels: `(cli)`, `(project)`, `(user)`, `(config)` per agent
 - `SubAgentDef.source`: scope label field on every loaded definition for diagnostics
 - `load_with_boundary()`: canonicalizes paths, enforces directory boundaries (symlink escape prevention), caps at 100 entries per directory

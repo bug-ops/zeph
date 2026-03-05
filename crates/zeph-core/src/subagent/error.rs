@@ -30,6 +30,9 @@ pub enum SubAgentError {
     #[error("agent '{0}' is still running; cancel it first or wait for completion")]
     StillRunning(String),
 
+    #[error("memory error for agent '{name}': {reason}")]
+    Memory { name: String, reason: String },
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

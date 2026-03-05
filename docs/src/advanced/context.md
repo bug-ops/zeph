@@ -19,6 +19,14 @@ tool_call_cutoff = 6              # Summarize oldest tool pair when visible pair
 enabled = true                    # Required for semantic recall
 recall_limit = 5                  # Max semantically relevant messages to inject
 
+[memory.routing]
+strategy = "heuristic"            # Query-aware memory backend selection
+
+[memory.compression]
+strategy = "proactive"            # "reactive" (default) or "proactive"
+threshold_tokens = 80000          # Proactive: fire when context exceeds this (>= 1000)
+max_summary_tokens = 4000         # Proactive: summary cap (>= 128)
+
 [tools]
 summarize_output = false          # Enable LLM-based tool output summarization
 ```
@@ -119,6 +127,38 @@ After each tool execution, `maybe_summarize_tool_pair()` checks whether the numb
 | `[tool summary]` message | `true` | `false` | LLM context only |
 
 Summarization runs synchronously between tool iterations. If the LLM call fails, the error is logged and the pair is left unsummarized.
+
+## Query-Aware Memory Routing
+
+When semantic memory is enabled, the `MemoryRouter` trait decides which backend(s) to query for each recall request. The default `HeuristicRouter` classifies queries based on lexical cues:
+
+- **Keyword** (SQLite FTS5 only) — code patterns (`::`, `/`), pure `snake_case` identifiers, short queries (<=3 words without question words)
+- **Semantic** (Qdrant vectors only) — natural language questions (`what`, `how`, `why`, ...), long queries (>=6 words)
+- **Hybrid** (both + reciprocal rank fusion) — medium-length queries without clear signals
+
+Configure via `[memory.routing]`:
+
+```toml
+[memory.routing]
+strategy = "heuristic"   # Only option currently; selected by default
+```
+
+When Qdrant is unavailable, Semantic-route queries return empty results and Hybrid-route queries fall back to FTS5 only.
+
+## Proactive Context Compression
+
+By default, context compression is **reactive** — it fires only when the two-tier pruning pipeline detects threshold overflow. Proactive compression fires earlier, based on an absolute token count threshold, to prevent overflow altogether.
+
+```toml
+[memory.compression]
+strategy = "proactive"
+threshold_tokens = 80000       # Compress when context exceeds this (>= 1000)
+max_summary_tokens = 4000      # Cap for the compressed summary (>= 128)
+```
+
+Proactive compression runs at the start of the context management phase, before reactive compaction. If proactive compression fires, reactive compaction is skipped for that turn (mutual exclusion via `compacted_this_turn` flag, reset each turn).
+
+Metrics: `compression_events` (count), `compression_tokens_saved` (cumulative tokens freed).
 
 ## Two-Tier Context Pruning
 

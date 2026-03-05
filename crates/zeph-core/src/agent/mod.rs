@@ -1034,6 +1034,14 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Reset per-turn compaction guard at the start of context management phase.
+        self.context_manager.compacted_this_turn = false;
+
+        // Proactive compression fires first (if configured); if it runs, reactive is skipped.
+        if let Err(e) = self.maybe_proactive_compress().await {
+            tracing::warn!("proactive compression failed: {e:#}");
+        }
+
         if let Err(e) = self.maybe_compact().await {
             tracing::warn!("context compaction failed: {e:#}");
         }
@@ -1232,10 +1240,20 @@ impl<C: Channel> Agent<C> {
                 }
                 let mut out = String::from("Available sub-agents:\n");
                 for d in defs {
+                    let memory_label = match d.memory {
+                        Some(crate::subagent::MemoryScope::User) => " [memory:user]",
+                        Some(crate::subagent::MemoryScope::Project) => " [memory:project]",
+                        Some(crate::subagent::MemoryScope::Local) => " [memory:local]",
+                        None => "",
+                    };
                     if let Some(ref src) = d.source {
-                        let _ = writeln!(out, "  {} — {} ({})", d.name, d.description, src);
+                        let _ = writeln!(
+                            out,
+                            "  {}{} — {} ({})",
+                            d.name, memory_label, d.description, src
+                        );
                     } else {
-                        let _ = writeln!(out, "  {} — {}", d.name, d.description);
+                        let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
                     }
                 }
                 Some(out)
@@ -1365,6 +1383,14 @@ impl<C: Channel> Agent<C> {
                         t = s.turns_used,
                         msg = s.last_message.as_deref().unwrap_or(""),
                     );
+                    // Show memory directory path for agents with memory enabled.
+                    if let Some(def) = mgr.agents_def(id)
+                        && let Some(scope) = def.memory
+                        && let Ok(dir) =
+                            crate::subagent::memory::resolve_memory_dir(scope, &def.name)
+                    {
+                        let _ = writeln!(out, "       memory: {}", dir.display());
+                    }
                 }
                 Some(out)
             }
@@ -1728,6 +1754,8 @@ impl<C: Channel> Agent<C> {
         self.context_manager.compaction_threshold = config.memory.compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
+        self.context_manager.compression = config.memory.compression.clone();
+        self.context_manager.routing = config.memory.routing.clone();
         self.memory_state.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 
@@ -3159,6 +3187,7 @@ pub(super) mod agent_tests {
             skills: SkillFilter::default(),
             system_prompt: "You are helpful.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3455,6 +3484,7 @@ mod compaction_e2e {
             skills: SkillFilter::default(),
             system_prompt: "You are a worker.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);
@@ -3566,6 +3596,7 @@ mod compaction_e2e {
             skills: SkillFilter::default(),
             system_prompt: "You need a secret.".into(),
             hooks: SubagentHooks::default(),
+            memory: None,
             source: None,
         });
         agent.subagent_manager = Some(mgr);

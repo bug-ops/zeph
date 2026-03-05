@@ -2589,3 +2589,72 @@ fn gateway_max_body_size_at_limit_accepted() {
     config.gateway.max_body_size = 10_485_760;
     assert!(config.validate().is_ok());
 }
+
+// --- SEC-01: CompressionConfig validation tests ---
+
+#[test]
+fn compression_threshold_zero_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compression.strategy = CompressionStrategy::Proactive {
+        threshold_tokens: 0,
+        max_summary_tokens: 4_000,
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("compression.threshold_tokens must be >= 1000"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compression_threshold_below_minimum_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compression.strategy = CompressionStrategy::Proactive {
+        threshold_tokens: 999,
+        max_summary_tokens: 4_000,
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+}
+
+#[test]
+fn compression_threshold_at_minimum_accepted_by_validate() {
+    let mut config = Config::default();
+    config.memory.compression.strategy = CompressionStrategy::Proactive {
+        threshold_tokens: 1_000,
+        max_summary_tokens: 128,
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn compression_max_summary_tokens_zero_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compression.strategy = CompressionStrategy::Proactive {
+        threshold_tokens: 80_000,
+        max_summary_tokens: 0,
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("compression.max_summary_tokens must be >= 128"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compression_reactive_strategy_always_passes_validate() {
+    // Reactive strategy has no numeric fields, so validate should always pass.
+    let config = Config::default(); // Reactive by default
+    assert!(
+        matches!(
+            config.memory.compression.strategy,
+            CompressionStrategy::Reactive
+        ),
+        "default strategy should be Reactive"
+    );
+    assert!(config.validate().is_ok());
+}
