@@ -107,9 +107,9 @@ A `graph_processed` flag on the existing `messages` table tracks which messages 
 
 Graph memory is being implemented incrementally:
 
-1. **Schema & Core Types** (this phase) — migration, types, CRUD store, config
-2. **Entity & Relation Extraction** — LLM-powered extraction pipeline
-3. **Graph-Aware Retrieval** — BFS + RRF fusion with vector/keyword results
+1. ~~**Schema & Core Types** — migration, types, CRUD store, config~~
+2. ~~**Entity & Relation Extraction** — LLM-powered extraction pipeline~~
+3. ~~**Graph-Aware Retrieval** — BFS traversal with fuzzy entity matching, composite scoring, and cycle-safe traversal~~
 4. **Background Extraction** — non-blocking extraction in agent loop
 5. **Community Detection** — label propagation with petgraph
 6. **TUI & Observability** — `/graph` commands, metrics, init wizard

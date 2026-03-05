@@ -104,6 +104,8 @@ enum ContextSlot {
     Corrections(Option<Message>),
     #[cfg(feature = "index")]
     CodeContext(Option<String>),
+    #[cfg(feature = "graph-memory")]
+    GraphFacts(Option<Message>),
 }
 
 impl<C: Channel> Agent<C> {
@@ -1043,6 +1045,54 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(CORRECTIONS_PREFIX));
     }
 
+    #[cfg(feature = "graph-memory")]
+    pub(super) fn remove_graph_facts_messages(&mut self) {
+        self.messages.retain(|m| {
+            m.role != Role::System || !m.content.starts_with(super::GRAPH_FACTS_PREFIX)
+        });
+    }
+
+    #[cfg(feature = "graph-memory")]
+    async fn fetch_graph_facts(
+        memory_state: &super::MemoryState,
+        query: &str,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        if budget_tokens == 0 {
+            return Ok(None);
+        }
+        let Some(ref memory) = memory_state.memory else {
+            return Ok(None);
+        };
+        let recall_limit = memory_state.graph_config.recall_limit;
+        let max_hops = memory_state.graph_config.max_hops;
+        let facts = memory
+            .recall_graph(query, recall_limit, max_hops)
+            .await
+            .map_err(|e| {
+                tracing::warn!("graph recall failed: {e:#}");
+                super::error::AgentError::Memory(e)
+            })?;
+        if facts.is_empty() {
+            return Ok(None);
+        }
+
+        let mut body = String::from(super::GRAPH_FACTS_PREFIX);
+        let mut tokens_so_far = tc.count_tokens(&body);
+        for f in &facts {
+            let line = format!("- {} (confidence: {:.2})\n", f.fact, f.confidence);
+            let line_tokens = tc.count_tokens(&line);
+            if tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            tokens_so_far += line_tokens;
+        }
+
+        Ok(Some(Message::from_legacy(Role::System, body)))
+    }
+
     async fn fetch_corrections(
         memory_state: &super::MemoryState,
         query: &str,
@@ -1454,6 +1504,8 @@ impl<C: Channel> Agent<C> {
         self.remove_correction_messages();
         #[cfg(feature = "index")]
         self.remove_code_context_messages();
+        #[cfg(feature = "graph-memory")]
+        self.remove_graph_facts_messages();
 
         // Own the query to satisfy Send bounds when agent.run() is spawned
         let query = query.to_owned();
@@ -1480,6 +1532,8 @@ impl<C: Channel> Agent<C> {
         let mut corrections_msg: Option<Message> = None;
         #[cfg(feature = "index")]
         let mut code_rag_text: Option<String> = None;
+        #[cfg(feature = "graph-memory")]
+        let mut graph_facts_msg: Option<Message> = None;
 
         {
             type CtxFuture<'a> = Pin<
@@ -1533,6 +1587,12 @@ impl<C: Channel> Agent<C> {
                     .await
                     .map(ContextSlot::CodeContext)
             }));
+            #[cfg(feature = "graph-memory")]
+            fetchers.push(Box::pin(async {
+                Self::fetch_graph_facts(memory_state, &query, alloc.graph_facts, &tc)
+                    .await
+                    .map(ContextSlot::GraphFacts)
+            }));
 
             while let Some(result) = fetchers.next().await {
                 match result {
@@ -1544,6 +1604,8 @@ impl<C: Channel> Agent<C> {
                         ContextSlot::Corrections(msg) => corrections_msg = msg,
                         #[cfg(feature = "index")]
                         ContextSlot::CodeContext(text) => code_rag_text = text,
+                        #[cfg(feature = "graph-memory")]
+                        ContextSlot::GraphFacts(msg) => graph_facts_msg = msg,
                     },
                     Err(e) => {
                         // Drop fetchers (releases immutable borrows) before &mut self below
@@ -1566,6 +1628,12 @@ impl<C: Channel> Agent<C> {
             self.messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected past corrections into context");
+        }
+        #[cfg(feature = "graph-memory")]
+        if let Some(msg) = graph_facts_msg.filter(|_| self.messages.len() > 1) {
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
+            tracing::debug!("injected graph facts into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
             self.messages
@@ -1641,9 +1709,9 @@ impl<C: Channel> Agent<C> {
     /// into the context. Memory content is `ExternalUntrusted` because prior sessions may
     /// have stored poisoned content retrieved from web scraping or MCP responses.
     ///
-    /// This is the SOLE sanitization point for the 5 memory retrieval paths (`doc_rag`,
-    /// corrections, recall, `cross_session`, summaries). Do not add redundant sanitization
-    /// in zeph-memory or at other call sites.
+    /// This is the SOLE sanitization point for the 6 memory retrieval paths (`doc_rag`,
+    /// corrections, recall, `cross_session`, summaries, `graph_facts`). Do not add redundant
+    /// sanitization in zeph-memory or at other call sites.
     async fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
         let sanitized = self.sanitizer.sanitize(&msg.content, source);

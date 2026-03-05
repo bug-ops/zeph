@@ -166,6 +166,8 @@ pub struct SemanticMemory {
     mmr_enabled: bool,
     mmr_lambda: f32,
     pub token_counter: Arc<TokenCounter>,
+    #[cfg(feature = "graph-memory")]
+    pub graph_store: Option<Arc<crate::graph::GraphStore>>,
 }
 
 impl SemanticMemory {
@@ -247,7 +249,20 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         })
+    }
+
+    /// Attach a `GraphStore` for graph-aware retrieval.
+    ///
+    /// When set, `recall_graph` traverses the graph starting from entities
+    /// matched by the query.
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn with_graph_store(mut self, store: Arc<crate::graph::GraphStore>) -> Self {
+        self.graph_store = Some(store);
+        self
     }
 
     /// Configure temporal decay and MMR re-ranking options.
@@ -292,6 +307,8 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter,
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         }
     }
 
@@ -347,6 +364,8 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         })
     }
 
@@ -716,10 +735,51 @@ impl SemanticMemory {
                 let vr = self.recall_vectors_raw(query, limit, filter).await?;
                 (kw, vr)
             }
+            // Graph routing triggers graph_recall separately in agent/context.rs.
+            // For the message-based recall, behave like Hybrid.
+            MemoryRoute::Graph => {
+                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("FTS5 keyword search failed (graph→hybrid fallback): {e:#}");
+                        Vec::new()
+                    }
+                };
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (kw, vr)
+            }
         };
 
         self.recall_merge_and_rank(keyword_results, vector_results, limit)
             .await
+    }
+
+    /// Retrieve graph facts relevant to `query` via BFS traversal.
+    ///
+    /// Returns an empty `Vec` if no `graph_store` is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn recall_graph(
+        &self,
+        query: &str,
+        limit: usize,
+        max_hops: u32,
+    ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        crate::graph::retrieval::graph_recall(
+            store,
+            self.qdrant.as_deref(),
+            &self.provider,
+            query,
+            limit,
+            max_hops,
+        )
+        .await
     }
 
     /// Check whether an embedding exists for a given message ID.
@@ -1316,6 +1376,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         }
     }
 
@@ -1769,6 +1831,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1902,6 +1966,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -2172,6 +2238,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();

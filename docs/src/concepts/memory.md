@@ -191,8 +191,9 @@ The heuristic router classifies queries into three routes:
 | Keyword | SQLite FTS5 | Code patterns (`::`, `/`), snake_case identifiers, short queries (<=3 words) |
 | Semantic | Qdrant vectors | Question words (`what`, `how`, `why`, ...), long natural language (>=6 words) |
 | Hybrid | Both + RRF merge | Medium-length queries without clear signals (4-5 words, no question word) |
+| Graph | Graph store + Hybrid fallback | Relationship patterns (`related to`, `opinion on`, `connection between`, `know about`). Requires `graph-memory` feature; falls back to Hybrid when disabled |
 
-Question words override code pattern heuristics: `"how does error_handling work"` routes Semantic, not Keyword.
+Question words override code pattern heuristics: `"how does error_handling work"` routes Semantic, not Keyword. Relationship patterns take priority over all other heuristics: `"how is Rust related to this project"` routes Graph, not Semantic.
 
 The agent calls `recall_routed()` on `SemanticMemory`, which delegates to the configured router before querying. When Qdrant is unavailable, Semantic-route queries return empty results; Hybrid-route queries fall back to FTS5 only.
 
@@ -227,7 +228,7 @@ Proactive compression emits two metrics: `compression_events` (count) and `compr
 
 With the `graph-memory` feature enabled, Zeph can extract entities and relationships from conversations and store them as a knowledge graph in SQLite. This enables multi-hop reasoning ("how is X related to Y?"), temporal fact tracking ("user switched from vim to neovim"), and cross-session entity linking.
 
-Graph memory is opt-in and complementary to vector + keyword search. When enabled, graph facts are injected into the context alongside recalled messages.
+Graph memory is opt-in and complementary to vector + keyword search. When enabled, graph facts are injected into the context as a transient system message with a `[known facts]` prefix, alongside recalled messages. The context budget allocates 4% of available tokens to graph facts (taken proportionally from summaries, semantic recall, cross-session, and code context allocations).
 
 ```toml
 [memory.graph]

@@ -52,6 +52,8 @@ When `context_budget_tokens > 0`, the context window is structured as:
 ├─────────────────────────────────────────────────┤
 │ [semantic recall] relevant past messages        │  10-25% of available
 ├─────────────────────────────────────────────────┤
+│ [known facts] graph entity-relationship facts   │  0-4% of available
+├─────────────────────────────────────────────────┤
 │ [compaction summary] if compacted               │  200-500 tokens
 ├─────────────────────────────────────────────────┤
 │ Recent message history                          │  50-60% of available
@@ -66,14 +68,18 @@ Context sources (summaries, cross-session recall, semantic recall, code RAG) are
 
 ## Proportional Budget Allocation
 
-Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history:
+Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history. When [graph memory](../concepts/graph-memory.md) is enabled, an additional 4% is allocated for graph facts, reducing summaries, semantic recall, cross-session, and code context by 1% each:
 
-| Allocation | Without code index | With code index | Purpose |
-|-----------|-------------------|-----------------|---------|
-| Summaries | 15% | 10% | Conversation summaries from SQLite |
-| Semantic recall | 25% | 10% | Relevant messages from past conversations via Qdrant |
-| Code context | -- | 30% | Retrieved code chunks from project index |
-| Recent history | 60% | 50% | Most recent messages in current conversation |
+| Allocation | Without code index | With code index | With graph memory | Purpose |
+|-----------|-------------------|-----------------|-------------------|---------|
+| Summaries | 15% | 8% | 7% | Conversation summaries from SQLite |
+| Semantic recall | 25% | 8% | 7% | Relevant messages from past conversations via Qdrant |
+| Cross-session | -- | 4% | 3% | Messages from other conversations |
+| Code context | -- | 30% | 29% | Retrieved code chunks from project index |
+| Graph facts | -- | -- | 4% | Entity-relationship facts from graph memory |
+| Recent history | 60% | 50% | 50% | Most recent messages in current conversation |
+
+> **Note:** The "With graph memory" column assumes code indexing is also enabled. Graph facts receive 0 tokens when the `graph-memory` feature is disabled or `[memory.graph] enabled = false`.
 
 ## Semantic Recall Injection
 
@@ -135,6 +141,9 @@ When semantic memory is enabled, the `MemoryRouter` trait decides which backend(
 - **Keyword** (SQLite FTS5 only) — code patterns (`::`, `/`), pure `snake_case` identifiers, short queries (<=3 words without question words)
 - **Semantic** (Qdrant vectors only) — natural language questions (`what`, `how`, `why`, ...), long queries (>=6 words)
 - **Hybrid** (both + reciprocal rank fusion) — medium-length queries without clear signals
+- **Graph** (graph store + hybrid fallback) — relationship patterns (`related to`, `opinion on`, `connection between`, `know about`). Triggers `graph_recall` BFS traversal in addition to hybrid message recall. Requires the `graph-memory` feature; falls back to Hybrid when disabled
+
+Relationship patterns take priority over all other heuristics.
 
 Configure via `[memory.routing]`:
 
