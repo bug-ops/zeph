@@ -99,6 +99,34 @@ Graph state is persisted to the `task_graphs` SQLite table (migration `022_task_
 
 The `RawGraphStore` trait abstracts the storage backend; `SqliteGraphStore` in `zeph-memory` is the default implementation.
 
+## LLM Planner
+
+The LLM planner performs goal decomposition: it takes a high-level user goal and breaks it into a validated `TaskGraph` via a single LLM call with structured JSON output.
+
+### Planning Flow
+
+1. The user provides a natural-language goal (e.g., "build and deploy the staging environment").
+2. The planner builds a prompt containing the goal, the available agent catalog, and formatting rules.
+3. The LLM returns a JSON object with a `tasks` array. Each task specifies a `task_id`, `title`, `description`, optional `depends_on` edges, an optional `agent_hint`, and an optional `failure_strategy`.
+4. The response is parsed and validated: task IDs must be unique kebab-case strings (`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`), dependency references must resolve, and the total task count must not exceed `max_tasks`.
+5. String `task_id` values from the LLM output are mapped to internal `TaskId(u32)` indices based on array position.
+6. The resulting `TaskGraph` is checked for DAG acyclicity via `dag::validate`.
+
+If the LLM returns malformed JSON, `chat_typed` retries the call once before propagating the error as `OrchestrationError::PlanningFailed`.
+
+### Agent Catalog
+
+The planner receives the list of available `SubAgentDef` entries and includes each agent's name, description, and tool policy in the system prompt. This allows the LLM to assign an `agent_hint` to each task, routing it to the most appropriate agent. Unknown agent hints are logged as warnings and silently dropped rather than failing the plan.
+
+### Configuration Fields
+
+Two config fields control planner behavior:
+
+- `planner_model` — override the model used for planning LLM calls. When unset, the caller provides whatever provider is configured for the agent. Currently reserved for future caller-side provider selection; `LlmPlanner` uses the provider it receives at construction time.
+- `planner_max_tokens` — maximum tokens for the planner LLM response (default: 4096). Currently reserved for future use: the underlying `chat_typed` API does not yet support per-call token limits.
+
+See [Configuration](../reference/configuration.md) for the full `[orchestration]` section reference.
+
 ## Configuration
 
 Add an `[orchestration]` section to `config.toml`:
@@ -111,6 +139,8 @@ max_parallel = 4                    # Maximum concurrent task executions (defaul
 default_failure_strategy = "abort"  # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3             # Retries for the "retry" strategy (default: 3)
 task_timeout_secs = 300             # Per-task timeout in seconds, 0 = no timeout (default: 300)
+# planner_model = "claude-sonnet-4-20250514"  # Model override for planning LLM calls
+planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
 ```
 
 ## Related

@@ -339,6 +339,8 @@ max_parallel = 4                         # Max concurrent task executions (defau
 default_failure_strategy = "abort"       # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3                  # Retries for the "retry" strategy (default: 3)
 task_timeout_secs = 300                  # Per-task timeout in seconds, 0 = no timeout (default: 300)
+# planner_model = "claude-sonnet-4-20250514"  # Model override for planning LLM calls; unset = agent's primary model
+planner_max_tokens = 4096                # Max tokens for planner LLM response (default: 4096; reserved — not yet enforced)
 
 [gateway]
 enabled = false
