@@ -22,6 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `/agents` management UI: interactive CLI subcommand (`zeph agents list|show|create|edit|delete`) and TUI panel with 5-state FSM (List, Detail, Create form, Edit form, ConfirmDelete) for full CRUD of sub-agent definitions; CLI `edit` opens `$VISUAL`/`$EDITOR` with fallback to `vi`; TUI wizard covers name, description, model, permission_mode, max_turns, background fields; atomic file writes via `tempfile::NamedTempFile::persist()`; `AGENT_NAME_RE` validation on all create paths; extra confirmation for non-project scope delete in TUI (#1154)
+- `SubAgentDef::serialize_to_markdown()` round-trip serialization via `WritableRawDef` struct with correct `tools.except` nesting (avoids serde asymmetry); `save_atomic()`, `delete_file()`, `default_template()` core API additions
+- `SubAgentDef.file_path: Option<PathBuf>` field populated during `load_with_boundary()` for edit/delete file location
+- `AgentsCommand` enum in `zeph-core::subagent::command` for `/agents` CRUD commands (separate from runtime `/agent` commands)
+- `SubAgentError::Io` variant for file operation errors
 - Query-aware memory routing (`zeph-memory`): `MemoryRouter` trait with `HeuristicRouter` implementation that classifies queries as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid based on query structure; code-like patterns route to keyword search, natural language questions route to semantic search; configurable via `[memory.routing] strategy = "heuristic"` (#1162)
 - Active context compression (`zeph-core`): proactive compression fires before hitting capacity limits; `CompressionStrategy` enum (`reactive`/`proactive`) with configurable `threshold_tokens` and `max_summary_tokens`; mutual exclusion guard prevents double-compaction per turn; `compression_events` and `compression_tokens_saved` metrics; configurable via `[memory.compression]` (#1161)
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time

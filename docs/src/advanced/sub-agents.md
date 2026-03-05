@@ -229,6 +229,85 @@ The default is `20`. Set a lower value for narrow, well-defined tasks.
 | `.zeph/agents/` | Project | Higher (wins on name conflict) |
 | `~/.config/zeph/agents/` | User (global) | Lower |
 
+## Managing Definitions
+
+Use the `zeph agents` subcommand to list, inspect, create, edit, and delete sub-agent definitions from the command line.
+
+### List
+
+```
+$ zeph agents list
+NAME             SCOPE                    DESCRIPTION                       MODEL
+code-reviewer    project/code-reviewer…   Reviews code for correctness      claude-sonnet-4-20250514
+test-writer      user/test-writer.md      Generates unit tests              -
+```
+
+### Show
+
+```
+$ zeph agents show code-reviewer
+Name:        code-reviewer
+Description: Reviews code for correctness
+Source:      project/code-reviewer.md
+Model:       claude-sonnet-4-20250514
+Mode:        Default
+Max turns:   10
+Background:  false
+Tools:       allow ["shell", "web_scrape"]
+
+System prompt:
+You are a code reviewer...
+```
+
+### Create
+
+```
+$ zeph agents create reviewer --description "Code review helper"
+Created .zeph/agents/reviewer.md
+```
+
+Options:
+- `--description` / `-d` — short description (required)
+- `--model` — model override (optional)
+- `--dir` — target directory (default: `.zeph/agents/`)
+
+### Edit
+
+Opens the definition file in `$VISUAL` or `$EDITOR` (falls back to `vi`). After the editor closes, Zeph re-parses the file to validate it:
+
+```
+$ zeph agents edit reviewer
+# $EDITOR opens .zeph/agents/reviewer.md
+Updated /path/to/.zeph/agents/reviewer.md
+```
+
+### Delete
+
+```
+$ zeph agents delete reviewer
+Delete /path/to/.zeph/agents/reviewer.md? [y/N] y
+Deleted reviewer
+```
+
+Use `--yes` / `-y` to skip the confirmation prompt.
+
+### TUI Panel
+
+The TUI command palette (`/`) includes `agents:*` entries that populate the input bar with the corresponding `/agents` command. The agent manager panel (accessible via `/agents list`) provides an interactive overlay with keyboard navigation:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrows | Navigate list |
+| `Enter` | Open detail view |
+| `c` | Create new definition (wizard form) |
+| `e` (in detail view) | Edit via form |
+| `d` (in detail view) | Delete with confirmation |
+| `Esc` | Go back / close panel |
+
+> **Note:** The TUI wizard edits `name`, `description`, `model`, and `max_turns` fields only. To edit `hooks`, `memory`, `skills`, or the system prompt, use `zeph agents edit` with `$EDITOR`.
+>
+> Saving via the TUI form rewrites the file and removes YAML comments. Use the CLI `edit` command to preserve hand-written formatting.
+
 ## Persistent Memory
 
 Sub-agents can maintain persistent state across sessions via a `MEMORY.md` file and topic-specific files in a dedicated memory directory. This lets agents build knowledge over time without starting from scratch on every spawn.

@@ -24,6 +24,9 @@ pub enum SubAgentError {
     #[error("memory error for agent '{name}': {reason}")]
     Memory { name: String, reason: String },
 
+    #[error("I/O error at {path}: {reason}")]
+    Io { path: String, reason: String },
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

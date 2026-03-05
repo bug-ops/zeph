@@ -33,6 +33,7 @@ use crate::acp::run_acp_http_server;
 #[cfg(feature = "acp")]
 use crate::acp::{print_acp_manifest, run_acp_server};
 use crate::cli::Command;
+use crate::commands::agents::handle_agents_command;
 use crate::commands::memory::handle_memory_command;
 #[cfg(feature = "acp")]
 use crate::commands::sessions::handle_sessions_command;
@@ -84,6 +85,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Sessions { command: sess_cmd }) => {
             tracing_subscriber::fmt::init();
             return handle_sessions_command(sess_cmd, cli.config.as_deref()).await;
+        }
+        Some(Command::Agents {
+            command: agents_cmd,
+        }) => {
+            tracing_subscriber::fmt::init();
+            return handle_agents_command(agents_cmd, cli.config.as_deref()).await;
         }
         None => {}
     }

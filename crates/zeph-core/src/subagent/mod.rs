@@ -12,9 +12,10 @@ pub mod memory;
 pub mod resolve;
 pub mod state;
 
-pub use command::AgentCommand;
+pub use command::{AgentCommand, AgentsCommand};
 pub use def::{
     MemoryScope, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy,
+    is_valid_agent_name,
 };
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};

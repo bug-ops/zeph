@@ -31,11 +31,16 @@ pub enum TuiCommand {
     GatewayStatus,
     // Scheduler
     SchedulerList,
-    // Sub-agents
+    // Sub-agents (runtime)
     AgentList,
     AgentStatus,
     AgentCancelPrompt,
     AgentSpawnPrompt,
+    // Sub-agent definitions (CRUD)
+    AgentsShow,
+    AgentsCreate,
+    AgentsEdit,
+    AgentsDelete,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -228,6 +233,34 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::AgentSpawnPrompt,
         },
+        CommandEntry {
+            id: "agents:show",
+            label: "Show sub-agent definition details (/agents show <name>)",
+            category: "agents",
+            shortcut: None,
+            command: TuiCommand::AgentsShow,
+        },
+        CommandEntry {
+            id: "agents:create",
+            label: "Create a new sub-agent definition (/agents create <name>)",
+            category: "agents",
+            shortcut: None,
+            command: TuiCommand::AgentsCreate,
+        },
+        CommandEntry {
+            id: "agents:edit",
+            label: "Edit a sub-agent definition (/agents edit <name>)",
+            category: "agents",
+            shortcut: None,
+            command: TuiCommand::AgentsEdit,
+        },
+        CommandEntry {
+            id: "agents:delete",
+            label: "Delete a sub-agent definition (/agents delete <name>)",
+            category: "agents",
+            shortcut: None,
+            command: TuiCommand::AgentsDelete,
+        },
     ];
     EXTRA
 }
@@ -303,8 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_eight_commands() {
-        assert_eq!(extra_command_registry().len(), 8);
+    fn extra_registry_has_twelve_commands() {
+        assert_eq!(extra_command_registry().len(), 12);
     }
 
     #[test]

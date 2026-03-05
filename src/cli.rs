@@ -136,6 +136,49 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: SessionsCommand,
     },
+    /// Manage sub-agent definitions
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AgentsCommand {
+    /// List all available sub-agent definitions
+    List,
+    /// Show full definition of a sub-agent
+    Show {
+        /// Agent name
+        name: String,
+    },
+    /// Create a new sub-agent definition
+    Create {
+        /// Agent name (must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,63})
+        name: String,
+        /// Short description
+        #[arg(long, short)]
+        description: String,
+        /// Target directory (default: .zeph/agents)
+        #[arg(long, default_value = ".zeph/agents")]
+        dir: std::path::PathBuf,
+        /// Model to use (optional, inherits from parent config)
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Edit a sub-agent definition in $VISUAL or $EDITOR
+    Edit {
+        /// Agent name
+        name: String,
+    },
+    /// Delete a sub-agent definition
+    Delete {
+        /// Agent name
+        name: String,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
