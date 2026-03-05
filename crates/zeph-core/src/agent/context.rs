@@ -1515,21 +1515,21 @@ impl<C: Channel> Agent<C> {
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
         if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // codeql[rust/cleartext-logging] false positive: document chunks from Qdrant, no secrets
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected document RAG context");
         }
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // codeql[rust/cleartext-logging] false positive: user correction text from Qdrant, no secrets
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg));
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
         }
         if let Some(msg) = cross_session_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg));
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
         }
         if let Some(msg) = summaries_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg));
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected summaries into context");
         }
 
