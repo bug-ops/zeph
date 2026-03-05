@@ -35,6 +35,7 @@ use crate::acp::{print_acp_manifest, run_acp_server};
 use crate::cli::Command;
 use crate::commands::agents::handle_agents_command;
 use crate::commands::memory::handle_memory_command;
+use crate::commands::router::handle_router_command;
 #[cfg(feature = "acp")]
 use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
@@ -64,6 +65,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Memory { command: mem_cmd }) => {
             tracing_subscriber::fmt::init();
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
+        }
+        Some(Command::Router {
+            command: router_cmd,
+        }) => {
+            return handle_router_command(router_cmd);
         }
         Some(Command::Ingest {
             path,

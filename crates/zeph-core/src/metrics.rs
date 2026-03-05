@@ -69,6 +69,8 @@ pub struct MetricsSnapshot {
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.
     pub scheduled_tasks: Vec<[String; 4]>,
+    /// Thompson Sampling distribution snapshots: `(provider, alpha, beta)`.
+    pub router_thompson_stats: Vec<(String, f64, f64)>,
 }
 
 pub struct MetricsCollector {

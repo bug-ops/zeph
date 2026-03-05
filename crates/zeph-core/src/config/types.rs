@@ -347,19 +347,36 @@ pub struct CompatibleConfig {
     pub embedding_model: Option<String>,
 }
 
+/// Routing strategy selection for `[llm.router]` config.
+///
+/// EMA and Thompson config fields are split across `RouterConfig` and `LlmConfig`
+/// for historical reasons. `RouterConfig.strategy` is the single dispatch point;
+/// the `LlmConfig.router_ema_*` fields only take effect when `strategy = "ema"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouterStrategyConfig {
+    /// Exponential moving average latency-aware ordering.
+    #[default]
+    Ema,
+    /// Thompson Sampling with Beta distributions (persistence-backed).
+    Thompson,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub chain: Vec<String>,
     /// Routing strategy: `"ema"` (default) or `"thompson"`.
-    #[serde(default = "default_router_strategy")]
-    pub strategy: String,
+    #[serde(default)]
+    pub strategy: RouterStrategyConfig,
     /// Path for persisting Thompson Sampling state. Defaults to `~/.zeph/router_thompson_state.json`.
+    ///
+    /// # Security
+    ///
+    /// This path is user-controlled. The application writes and reads a JSON file at
+    /// this location. Ensure the path is within a directory that is not world-writable
+    /// (e.g., avoid `/tmp`). The file is created with mode `0o600` on Unix.
     #[serde(default)]
     pub thompson_state_path: Option<String>,
-}
-
-fn default_router_strategy() -> String {
-    "ema".to_owned()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2103,5 +2120,41 @@ mod tests {
             MemoryRoute::Semantic,
             "question word must override :: structural pattern"
         );
+    }
+
+    #[test]
+    fn router_strategy_config_serde_ema() {
+        let s: RouterStrategyConfig = toml::from_str("strategy = \"ema\"")
+            .map(|t: toml::Value| {
+                t["strategy"]
+                    .as_str()
+                    .and_then(|v| {
+                        serde_json::from_value(serde_json::Value::String(v.to_owned())).ok()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        assert_eq!(s, RouterStrategyConfig::Ema);
+        let json = serde_json::to_string(&RouterStrategyConfig::Ema).unwrap();
+        assert_eq!(json, r#""ema""#);
+    }
+
+    #[test]
+    fn router_strategy_config_serde_thompson() {
+        let json = serde_json::to_string(&RouterStrategyConfig::Thompson).unwrap();
+        assert_eq!(json, r#""thompson""#);
+        let back: RouterStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, RouterStrategyConfig::Thompson);
+    }
+
+    #[test]
+    fn router_strategy_config_default_is_ema() {
+        assert_eq!(RouterStrategyConfig::default(), RouterStrategyConfig::Ema);
+    }
+
+    #[test]
+    fn router_strategy_config_invalid_deserialize_fails() {
+        let result: Result<RouterStrategyConfig, _> = serde_json::from_str(r#""unknown""#);
+        assert!(result.is_err(), "unknown variant must fail to deserialize");
     }
 }

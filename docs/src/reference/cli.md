@@ -17,6 +17,7 @@ zeph [OPTIONS] [COMMAND]
 | `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
+| `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
 
 When no subcommand is given, Zeph starts the agent loop.
 
@@ -144,6 +145,23 @@ zeph vault set ZEPH_TELEGRAM_TOKEN 123:ABC
 zeph vault list
 zeph vault get ZEPH_CLAUDE_API_KEY
 zeph vault rm ZEPH_TELEGRAM_TOKEN
+```
+
+### `zeph router`
+
+Inspect or reset the Thompson Sampling router state file.
+
+| Subcommand | Description |
+|------------|-------------|
+| `router stats` | Show alpha/beta and mean success rate per provider |
+| `router reset` | Delete the state file (resets to uniform priors) |
+
+Both subcommands accept `--state-path <PATH>` to override the default location (`~/.zeph/router_thompson_state.json`).
+
+```bash
+zeph router stats
+zeph router reset
+zeph router stats --state-path /custom/path.json
 ```
 
 ## Interactive Commands

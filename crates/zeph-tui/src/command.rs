@@ -36,6 +36,8 @@ pub enum TuiCommand {
     AgentStatus,
     AgentCancelPrompt,
     AgentSpawnPrompt,
+    // Router
+    RouterStats,
     // Sub-agent definitions (CRUD)
     AgentsShow,
     AgentsCreate,
@@ -234,6 +236,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             command: TuiCommand::AgentSpawnPrompt,
         },
         CommandEntry {
+            id: "router:stats",
+            label: "Show Thompson router alpha/beta per provider",
+            category: "router",
+            shortcut: None,
+            command: TuiCommand::RouterStats,
+        },
+        CommandEntry {
             id: "agents:show",
             label: "Show sub-agent definition details (/agents show <name>)",
             category: "agents",
@@ -336,8 +345,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_twelve_commands() {
-        assert_eq!(extra_command_registry().len(), 12);
+    fn extra_registry_has_thirteen_commands() {
+        assert_eq!(extra_command_registry().len(), 13);
     }
 
     #[test]

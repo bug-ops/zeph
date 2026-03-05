@@ -4,6 +4,7 @@
 pub(crate) mod agents;
 pub(crate) mod ingest;
 pub(crate) mod memory;
+pub(crate) mod router;
 #[cfg(feature = "acp")]
 pub(crate) mod sessions;
 pub(crate) mod skill;

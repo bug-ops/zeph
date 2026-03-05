@@ -366,6 +366,8 @@ pub(crate) async fn run_daemon(
         () = supervisor.run() => {}
     }
 
+    agent.shutdown().await;
+
     if let Err(e) = remove_pid_file(&pid_file) {
         tracing::warn!("failed to remove PID file: {e}");
     }

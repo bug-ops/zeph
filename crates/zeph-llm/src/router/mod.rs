@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Provider router: EMA-based and Thompson Sampling strategies.
+//!
+//! # Security
+//!
+//! Thompson state is loaded from a user-controlled path at startup. The file is
+//! validated (finite floats, clamped range) and written with `0o600` permissions
+//! on Unix. Do not store the state file in world-writable directories.
 
 pub mod thompson;
 
@@ -62,11 +68,16 @@ impl RouterProvider {
     /// Enable Thompson Sampling strategy.
     ///
     /// Loads existing state from `state_path` if present; falls back to uniform prior.
+    /// Prunes stale entries for providers not in the current chain.
     #[must_use]
     pub fn with_thompson(mut self, state_path: Option<&Path>) -> Self {
         self.strategy = RouterStrategy::Thompson;
         let path = state_path.map_or_else(ThompsonState::default_path, Path::to_path_buf);
-        let state = ThompsonState::load(&path);
+        let mut state = ThompsonState::load(&path);
+        // CRIT-3: prune orphan entries from previous configs.
+        let known: std::collections::HashSet<String> =
+            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        state.prune(&known);
         self.thompson = Some(Arc::new(Mutex::new(state)));
         self.thompson_state_path = Some(path);
         self
@@ -75,6 +86,12 @@ impl RouterProvider {
     /// Persist current Thompson state to disk.
     ///
     /// No-op if Thompson strategy is not active.
+    ///
+    /// # Note
+    ///
+    /// This performs synchronous I/O. Called at agent shutdown from an async context;
+    /// acceptable since it runs after all in-flight requests have completed.
+    // FIXME: if called mid-request, use `tokio::task::spawn_blocking` instead.
     pub fn save_thompson_state(&self) {
         let (Some(thompson), Some(path)) = (&self.thompson, &self.thompson_state_path) else {
             return;
@@ -109,7 +126,7 @@ impl RouterProvider {
         let Some(ref thompson) = self.thompson else {
             return self.providers.clone();
         };
-        let state = thompson
+        let mut state = thompson
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
@@ -166,6 +183,20 @@ impl RouterProvider {
         }
     }
 
+    /// Return a snapshot of Thompson distribution parameters for all tracked providers.
+    ///
+    /// Returns an empty vec if Thompson strategy is not active.
+    #[must_use]
+    pub fn thompson_stats(&self) -> Vec<(String, f64, f64)> {
+        let Some(ref thompson) = self.thompson else {
+            return vec![];
+        };
+        let state = thompson
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.provider_stats()
+    }
+
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         for p in &mut self.providers {
             p.set_status_tx(tx.clone());
@@ -216,6 +247,8 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
+        // TODO: DRY — `chat` and `chat_stream` share the same fallback loop pattern.
+        // Refactor into a shared helper once the API stabilizes.
         Box::pin(async move {
             for p in &providers {
                 let start = std::time::Instant::now();
@@ -258,6 +291,12 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
                     Ok(r) => {
+                        // NOTE: success is recorded at stream-open time, not on stream
+                        // completion. A provider that opens the stream but then fails
+                        // mid-delivery still gets alpha += 1. This is a known pre-1.0
+                        // limitation: fixing it requires wrapping ChatStream to intercept
+                        // the completion/error signal, which adds latency on the hot path.
+                        // Tracked in the adaptive-inference epic (CRIT-2).
                         router.record_outcome(
                             p.name(),
                             true,
@@ -528,5 +567,25 @@ mod tests {
         let r = RouterProvider::new(vec![]).with_thompson(None);
         let ordered = r.ordered_providers();
         assert!(ordered.is_empty());
+    }
+
+    #[test]
+    fn concurrent_record_outcome_does_not_deadlock() {
+        use std::sync::Arc;
+        let r = Arc::new(RouterProvider::new(vec![]).with_thompson(None));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let router = Arc::clone(&r);
+                std::thread::spawn(move || {
+                    router.record_outcome(&format!("p{i}"), i % 2 == 0, 10);
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+        // If we reach here, no deadlock occurred.
+        let stats = r.thompson_stats();
+        assert_eq!(stats.len(), 8);
     }
 }

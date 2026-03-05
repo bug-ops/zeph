@@ -136,6 +136,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: SessionsCommand,
     },
+    /// Inspect or reset Thompson Sampling router state
+    Router {
+        #[command(subcommand)]
+        command: RouterCommand,
+    },
     /// Manage sub-agent definitions
     Agents {
         #[command(subcommand)]
@@ -247,6 +252,22 @@ pub(crate) enum SessionsCommand {
     Delete {
         /// Session ID
         id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RouterCommand {
+    /// Show current Thompson Sampling alpha/beta per provider
+    Stats {
+        /// Path to Thompson state file (default: `~/.zeph/router_thompson_state.json`)
+        #[arg(long, value_name = "PATH")]
+        state_path: Option<std::path::PathBuf>,
+    },
+    /// Delete the Thompson state file (resets to uniform priors)
+    Reset {
+        /// Path to Thompson state file (default: `~/.zeph/router_thompson_state.json`)
+        #[arg(long, value_name = "PATH")]
+        state_path: Option<std::path::PathBuf>,
     },
 }
 

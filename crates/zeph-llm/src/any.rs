@@ -113,6 +113,27 @@ impl AnyProvider {
         }
     }
 
+    /// Persist router state to disk if this provider is a `RouterProvider` with Thompson strategy.
+    ///
+    /// No-op for all other provider variants.
+    pub fn save_router_state(&self) {
+        if let Self::Router(p) = self {
+            p.save_thompson_state();
+        }
+    }
+
+    /// Return Thompson Sampling distribution snapshots `(provider, alpha, beta)`.
+    ///
+    /// Returns an empty vec for non-router providers or EMA strategy.
+    #[must_use]
+    pub fn router_thompson_stats(&self) -> Vec<(String, f64, f64)> {
+        if let Self::Router(p) = self {
+            p.thompson_stats()
+        } else {
+            vec![]
+        }
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

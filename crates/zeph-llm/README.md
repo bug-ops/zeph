@@ -22,7 +22,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `compatible` | Generic OpenAI-compatible endpoint backend |
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
-| `router` | Model selection and routing logic; `EmaTracker` maintains per-provider exponential moving average latency; when `router_ema_enabled = true`, providers are periodically reordered by EMA score |
+| `router` | Model selection and routing logic with two strategies: EMA latency tracking and Thompson Sampling (Beta distributions). `RouterProvider` dispatches to the configured strategy and records outcomes per provider |
 | `vision` | Image input support — base64-encoded images in LLM requests; optional dedicated `vision_model` per provider |
 | `extractor` | `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
 | `sse` | Shared `sse_to_chat_stream()` helpers for Claude and OpenAI SSE parsing |
@@ -33,19 +33,48 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 
 **Re-exports:** `LlmProvider`, `LlmError`
 
-## EMA routing
+## Router strategies
 
-When `router_ema_enabled = true`, `EmaTracker` records per-provider call latency after each successful response. Providers are reordered by EMA score every `router_reorder_interval` seconds, so the fastest reliable provider is tried first.
+The router supports two strategies for ordering providers in the fallback chain. Set the strategy in `[llm.router]`:
+
+### EMA (default)
+
+Exponential moving average latency tracking. After each response, `EmaTracker` records provider latency and periodically reorders the chain so the fastest reliable provider is tried first.
 
 ```toml
 [llm]
 router_ema_enabled      = true
 router_ema_alpha        = 0.1   # smoothing factor; lower = slower to adapt
 router_reorder_interval = 60    # seconds between reordering
+
+[llm.router]
+strategy = "ema"
 ```
 
+### Thompson Sampling
+
+Adaptive model selection using Beta distributions. Each provider maintains a Beta(alpha, beta) distribution initialized with a uniform prior (1, 1). On each request the router samples all distributions and picks the provider with the highest sample; after the response it updates alpha (success) or beta (failure). This naturally balances exploration of less-tested providers with exploitation of known-good ones.
+
+State persists across restarts to `~/.zeph/router_thompson_state.json` (configurable). Stale entries for removed providers are pruned automatically on startup.
+
+```toml
+[llm.router]
+chain    = ["claude", "openai", "ollama"]
+strategy = "thompson"
+# thompson_state_path = "~/.zeph/router_thompson_state.json"  # optional
+```
+
+CLI commands for inspecting and managing Thompson state:
+
+```bash
+zeph router stats   # show per-provider alpha/beta and success rate
+zeph router reset   # reset all distributions to uniform prior
+```
+
+TUI: `/router stats` displays the same information in the dashboard.
+
 > [!NOTE]
-> EMA routing is disabled by default. It is most useful in multi-provider setups where provider latencies differ significantly or change over time.
+> Thompson Sampling is most useful when you have multiple providers with varying reliability and want the router to automatically converge on the best one while still occasionally probing alternatives.
 
 ## Claude extended thinking
 

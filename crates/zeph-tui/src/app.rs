@@ -930,6 +930,38 @@ impl App {
                 };
                 self.push_system_message(msg);
             }
+            TuiCommand::RouterStats => {
+                let msg = if self.metrics.router_thompson_stats.is_empty() {
+                    "Router: no Thompson state available.\n\
+                     (Thompson strategy not active, or no LLM calls made yet)"
+                        .to_owned()
+                } else {
+                    let total_mean: f64 = self
+                        .metrics
+                        .router_thompson_stats
+                        .iter()
+                        .map(|(_, a, b)| a / (a + b))
+                        .sum();
+                    let lines: Vec<String> = self
+                        .metrics
+                        .router_thompson_stats
+                        .iter()
+                        .map(|(name, alpha, beta)| {
+                            let mean = alpha / (alpha + beta);
+                            let pct = if total_mean > 0.0 {
+                                mean / total_mean * 100.0
+                            } else {
+                                0.0
+                            };
+                            format!("  {name:<28}  α={alpha:.2}  β={beta:.2}  Mean={pct:.1}%")
+                        })
+                        .collect();
+                    let n = self.metrics.router_thompson_stats.len();
+                    let joined = lines.join("\n");
+                    format!("Thompson Sampling state ({n} providers):\n{joined}")
+                };
+                self.push_system_message(msg);
+            }
         }
     }
 
