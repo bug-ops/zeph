@@ -782,6 +782,8 @@ pub struct MemoryConfig {
     pub compression: CompressionConfig,
     #[serde(default)]
     pub routing: RoutingConfig,
+    #[serde(default)]
+    pub graph: GraphConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
@@ -1697,6 +1699,7 @@ impl Default for Config {
                 eviction: zeph_memory::EvictionConfig::default(),
                 compression: CompressionConfig::default(),
                 routing: RoutingConfig::default(),
+                graph: GraphConfig::default(),
             },
             telegram: None,
             discord: None,
@@ -1736,6 +1739,74 @@ pub enum RoutingStrategy {
 pub struct RoutingConfig {
     /// Routing strategy. Currently only `heuristic` is supported.
     pub strategy: RoutingStrategy,
+}
+
+fn default_graph_max_entities_per_message() -> usize {
+    10
+}
+
+fn default_graph_max_edges_per_message() -> usize {
+    15
+}
+
+fn default_graph_community_refresh_interval() -> usize {
+    100
+}
+
+fn default_graph_entity_similarity_threshold() -> f32 {
+    0.85
+}
+
+fn default_graph_extraction_timeout_secs() -> u64 {
+    15
+}
+
+fn default_graph_max_hops() -> u32 {
+    2
+}
+
+fn default_graph_recall_limit() -> usize {
+    10
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GraphConfig {
+    pub enabled: bool,
+    pub extract_model: String,
+    #[serde(default = "default_graph_max_entities_per_message")]
+    pub max_entities_per_message: usize,
+    #[serde(default = "default_graph_max_edges_per_message")]
+    pub max_edges_per_message: usize,
+    #[serde(default = "default_graph_community_refresh_interval")]
+    pub community_refresh_interval: usize,
+    #[serde(default = "default_graph_entity_similarity_threshold")]
+    pub entity_similarity_threshold: f32,
+    #[serde(default = "default_graph_extraction_timeout_secs")]
+    pub extraction_timeout_secs: u64,
+    #[serde(default)]
+    pub use_embedding_resolution: bool,
+    #[serde(default = "default_graph_max_hops")]
+    pub max_hops: u32,
+    #[serde(default = "default_graph_recall_limit")]
+    pub recall_limit: usize,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            extract_model: String::new(),
+            max_entities_per_message: default_graph_max_entities_per_message(),
+            max_edges_per_message: default_graph_max_edges_per_message(),
+            community_refresh_interval: default_graph_community_refresh_interval(),
+            entity_similarity_threshold: default_graph_entity_similarity_threshold(),
+            extraction_timeout_secs: default_graph_extraction_timeout_secs(),
+            use_embedding_resolution: false,
+            max_hops: default_graph_max_hops(),
+            recall_limit: default_graph_recall_limit(),
+        }
+    }
 }
 
 /// Compression strategy for active context compression (#1161).
@@ -2161,5 +2232,30 @@ mod tests {
     fn router_strategy_config_invalid_deserialize_fails() {
         let result: Result<RouterStrategyConfig, _> = serde_json::from_str(r#""unknown""#);
         assert!(result.is_err(), "unknown variant must fail to deserialize");
+    }
+
+    #[test]
+    fn graph_config_defaults() {
+        let cfg = GraphConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.extract_model.is_empty());
+        assert_eq!(cfg.max_entities_per_message, 10);
+        assert_eq!(cfg.max_edges_per_message, 15);
+        assert_eq!(cfg.community_refresh_interval, 100);
+        assert!((cfg.entity_similarity_threshold - 0.85).abs() < f32::EPSILON);
+        assert_eq!(cfg.extraction_timeout_secs, 15);
+        assert!(!cfg.use_embedding_resolution);
+        assert_eq!(cfg.max_hops, 2);
+        assert_eq!(cfg.recall_limit, 10);
+    }
+
+    #[test]
+    fn graph_config_toml_round_trip() {
+        let original = GraphConfig::default();
+        let toml_str = toml::to_string_pretty(&original).expect("serialize");
+        let back: GraphConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.enabled, original.enabled);
+        assert_eq!(back.max_hops, original.max_hops);
+        assert_eq!(back.recall_limit, original.recall_limit);
     }
 }
