@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `GraphExtractor` with LLM-powered entity/relation extraction via `chat_typed_erased`, system prompt with 10 extraction rules, truncation guards, and graceful parse-failure degradation (#1225)
+- Add `EntityResolver` with exact name+type entity resolution (`resolve`) and edge deduplication/supersession (`resolve_edge`), case-insensitive entity matching, unknown-type coercion to `Concept` (#1225)
+- Add `ExtractionResult`, `ExtractedEntity`, `ExtractedEdge` types with `JsonSchema` derivation for structured LLM output (#1225)
+- Add `GraphStore::edges_exact` for unidirectional edge queries (performance optimization) (#1225)
+- Add entity name sanitization: control-character stripping (ASCII controls + BiDi overrides), 512-byte length cap, empty-name rejection (#1225)
+- Add relation/fact string sanitization: control-character stripping, length caps (256/2048 bytes) (#1225)
 - Add graph memory schema with SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`) and `messages.graph_processed` flag (migration 021) (#1224)
 - Add `GraphStore` CRUD with 18 methods: entity/edge/community upsert, BFS traversal with cycle-safe iterative algorithm, metadata persistence (#1224)
 - Add `EntityType` enum (8 variants), `Entity`, `Edge`, `Community`, `GraphFact` types in `zeph-memory::graph` module (#1224)

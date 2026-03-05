@@ -33,7 +33,7 @@ zeph-llm.workspace = true
 
 [features]
 default = []
-graph-memory = []
+graph-memory = ["zeph-llm/schema"]
 mock = []
 pdf = ["dep:pdf-extract"]
 
