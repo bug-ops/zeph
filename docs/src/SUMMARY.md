@@ -67,6 +67,7 @@
 - [Feature Flags](reference/feature-flags.md)
 - [Security](reference/security.md)
   - [MCP Security](reference/security/mcp.md)
+  - [Untrusted Content Isolation](reference/security/untrusted-content-isolation.md)
 
 # Development
 
