@@ -6,6 +6,8 @@
 pub mod dag;
 pub mod error;
 pub mod graph;
+pub mod router;
+pub mod scheduler;
 
 pub use crate::config::OrchestrationConfig;
 pub use error::OrchestrationError;
@@ -13,3 +15,5 @@ pub use graph::{
     FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId, TaskNode,
     TaskResult, TaskStatus,
 };
+pub use router::{AgentRouter, RuleBasedRouter};
+pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};

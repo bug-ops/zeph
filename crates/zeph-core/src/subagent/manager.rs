@@ -1387,6 +1387,112 @@ impl SubAgentManager {
     pub fn agents_def(&self, task_id: &str) -> Option<&SubAgentDef> {
         self.agents.get(task_id).map(|h| &h.def)
     }
+
+    /// Spawn a sub-agent for an orchestrated task.
+    ///
+    /// Identical to [`spawn`][Self::spawn] but wraps the `JoinHandle` to send a
+    /// [`crate::orchestration::TaskEvent`] on the provided channel when the agent loop
+    /// terminates. This allows the `DagScheduler` to receive completion notifications
+    /// without polling (ADR-027).
+    ///
+    /// The `event_tx` channel is best-effort: if the scheduler is dropped before all
+    /// agents complete, the send will fail silently with a warning log.
+    ///
+    /// # Errors
+    ///
+    /// Same error conditions as [`spawn`][Self::spawn].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal agent entry is missing after a successful `spawn` call.
+    /// This is a programming error and should never occur in normal operation.
+    #[cfg(feature = "orchestration")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_for_task(
+        &mut self,
+        def_name: &str,
+        task_prompt: &str,
+        provider: AnyProvider,
+        tool_executor: Arc<dyn ErasedToolExecutor>,
+        skills: Option<Vec<String>>,
+        config: &SubAgentConfig,
+        orch_task_id: crate::orchestration::TaskId,
+        event_tx: tokio::sync::mpsc::Sender<crate::orchestration::TaskEvent>,
+    ) -> Result<String, SubAgentError> {
+        use crate::orchestration::{TaskEvent, TaskOutcome};
+
+        let handle_id = self.spawn(
+            def_name,
+            task_prompt,
+            provider,
+            tool_executor,
+            skills,
+            config,
+        )?;
+
+        let handle = self
+            .agents
+            .get_mut(&handle_id)
+            .expect("just spawned agent must exist");
+
+        let original_join = handle
+            .join_handle
+            .take()
+            .expect("just spawned agent must have a join handle");
+
+        let handle_id_clone = handle_id.clone();
+        let wrapped_join: tokio::task::JoinHandle<anyhow::Result<String>> =
+            tokio::spawn(async move {
+                let result = original_join.await;
+
+                let (outcome, output) = match &result {
+                    Ok(Ok(output)) => (
+                        TaskOutcome::Completed {
+                            output: output.clone(),
+                            artifacts: vec![],
+                        },
+                        Ok(output.clone()),
+                    ),
+                    Ok(Err(e)) => (
+                        TaskOutcome::Failed {
+                            error: e.to_string(),
+                        },
+                        Err(anyhow::anyhow!("{e}")),
+                    ),
+                    Err(join_err) => (
+                        TaskOutcome::Failed {
+                            // Use Debug format to preserve panic backtrace info (S3).
+                            error: format!("task panicked: {join_err:?}"),
+                        },
+                        Err(anyhow::anyhow!("task panicked: {join_err:?}")),
+                    ),
+                };
+
+                // Best-effort send. If the scheduler was dropped, warn but do not fail.
+                if let Err(e) = event_tx
+                    .send(TaskEvent {
+                        task_id: orch_task_id,
+                        agent_handle_id: handle_id_clone,
+                        outcome,
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to send TaskEvent: scheduler may have been dropped"
+                    );
+                }
+
+                match output {
+                    Ok(s) => Ok(s),
+                    Err(e) => Err(e),
+                }
+            });
+
+        handle.join_handle = Some(wrapped_join);
+
+        Ok(handle_id)
+    }
 }
 
 #[cfg(test)]

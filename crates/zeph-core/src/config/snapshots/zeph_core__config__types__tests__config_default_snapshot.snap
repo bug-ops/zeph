@@ -287,3 +287,5 @@ max_parallel = 4
 default_failure_strategy = "abort"
 default_max_retries = 3
 task_timeout_secs = 300
+dependency_context_budget = 16384
+confirm_before_execute = true

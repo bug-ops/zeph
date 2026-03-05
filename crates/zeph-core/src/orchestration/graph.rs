@@ -246,7 +246,7 @@ impl TaskGraph {
     }
 }
 
-fn chrono_now() -> String {
+pub(crate) fn chrono_now() -> String {
     // ISO-8601 UTC timestamp, consistent with the rest of the codebase.
     // Format: "2026-03-05T22:04:41Z"
     let secs = std::time::SystemTime::now()
