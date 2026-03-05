@@ -42,6 +42,7 @@ That's it. The sub-agent works in the background and reports results when done.
 | `/agent bg <name> <prompt>` | Alias for `spawn` |
 | `/agent status` | Show active sub-agents with state and progress |
 | `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `/agent resume <id> <prompt>` | Resume a completed sub-agent with its conversation history |
 | `/agent approve <id>` | Approve a pending secret request |
 | `/agent deny <id>` | Deny a pending secret request |
 | `@name <prompt>` | Shorthand for `/agent spawn` |
@@ -61,6 +62,67 @@ The `cancel` command accepts a UUID prefix. If the prefix is ambiguous (matches 
 ```
 > /agent cancel a1b2
 Cancelled sub-agent a1b2c3d4-...
+```
+
+### Resuming
+
+Resume a previously completed sub-agent session with `/agent resume`. The agent is re-spawned with its full conversation history loaded from the transcript, so it picks up where it left off:
+
+```
+> /agent resume a1b2 Fix the remaining two warnings
+Resuming sub-agent a1b2c3d4-... (code-reviewer) with 12 messages
+```
+
+The `<id>` argument accepts a UUID prefix, just like `cancel`. The `<prompt>` is appended as a new user message after the restored history.
+
+Resume requires transcript storage to be enabled (it is by default). If the transcript file for the given ID does not exist, the command returns an error.
+
+### Transcript Storage
+
+Every sub-agent session is recorded as a JSONL transcript file in `.zeph/subagents/` (configurable). Each line is a JSON object containing a sequence number, ISO 8601 timestamp, and the full message:
+
+```
+.zeph/subagents/
+  a1b2c3d4-...-...-....jsonl        # conversation transcript
+  a1b2c3d4-...-...-....meta.json    # sidecar metadata
+```
+
+The **meta sidecar** (`<agent_id>.meta.json`) stores structured metadata about the session:
+
+```json
+{
+  "agent_id": "a1b2c3d4-...",
+  "agent_name": "code-reviewer",
+  "def_name": "code-reviewer",
+  "status": "Completed",
+  "started_at": "2026-03-05T10:00:00Z",
+  "finished_at": "2026-03-05T10:01:38Z",
+  "resumed_from": null,
+  "turns_used": 5
+}
+```
+
+When a session is resumed, the new meta sidecar records the original agent ID in `resumed_from`, creating a traceable chain.
+
+Old transcript files are automatically cleaned up. When the file count exceeds `transcript_max_files`, the oldest transcripts (and their sidecars) are deleted on each spawn or resume.
+
+#### Transcript Configuration
+
+Configure transcript behavior in the `[agents]` section of `config.toml`:
+
+```toml
+[agents]
+# Enable or disable transcript recording (default: true).
+# When false, no transcript files are written and /agent resume is unavailable.
+transcript_enabled = true
+
+# Directory for transcript files (default: .zeph/subagents).
+# transcript_dir = ".zeph/subagents"
+
+# Maximum number of .jsonl files to keep (default: 50).
+# Oldest files are deleted when the count exceeds this limit.
+# Set to 0 for unlimited (no cleanup).
+transcript_max_files = 50
 ```
 
 ## Writing Definitions
@@ -228,6 +290,93 @@ The default is `20`. Set a lower value for narrow, well-defined tasks.
 |------|-------|----------|
 | `.zeph/agents/` | Project | Higher (wins on name conflict) |
 | `~/.config/zeph/agents/` | User (global) | Lower |
+
+## Managing Definitions
+
+Use the `zeph agents` subcommand to list, inspect, create, edit, and delete sub-agent definitions from the command line.
+
+### List
+
+```
+$ zeph agents list
+NAME             SCOPE                    DESCRIPTION                       MODEL
+code-reviewer    project/code-reviewer…   Reviews code for correctness      claude-sonnet-4-20250514
+test-writer      user/test-writer.md      Generates unit tests              -
+```
+
+### Show
+
+```
+$ zeph agents show code-reviewer
+Name:        code-reviewer
+Description: Reviews code for correctness
+Source:      project/code-reviewer.md
+Model:       claude-sonnet-4-20250514
+Mode:        Default
+Max turns:   10
+Background:  false
+Tools:       allow ["shell", "web_scrape"]
+
+System prompt:
+You are a code reviewer...
+```
+
+### Create
+
+```
+$ zeph agents create reviewer --description "Code review helper"
+Created .zeph/agents/reviewer.md
+
+$ zeph agents create reviewer --description "Code review helper" --model claude-sonnet-4-20250514
+Created .zeph/agents/reviewer.md
+
+$ zeph agents create reviewer --description "Global helper" --dir ~/.config/zeph/agents/
+Created /Users/you/.config/zeph/agents/reviewer.md
+```
+
+Options:
+- `--description` / `-d` — short description (required)
+- `--model` — model override (optional)
+- `--dir` — target directory (default: `.zeph/agents/`)
+
+### Edit
+
+Opens the definition file in `$VISUAL` or `$EDITOR` (falls back to `vi`). After the editor closes, Zeph re-parses the file to validate it:
+
+```
+$ zeph agents edit reviewer
+# $EDITOR opens .zeph/agents/reviewer.md
+Updated /path/to/.zeph/agents/reviewer.md
+```
+
+### Delete
+
+```
+$ zeph agents delete reviewer
+Delete /path/to/.zeph/agents/reviewer.md? [y/N] y
+Deleted reviewer
+```
+
+Use `--yes` / `-y` to skip the confirmation prompt.
+
+### TUI Panel
+
+The TUI command palette (`/`) includes `agents:*` entries. Select one to open the agent manager overlay or populate the input bar with the corresponding `/agent` command. Open the overlay directly by typing `/agents` in the command palette and selecting `agents:list`.
+
+The agent manager overlay provides keyboard navigation over all loaded definitions:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrows | Navigate list |
+| `Enter` | Open detail view |
+| `c` | Create new definition (wizard form) |
+| `e` (in detail view) | Edit via form |
+| `d` (in detail view) | Delete with confirmation |
+| `Esc` | Go back / close panel |
+
+> **Note:** The TUI wizard edits `name`, `description`, `model`, and `max_turns` fields only. To edit `hooks`, `memory`, `skills`, or the system prompt, use `zeph agents edit` with `$EDITOR`.
+>
+> Saving via the TUI form rewrites the file and removes YAML comments. Use the CLI `edit` command to preserve hand-written formatting.
 
 ## Persistent Memory
 
@@ -506,6 +655,17 @@ default_disallowed_tools = []
 # When false (the default), spawning a definition with permission_mode: bypass_permissions
 # is rejected at load time with an error.
 allow_bypass_permissions = false
+
+# Enable JSONL transcript recording for sub-agent sessions (default: true).
+# When false, /agent resume is unavailable.
+transcript_enabled = true
+
+# Directory for transcript files (default: .zeph/subagents).
+# transcript_dir = ".zeph/subagents"
+
+# Maximum number of transcript files to keep (default: 50).
+# Set to 0 for unlimited.
+transcript_max_files = 50
 
 # Default memory scope for agents that do not set `memory` in their frontmatter.
 # Valid values: "user", "project", "local"

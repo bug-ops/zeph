@@ -881,6 +881,26 @@ impl App {
                 self.input.push_str("/agent spawn ");
                 self.cursor_position = self.input.len();
             }
+            TuiCommand::AgentsShow => {
+                self.input.clear();
+                self.input.push_str("/agents show ");
+                self.cursor_position = self.input.len();
+            }
+            TuiCommand::AgentsCreate => {
+                self.input.clear();
+                self.input.push_str("/agents create ");
+                self.cursor_position = self.input.len();
+            }
+            TuiCommand::AgentsEdit => {
+                self.input.clear();
+                self.input.push_str("/agents edit ");
+                self.cursor_position = self.input.len();
+            }
+            TuiCommand::AgentsDelete => {
+                self.input.clear();
+                self.input.push_str("/agents delete ");
+                self.cursor_position = self.input.len();
+            }
             TuiCommand::SchedulerList => {
                 let msg = if self.metrics.scheduled_tasks.is_empty() {
                     "No scheduled tasks.".to_owned()

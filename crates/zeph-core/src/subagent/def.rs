@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 use super::error::SubAgentError;
 use super::hooks::SubagentHooks;
@@ -15,6 +16,11 @@ use super::hooks::SubagentHooks;
 /// Must start with alphanumeric, max 64 chars. Rejects unicode homoglyphs.
 pub(super) static AGENT_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$").unwrap());
+
+/// Returns true if the given name passes the agent name validation regex.
+pub fn is_valid_agent_name(name: &str) -> bool {
+    AGENT_NAME_RE.is_match(name)
+}
 
 /// Maximum allowed size for a sub-agent definition file (256 KiB).
 ///
@@ -111,6 +117,11 @@ pub struct SubAgentDef {
     /// filesystem layout in diagnostics and `/agent list` output.
     #[serde(skip)]
     pub source: Option<String>,
+    /// Full filesystem path of the definition file (populated by `load_with_boundary`).
+    ///
+    /// Used internally by edit/delete operations. Not included in diagnostics output.
+    #[serde(skip)]
+    pub file_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -451,6 +462,7 @@ impl SubAgentDef {
             memory: raw.memory,
             system_prompt: body.trim().to_owned(),
             source: None,
+            file_path: None,
         })
     }
 
@@ -532,6 +544,8 @@ impl SubAgentDef {
         } else {
             filename.to_owned()
         });
+        // Populate file_path for edit/delete operations (not used in diagnostics output).
+        def.file_path = Some(canonical);
 
         Ok(def)
     }
@@ -601,14 +615,16 @@ impl SubAgentDef {
                 continue; // directory doesn't exist — skip silently
             };
 
-            // Compute boundary for symlink protection on non-project directories.
-            // Project dir (.zeph/agents) is trusted; user/extra dirs get boundary checks.
+            // Compute boundary for symlink protection. CLI dirs are trusted (user-supplied,
+            // already validated by the shell). All other dirs (project, user, extra) get a
+            // canonical boundary check to reject symlinks that escape the allowed directory.
             let is_cli_dir = cli_agents.iter().any(|c| c == path);
-            let is_project_dir = path == &PathBuf::from(".zeph/agents");
-            let boundary = if is_cli_dir || is_project_dir {
+            let boundary = if is_cli_dir {
                 None
             } else {
                 // Canonicalize the directory itself as the boundary.
+                // This applies to project dir (.zeph/agents) as well — a symlink at
+                // .zeph/agents pointing outside the project would be rejected.
                 std::fs::canonicalize(path).ok()
             };
 
@@ -664,6 +680,218 @@ impl SubAgentDef {
         }
 
         Ok(result)
+    }
+}
+
+// ── Serialization helpers ────────────────────────────────────────────────────
+
+/// Mirror of `RawSubAgentDef` with correct `tools.except` nesting for round-trip
+/// serialization. Avoids the IMP-CRIT-04 serde asymmetry on `SubAgentDef`.
+#[derive(Serialize)]
+struct WritableRawDef<'a> {
+    name: &'a str,
+    description: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "WritableToolPolicy::is_inherit_all")]
+    tools: WritableToolPolicy<'a>,
+    #[serde(skip_serializing_if = "WritablePermissions::is_default")]
+    permissions: WritablePermissions<'a>,
+    #[serde(skip_serializing_if = "SkillFilter::is_empty")]
+    skills: &'a SkillFilter,
+    #[serde(skip_serializing_if = "SubagentHooks::is_empty")]
+    hooks: &'a SubagentHooks,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory: Option<MemoryScope>,
+}
+
+#[derive(Serialize)]
+struct WritableToolPolicy<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allow: Option<&'a Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deny: Option<&'a Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    except: &'a Vec<String>,
+}
+
+impl<'a> WritableToolPolicy<'a> {
+    fn from_def(policy: &'a ToolPolicy, except: &'a Vec<String>) -> Self {
+        match policy {
+            ToolPolicy::AllowList(v) => Self {
+                allow: Some(v),
+                deny: None,
+                except,
+            },
+            ToolPolicy::DenyList(v) => Self {
+                allow: None,
+                deny: Some(v),
+                except,
+            },
+            ToolPolicy::InheritAll => Self {
+                allow: None,
+                deny: None,
+                except,
+            },
+        }
+    }
+
+    fn is_inherit_all(&self) -> bool {
+        self.allow.is_none() && self.deny.is_none() && self.except.is_empty()
+    }
+}
+
+#[derive(Serialize)]
+struct WritablePermissions<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets: &'a Vec<String>,
+    max_turns: u32,
+    background: bool,
+    timeout_secs: u64,
+    ttl_secs: u64,
+    permission_mode: PermissionMode,
+}
+
+impl<'a> WritablePermissions<'a> {
+    fn from_def(p: &'a SubAgentPermissions) -> Self {
+        Self {
+            secrets: &p.secrets,
+            max_turns: p.max_turns,
+            background: p.background,
+            timeout_secs: p.timeout_secs,
+            ttl_secs: p.ttl_secs,
+            permission_mode: p.permission_mode,
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        self.secrets.is_empty()
+            && self.max_turns == default_max_turns()
+            && !self.background
+            && self.timeout_secs == default_timeout()
+            && self.ttl_secs == default_ttl()
+            && self.permission_mode == PermissionMode::Default
+    }
+}
+
+impl SkillFilter {
+    fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+}
+
+impl SubagentHooks {
+    fn is_empty(&self) -> bool {
+        self.pre_tool_use.is_empty() && self.post_tool_use.is_empty()
+    }
+}
+
+impl SubAgentDef {
+    /// Serialize the definition to YAML frontmatter + markdown body.
+    ///
+    /// Uses `WritableRawDef` (with correct `tools.except` nesting) to avoid the
+    /// IMP-CRIT-04 serde asymmetry. The result can be re-parsed with `SubAgentDef::parse`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `serde_norway` serialization fails (should not happen for valid structs).
+    #[must_use]
+    pub fn serialize_to_markdown(&self) -> String {
+        let tools = WritableToolPolicy::from_def(&self.tools, &self.disallowed_tools);
+        let permissions = WritablePermissions::from_def(&self.permissions);
+
+        let writable = WritableRawDef {
+            name: &self.name,
+            description: &self.description,
+            model: self.model.as_deref(),
+            tools,
+            permissions,
+            skills: &self.skills,
+            hooks: &self.hooks,
+            memory: self.memory,
+        };
+
+        let yaml = serde_norway::to_string(&writable).expect("serialization cannot fail");
+        if self.system_prompt.is_empty() {
+            format!("---\n{yaml}---\n")
+        } else {
+            format!("---\n{yaml}---\n\n{}\n", self.system_prompt)
+        }
+    }
+
+    /// Write definition to `{dir}/{self.name}.md` atomically using temp+rename.
+    ///
+    /// Creates parent directories if needed. Uses `tempfile::NamedTempFile` in the same
+    /// directory for automatic cleanup on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::Invalid`] if the agent name fails validation (prevents path traversal).
+    /// Returns [`SubAgentError::Io`] if directory creation, write, or rename fails.
+    pub fn save_atomic(&self, dir: &Path) -> Result<PathBuf, SubAgentError> {
+        if !AGENT_NAME_RE.is_match(&self.name) {
+            return Err(SubAgentError::Invalid(format!(
+                "name '{}' is invalid: must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{{0,63}}$",
+                self.name
+            )));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| SubAgentError::Io {
+            path: dir.display().to_string(),
+            reason: format!("cannot create directory: {e}"),
+        })?;
+
+        let content = self.serialize_to_markdown();
+        let target = dir.join(format!("{}.md", self.name));
+
+        let mut tmp = NamedTempFile::new_in(dir).map_err(|e| SubAgentError::Io {
+            path: dir.display().to_string(),
+            reason: format!("cannot create temp file: {e}"),
+        })?;
+
+        std::io::Write::write_all(&mut tmp, content.as_bytes()).map_err(|e| SubAgentError::Io {
+            path: dir.display().to_string(),
+            reason: format!("cannot write temp file: {e}"),
+        })?;
+
+        tmp.persist(&target).map_err(|e| SubAgentError::Io {
+            path: target.display().to_string(),
+            reason: format!("cannot rename temp file: {e}"),
+        })?;
+
+        Ok(target)
+    }
+
+    /// Delete a definition file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::Io`] if the file does not exist or cannot be removed.
+    pub fn delete_file(path: &Path) -> Result<(), SubAgentError> {
+        std::fs::remove_file(path).map_err(|e| SubAgentError::Io {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })
+    }
+
+    /// Create a minimal definition suitable for the create wizard.
+    ///
+    /// Sets sensible defaults: `InheritAll` tools, default permissions, empty system prompt.
+    #[must_use]
+    pub fn default_template(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: Vec::new(),
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            system_prompt: String::new(),
+            source: None,
+            file_path: None,
+        }
     }
 }
 
@@ -1399,5 +1627,224 @@ mod tests {
         let content = "---\nname: my_agent-v2\ndescription: b\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
         assert_eq!(def.name, "my_agent-v2");
+    }
+
+    // ── Serialization / save / delete / template tests ────────────────────────
+
+    #[test]
+    fn default_template_valid() {
+        let def = SubAgentDef::default_template("tester", "Runs tests");
+        assert_eq!(def.name, "tester");
+        assert_eq!(def.description, "Runs tests");
+        assert!(def.model.is_none());
+        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert!(def.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn default_template_roundtrip() {
+        let def = SubAgentDef::default_template("tester", "Runs tests");
+        let markdown = def.serialize_to_markdown();
+        let parsed = SubAgentDef::parse(&markdown).unwrap();
+        assert_eq!(parsed.name, "tester");
+        assert_eq!(parsed.description, "Runs tests");
+    }
+
+    #[test]
+    fn serialize_minimal() {
+        let def = SubAgentDef::default_template("bot", "A bot");
+        let md = def.serialize_to_markdown();
+        assert!(md.starts_with("---\n"));
+        assert!(md.contains("name: bot"));
+        assert!(md.contains("description: A bot"));
+    }
+
+    #[test]
+    fn serialize_roundtrip() {
+        let content = indoc! {"
+            ---
+            name: code-reviewer
+            description: Reviews code changes for correctness and style
+            model: claude-sonnet-4-20250514
+            tools:
+              allow:
+                - shell
+                - web_scrape
+            permissions:
+              max_turns: 10
+              background: false
+              timeout_secs: 300
+              ttl_secs: 120
+            skills:
+              include:
+                - \"git-*\"
+                - \"rust-*\"
+              exclude:
+                - \"deploy-*\"
+            ---
+
+            You are a code reviewer. Report findings with severity.
+        "};
+        let def = SubAgentDef::parse(content).unwrap();
+        let serialized = def.serialize_to_markdown();
+        let reparsed = SubAgentDef::parse(&serialized).unwrap();
+        assert_eq!(reparsed.name, def.name);
+        assert_eq!(reparsed.description, def.description);
+        assert_eq!(reparsed.model, def.model);
+        assert_eq!(reparsed.permissions.max_turns, def.permissions.max_turns);
+        assert_eq!(
+            reparsed.permissions.timeout_secs,
+            def.permissions.timeout_secs
+        );
+        assert_eq!(reparsed.permissions.ttl_secs, def.permissions.ttl_secs);
+        assert_eq!(reparsed.permissions.background, def.permissions.background);
+        assert_eq!(
+            reparsed.permissions.permission_mode,
+            def.permissions.permission_mode
+        );
+        assert_eq!(reparsed.skills.include, def.skills.include);
+        assert_eq!(reparsed.skills.exclude, def.skills.exclude);
+        assert_eq!(reparsed.system_prompt, def.system_prompt);
+        assert!(
+            matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell", "web_scrape"])
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrip_tools_except() {
+        let content = indoc! {"
+            ---
+            name: auditor
+            description: Security auditor
+            tools:
+              allow:
+                - shell
+              except:
+                - shell_sudo
+                - shell_rm
+            ---
+
+            Audit mode.
+        "};
+        let def = SubAgentDef::parse(content).unwrap();
+        let serialized = def.serialize_to_markdown();
+        let reparsed = SubAgentDef::parse(&serialized).unwrap();
+        assert_eq!(reparsed.disallowed_tools, def.disallowed_tools);
+        assert_eq!(reparsed.disallowed_tools, ["shell_sudo", "shell_rm"]);
+        assert!(matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell"]));
+    }
+
+    #[test]
+    fn serialize_all_fields() {
+        let content = indoc! {"
+            ---
+            name: full-agent
+            description: Full featured agent
+            model: claude-opus-4-6
+            tools:
+              allow:
+                - shell
+              except:
+                - shell_sudo
+            permissions:
+              max_turns: 5
+              background: true
+              timeout_secs: 120
+              ttl_secs: 60
+            skills:
+              include:
+                - \"git-*\"
+            ---
+
+            System prompt here.
+        "};
+        let def = SubAgentDef::parse(content).unwrap();
+        let md = def.serialize_to_markdown();
+        assert!(md.contains("model: claude-opus-4-6"));
+        assert!(md.contains("except:"));
+        assert!(md.contains("shell_sudo"));
+        assert!(md.contains("background: true"));
+        assert!(md.contains("System prompt here."));
+    }
+
+    #[test]
+    fn save_atomic_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = SubAgentDef::default_template("myagent", "A test agent");
+        let path = def.save_atomic(dir.path()).unwrap();
+        assert!(path.exists());
+        assert_eq!(path.file_name().unwrap(), "myagent.md");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name: myagent"));
+    }
+
+    #[test]
+    fn save_atomic_creates_parent_dirs() {
+        let base = tempfile::tempdir().unwrap();
+        let nested = base.path().join("a").join("b").join("c");
+        let def = SubAgentDef::default_template("nested", "Nested dir test");
+        let path = def.save_atomic(&nested).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_atomic_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let def1 = SubAgentDef::default_template("agent", "First description");
+        def1.save_atomic(dir.path()).unwrap();
+
+        let def2 = SubAgentDef::default_template("agent", "Second description");
+        def2.save_atomic(dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("agent.md")).unwrap();
+        assert!(content.contains("Second description"));
+        assert!(!content.contains("First description"));
+    }
+
+    #[test]
+    fn delete_file_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = SubAgentDef::default_template("todelete", "Will be deleted");
+        let path = def.save_atomic(dir.path()).unwrap();
+        assert!(path.exists());
+        SubAgentDef::delete_file(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn delete_file_nonexistent_errors() {
+        let path = std::path::PathBuf::from("/tmp/does-not-exist-zeph-test.md");
+        let result = SubAgentDef::delete_file(&path);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), SubAgentError::Io { .. }));
+    }
+
+    #[test]
+    fn save_atomic_rejects_invalid_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut def = SubAgentDef::default_template("valid-name", "desc");
+        // Bypass default_template to inject an invalid name.
+        def.name = "../../etc/cron.d/agent".to_owned();
+        let result = def.save_atomic(dir.path());
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), SubAgentError::Invalid(_)));
+    }
+
+    #[test]
+    fn is_valid_agent_name_accepts_valid() {
+        assert!(super::is_valid_agent_name("reviewer"));
+        assert!(super::is_valid_agent_name("code-reviewer"));
+        assert!(super::is_valid_agent_name("code_reviewer"));
+        assert!(super::is_valid_agent_name("a"));
+        assert!(super::is_valid_agent_name("A1"));
+    }
+
+    #[test]
+    fn is_valid_agent_name_rejects_invalid() {
+        assert!(!super::is_valid_agent_name(""));
+        assert!(!super::is_valid_agent_name("my agent"));
+        assert!(!super::is_valid_agent_name("../../etc"));
+        assert!(!super::is_valid_agent_name("-starts-with-dash"));
+        assert!(!super::is_valid_agent_name("has.dot"));
     }
 }

@@ -3,6 +3,95 @@
 
 use super::error::SubAgentError;
 
+/// Typed representation of a parsed `/agents` command for definition CRUD operations.
+///
+/// Separate from [`AgentCommand`] (runtime operations like spawn/cancel) to avoid
+/// namespace collision between running-agent management and definition management.
+#[derive(Debug, PartialEq)]
+pub enum AgentsCommand {
+    /// List all discovered sub-agent definitions.
+    List,
+    /// Show full details of a definition.
+    Show { name: String },
+    /// Create a new definition.
+    Create { name: String },
+    /// Edit an existing definition.
+    Edit { name: String },
+    /// Delete a definition.
+    Delete { name: String },
+}
+
+impl AgentsCommand {
+    /// Parse from raw input text starting with `/agents`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::InvalidCommand`] if parsing fails.
+    pub fn parse(input: &str) -> Result<Self, SubAgentError> {
+        let rest = input
+            .strip_prefix("/agents")
+            .ok_or_else(|| SubAgentError::InvalidCommand("input must start with /agents".into()))?
+            .trim();
+
+        if rest.is_empty() {
+            return Err(SubAgentError::InvalidCommand(
+                "usage: /agents <list|show|create|edit|delete> [args]".into(),
+            ));
+        }
+
+        let (cmd, args) = rest.split_once(' ').unwrap_or((rest, ""));
+        let cmd = cmd.trim();
+        let args = args.trim();
+
+        match cmd {
+            "list" => Ok(Self::List),
+            "show" => {
+                if args.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "usage: /agents show <name>".into(),
+                    ));
+                }
+                Ok(Self::Show {
+                    name: args.to_owned(),
+                })
+            }
+            "create" => {
+                if args.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "usage: /agents create <name>".into(),
+                    ));
+                }
+                Ok(Self::Create {
+                    name: args.to_owned(),
+                })
+            }
+            "edit" => {
+                if args.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "usage: /agents edit <name>".into(),
+                    ));
+                }
+                Ok(Self::Edit {
+                    name: args.to_owned(),
+                })
+            }
+            "delete" => {
+                if args.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "usage: /agents delete <name>".into(),
+                    ));
+                }
+                Ok(Self::Delete {
+                    name: args.to_owned(),
+                })
+            }
+            other => Err(SubAgentError::InvalidCommand(format!(
+                "unknown subcommand '{other}'; try: list, show, create, edit, delete"
+            ))),
+        }
+    }
+}
+
 /// Typed representation of a parsed `/agent` CLI command or `@agent` mention.
 #[derive(Debug, PartialEq)]
 pub enum AgentCommand {
@@ -28,6 +117,11 @@ pub enum AgentCommand {
     /// Foreground spawn triggered by `@agent_name <prompt>` mention syntax.
     Mention {
         agent: String,
+        prompt: String,
+    },
+    /// Resume a previously completed sub-agent session by ID prefix.
+    Resume {
+        id: String,
         prompt: String,
     },
 }
@@ -63,7 +157,7 @@ impl AgentCommand {
 
         if rest.is_empty() {
             return Err(SubAgentError::InvalidCommand(
-                "usage: /agent <list|spawn|bg|status|cancel|approve|deny> [args]".into(),
+                "usage: /agent <list|spawn|bg|resume|status|cancel|approve|deny> [args]".into(),
             ));
         }
 
@@ -126,8 +220,33 @@ impl AgentCommand {
                     id: args.to_owned(),
                 })
             }
+            "resume" => {
+                let (id, prompt) = args.split_once(' ').ok_or_else(|| {
+                    SubAgentError::InvalidCommand("usage: /agent resume <id> <prompt>".into())
+                })?;
+                let id = id.trim().to_owned();
+                let prompt = prompt.trim().to_owned();
+                if id.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "agent id must not be empty".into(),
+                    ));
+                }
+                // Require at least 4 characters to prevent accidental mass-match or session
+                // enumeration via very short prefixes.
+                if id.len() < 4 {
+                    return Err(SubAgentError::InvalidCommand(
+                        "agent id prefix must be at least 4 characters".into(),
+                    ));
+                }
+                if prompt.is_empty() {
+                    return Err(SubAgentError::InvalidCommand(
+                        "prompt must not be empty".into(),
+                    ));
+                }
+                Ok(Self::Resume { id, prompt })
+            }
             other => Err(SubAgentError::InvalidCommand(format!(
-                "unknown subcommand '{other}'; try: list, spawn, bg, status, cancel, approve, deny"
+                "unknown subcommand '{other}'; try: list, spawn, bg, resume, status, cancel, approve, deny"
             ))),
         }
     }
@@ -414,6 +533,166 @@ mod tests {
     #[test]
     fn parse_at_with_empty_known_returns_error() {
         let err = AgentCommand::parse("@reviewer test", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+    }
+
+    // ── parse resume ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_resume() {
+        let cmd = AgentCommand::parse("/agent resume deadbeef continue the analysis", &[]).unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "deadbeef".into(),
+                prompt: "continue the analysis".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_missing_prompt_returns_error() {
+        let err = AgentCommand::parse("/agent resume deadbeef", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+    }
+
+    #[test]
+    fn parse_resume_missing_id_and_prompt_returns_error() {
+        let err = AgentCommand::parse("/agent resume", &[]).unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+    }
+
+    #[test]
+    fn parse_resume_unknown_subcommand_hint() {
+        let err = AgentCommand::parse("/agent frobnicate", &[]).unwrap_err();
+        if let SubAgentError::InvalidCommand(msg) = err {
+            assert!(
+                msg.contains("resume"),
+                "hint should mention 'resume': {msg}"
+            );
+        } else {
+            panic!("expected InvalidCommand");
+        }
+    }
+
+    #[test]
+    fn parse_resume_prompt_with_spaces_preserved() {
+        let cmd = AgentCommand::parse("/agent resume abc123 do more work and fix the issue", &[])
+            .unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "abc123".into(),
+                prompt: "do more work and fix the issue".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_id_too_short_returns_error() {
+        // id "abc" has only 3 chars — below the 4-char minimum.
+        let err = AgentCommand::parse("/agent resume abc continue", &[]).unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("4 characters")),
+            "expected min-length error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_resume_id_exactly_four_chars_is_accepted() {
+        let cmd = AgentCommand::parse("/agent resume abcd continue the work", &[]).unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Resume {
+                id: "abcd".into(),
+                prompt: "continue the work".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_resume_whitespace_only_prompt_returns_error() {
+        // After split_once, prompt is "   " which trims to "".
+        let err = AgentCommand::parse("/agent resume deadbeef    ", &[]).unwrap_err();
+        // Either split_once returns None (no space after id) or prompt trims to empty.
+        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+    }
+
+    // ── AgentsCommand (definition CRUD) ────────────────────────────────────
+
+    #[test]
+    fn agents_parse_list() {
+        assert_eq!(
+            AgentsCommand::parse("/agents list").unwrap(),
+            AgentsCommand::List
+        );
+    }
+
+    #[test]
+    fn agents_parse_show() {
+        let cmd = AgentsCommand::parse("/agents show code-reviewer").unwrap();
+        assert_eq!(
+            cmd,
+            AgentsCommand::Show {
+                name: "code-reviewer".into()
+            }
+        );
+    }
+
+    #[test]
+    fn agents_parse_create() {
+        let cmd = AgentsCommand::parse("/agents create my-agent").unwrap();
+        assert_eq!(
+            cmd,
+            AgentsCommand::Create {
+                name: "my-agent".into()
+            }
+        );
+    }
+
+    #[test]
+    fn agents_parse_edit() {
+        let cmd = AgentsCommand::parse("/agents edit reviewer").unwrap();
+        assert_eq!(
+            cmd,
+            AgentsCommand::Edit {
+                name: "reviewer".into()
+            }
+        );
+    }
+
+    #[test]
+    fn agents_parse_delete() {
+        let cmd = AgentsCommand::parse("/agents delete reviewer").unwrap();
+        assert_eq!(
+            cmd,
+            AgentsCommand::Delete {
+                name: "reviewer".into()
+            }
+        );
+    }
+
+    #[test]
+    fn agents_parse_missing_subcommand_returns_usage() {
+        let err = AgentsCommand::parse("/agents").unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+    }
+
+    #[test]
+    fn agents_parse_show_missing_name_returns_usage() {
+        let err = AgentsCommand::parse("/agents show").unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+    }
+
+    #[test]
+    fn agents_parse_unknown_subcommand_returns_error() {
+        let err = AgentsCommand::parse("/agents frobnicate").unwrap_err();
+        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("frobnicate")));
+    }
+
+    #[test]
+    fn agents_parse_wrong_prefix_returns_error() {
+        let err = AgentsCommand::parse("/agent list").unwrap_err();
         assert!(matches!(err, SubAgentError::InvalidCommand(_)));
     }
 }

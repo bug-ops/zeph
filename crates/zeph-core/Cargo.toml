@@ -19,7 +19,7 @@ cuda = ["zeph-llm/cuda"]
 daemon = []
 index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
-mock = ["zeph-llm/mock", "zeph-memory/mock", "dep:tempfile"]
+mock = ["zeph-llm/mock", "zeph-memory/mock"]
 
 [dependencies]
 age.workspace = true
@@ -42,7 +42,7 @@ tokio-stream.workspace = true
 toml.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-tempfile = { workspace = true, optional = true }
+tempfile.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
 zeph-mcp.workspace = true

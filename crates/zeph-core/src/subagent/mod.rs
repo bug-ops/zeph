@@ -11,10 +11,12 @@ pub mod manager;
 pub mod memory;
 pub mod resolve;
 pub mod state;
+pub mod transcript;
 
-pub use command::AgentCommand;
+pub use command::{AgentCommand, AgentsCommand};
 pub use def::{
     MemoryScope, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy,
+    is_valid_agent_name,
 };
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
@@ -26,3 +28,4 @@ pub use manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
+pub use transcript::{TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts};

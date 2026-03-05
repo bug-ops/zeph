@@ -22,6 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `/agents` management UI: interactive CLI subcommand (`zeph agents list|show|create|edit|delete`) and TUI panel with 5-state FSM (List, Detail, Create form, Edit form, ConfirmDelete) for full CRUD of sub-agent definitions; CLI `edit` opens `$VISUAL`/`$EDITOR` with fallback to `vi`; TUI wizard covers name, description, model, permission_mode, max_turns, background fields; atomic file writes via `tempfile::NamedTempFile::persist()`; `AGENT_NAME_RE` validation on all create paths; extra confirmation for non-project scope delete in TUI (#1154)
+- `SubAgentDef::serialize_to_markdown()` round-trip serialization via `WritableRawDef` struct with correct `tools.except` nesting (avoids serde asymmetry); `save_atomic()`, `delete_file()`, `default_template()` core API additions
+- `SubAgentDef.file_path: Option<PathBuf>` field populated during `load_with_boundary()` for edit/delete file location
+- `AgentsCommand` enum in `zeph-core::subagent::command` for `/agents` CRUD commands (separate from runtime `/agent` commands)
+- `SubAgentError::Io` variant for file operation errors
+- Sub-agent transcript persistence: JSONL append-only transcripts written per session under `.zeph/subagents/`; each session gets a UUID-named `.jsonl` file and a `.meta.json` sidecar with status, turn count, and lineage (`resumed_from`) (#1153)
+- `/agent resume <id> <prompt>` command: resumes a completed, failed, or cancelled sub-agent session by loading its full message history and spawning a new foreground loop with a fresh UUID; supports 8-char prefix matching (#1153)
+- `TranscriptWriter` / `TranscriptReader` / `TranscriptEntry` / `TranscriptMeta` types in `zeph-core::subagent::transcript` (#1153)
+- `SubAgentManager::resume()` method for loading transcript history and spawning resumed agent loops (#1153)
+- `SubAgentError::Transcript`, `SubAgentError::AmbiguousId`, `SubAgentError::StillRunning` error variants (#1153)
+- `SubAgentConfig` transcript fields: `transcript_enabled` (default: `true`), `transcript_dir` (default: `.zeph/subagents`), `transcript_max_files` (default: `50`); cooperative sweep-on-access deletes oldest `.jsonl` files when limit exceeded (#1153)
 - Query-aware memory routing (`zeph-memory`): `MemoryRouter` trait with `HeuristicRouter` implementation that classifies queries as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid based on query structure; code-like patterns route to keyword search, natural language questions route to semantic search; configurable via `[memory.routing] strategy = "heuristic"` (#1162)
 - Active context compression (`zeph-core`): proactive compression fires before hitting capacity limits; `CompressionStrategy` enum (`reactive`/`proactive`) with configurable `threshold_tokens` and `max_summary_tokens`; mutual exclusion guard prevents double-compaction per turn; `compression_events` and `compression_tokens_saved` metrics; configurable via `[memory.compression]` (#1161)
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
