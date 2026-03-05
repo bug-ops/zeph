@@ -31,6 +31,15 @@ impl CompatibleProvider {
     }
 }
 
+impl CompatibleProvider {
+    /// Override the maximum tokens for this provider instance.
+    #[must_use]
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.inner = self.inner.with_max_tokens(max_tokens);
+        self
+    }
+}
+
 impl fmt::Debug for CompatibleProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CompatibleProvider")

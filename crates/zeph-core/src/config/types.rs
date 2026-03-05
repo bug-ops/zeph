@@ -721,6 +721,8 @@ pub struct MemoryConfig {
     pub documents: DocumentConfig,
     #[serde(default)]
     pub eviction: zeph_memory::EvictionConfig,
+    #[serde(default)]
+    pub compression: zeph_memory::CompressionConfig,
 }
 
 fn default_sqlite_pool_size() -> u32 {
@@ -1631,6 +1633,7 @@ impl Default for Config {
                 sessions: SessionsConfig::default(),
                 documents: DocumentConfig::default(),
                 eviction: zeph_memory::EvictionConfig::default(),
+                compression: zeph_memory::CompressionConfig::default(),
             },
             telegram: None,
             discord: None,

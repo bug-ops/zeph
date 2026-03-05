@@ -96,6 +96,13 @@ impl OpenAiProvider {
         self
     }
 
+    /// Override the maximum tokens for this provider instance.
+    #[must_use]
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
+
     /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
     ///
     /// Only ASCII alphanumeric characters and underscores are kept to prevent

@@ -303,6 +303,16 @@ pub(crate) async fn run_daemon(
         agent
     };
 
+    let compression_provider = app.build_compression_provider()?;
+    let agent = if let Some(cp) = compression_provider {
+        agent
+            .with_compression_provider(cp)
+            .with_compression_strategy(config.memory.compression.strategy.clone())
+            .with_compression_min_messages(config.memory.compression.min_messages)
+    } else {
+        agent
+    };
+
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {
         agent.with_judge_provider(jp)

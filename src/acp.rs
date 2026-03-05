@@ -60,6 +60,9 @@ struct AgentDeps {
     tool_call_cutoff: usize,
     secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
     summary_provider: Option<zeph_llm::any::AnyProvider>,
+    compression_provider: Option<zeph_llm::any::AnyProvider>,
+    compression_strategy: zeph_memory::CompressionStrategy,
+    compression_min_messages: usize,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
     acp_agent_name: String,
     acp_agent_version: String,
@@ -206,6 +209,9 @@ async fn build_acp_deps(
             .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
             .collect(),
         summary_provider,
+        compression_provider: app.build_compression_provider()?,
+        compression_strategy: config.memory.compression.strategy.clone(),
+        compression_min_messages: config.memory.compression.min_messages,
         judge_provider: app.build_judge_provider(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
@@ -354,6 +360,13 @@ async fn spawn_acp_agent(
 
     if let Some(sp) = d.summary_provider {
         agent = agent.with_summary_provider(sp);
+    }
+
+    if let Some(cp) = d.compression_provider {
+        agent = agent
+            .with_compression_provider(cp)
+            .with_compression_strategy(d.compression_strategy)
+            .with_compression_min_messages(d.compression_min_messages);
     }
 
     if let Some(jp) = d.judge_provider {

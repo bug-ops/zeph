@@ -67,6 +67,8 @@ pub struct MetricsSnapshot {
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.
     pub scheduled_tasks: Vec<[String; 4]>,
+    pub compression_events: u64,
+    pub compression_tokens_saved: u64,
 }
 
 pub struct MetricsCollector {
@@ -184,5 +186,37 @@ mod tests {
         collector.update(|m| m.cancellations += 1);
         collector.update(|m| m.cancellations += 1);
         assert_eq!(rx.borrow().cancellations, 2);
+    }
+
+    #[test]
+    fn compression_events_and_tokens_saved_increment() {
+        let (collector, rx) = MetricsCollector::new();
+        assert_eq!(rx.borrow().compression_events, 0);
+        assert_eq!(rx.borrow().compression_tokens_saved, 0);
+
+        collector.update(|m| {
+            m.compression_events += 1;
+            m.compression_tokens_saved = m.compression_tokens_saved.saturating_add(500);
+        });
+        collector.update(|m| {
+            m.compression_events += 1;
+            m.compression_tokens_saved = m.compression_tokens_saved.saturating_add(300);
+        });
+
+        let s = rx.borrow();
+        assert_eq!(s.compression_events, 2);
+        assert_eq!(s.compression_tokens_saved, 800);
+    }
+
+    #[test]
+    fn compression_tokens_saved_saturating_add_at_max() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.compression_tokens_saved = u64::MAX;
+        });
+        collector.update(|m| {
+            m.compression_tokens_saved = m.compression_tokens_saved.saturating_add(1);
+        });
+        assert_eq!(rx.borrow().compression_tokens_saved, u64::MAX);
     }
 }

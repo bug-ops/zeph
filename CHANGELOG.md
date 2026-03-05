@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Active context compression (`[memory.compression]`): proactive summarization of older messages when projected token count exceeds a configurable threshold, reducing token costs and improving coherence; two strategies — `reactive` (default, existing behavior) and `proactive` (requires explicit `model` config); recursion guard limits compression to once per agent turn; `max_summary_tokens` enforced via LLM API parameter; XML injection prevented by escaping angle brackets in compression prompts; sensitive data scrubbed before summary storage; metrics tracked via `compression_events` and `compression_tokens_saved`
 - `PermissionMode` enum in sub-agent YAML frontmatter (`permissions.permission_mode`): `default`, `accept_edits`, `dont_ask`, `bypass_permissions`, `plan`; `bypass_permissions` emits a `tracing::warn!` at load time
 - `tools.except` list in sub-agent YAML frontmatter: additional denylist applied on top of `tools.allow`/`tools.deny`; deny wins over allow
 - `PlanModeExecutor` in `zeph-core`: wraps the real executor to expose tool catalog but block all execution; used when `permission_mode: plan`

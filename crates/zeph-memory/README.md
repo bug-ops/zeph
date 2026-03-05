@@ -37,9 +37,10 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
+| `compression` | `CompressionConfig`, `CompressionStrategy` — reactive (default) or proactive context compression with configurable token threshold and dedicated summary model |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `CompressionConfig`, `CompressionStrategy`
 
 ## Document RAG
 
@@ -117,6 +118,31 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 
 > [!NOTE]
 > Event cascade delete is handled at the SQL level: deleting a session via `delete_acp_session` removes all associated events.
+
+## Context compression
+
+Two compression strategies control when the context window is compacted:
+
+- **Reactive** (default): compression triggers only when the context window approaches the hard token limit. No additional configuration needed.
+- **Proactive**: compression triggers earlier, at a configurable token threshold, using a dedicated model to summarize older messages and keep the context well below the limit.
+
+Configure via `[memory.compression]` in `config.toml`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strategy` | `"reactive"` / `"proactive"` | `"reactive"` | When to trigger compression |
+| `model` | string? | `null` | Model used for compression (required when `strategy = "proactive"`) |
+| `min_messages` | usize | `4` | Minimum messages before proactive compression is attempted |
+| `threshold_tokens` | usize | — | Token count triggering proactive compression (proactive only) |
+| `max_summary_tokens` | usize | — | Max tokens for the summary output (proactive only) |
+
+```toml
+[memory.compression]
+strategy = "proactive"
+model = "claude-haiku-4-5-20251001"
+threshold_tokens = 8000
+max_summary_tokens = 2000
+```
 
 ## Features
 

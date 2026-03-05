@@ -35,6 +35,9 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `acp.permission_file` | valid file path (optional) |
 | `gateway.rate_limit` | > 0 |
 | `gateway.max_body_size` | <= 10,485,760 (10 MiB) |
+| `memory.compression.model` | required when `strategy = "proactive"` |
+| `memory.compression.threshold_tokens` | > 0 (proactive only) |
+| `memory.compression.max_summary_tokens` | > 0 and < `threshold_tokens` (proactive only) |
 
 ## Hot-Reload
 
@@ -158,6 +161,13 @@ temporal_decay_enabled = false        # Attenuate scores by message age (default
 temporal_decay_half_life_days = 30    # Half-life for temporal decay in days (default: 30)
 mmr_enabled = false                   # MMR re-ranking for result diversity (default: false)
 mmr_lambda = 0.7                      # MMR relevance-diversity trade-off, 0.0-1.0 (default: 0.7)
+
+[memory.compression]
+strategy = "reactive"         # Compression strategy: "reactive" (default) or "proactive"
+# threshold_tokens = 8000     # Token count trigger for proactive compression (proactive only)
+# max_summary_tokens = 2000   # Max tokens for the compression summary output (proactive only)
+# model = "claude-haiku-4-5"  # Model for compression LLM calls (required for proactive)
+min_messages = 4              # Min messages before proactive compression triggers (default: 4)
 
 [tools]
 enabled = true

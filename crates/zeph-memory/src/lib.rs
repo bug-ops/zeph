@@ -3,6 +3,7 @@
 
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
+pub mod compression;
 pub mod document;
 pub mod embedding_registry;
 pub mod embedding_store;
@@ -22,6 +23,7 @@ pub mod token_counter;
 pub mod types;
 pub mod vector_store;
 
+pub use compression::{CompressionConfig, CompressionStrategy};
 #[cfg(feature = "pdf")]
 pub use document::PdfLoader;
 pub use document::{

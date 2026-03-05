@@ -21,6 +21,13 @@ recall_limit = 5                  # Max semantically relevant messages to inject
 
 [tools]
 summarize_output = false          # Enable LLM-based tool output summarization
+
+[memory.compression]
+strategy = "reactive"             # "reactive" (default) or "proactive"
+# threshold_tokens = 8000         # Token count trigger for proactive mode
+# max_summary_tokens = 2000       # Max tokens for the compression summary
+# model = "claude-haiku-4-5"      # Required for proactive mode
+# min_messages = 4                # Min messages before compression triggers (default: 4)
 ```
 
 ## Context Window Layout
@@ -191,6 +198,63 @@ Last assistant message: <first 200 chars of last assistant message>
 ```
 
 Text previews use safe UTF-8 truncation (`truncate_chars()`) that never splits a Unicode scalar value. This fallback guarantees that compaction always succeeds, even when the LLM is unreachable or the context is too large for any available model.
+
+## Active Context Compression
+
+Zeph supports two compression strategies that control when and how context compaction is triggered:
+
+| Strategy | Trigger | Use case |
+|----------|---------|----------|
+| `reactive` (default) | Context exceeds `compaction_threshold` of the budget | General use, small context windows |
+| `proactive` | Token count exceeds `threshold_tokens` after full context preparation | Long conversations, multi-tool sessions |
+
+### Reactive (Default)
+
+The existing behavior: compression fires only when context usage exceeds `compaction_threshold` (default: 75%) of `context_budget_tokens`. No additional configuration required.
+
+### Proactive
+
+Proactive compression checks the token count **after** the full context is prepared — including semantic recall, corrections, and code context injection. If the total exceeds `threshold_tokens` and there are at least `min_messages` messages, Zeph compresses older messages into a summary using a dedicated model before sending the request to the primary LLM.
+
+```toml
+[memory.compression]
+strategy = "proactive"
+threshold_tokens = 8000     # Compress when context exceeds this token count
+max_summary_tokens = 2000   # Max tokens for the compression summary output
+model = "claude-haiku-4-5"  # Required: explicit model for compression calls
+min_messages = 4             # Min messages before compression triggers (default: 4)
+```
+
+Key behaviors:
+
+- **Post-preparation check**: proactive compression runs after `prepare_context()`, so the token count reflects the fully assembled context (recall, corrections, code RAG), not just raw message history.
+- **Recursion guard**: at most one compression per agent turn. If reactive compaction fires first, proactive compression is skipped for that turn, and vice versa. The `/compact` command also shares this guard.
+- **Dedicated model**: the `model` field is required for proactive mode and specifies which LLM performs the summarization. Use a fast, cheap model (e.g. `claude-haiku-4-5`) to minimize latency and cost. If `model` is omitted, startup validation fails.
+- **Summary cap**: `max_summary_tokens` limits the output length of the compression summary, keeping the compressed context predictably sized.
+
+### Validation Rules
+
+Startup validation rejects invalid configurations:
+
+| Rule | Error |
+|------|-------|
+| `strategy = "proactive"` without `model` | `compression strategy is "proactive" but no model is set` |
+| `threshold_tokens = 0` | `compression.threshold_tokens must be greater than 0` |
+| `max_summary_tokens = 0` | `compression.max_summary_tokens must be greater than 0` |
+| `max_summary_tokens >= threshold_tokens` | `compression.max_summary_tokens must be less than threshold_tokens` |
+
+### Metrics
+
+Two counters track compression activity, visible in the TUI dashboard and via the metrics API:
+
+| Metric | Description |
+|--------|-------------|
+| `compression_events` | Total number of proactive compressions performed |
+| `compression_tokens_saved` | Cumulative tokens reclaimed by proactive compression |
+
+### Configuration Wizard
+
+The interactive setup wizard (`zeph --init`) includes compression settings. When proactive mode is selected, the wizard prompts for `threshold_tokens`, `max_summary_tokens`, and the compression model.
 
 ## Reactive Retry on Context Length Errors
 

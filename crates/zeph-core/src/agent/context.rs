@@ -14,6 +14,8 @@ use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
 use crate::redact::scrub_content;
 
+use zeph_llm::any::AnyProvider;
+
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget,
     DOCUMENT_RAG_PREFIX, LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill,
@@ -76,7 +78,7 @@ impl<C: Channel> Agent<C> {
             .should_compact(self.cached_prompt_tokens)
     }
 
-    fn build_chunk_prompt(messages: &[Message]) -> String {
+    fn build_chunk_prompt_with_limit(messages: &[Message], max_tokens: Option<u32>) -> String {
         let estimated_len: usize = messages
             .iter()
             .map(|m| "[assistant]: ".len() + m.content.len() + 2)
@@ -91,14 +93,20 @@ impl<C: Channel> Agent<C> {
                 Role::Assistant => "assistant",
                 Role::System => "system",
             };
-            let _ = write!(history_text, "[{role}]: {}", m.content);
+            let escaped = m.content.replace('<', "&lt;").replace('>', "&gt;");
+            let _ = write!(history_text, "[{role}]: {escaped}");
         }
+
+        let token_limit_instruction = max_tokens.map_or_else(
+            || "Longer is better if it preserves actionable detail.".to_string(),
+            |t| format!("Keep the summary under {t} tokens. Be concise but preserve key facts."),
+        );
 
         format!(
             "<analysis>\n\
              Analyze this conversation and produce a structured compaction note for self-consumption.\n\
              This note replaces the original messages in your context window — be thorough.\n\
-             Longer is better if it preserves actionable detail.\n\
+             {token_limit_instruction}\n\
              </analysis>\n\
              \n\
              Produce exactly these 9 sections:\n\
@@ -162,6 +170,8 @@ impl<C: Channel> Agent<C> {
     async fn try_summarize_with_llm(
         &self,
         messages: &[Message],
+        provider: &AnyProvider,
+        max_summary_tokens: Option<u32>,
     ) -> Result<String, zeph_llm::LlmError> {
         const CHUNK_TOKEN_BUDGET: usize = 4096;
         const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
@@ -175,36 +185,44 @@ impl<C: Channel> Agent<C> {
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
 
+        // Apply max_tokens at the API level in addition to the prompt instruction.
+        let bounded_provider;
+        let provider = if let Some(t) = max_summary_tokens {
+            bounded_provider = provider.clone().with_max_tokens(t);
+            &bounded_provider
+        } else {
+            provider
+        };
+
         if chunks.len() <= 1 {
-            let prompt = Self::build_chunk_prompt(messages);
+            let prompt = Self::build_chunk_prompt_with_limit(messages, max_summary_tokens);
             let msgs = [Message {
                 role: Role::User,
                 content: prompt,
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             }];
-            return tokio::time::timeout(
-                llm_timeout,
-                self.summary_or_primary_provider().chat(&msgs),
-            )
-            .await
-            .map_err(|_| zeph_llm::LlmError::Timeout)?;
+            return tokio::time::timeout(llm_timeout, LlmProvider::chat(provider, &msgs))
+                .await
+                .map_err(|_| zeph_llm::LlmError::Timeout)?;
         }
 
         // Summarize chunks with bounded concurrency to prevent runaway API calls
-        let provider = self.summary_or_primary_provider();
         let results: Vec<_> = futures::stream::iter(chunks.iter().map(|chunk| {
-            let prompt = Self::build_chunk_prompt(chunk);
+            let prompt = Self::build_chunk_prompt_with_limit(chunk, max_summary_tokens);
             let p = provider.clone();
             async move {
                 tokio::time::timeout(
                     llm_timeout,
-                    p.chat(&[Message {
-                        role: Role::User,
-                        content: prompt,
-                        parts: vec![],
-                        metadata: MessageMetadata::default(),
-                    }]),
+                    LlmProvider::chat(
+                        &p,
+                        &[Message {
+                            role: Role::User,
+                            content: prompt,
+                            parts: vec![],
+                            metadata: MessageMetadata::default(),
+                        }],
+                    ),
                 )
                 .await
                 .map_err(|_| zeph_llm::LlmError::Timeout)?
@@ -224,19 +242,16 @@ impl<C: Channel> Agent<C> {
 
         if partial_summaries.is_empty() {
             // Fallback: single-pass on full messages
-            let prompt = Self::build_chunk_prompt(messages);
+            let prompt = Self::build_chunk_prompt_with_limit(messages, max_summary_tokens);
             let msgs = [Message {
                 role: Role::User,
                 content: prompt,
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             }];
-            return tokio::time::timeout(
-                llm_timeout,
-                self.summary_or_primary_provider().chat(&msgs),
-            )
-            .await
-            .map_err(|_| zeph_llm::LlmError::Timeout)?;
+            return tokio::time::timeout(llm_timeout, LlmProvider::chat(provider, &msgs))
+                .await
+                .map_err(|_| zeph_llm::LlmError::Timeout)?;
         }
 
         // Consolidate partial summaries
@@ -279,7 +294,7 @@ impl<C: Channel> Agent<C> {
         }];
         tokio::time::timeout(
             llm_timeout,
-            self.summary_or_primary_provider().chat(&consolidation_msgs),
+            LlmProvider::chat(provider, &consolidation_msgs),
         )
         .await
         .map_err(|_| zeph_llm::LlmError::Timeout)?
@@ -375,9 +390,14 @@ impl<C: Channel> Agent<C> {
     async fn summarize_messages(
         &self,
         messages: &[Message],
+        provider: &AnyProvider,
+        max_tokens: Option<u32>,
     ) -> Result<String, super::error::AgentError> {
         // Try direct summarization first
-        match self.try_summarize_with_llm(messages).await {
+        match self
+            .try_summarize_with_llm(messages, provider, max_tokens)
+            .await
+        {
             Ok(summary) => return Ok(summary),
             Err(e) if !e.is_context_length_error() => return Err(e.into()),
             Err(e) => {
@@ -394,7 +414,10 @@ impl<C: Channel> Agent<C> {
                 fraction,
                 "retrying summarization with reduced tool responses"
             );
-            match self.try_summarize_with_llm(&reduced).await {
+            match self
+                .try_summarize_with_llm(&reduced, provider, max_tokens)
+                .await
+            {
                 Ok(summary) => {
                     tracing::info!(
                         fraction,
@@ -414,88 +437,11 @@ impl<C: Channel> Agent<C> {
         Ok(Self::build_metadata_summary(messages))
     }
 
+    /// Compact the context using the default provider and no max-token cap on the summary.
+    ///
+    /// Delegates to [`Self::compact_context_with_max_tokens`] which owns the recursion guard.
     pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
-        let preserve_tail = self.context_manager.compaction_preserve_tail;
-
-        if self.messages.len() <= preserve_tail + 1 {
-            return Ok(());
-        }
-
-        let compact_end = self.messages.len() - preserve_tail;
-        let to_compact = &self.messages[1..compact_end];
-        if to_compact.is_empty() {
-            return Ok(());
-        }
-
-        let summary = self.summarize_messages(to_compact).await?;
-
-        let compacted_count = to_compact.len();
-        let summary_content =
-            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
-        self.messages.drain(1..compact_end);
-        self.messages.insert(
-            1,
-            Message {
-                role: Role::System,
-                content: summary_content.clone(),
-                parts: vec![],
-                metadata: MessageMetadata::agent_only(),
-            },
-        );
-
-        tracing::info!(
-            compacted_count,
-            summary_tokens = self.token_counter.count_tokens(&summary),
-            "compacted context"
-        );
-
-        self.recompute_prompt_tokens();
-        self.update_metrics(|m| {
-            m.context_compactions += 1;
-        });
-
-        if let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        {
-            // Persist compaction: mark originals as user_only, insert summary as agent_only.
-            // Assumption: the system prompt is always the first (oldest) row for this conversation
-            // in SQLite — i.e., ids[0] corresponds to self.messages[0] (the system prompt).
-            // This holds for normal sessions but may not hold after cross-session restore if a
-            // non-system message was persisted first. MVP assumption; document if changed.
-            // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
-            // that were drained from self.messages[1..compact_end].
-            let sqlite = memory.sqlite();
-            let ids = sqlite
-                .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
-                .await;
-            match ids {
-                Ok(ids) if ids.len() >= 2 => {
-                    // ids[0] is the system prompt; compact ids[1..=compacted_count]
-                    let start = ids[1];
-                    let end = ids[compacted_count.min(ids.len() - 1)];
-                    if let Err(e) = sqlite
-                        .replace_conversation(cid, start..=end, "system", &summary_content)
-                        .await
-                    {
-                        tracing::warn!("failed to persist compaction in sqlite: {e:#}");
-                    }
-                }
-                Ok(_) => {
-                    // Not enough messages in DB — fall back to legacy summary storage
-                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                        tracing::warn!("failed to store session summary: {e:#}");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("failed to get message ids for compaction: {e:#}");
-                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                        tracing::warn!("failed to store session summary: {e:#}");
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        self.compact_context_with_max_tokens(None).await
     }
 
     /// Prune tool output bodies outside the protection zone, oldest first.
@@ -679,11 +625,13 @@ impl<C: Channel> Agent<C> {
     }
 
     fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
+        let request_body = req.content.replace('<', "&lt;").replace('>', "&gt;");
+        let response_body = res.content.replace('<', "&lt;").replace('>', "&gt;");
         format!(
             "Summarize this tool invocation in 1-2 sentences. Include the tool name, \
              key input parameters, and the essential outcome/result.\n\n\
-             <tool_request>\n{}\n</tool_request>\n\n<tool_response>\n{}\n</tool_response>",
-            req.content, res.content
+             <tool_request>\n{request_body}\n</tool_request>\n\n\
+             <tool_response>\n{response_body}\n</tool_response>"
         )
     }
 
@@ -1185,6 +1133,159 @@ impl<C: Channel> Agent<C> {
                 "trimmed messages to fit context budget"
             );
         }
+    }
+
+    /// Proactive compression check, called AFTER `prepare_context()` so the token count
+    /// includes recall/corrections/code-context injected by that call (S2).
+    ///
+    /// The recursion guard (`compressed_this_turn`) is set inside `compact_context()` itself,
+    /// so both reactive (`maybe_compact`) and proactive paths share the same guard (S1).
+    pub(super) async fn maybe_compress_proactively(
+        &mut self,
+    ) -> Result<(), super::error::AgentError> {
+        let current_tokens = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let message_count = self.messages.len();
+        if !self
+            .context_manager
+            .should_compress_proactively(current_tokens, message_count)
+        {
+            return Ok(());
+        }
+
+        let max_summary_tokens = self
+            .context_manager
+            .compression_strategy
+            .max_summary_tokens()
+            .and_then(|t| u32::try_from(t).ok());
+
+        tracing::info!(current_tokens, "proactive compression triggered");
+        let _ = self.channel.send_status("compressing context...").await;
+
+        let tokens_before = current_tokens;
+        self.compact_context_with_max_tokens(max_summary_tokens)
+            .await?;
+
+        let tokens_after = usize::try_from(self.cached_prompt_tokens).unwrap_or(0);
+        let tokens_saved = tokens_before.saturating_sub(tokens_after);
+        self.update_metrics(|m| {
+            m.compression_events += 1;
+            m.compression_tokens_saved = m
+                .compression_tokens_saved
+                .saturating_add(u64::try_from(tokens_saved).unwrap_or(u64::MAX));
+        });
+
+        Ok(())
+    }
+
+    /// Core compaction implementation. Accepts an optional `max_tokens` cap for the summary
+    /// output (M1). Both reactive (`compact_context`) and proactive paths go through this
+    /// method, which holds the single recursion guard (S1).
+    ///
+    /// **Guard behaviour:** At most one compression per turn from any source (reactive,
+    /// proactive, or the `/compact` user command). If reactive compaction fires first in a
+    /// turn, a subsequent `/compact` call in the same turn is silently skipped. This is
+    /// intentional — double-compression in one turn would produce an empty or near-empty
+    /// context window, discarding work the LLM just summarised. The guard resets at the
+    /// start of every new turn.
+    pub(super) async fn compact_context_with_max_tokens(
+        &mut self,
+        max_summary_tokens: Option<u32>,
+    ) -> Result<(), super::error::AgentError> {
+        // S1: shared guard — prevents double compression in a single turn regardless of
+        // which code path (reactive or proactive) calls this method first.
+        if self.compressed_this_turn {
+            tracing::debug!("compact_context: skipping, already compressed this turn");
+            return Ok(());
+        }
+
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+
+        if self.messages.len() <= preserve_tail + 1 {
+            return Ok(());
+        }
+
+        let compact_end = self.messages.len() - preserve_tail;
+        let to_compact = &self.messages[1..compact_end];
+        if to_compact.is_empty() {
+            return Ok(());
+        }
+
+        // Guard is consumed only when actual compression work begins — not on early returns.
+        self.compressed_this_turn = true;
+
+        let provider = self
+            .compression_provider
+            .as_ref()
+            .unwrap_or_else(|| self.summary_or_primary_provider())
+            .clone();
+
+        let summary = self
+            .summarize_messages(to_compact, &provider, max_summary_tokens)
+            .await?;
+
+        let compacted_count = to_compact.len();
+        let summary_content =
+            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+        let summary_content = if self.runtime.redact_credentials {
+            scrub_content(&summary_content).into_owned()
+        } else {
+            summary_content
+        };
+        self.messages.drain(1..compact_end);
+        self.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: summary_content.clone(),
+                parts: vec![],
+                metadata: MessageMetadata::agent_only(),
+            },
+        );
+
+        tracing::info!(
+            compacted_count,
+            summary_tokens = self.token_counter.count_tokens(&summary),
+            "compacted context"
+        );
+
+        self.recompute_prompt_tokens();
+        self.update_metrics(|m| {
+            m.context_compactions += 1;
+        });
+
+        if let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        {
+            let sqlite = memory.sqlite();
+            let ids = sqlite
+                .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
+                .await;
+            match ids {
+                Ok(ids) if ids.len() >= 2 => {
+                    let start = ids[1];
+                    let end = ids[compacted_count.min(ids.len() - 1)];
+                    if let Err(e) = sqlite
+                        .replace_conversation(cid, start..=end, "system", &summary_content)
+                        .await
+                    {
+                        tracing::warn!("failed to persist proactive compaction in sqlite: {e:#}");
+                    }
+                }
+                Ok(_) => {
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to get message ids for proactive compaction: {e:#}");
+                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary: {e:#}");
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3535,7 +3636,7 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
-        let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages);
+        let prompt = Agent::<MockChannel>::build_chunk_prompt_with_limit(&messages, None);
 
         let sections = [
             "User Intent",
@@ -3559,7 +3660,7 @@ mod tests {
     #[test]
     fn build_chunk_prompt_empty_messages() {
         let messages: &[Message] = &[];
-        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages);
+        let prompt = Agent::<MockChannel>::build_chunk_prompt_with_limit(messages, None);
         // Even with no messages the prompt structure must be valid (not panic, contains sections)
         assert!(prompt.contains("User Intent"));
         assert!(prompt.contains("Next Step"));

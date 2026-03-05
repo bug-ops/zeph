@@ -83,7 +83,7 @@ A two-tier pruning system manages overflow:
 1. **Tool output pruning** (cheap) — replaces old tool outputs with short placeholders
 2. **Chunked LLM compaction** (fallback) — splits middle messages into ~4096-token chunks, summarizes them in parallel (up to 4 concurrent LLM calls), then merges partial summaries. Falls back to single-pass if any chunk fails.
 
-Both tiers run automatically. See [Context Engineering](../advanced/context.md) for tuning options.
+Both tiers run automatically. Additionally, **proactive compression** can be enabled to compress context before it reaches the hard limit — see [Active Context Compression](../advanced/context.md#active-context-compression) for details. See [Context Engineering](../advanced/context.md) for tuning options.
 
 ## Project Context
 

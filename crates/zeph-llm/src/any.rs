@@ -113,6 +113,20 @@ impl AnyProvider {
         }
     }
 
+    /// Return a clone of this provider with `max_tokens` overridden.
+    ///
+    /// For providers without a configurable token limit (Ollama, Candle, Orchestrator, Router)
+    /// the clone is returned unchanged.
+    #[must_use]
+    pub fn with_max_tokens(self, max_tokens: u32) -> Self {
+        match self {
+            Self::Claude(p) => Self::Claude(p.with_max_tokens(max_tokens)),
+            Self::OpenAi(p) => Self::OpenAi(p.with_max_tokens(max_tokens)),
+            Self::Compatible(p) => Self::Compatible(p.with_max_tokens(max_tokens)),
+            other => other,
+        }
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

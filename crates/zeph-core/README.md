@@ -92,6 +92,9 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `tool_call_cutoff` | usize | `6` | Max visible tool call/response pairs before oldest is summarized via LLM |
 | `sqlite_pool_size` | u32 | `5` | SQLite connection pool size for memory storage |
 | `response_cache_cleanup_interval_secs` | u64 | `3600` | Interval for expiring stale response cache entries |
+| `compression.strategy` | `"reactive"` / `"proactive"` | `"reactive"` | Context compression strategy |
+| `compression.model` | string? | `null` | Model for proactive compression (required when proactive) |
+| `compression.min_messages` | usize | `4` | Minimum messages before proactive compression triggers |
 
 ```toml
 [agent]

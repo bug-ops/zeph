@@ -191,6 +191,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let registry = app.build_registry();
     let watchers = app.build_watchers();
     let summary_provider = app.build_summary_provider();
+    let compression_provider = app.build_compression_provider()?;
 
     let warmup_provider_clone = provider.clone();
     #[cfg(feature = "tui")]
@@ -455,6 +456,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
+    let agent = if let Some(cp) = compression_provider {
+        agent
+            .with_compression_provider(cp)
+            .with_compression_strategy(config.memory.compression.strategy.clone())
+            .with_compression_min_messages(config.memory.compression.min_messages)
+    } else {
+        agent
+    };
 
     #[cfg(feature = "index")]
     let (agent, _index_watcher) = agent_setup::apply_code_index(

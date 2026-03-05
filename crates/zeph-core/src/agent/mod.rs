@@ -190,6 +190,12 @@ pub struct Agent<C: Channel> {
     pub(super) instruction_blocks: Vec<InstructionBlock>,
     pub(super) instruction_reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
     pub(super) instruction_reload_state: Option<InstructionReloadState>,
+    /// Recursion guard: proactive/reactive compression runs at most once per agent turn.
+    /// Set to `true` inside `compact_context()` so both code paths share the guard.
+    pub(super) compressed_this_turn: bool,
+    /// Dedicated provider for compression LLM calls (resolved from `memory.compression.model`).
+    /// Falls back to `summary_provider`, then `provider`.
+    pub(super) compression_provider: Option<AnyProvider>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -341,6 +347,8 @@ impl<C: Channel> Agent<C> {
             instruction_blocks: Vec::new(),
             instruction_reload_rx: None,
             instruction_reload_state: None,
+            compressed_this_turn: false,
+            compression_provider: None,
         }
     }
 
@@ -1034,12 +1042,21 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Reset per-turn compression guard so each new turn can compress once.
+        self.compressed_this_turn = false;
+
         if let Err(e) = self.maybe_compact().await {
             tracing::warn!("context compaction failed: {e:#}");
         }
 
         if let Err(e) = Box::pin(self.prepare_context(trimmed)).await {
             tracing::warn!("context preparation failed: {e:#}");
+        }
+
+        // S2: proactive check runs AFTER prepare_context() so cached_prompt_tokens reflects
+        // recall/corrections/code-context tokens injected by that call.
+        if let Err(e) = self.maybe_compress_proactively().await {
+            tracing::warn!("proactive compression failed: {e:#}");
         }
 
         self.learning_engine.reset_reflection();

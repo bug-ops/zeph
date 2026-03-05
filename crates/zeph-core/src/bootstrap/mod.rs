@@ -98,6 +98,16 @@ impl AppBuilder {
         })
     }
 
+    /// Construct an `AppBuilder` directly from a `Config` for use in unit tests.
+    #[cfg(test)]
+    pub fn from_config(config: Config) -> Self {
+        Self {
+            config,
+            config_path: PathBuf::new(),
+            vault: Box::new(EnvVaultProvider),
+        }
+    }
+
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -285,6 +295,48 @@ impl AppBuilder {
                 }
             },
         )
+    }
+
+    /// Build the dedicated provider for compression LLM calls.
+    ///
+    /// Returns `Ok(Some(provider))` when `memory.compression.strategy = "proactive"` and
+    /// `memory.compression.model` is set.
+    ///
+    /// Returns `Ok(None)` when strategy is `Reactive` (no compression provider needed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (S3) when strategy is `Proactive` but `model` is not set, or when
+    /// the model spec cannot be resolved to a provider. This is a configuration error that
+    /// should abort startup rather than silently fall back.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `validate()` incorrectly passes with `model = None` (internal invariant).
+    pub fn build_compression_provider(&self) -> anyhow::Result<Option<AnyProvider>> {
+        let compression = &self.config.memory.compression;
+
+        // Validate first — surfaces config errors early (M4).
+        compression.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        if !compression.strategy.is_proactive() {
+            return Ok(None);
+        }
+
+        // At this point validate() ensured model is Some.
+        let model = compression.model.as_deref().expect("validated above");
+        match create_named_provider(model, &self.config) {
+            Ok(p) => {
+                tracing::info!(model, "compression provider configured");
+                Ok(Some(p))
+            }
+            Err(e) => {
+                anyhow::bail!(
+                    "failed to create compression provider for model {}: {e:#}",
+                    model.escape_debug()
+                )
+            }
+        }
     }
 
     /// Build a dedicated provider for the judge detector when `detector_mode = judge`.

@@ -299,6 +299,30 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the dedicated provider used for compression LLM calls.
+    ///
+    /// Required when `memory.compression.strategy = "proactive"`. Falls back to
+    /// `summary_provider` then `provider` if not set.
+    #[must_use]
+    pub fn with_compression_provider(mut self, provider: AnyProvider) -> Self {
+        self.compression_provider = Some(provider);
+        self
+    }
+
+    /// Set the compression strategy on the context manager.
+    #[must_use]
+    pub fn with_compression_strategy(mut self, strategy: zeph_memory::CompressionStrategy) -> Self {
+        self.context_manager.compression_strategy = strategy;
+        self
+    }
+
+    /// Set the minimum message count required before proactive compression is attempted.
+    #[must_use]
+    pub fn with_compression_min_messages(mut self, min: usize) -> Self {
+        self.context_manager.compression_min_messages = min;
+        self
+    }
+
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
         self.summary_provider.as_ref().unwrap_or(&self.provider)
     }

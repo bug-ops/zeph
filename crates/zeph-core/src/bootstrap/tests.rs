@@ -900,3 +900,38 @@ async fn create_skill_matcher_when_semantic_disabled() {
 
     let _ = std::fs::remove_file(&tmp);
 }
+
+#[test]
+fn build_compression_provider_reactive_returns_none() {
+    use zeph_memory::{CompressionConfig, CompressionStrategy};
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.compression = CompressionConfig {
+        strategy: CompressionStrategy::Reactive,
+        model: None,
+        min_messages: 4,
+    };
+    let app = AppBuilder::from_config(config);
+    let result = app.build_compression_provider();
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[test]
+fn build_compression_provider_proactive_no_model_errors() {
+    use zeph_memory::{CompressionConfig, CompressionStrategy};
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.compression = CompressionConfig {
+        strategy: CompressionStrategy::Proactive {
+            threshold_tokens: 8000,
+            max_summary_tokens: 2000,
+        },
+        model: None,
+        min_messages: 4,
+    };
+    let app = AppBuilder::from_config(config);
+    let result = app.build_compression_provider();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("no model is set"));
+}

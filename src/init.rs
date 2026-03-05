@@ -11,6 +11,7 @@ use zeph_core::config::{
 };
 use zeph_core::subagent::def::PermissionMode;
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
+use zeph_memory::{CompressionConfig, CompressionStrategy};
 
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
@@ -67,6 +68,10 @@ pub(crate) struct WizardState {
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
+    pub(crate) compression_proactive: bool,
+    pub(crate) compression_threshold_tokens: usize,
+    pub(crate) compression_max_summary_tokens: usize,
+    pub(crate) compression_model: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -393,6 +398,29 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
+    state.compression_proactive = Confirm::new()
+        .with_prompt(
+            "Enable proactive context compression? (compresses before hitting context limit)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.compression_proactive {
+        state.compression_threshold_tokens = Input::new()
+            .with_prompt("Compression threshold (tokens) — compress when context exceeds this")
+            .default(8000usize)
+            .interact_text()?;
+        state.compression_max_summary_tokens = Input::new()
+            .with_prompt("Max summary tokens — target length for the compressed summary")
+            .default(2000usize)
+            .interact_text()?;
+        state.compression_model = Some(
+            Input::new()
+                .with_prompt("Compression model (required, e.g. claude-haiku-4-5)")
+                .interact_text()?,
+        );
+    }
+
     println!();
     Ok(())
 }
@@ -548,6 +576,19 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         instruction_file: None,
     };
 
+    let compression = if state.compression_proactive {
+        CompressionConfig {
+            strategy: CompressionStrategy::Proactive {
+                threshold_tokens: state.compression_threshold_tokens,
+                max_summary_tokens: state.compression_max_summary_tokens,
+            },
+            model: state.compression_model.clone(),
+            min_messages: CompressionConfig::default().min_messages,
+        }
+    } else {
+        CompressionConfig::default()
+    };
+
     config.memory = MemoryConfig {
         sqlite_path: state
             .sqlite_path
@@ -565,6 +606,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             max_history: state.sessions_max_history,
             title_max_chars: state.sessions_title_max_chars,
         },
+        compression,
         ..config.memory
     };
 
