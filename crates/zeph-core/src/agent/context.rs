@@ -1560,11 +1560,18 @@ impl<C: Channel> Agent<C> {
     fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
         let sanitized = self.sanitizer.sanitize(&msg.content, source);
+        self.update_metrics(|m| m.sanitizer_runs += 1);
         if !sanitized.injection_flags.is_empty() {
             tracing::warn!(
                 flags = sanitized.injection_flags.len(),
                 "injection patterns detected in memory retrieval"
             );
+            self.update_metrics(|m| {
+                m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+            });
+        }
+        if sanitized.was_truncated {
+            self.update_metrics(|m| m.sanitizer_truncations += 1);
         }
         msg.content = sanitized.body;
         msg
