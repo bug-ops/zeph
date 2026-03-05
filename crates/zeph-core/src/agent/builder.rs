@@ -270,6 +270,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
+        self.sanitizer = crate::sanitizer::ContentSanitizer::new(&security.content_isolation);
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;
         self

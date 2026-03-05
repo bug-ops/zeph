@@ -11,6 +11,7 @@ use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
+use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
 use zeph_skills::evolution::FailureKind;
 use zeph_skills::loader::Skill;
@@ -601,11 +602,12 @@ impl<C: Channel> Agent<C> {
                     )
                     .await?;
 
+                let llm_body = self.sanitize_tool_output(&processed, &output.tool_name);
                 self.push_message(Message::from_parts(
                     Role::User,
                     vec![MessagePart::ToolOutput {
                         tool_name: output.tool_name.clone(),
-                        body: processed,
+                        body: llm_body,
                         compacted_at: None,
                     }],
                 ));
@@ -666,11 +668,12 @@ impl<C: Channel> Agent<C> {
                                 Some(confirmed_started_at),
                             )
                             .await?;
+                        let llm_body = self.sanitize_tool_output(&processed, &out.tool_name);
                         self.push_message(Message::from_parts(
                             Role::User,
                             vec![MessagePart::ToolOutput {
                                 tool_name: out.tool_name.clone(),
-                                body: processed,
+                                body: llm_body,
                                 compacted_at: None,
                             }],
                         ));
@@ -715,6 +718,30 @@ impl<C: Channel> Agent<C> {
                 Ok(false)
             }
         }
+    }
+
+    /// Sanitize tool output body before inserting it into the LLM message history.
+    ///
+    /// Channel display (`send_tool_output`) still receives the raw body so the user
+    /// sees unmodified output; spotlighting delimiters are added only for the LLM.
+    fn sanitize_tool_output(&self, body: &str, tool_name: &str) -> String {
+        let source = ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name);
+        let sanitized = self.sanitizer.sanitize(body, source);
+        if !sanitized.injection_flags.is_empty() {
+            tracing::warn!(
+                tool = %tool_name,
+                flags = sanitized.injection_flags.len(),
+                "injection patterns detected in tool output"
+            );
+            self.update_metrics(|m| {
+                m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+            });
+        }
+        if sanitized.was_truncated {
+            self.update_metrics(|m| m.sanitizer_truncations += 1);
+        }
+        self.update_metrics(|m| m.sanitizer_runs += 1);
+        sanitized.body
     }
 
     pub(super) async fn process_response_streaming(

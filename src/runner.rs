@@ -338,7 +338,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.prune_protect_tokens,
     )
     .with_shutdown(shutdown_rx.clone())
-    .with_security(config.security, config.timeouts)
+    .with_security(config.security.clone(), config.timeouts)
     .with_redact_credentials(config.memory.redact_credentials)
     .with_tool_summarization(config.tools.summarize_output)
     .with_overflow_config(config.tools.overflow.clone())

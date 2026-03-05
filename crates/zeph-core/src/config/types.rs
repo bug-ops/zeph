@@ -9,6 +9,8 @@ use zeph_llm::ThinkingConfig;
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
+use crate::sanitizer::ContentIsolationConfig;
+
 use crate::subagent::def::{MemoryScope, PermissionMode};
 use crate::subagent::hooks::HookDef;
 
@@ -1197,12 +1199,14 @@ fn default_llm_request_timeout() -> u64 {
     600
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
     #[serde(default)]
     pub autonomy_level: AutonomyLevel,
+    #[serde(default)]
+    pub content_isolation: ContentIsolationConfig,
 }
 
 impl Default for SecurityConfig {
@@ -1210,6 +1214,7 @@ impl Default for SecurityConfig {
         Self {
             redact_secrets: true,
             autonomy_level: AutonomyLevel::default(),
+            content_isolation: ContentIsolationConfig::default(),
         }
     }
 }

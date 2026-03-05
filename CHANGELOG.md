@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Add `ContentSanitizer` pipeline in `zeph-core` that wraps untrusted content (tool results, web scrape, MCP responses, A2A messages, memory retrieval) in spotlighting XML delimiters before it enters the LLM message history, defending against indirect prompt injection (#1196, #1197, #1198, #1199)
+- Add 17 compiled injection detection patterns covering common prompt injection techniques; detected patterns are flagged (not removed) and trigger a `[WARNING]` addendum in the spotlighting wrapper (#1197)
+- Apply sanitizer to both `Ok(Some(output))` and `ConfirmationRequired` branches of `handle_tool_result`, and to all memory retrieval messages in `prepare_context` (recall, cross-session, corrections, document RAG, summaries) (#1196)
+- Escape delimiter tag names (`<tool-output>`, `<external-data>`) from untrusted content before wrapping to prevent wrapper escape injection (#1197)
+- Add system prompt security note in `BASE_PROMPT_TAIL` instructing the LLM to treat `<tool-output>` and `<external-data>` content as untrusted data, not instructions (#1199)
+- Add `[security.content_isolation]` TOML config section: `enabled`, `max_content_size` (64 KiB default), `flag_injection_patterns`, `spotlight_untrusted` (#1198)
+- Add `sanitizer_runs`, `sanitizer_injection_flags`, `sanitizer_truncations` counters to `MetricsSnapshot` (#1197)
+
 ## [0.13.0] - 2026-03-05
 
 ### Security

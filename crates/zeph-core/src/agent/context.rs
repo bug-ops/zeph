@@ -13,6 +13,7 @@ use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
 use crate::redact::scrub_content;
+use crate::sanitizer::{ContentSource, ContentSourceKind};
 
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget,
@@ -1512,22 +1513,23 @@ impl<C: Channel> Agent<C> {
         };
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
+        // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
         if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg); // codeql[rust/cleartext-logging] false positive: document chunks from Qdrant, no secrets
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // codeql[rust/cleartext-logging] false positive: document chunks from Qdrant, no secrets
             tracing::debug!("injected document RAG context");
         }
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg); // codeql[rust/cleartext-logging] false positive: user correction text from Qdrant, no secrets
+            self.messages.insert(1, self.sanitize_memory_message(msg)); // codeql[rust/cleartext-logging] false positive: user correction text from Qdrant, no secrets
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg);
+            self.messages.insert(1, self.sanitize_memory_message(msg));
         }
         if let Some(msg) = cross_session_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg);
+            self.messages.insert(1, self.sanitize_memory_message(msg));
         }
         if let Some(msg) = summaries_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, msg);
+            self.messages.insert(1, self.sanitize_memory_message(msg));
             tracing::debug!("injected summaries into context");
         }
 
@@ -1550,6 +1552,22 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
 
         Ok(())
+    }
+
+    /// Apply spotlighting sanitization to a memory retrieval message before inserting it
+    /// into the context. Memory content is `ExternalUntrusted` because prior sessions may
+    /// have stored poisoned content retrieved from web scraping or MCP responses.
+    fn sanitize_memory_message(&self, mut msg: Message) -> Message {
+        let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
+        let sanitized = self.sanitizer.sanitize(&msg.content, source);
+        if !sanitized.injection_flags.is_empty() {
+            tracing::warn!(
+                flags = sanitized.injection_flags.len(),
+                "injection patterns detected in memory retrieval"
+            );
+        }
+        msg.content = sanitized.body;
+        msg
     }
 
     async fn disambiguate_skills(
