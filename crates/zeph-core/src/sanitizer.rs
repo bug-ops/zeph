@@ -265,6 +265,7 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
 ///
 /// Constructed once at `Agent` startup from [`ContentIsolationConfig`] and held as a
 /// field on the agent. All calls are synchronous.
+#[derive(Clone)]
 pub struct ContentSanitizer {
     max_content_size: usize,
     flag_injections: bool,

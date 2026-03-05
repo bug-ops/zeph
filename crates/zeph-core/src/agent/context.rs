@@ -1535,7 +1535,26 @@ impl<C: Channel> Agent<C> {
 
         #[cfg(feature = "index")]
         if let Some(text) = code_rag_text {
-            self.inject_code_context(&text);
+            // Sanitize before injection: indexed repo files can contain injection patterns
+            // embedded in comments, docstrings, or string literals (ContentSourceKind::ToolResult
+            // / LocalUntrusted — local repo, not external).
+            let sanitized = self
+                .sanitizer
+                .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
+            self.update_metrics(|m| m.sanitizer_runs += 1);
+            if !sanitized.injection_flags.is_empty() {
+                tracing::warn!(
+                    flags = sanitized.injection_flags.len(),
+                    "injection patterns detected in code RAG context"
+                );
+                self.update_metrics(|m| {
+                    m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+                });
+            }
+            if sanitized.was_truncated {
+                self.update_metrics(|m| m.sanitizer_truncations += 1);
+            }
+            self.inject_code_context(&sanitized.body);
         }
 
         self.trim_messages_to_budget(alloc.recent_history);
@@ -1557,6 +1576,10 @@ impl<C: Channel> Agent<C> {
     /// Apply spotlighting sanitization to a memory retrieval message before inserting it
     /// into the context. Memory content is `ExternalUntrusted` because prior sessions may
     /// have stored poisoned content retrieved from web scraping or MCP responses.
+    ///
+    /// This is the SOLE sanitization point for the 5 memory retrieval paths (`doc_rag`,
+    /// corrections, recall, `cross_session`, summaries). Do not add redundant sanitization
+    /// in zeph-memory or at other call sites.
     fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
         let sanitized = self.sanitizer.sanitize(&msg.content, source);

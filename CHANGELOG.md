@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add system prompt security note in `BASE_PROMPT_TAIL` instructing the LLM to treat `<tool-output>` and `<external-data>` content as untrusted data, not instructions (#1199)
 - Add `[security.content_isolation]` TOML config section: `enabled`, `max_content_size` (64 KiB default), `flag_injection_patterns`, `spotlight_untrusted` (#1198)
 - Add `sanitizer_runs`, `sanitizer_injection_flags`, `sanitizer_truncations` counters to `MetricsSnapshot` (#1197)
+- Differentiate `ContentSourceKind` in `sanitize_tool_output`: MCP tools use `McpResponse` (ExternalUntrusted), web-scrape/fetch use `WebScrape` (ExternalUntrusted), others remain `ToolResult` (LocalUntrusted) (#1200, #1201)
+- Sanitize A2A inbound messages as `ExternalUntrusted` in `AgentTaskProcessor` before they enter the agent loop; add `all_text_content()` to collect all `Part::Text` entries (#1202)
+- Sanitize code RAG text from `zeph-index` before injection into context with metrics tracking and injection flag logging (#1203)
+- Sanitize tool error messages before `self_reflection` context using `ExternalUntrusted` as conservative default (#1200)
 
 ## [0.13.0] - 2026-03-05
 

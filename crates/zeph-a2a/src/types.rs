@@ -232,6 +232,24 @@ impl Message {
             _ => None,
         })
     }
+
+    /// Collect and concatenate all `Part::Text` entries in order.
+    ///
+    /// Unlike [`text_content`] which returns only the first text part, this method
+    /// preserves the full message when an agent sends multiple text parts.
+    /// Returns an empty string if the message contains no text parts.
+    #[must_use]
+    pub fn all_text_content(&self) -> String {
+        let parts: Vec<&str> = self
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        parts.join("\n\n")
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +494,61 @@ mod tests {
         assert!(!json.contains("fileWithUri"));
         let back: FileContent = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name.as_deref(), Some("doc.pdf"));
+    }
+
+    #[test]
+    fn all_text_content_single_part() {
+        let msg = Message::user_text("hello world");
+        assert_eq!(msg.all_text_content(), "hello world");
+    }
+
+    #[test]
+    fn all_text_content_multiple_parts_joined() {
+        let msg = Message {
+            role: Role::User,
+            parts: vec![
+                Part::text("first"),
+                Part::text("second"),
+                Part::text("third"),
+            ],
+            message_id: None,
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        assert_eq!(msg.all_text_content(), "first\n\nsecond\n\nthird");
+    }
+
+    #[test]
+    fn all_text_content_no_text_parts_returns_empty() {
+        let msg = Message {
+            role: Role::User,
+            parts: vec![],
+            message_id: None,
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        assert_eq!(msg.all_text_content(), "");
+    }
+
+    #[test]
+    fn all_text_content_skips_non_text_parts() {
+        let msg = Message {
+            role: Role::User,
+            parts: vec![
+                Part::text("text-only"),
+                Part::Data {
+                    data: serde_json::json!({"key": "val"}),
+                    metadata: None,
+                },
+            ],
+            message_id: None,
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        assert_eq!(msg.all_text_content(), "text-only");
     }
 
     trait Not {

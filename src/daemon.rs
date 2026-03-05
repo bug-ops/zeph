@@ -17,6 +17,7 @@ fn spawn_a2a_server(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
     loopback_handle: zeph_core::LoopbackHandle,
+    sanitizer: zeph_core::ContentSanitizer,
 ) {
     let public_url = if config.a2a.public_url.is_empty() {
         format!("http://{}:{}", config.a2a.host, config.a2a.port)
@@ -33,6 +34,7 @@ fn spawn_a2a_server(
     let processor: std::sync::Arc<dyn zeph_a2a::TaskProcessor> =
         std::sync::Arc::new(AgentTaskProcessor {
             loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(loopback_handle)),
+            sanitizer,
         });
     let a2a_server = zeph_a2a::A2aServer::new(
         card,
@@ -60,6 +62,7 @@ fn spawn_a2a_server(
 
 pub(crate) struct AgentTaskProcessor {
     pub(crate) loopback_handle: std::sync::Arc<tokio::sync::Mutex<zeph_core::LoopbackHandle>>,
+    pub(crate) sanitizer: zeph_core::ContentSanitizer,
 }
 
 impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
@@ -71,9 +74,20 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), zeph_a2a::A2aError>> + Send>>
     {
         let handle = self.loopback_handle.clone();
+        let sanitizer = self.sanitizer.clone();
 
         Box::pin(async move {
-            let user_text = message.text_content().unwrap_or("").to_owned();
+            // Inbound A2A messages come from external agents and are treated as
+            // ExternalUntrusted — sanitize before forwarding to the agent loop.
+            // Use all_text_content() to concatenate ALL Part::Text entries; text_content()
+            // returns only the first part and would silently drop subsequent text.
+            let raw_text = message.all_text_content();
+            let user_text = sanitizer
+                .sanitize(
+                    &raw_text,
+                    zeph_core::ContentSource::new(zeph_core::ContentSourceKind::A2aMessage),
+                )
+                .body;
             let mut handle = handle.lock().await;
 
             handle
@@ -335,7 +349,8 @@ pub(crate) async fn run_daemon(
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
 
-    spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle);
+    let a2a_sanitizer = zeph_core::ContentSanitizer::new(&config.security.content_isolation);
+    spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle, a2a_sanitizer);
 
     #[cfg(feature = "gateway")]
     if config.gateway.enabled {

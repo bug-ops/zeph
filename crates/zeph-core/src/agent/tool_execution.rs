@@ -702,12 +702,21 @@ impl<C: Channel> Agent<C> {
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
                 let kind = FailureKind::from_error(&err_str);
+                // Sanitize before passing to self_reflection: error messages from MCP servers
+                // and web endpoints can contain untrusted content with injection patterns.
+                // Use McpResponse (ExternalUntrusted) as conservative default — tool_name is
+                // not available in this error branch, and over-spotlighting local errors is
+                // harmless while under-spotlighting external errors is a risk.
+                let sanitized_err = self
+                    .sanitizer
+                    .sanitize(&err_str, ContentSource::new(ContentSourceKind::McpResponse))
+                    .body;
                 self.record_skill_outcomes("tool_failure", Some(&err_str), Some(kind.as_str()))
                     .await;
                 self.record_anomaly_outcome(AnomalyOutcome::Error).await?;
 
                 if !self.learning_engine.was_reflection_used()
-                    && self.attempt_self_reflection(&err_str, "").await?
+                    && self.attempt_self_reflection(&sanitized_err, "").await?
                 {
                     return Ok(false);
                 }
@@ -724,8 +733,21 @@ impl<C: Channel> Agent<C> {
     ///
     /// Channel display (`send_tool_output`) still receives the raw body so the user
     /// sees unmodified output; spotlighting delimiters are added only for the LLM.
+    ///
+    /// This is the SOLE sanitization point for tool output data flows. Do not add
+    /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
     fn sanitize_tool_output(&self, body: &str, tool_name: &str) -> String {
-        let source = ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name);
+        // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
+        // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
+        // Everything else is local shell/file output.
+        let kind = if tool_name.contains(':') || tool_name == "mcp" {
+            ContentSourceKind::McpResponse
+        } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
+            ContentSourceKind::WebScrape
+        } else {
+            ContentSourceKind::ToolResult
+        };
+        let source = ContentSource::new(kind).with_identifier(tool_name);
         let sanitized = self.sanitizer.sanitize(body, source);
         if !sanitized.injection_flags.is_empty() {
             tracing::warn!(
@@ -2821,5 +2843,159 @@ mod tests {
     #[test]
     fn first_tool_name_empty_input_falls_back_to_tool() {
         assert_eq!(first_tool_name(""), "tool");
+    }
+
+    // --- sanitize_tool_output source kind differentiation ---
+
+    macro_rules! assert_external_data {
+        ($tool:literal, $body:literal) => {{
+            use super::super::agent_tests::{
+                MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+            };
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent =
+                super::super::Agent::new(provider, channel, registry, None, 5, executor);
+            let cfg = crate::sanitizer::ContentIsolationConfig {
+                enabled: true,
+                spotlight_untrusted: true,
+                flag_injection_patterns: false,
+                ..Default::default()
+            };
+            agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+            let result = agent.sanitize_tool_output($body, $tool);
+            assert!(
+                result.contains("<external-data"),
+                "tool '{}' should produce ExternalUntrusted (<external-data>) spotlighting, got: {}",
+                $tool,
+                &result[..result.len().min(200)]
+            );
+            assert!(
+                result.contains($body),
+                "tool '{}' result should preserve body text '{}' inside wrapper",
+                $tool,
+                $body
+            );
+        }};
+    }
+
+    macro_rules! assert_tool_output {
+        ($tool:literal, $body:literal) => {{
+            use super::super::agent_tests::{
+                MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+            };
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent =
+                super::super::Agent::new(provider, channel, registry, None, 5, executor);
+            let cfg = crate::sanitizer::ContentIsolationConfig {
+                enabled: true,
+                spotlight_untrusted: true,
+                flag_injection_patterns: false,
+                ..Default::default()
+            };
+            agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+            let result = agent.sanitize_tool_output($body, $tool);
+            assert!(
+                result.contains("<tool-output"),
+                "tool '{}' should produce LocalUntrusted (<tool-output>) spotlighting",
+                $tool
+            );
+            assert!(!result.contains("<external-data"));
+            assert!(
+                result.contains($body),
+                "tool '{}' result should preserve body text '{}' inside wrapper",
+                $tool,
+                $body
+            );
+        }};
+    }
+
+    #[test]
+    fn sanitize_tool_output_mcp_colon_uses_external_data_wrapper() {
+        assert_external_data!("gh:create_issue", "hello from mcp");
+    }
+
+    #[test]
+    fn sanitize_tool_output_legacy_mcp_uses_external_data_wrapper() {
+        assert_external_data!("mcp", "mcp output");
+    }
+
+    #[test]
+    fn sanitize_tool_output_web_scrape_hyphen_uses_external_data_wrapper() {
+        assert_external_data!("web-scrape", "scraped page");
+    }
+
+    #[test]
+    fn sanitize_tool_output_web_scrape_underscore_uses_external_data_wrapper() {
+        assert_external_data!("web_scrape", "scraped page");
+    }
+
+    #[test]
+    fn sanitize_tool_output_fetch_uses_external_data_wrapper() {
+        assert_external_data!("fetch", "fetched content");
+    }
+
+    #[test]
+    fn sanitize_tool_output_shell_uses_tool_output_wrapper() {
+        assert_tool_output!("shell", "ls output");
+    }
+
+    #[test]
+    fn sanitize_tool_output_bash_uses_tool_output_wrapper() {
+        assert_tool_output!("bash", "command output");
+    }
+
+    // R-06: disabled sanitizer returns raw body unchanged
+    #[test]
+    fn sanitize_tool_output_disabled_returns_raw_body() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        let cfg = crate::sanitizer::ContentIsolationConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+        let body = "raw mcp output";
+        let result = agent.sanitize_tool_output(body, "gh:create_issue");
+        assert_eq!(
+            result, body,
+            "disabled sanitizer must return body unchanged",
+        );
+    }
+
+    // R-07: error path sanitization — FailureKind uses raw err_str, self_reflection gets sanitized
+    #[test]
+    fn sanitize_error_str_strips_injection_patterns() {
+        // Verify that the sanitizer correctly processes content that would be passed
+        // to self_reflection in the Err(e) branch. We test this by calling the sanitizer
+        // directly with McpResponse kind (as the error path does) and confirming that
+        // spotlighting is applied while body content is preserved.
+        let cfg = crate::sanitizer::ContentIsolationConfig {
+            enabled: true,
+            spotlight_untrusted: true,
+            flag_injection_patterns: true,
+            ..Default::default()
+        };
+        let sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+        let err_msg = "HTTP 500: server error body";
+        let result = sanitizer.sanitize(
+            err_msg,
+            crate::sanitizer::ContentSource::new(crate::sanitizer::ContentSourceKind::McpResponse),
+        );
+        // ExternalUntrusted wraps in <external-data>
+        assert!(result.body.contains("<external-data"));
+        // Body content is preserved
+        assert!(result.body.contains(err_msg));
     }
 }

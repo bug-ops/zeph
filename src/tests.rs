@@ -352,8 +352,10 @@ fn agent_task_processor_construction() {
     use crate::daemon::AgentTaskProcessor;
 
     let (_, handle) = zeph_core::LoopbackChannel::pair(8);
+    let sanitizer = zeph_core::ContentSanitizer::new(&zeph_core::ContentIsolationConfig::default());
     let processor = AgentTaskProcessor {
         loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(handle)),
+        sanitizer,
     };
     assert!(std::sync::Arc::strong_count(&processor.loopback_handle) == 1);
 }
