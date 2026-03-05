@@ -9,9 +9,9 @@
 //! other's state on shutdown (known limitation, acceptable pre-1.0).
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use rand::SeedableRng;
 use rand_distr::{Beta, Distribution};
