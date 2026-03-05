@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "acp")]
+use crate::agent_setup;
+#[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
 #[cfg(any(feature = "acp", feature = "acp-http"))]
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::agent_setup;
 #[cfg(feature = "gateway")]
 use crate::gateway_spawn::spawn_gateway_server;
 use tokio::sync::watch;

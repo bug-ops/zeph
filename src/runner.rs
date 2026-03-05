@@ -122,26 +122,26 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "acp")]
     if cli.acp {
         init_file_logger();
-        return run_acp_server(
+        return Box::pin(run_acp_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
-        )
+        ))
         .await;
     }
 
     #[cfg(feature = "acp-http")]
     if cli.acp_http {
         init_file_logger();
-        return run_acp_http_server(
+        return Box::pin(run_acp_http_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
             cli.acp_http_bind.as_deref(),
             cli.acp_auth_token,
-        )
+        ))
         .await;
     }
 
