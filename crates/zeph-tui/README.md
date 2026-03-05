@@ -21,9 +21,9 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **highlight** — syntax highlighting for code blocks
 - **hyperlink** — OSC 8 clickable hyperlinks for bare URLs and markdown links
 - **layout** — panel arrangement and responsive grid
-- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry; filter savings percentage shown in the status bar (e.g. `Filters: 78%`)
+- **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry; filter savings percentage shown in the status bar (e.g. `Filters: 78%`); `SEC` indicator in status bar shows injection flag count when nonzero
 - **theme** — color palette and style definitions
-- **widgets** — reusable ratatui widget components; includes `subagents` widget with a 5-state FSM panel (`List` → `Detail` → `Create` → `Edit` → `ConfirmDelete`) for interactive management of sub-agent definition files
+- **widgets** — reusable ratatui widget components; includes `subagents` widget with a 5-state FSM panel (`List` → `Detail` → `Create` → `Edit` → `ConfirmDelete`) for interactive management of sub-agent definition files; `security` widget renders a side panel with a real-time security event feed (injection flags, exfiltration blocks, quarantine invocations, truncations)
 - **error** — `TuiError` typed error enum (Io, Channel)
 
 ## Agents management panel
@@ -56,6 +56,7 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `view:filters` | Display output filter hit rates and invocation counts |
 | `scheduler:list` | List active scheduled tasks (name, kind, mode, next run) — requires `scheduler` feature |
 | `gateway:status` | Show gateway server state — requires `gateway` feature |
+| `security:events` | Show security event history |
 | `ingest` | Usage hint for `zeph ingest <path>` |
 | `session:new` | Start a new conversation session |
 | `session:history` | Browse session history (`H` shortcut) |

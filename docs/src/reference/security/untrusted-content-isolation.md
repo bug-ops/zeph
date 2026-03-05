@@ -150,7 +150,7 @@ Eight counters in the metrics system track sanitizer, quarantine, and exfiltrati
 | `exfiltration_urls_flagged` | Suspicious tool URLs matched against flagged content |
 | `exfiltration_memory_guarded` | Memory writes skipped due to injection flags |
 
-These are visible in the TUI metrics panel and in the `GET /metrics` gateway endpoint (when enabled).
+These counters are visible in the [TUI security side panel](../../advanced/tui.md#security-side-panel) when recent events exist, and in the `GET /metrics` gateway endpoint (when enabled). The TUI status bar also shows a `SEC` badge summarizing injection flags (yellow) and exfiltration blocks (red). Use the `security:events` command palette entry to view the full event history in the chat panel.
 
 ## System Prompt Reinforcement
 
