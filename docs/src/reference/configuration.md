@@ -247,6 +247,17 @@ destination = "stdout"      # "stdout" or file path
 [security]
 redact_secrets = true       # Redact API keys/tokens in LLM responses
 
+[security.content_isolation]
+enabled = true              # Master switch for untrusted content sanitizer
+max_content_size = 65536    # Max bytes per source before truncation (default: 64 KiB)
+flag_injection_patterns = true  # Detect and flag injection patterns
+spotlight_untrusted = true  # Wrap untrusted content in XML delimiters
+
+[security.content_isolation.quarantine]
+enabled = false             # Opt-in: route high-risk sources through quarantine LLM
+sources = ["web_scrape", "a2a_message"]  # Source kinds to quarantine
+model = "claude"            # Provider/model for quarantine extraction
+
 [timeouts]
 llm_seconds = 120           # LLM chat completion timeout
 embedding_seconds = 30      # Embedding generation timeout
