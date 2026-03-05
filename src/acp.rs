@@ -182,7 +182,7 @@ async fn build_acp_deps(
         compaction_preserve_tail: config.memory.compaction_preserve_tail,
         prune_protect_tokens: config.memory.prune_protect_tokens,
         shutdown_rx,
-        security: config.security,
+        security: config.security.clone(),
         timeouts: config.timeouts,
         redact_credentials: config.memory.redact_credentials,
         tool_summarization: config.tools.summarize_output,
