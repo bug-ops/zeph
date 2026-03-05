@@ -122,26 +122,26 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "acp")]
     if cli.acp {
         init_file_logger();
-        return run_acp_server(
+        return Box::pin(run_acp_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
-        )
+        ))
         .await;
     }
 
     #[cfg(feature = "acp-http")]
     if cli.acp_http {
         init_file_logger();
-        return run_acp_http_server(
+        return Box::pin(run_acp_http_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
             cli.acp_http_bind.as_deref(),
             cli.acp_auth_token,
-        )
+        ))
         .await;
     }
 
@@ -468,6 +468,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
+    let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
 
     #[cfg(feature = "index")]
     let (agent, _index_watcher) = agent_setup::apply_code_index(

@@ -287,6 +287,33 @@ impl AppBuilder {
         )
     }
 
+    /// Build the quarantine summarizer provider when `security.content_isolation.quarantine.enabled = true`.
+    ///
+    /// Returns `None` when quarantine is disabled or provider resolution fails.
+    /// Emits a `tracing::warn` on resolution failure (quarantine silently disabled).
+    pub fn build_quarantine_provider(
+        &self,
+    ) -> Option<(AnyProvider, crate::sanitizer::QuarantineConfig)> {
+        let qc = &self.config.security.content_isolation.quarantine;
+        if !qc.enabled {
+            return None;
+        }
+        match create_named_provider(&qc.model, &self.config) {
+            Ok(p) => {
+                tracing::info!(model = %qc.model, "quarantine provider configured");
+                Some((p, qc.clone()))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    model = %qc.model,
+                    error = %e,
+                    "quarantine provider resolution failed, quarantine disabled"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for the judge detector when `detector_mode = judge`.
     ///
     /// Returns `None` when mode is `Regex` or `judge_model` is empty (primary provider used).

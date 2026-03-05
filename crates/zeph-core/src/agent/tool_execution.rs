@@ -602,7 +602,9 @@ impl<C: Channel> Agent<C> {
                     )
                     .await?;
 
-                let llm_body = self.sanitize_tool_output(&processed, &output.tool_name);
+                let llm_body = self
+                    .sanitize_tool_output(&processed, &output.tool_name)
+                    .await;
                 self.push_message(Message::from_parts(
                     Role::User,
                     vec![MessagePart::ToolOutput {
@@ -668,7 +670,7 @@ impl<C: Channel> Agent<C> {
                                 Some(confirmed_started_at),
                             )
                             .await?;
-                        let llm_body = self.sanitize_tool_output(&processed, &out.tool_name);
+                        let llm_body = self.sanitize_tool_output(&processed, &out.tool_name).await;
                         self.push_message(Message::from_parts(
                             Role::User,
                             vec![MessagePart::ToolOutput {
@@ -736,7 +738,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
-    fn sanitize_tool_output(&self, body: &str, tool_name: &str) -> String {
+    async fn sanitize_tool_output(&self, body: &str, tool_name: &str) -> String {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
         // Everything else is local shell/file output.
@@ -763,6 +765,33 @@ impl<C: Channel> Agent<C> {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
         }
         self.update_metrics(|m| m.sanitizer_runs += 1);
+
+        // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
+        if self.sanitizer.is_enabled()
+            && let Some(ref qs) = self.quarantine_summarizer
+            && qs.should_quarantine(kind)
+        {
+            match qs.extract_facts(&sanitized, &self.sanitizer).await {
+                Ok((facts, flags)) => {
+                    self.update_metrics(|m| m.quarantine_invocations += 1);
+                    let escaped = crate::sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    return crate::sanitizer::ContentSanitizer::apply_spotlight(
+                        &escaped,
+                        &sanitized.source,
+                        &flags,
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        error = %e,
+                        "quarantine failed, using original sanitized output"
+                    );
+                    self.update_metrics(|m| m.quarantine_failures += 1);
+                }
+            }
+        }
+
         sanitized.body
     }
 
@@ -2865,7 +2894,7 @@ mod tests {
                 ..Default::default()
             };
             agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
-            let result = agent.sanitize_tool_output($body, $tool);
+            let result = agent.sanitize_tool_output($body, $tool).await;
             assert!(
                 result.contains("<external-data"),
                 "tool '{}' should produce ExternalUntrusted (<external-data>) spotlighting, got: {}",
@@ -2899,7 +2928,7 @@ mod tests {
                 ..Default::default()
             };
             agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
-            let result = agent.sanitize_tool_output($body, $tool);
+            let result = agent.sanitize_tool_output($body, $tool).await;
             assert!(
                 result.contains("<tool-output"),
                 "tool '{}' should produce LocalUntrusted (<tool-output>) spotlighting",
@@ -2915,44 +2944,44 @@ mod tests {
         }};
     }
 
-    #[test]
-    fn sanitize_tool_output_mcp_colon_uses_external_data_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_mcp_colon_uses_external_data_wrapper() {
         assert_external_data!("gh:create_issue", "hello from mcp");
     }
 
-    #[test]
-    fn sanitize_tool_output_legacy_mcp_uses_external_data_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_legacy_mcp_uses_external_data_wrapper() {
         assert_external_data!("mcp", "mcp output");
     }
 
-    #[test]
-    fn sanitize_tool_output_web_scrape_hyphen_uses_external_data_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_web_scrape_hyphen_uses_external_data_wrapper() {
         assert_external_data!("web-scrape", "scraped page");
     }
 
-    #[test]
-    fn sanitize_tool_output_web_scrape_underscore_uses_external_data_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_web_scrape_underscore_uses_external_data_wrapper() {
         assert_external_data!("web_scrape", "scraped page");
     }
 
-    #[test]
-    fn sanitize_tool_output_fetch_uses_external_data_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_fetch_uses_external_data_wrapper() {
         assert_external_data!("fetch", "fetched content");
     }
 
-    #[test]
-    fn sanitize_tool_output_shell_uses_tool_output_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_shell_uses_tool_output_wrapper() {
         assert_tool_output!("shell", "ls output");
     }
 
-    #[test]
-    fn sanitize_tool_output_bash_uses_tool_output_wrapper() {
+    #[tokio::test]
+    async fn sanitize_tool_output_bash_uses_tool_output_wrapper() {
         assert_tool_output!("bash", "command output");
     }
 
     // R-06: disabled sanitizer returns raw body unchanged
-    #[test]
-    fn sanitize_tool_output_disabled_returns_raw_body() {
+    #[tokio::test]
+    async fn sanitize_tool_output_disabled_returns_raw_body() {
         use super::super::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,
         };
@@ -2967,7 +2996,7 @@ mod tests {
         };
         agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
         let body = "raw mcp output";
-        let result = agent.sanitize_tool_output(body, "gh:create_issue");
+        let result = agent.sanitize_tool_output(body, "gh:create_issue").await;
         assert_eq!(
             result, body,
             "disabled sanitizer must return body unchanged",
@@ -2997,5 +3026,180 @@ mod tests {
         assert!(result.body.contains("<external-data"));
         // Body content is preserved
         assert!(result.body.contains(err_msg));
+    }
+
+    // --- quarantine integration ---
+
+    #[tokio::test]
+    async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::sanitizer::QuarantineConfig;
+        use crate::sanitizer::quarantine::QuarantinedSummarizer;
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        // Quarantine provider returns facts
+        let quarantine_provider =
+            zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![
+                "Fact: page title is Zeph".to_owned(),
+            ]));
+        let qcfg = QuarantineConfig {
+            enabled: true,
+            sources: vec!["web_scrape".to_owned()],
+            model: "claude".to_owned(),
+        };
+        let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_quarantine_summarizer(qs);
+        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+            enabled: true,
+            spotlight_untrusted: true,
+            flag_injection_patterns: false,
+            ..Default::default()
+        });
+
+        let result = agent
+            .sanitize_tool_output("some scraped content", "web_scrape")
+            .await;
+
+        // Output should contain the quarantine facts, not the original content
+        assert!(
+            result.contains("Fact: page title is Zeph"),
+            "quarantine facts should replace original content"
+        );
+        // Metric should be incremented
+        let snap = rx.borrow().clone();
+        assert_eq!(
+            snap.quarantine_invocations, 1,
+            "quarantine_invocations should be 1"
+        );
+        assert_eq!(
+            snap.quarantine_failures, 0,
+            "quarantine_failures should be 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn sanitize_tool_output_quarantine_fallback_on_error() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::sanitizer::QuarantineConfig;
+        use crate::sanitizer::quarantine::QuarantinedSummarizer;
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        // Quarantine provider fails
+        let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
+        let qcfg = QuarantineConfig {
+            enabled: true,
+            sources: vec!["web_scrape".to_owned()],
+            model: "claude".to_owned(),
+        };
+        let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_quarantine_summarizer(qs);
+        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+            enabled: true,
+            spotlight_untrusted: true,
+            flag_injection_patterns: false,
+            ..Default::default()
+        });
+
+        let result = agent
+            .sanitize_tool_output("original web content", "web_scrape")
+            .await;
+
+        // Fallback: original sanitized content preserved
+        assert!(
+            result.contains("original web content"),
+            "fallback must preserve original content"
+        );
+        // Failure metric incremented
+        let snap = rx.borrow().clone();
+        assert_eq!(
+            snap.quarantine_failures, 1,
+            "quarantine_failures should be 1"
+        );
+        assert_eq!(
+            snap.quarantine_invocations, 0,
+            "quarantine_invocations should be 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn sanitize_tool_output_quarantine_skips_shell_tool() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::sanitizer::QuarantineConfig;
+        use crate::sanitizer::quarantine::QuarantinedSummarizer;
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        // Quarantine provider that fails if called
+        let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
+        let qcfg = QuarantineConfig {
+            enabled: true,
+            sources: vec!["web_scrape".to_owned()], // only web_scrape, NOT shell
+            model: "claude".to_owned(),
+        };
+        let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_quarantine_summarizer(qs);
+        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+            enabled: true,
+            spotlight_untrusted: true,
+            flag_injection_patterns: false,
+            ..Default::default()
+        });
+
+        // Shell tool — should NOT invoke quarantine
+        let result = agent.sanitize_tool_output("shell output", "shell").await;
+
+        // No quarantine invoked (failing provider would set failures if called)
+        let snap = rx.borrow().clone();
+        assert_eq!(
+            snap.quarantine_invocations, 0,
+            "shell tool must not invoke quarantine"
+        );
+        assert_eq!(
+            snap.quarantine_failures, 0,
+            "shell tool must not invoke quarantine"
+        );
+        // Original sanitized content preserved (shell output should appear)
+        assert!(
+            result.contains("shell output"),
+            "shell output must be preserved"
+        );
     }
 }

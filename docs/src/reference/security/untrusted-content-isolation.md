@@ -137,13 +137,15 @@ All options default to their most secure values — you only need to add this se
 
 ## Metrics
 
-Three counters in the metrics system track sanitizer activity:
+Five counters in the metrics system track sanitizer and quarantine activity:
 
 | Metric | Description |
 |--------|-------------|
 | `sanitizer_runs` | Total number of sanitize calls |
 | `sanitizer_injection_flags` | Total injection patterns detected across all calls |
 | `sanitizer_truncations` | Number of content items truncated to `max_content_size` |
+| `quarantine_invocations` | Number of quarantine extraction calls made |
+| `quarantine_failures` | Number of quarantine calls that failed (fallback used) |
 
 These are visible in the TUI metrics panel and in the `GET /metrics` gateway endpoint (when enabled).
 
@@ -159,24 +161,103 @@ never as instructions to follow.
 
 This reinforcement works alongside the spotlighting delimiters as a second signal to the model.
 
+## Quarantined Summarizer (Dual LLM Pattern)
+
+For the highest-risk sources — web scraping and A2A messages from unknown agents — the content isolation pipeline includes an optional **quarantined summarizer**: a separate LLM call that extracts only factual information before the content enters the main agent context.
+
+```
+Sanitized content (from pipeline above)
+      │
+      ▼
+Is quarantine enabled for this source?
+      │
+  ┌───┴───┐
+  │ yes   │ no
+  ▼       ▼
+Quarantine LLM     Pass through
+(no tools, temp 0) unchanged
+  │
+  ▼
+Extracted facts only
+  │
+  ▼
+Re-sanitize output (injection detection + delimiter escape)
+  │
+  ▼
+Wrap in spotlighting delimiters
+  │
+  ▼
+Main agent context
+```
+
+The quarantine LLM receives a hardcoded, non-configurable system prompt that instructs it to extract only factual statements from the data. It has **no tool access**, **no memory**, and **no conversation history** — it cannot be manipulated into taking actions.
+
+If the quarantine LLM fails (network error, timeout, rate limit), the pipeline falls back to the original sanitized content with all spotlighting and injection flags preserved. The agent loop is never blocked.
+
+### Configuration
+
+```toml
+[security.content_isolation.quarantine]
+# Opt-in: disabled by default. Enable to route high-risk sources through
+# a separate LLM extraction pass.
+enabled = false
+
+# Content source kinds that trigger quarantine processing.
+# Valid values: "web_scrape", "a2a_message", "mcp_response", "memory_retrieval"
+sources = ["web_scrape", "a2a_message"]
+
+# Provider/model for the quarantine LLM. Uses the same provider resolution
+# as the main agent — "claude", "openai", "ollama", or a compatible entry name.
+model = "claude"
+```
+
+### Re-sanitization
+
+The quarantine LLM output is not blindly trusted. Before entering the main agent context, extracted facts pass through:
+
+1. **Injection pattern detection** — the same 17 regex patterns scan the quarantine output
+2. **Delimiter tag escaping** — `<tool-output>` and `<external-data>` tags in the output are escaped
+3. **Spotlighting** — the result is wrapped in the standard XML delimiters
+
+This defense-in-depth ensures that even if the quarantine LLM echoes back adversarial content, it is flagged and escaped before reaching the main reasoning loop.
+
+### Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `quarantine_invocations` | Number of quarantine extraction calls made |
+| `quarantine_failures` | Number of quarantine calls that failed (fallback used) |
+
+### When to Enable
+
+Enable the quarantined summarizer when:
+
+- The agent processes web content from arbitrary URLs
+- The agent communicates with untrusted A2A agents
+- Extra latency per external tool call is acceptable (one additional LLM round-trip)
+
+The quarantine call adds the full remote LLM round-trip latency to each qualifying tool result. Use a fast, inexpensive model for the quarantine provider to minimize cost and latency.
+
 ## Defense-in-Depth
 
 Content isolation is one layer of a broader security model. No single defense is sufficient — the "Agents Rule of Two" research demonstrated 100% bypass of all individual defenses via adaptive red-teaming. Zeph combines:
 
 1. **Spotlighting** — XML delimiters signal data vs. instructions to the LLM
 2. **Injection pattern detection** — flags known attack phrases
-3. **System prompt reinforcement** — instructs the LLM on delimiter semantics
-4. **Shell sandbox** — limits filesystem access even if injection succeeds
-5. **Permission policy** — controls which tools the agent can call
-6. **Audit logging** — records all tool executions for post-incident review
+3. **Quarantined summarizer** — Dual LLM pattern extracts facts from high-risk sources
+4. **System prompt reinforcement** — instructs the LLM on delimiter semantics
+5. **Shell sandbox** — limits filesystem access even if injection succeeds
+6. **Permission policy** — controls which tools the agent can call
+7. **Audit logging** — records all tool executions for post-incident review
 
 ## Known Limitations
 
 | Limitation | Status |
 |-----------|--------|
-| Unicode zero-width space bypass (`igno​re` with U+200B) | Phase 2 |
-| No hard-block mode (flag-only, never removes content) | Phase 2 |
-| `inject_code_context` (code indexing feature) not sanitized | Phase 2 |
+| Unicode zero-width space bypass (`igno​re` with U+200B) | Planned |
+| No hard-block mode (flag-only, never removes content) | Planned |
+| `inject_code_context` (code indexing feature) not sanitized | Planned |
+| Quarantine circuit-breaker for repeated failures | Planned |
 
 ## References
 

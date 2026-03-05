@@ -458,6 +458,25 @@ redact_secrets = true
 # Tool access level: "readonly" (observe only), "supervised" (default, with confirmations), "full" (all tools, no confirmations)
 autonomy_level = "supervised"
 
+[security.content_isolation]
+# Enable the 4-step sanitization pipeline for untrusted content (default: true)
+enabled = true
+# Maximum byte length of untrusted content before truncation (default: 65536)
+max_content_size = 65536
+# Flag detected injection patterns in the spotlighting wrapper (default: true)
+flag_injection_patterns = true
+# Wrap untrusted content in spotlighting XML delimiters (default: true)
+spotlight_untrusted = true
+
+[security.content_isolation.quarantine]
+# Route high-risk content through an isolated LLM for fact extraction (default: false)
+enabled = false
+# Source kinds to route through quarantine (default: web_scrape, a2a_message)
+sources = ["web_scrape", "a2a_message"]
+# Provider to use for quarantine LLM calls — must be a recognized provider name
+# (e.g. "claude", "ollama", "openai", or a compatible entry name)
+model = "claude"
+
 # [telegram]
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)

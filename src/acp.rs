@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "acp")]
+use crate::agent_setup;
+#[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
 #[cfg(any(feature = "acp", feature = "acp-http"))]
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
@@ -61,6 +63,10 @@ struct AgentDeps {
     secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
+    quarantine_provider: Option<(
+        zeph_llm::any::AnyProvider,
+        zeph_core::sanitizer::QuarantineConfig,
+    )>,
     acp_agent_name: String,
     acp_agent_version: String,
     acp_max_sessions: usize,
@@ -207,6 +213,7 @@ async fn build_acp_deps(
             .collect(),
         summary_provider,
         judge_provider: app.build_judge_provider(),
+        quarantine_provider: app.build_quarantine_provider(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -359,6 +366,8 @@ async fn spawn_acp_agent(
     if let Some(jp) = d.judge_provider {
         agent = agent.with_judge_provider(jp);
     }
+
+    agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider);
 
     if let Err(e) = agent.load_history().await {
         tracing::error!("failed to load agent history: {e:#}");

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::agent_setup;
 #[cfg(feature = "gateway")]
 use crate::gateway_spawn::spawn_gateway_server;
 use tokio::sync::watch;
@@ -316,6 +317,7 @@ pub(crate) async fn run_daemon(
     } else {
         agent
     };
+    let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

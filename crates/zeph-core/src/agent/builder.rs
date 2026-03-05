@@ -300,6 +300,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[must_use]
+    pub fn with_quarantine_summarizer(
+        mut self,
+        qs: crate::sanitizer::quarantine::QuarantinedSummarizer,
+    ) -> Self {
+        self.quarantine_summarizer = Some(qs);
+        self
+    }
+
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
         self.summary_provider.as_ref().unwrap_or(&self.provider)
     }

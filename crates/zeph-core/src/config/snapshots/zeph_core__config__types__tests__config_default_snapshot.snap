@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1793
 expression: toml_str
 ---
 [agent]
@@ -194,6 +193,14 @@ enabled = true
 max_content_size = 65536
 flag_injection_patterns = true
 spotlight_untrusted = true
+
+[security.content_isolation.quarantine]
+enabled = false
+sources = [
+    "web_scrape",
+    "a2a_message",
+]
+model = "claude"
 
 [timeouts]
 llm_seconds = 120

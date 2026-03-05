@@ -52,6 +52,7 @@ use crate::context::{
 use crate::cost::CostTracker;
 use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
 use crate::sanitizer::ContentSanitizer;
+use crate::sanitizer::quarantine::QuarantinedSummarizer;
 use crate::vault::Secret;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
@@ -193,6 +194,8 @@ pub struct Agent<C: Channel> {
     pub(super) instruction_reload_state: Option<InstructionReloadState>,
     /// Sanitizes untrusted content before it enters the LLM message history.
     pub(super) sanitizer: ContentSanitizer,
+    /// Optional quarantine summarizer for routing high-risk content through an isolated LLM.
+    pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -345,6 +348,7 @@ impl<C: Channel> Agent<C> {
             instruction_reload_rx: None,
             instruction_reload_state: None,
             sanitizer: ContentSanitizer::new(&crate::sanitizer::ContentIsolationConfig::default()),
+            quarantine_summarizer: None,
         }
     }
 
