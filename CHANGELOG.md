@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add stale event guard in scheduler: rejects completion events from timed-out-then-retried agents (#1238)
 - Add `ContentSanitizer` integration in `build_task_prompt()` for cross-task dependency output sanitization (#1238)
 - Add `dependency_context_budget` (default 16384) and `confirm_before_execute` (default true) to `OrchestrationConfig` (#1238)
+- Add LLM-based task planner: `Planner` trait and `LlmPlanner<P>` implementation for goal decomposition into validated `TaskGraph` via `chat_typed` structured output, string-to-`TaskId` mapping, kebab-case task_id validation, agent hint matching against `SubAgentDef` catalog (Phase 2, #1237)
+- Add `planner_model` and `planner_max_tokens` fields to `[orchestration]` config section (#1237)
 - Add task orchestration core types (`TaskGraph`, `TaskNode`, `TaskId`, `GraphId`, `TaskStatus`, `GraphStatus`, `FailureStrategy`, `TaskResult`), DAG algorithms (`validate`, `toposort`, `ready_tasks`, `propagate_failure`), `OrchestrationConfig`, `OrchestrationError`, and SQLite persistence via `RawGraphStore`/`GraphPersistence` (Phase 1, #1236)
 - Add `orchestration` feature flag in root, `zeph-core`, and `zeph-memory` crates (included in `full`) (#1236)
 - Add `[orchestration]` TOML config section: `enabled`, `max_tasks`, `max_parallel`, `default_failure_strategy`, `default_max_retries`, `task_timeout_secs` (#1236)

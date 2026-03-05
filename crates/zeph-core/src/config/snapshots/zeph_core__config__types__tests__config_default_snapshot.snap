@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
+assertion_line: 1937
 expression: toml_str
 ---
 [agent]
@@ -287,5 +288,6 @@ max_parallel = 4
 default_failure_strategy = "abort"
 default_max_retries = 3
 task_timeout_secs = 300
+planner_max_tokens = 4096
 dependency_context_budget = 16384
 confirm_before_execute = true
