@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-03-05
+
 ### Security
 
 - SEC-M22-001: fix bearer token timing side-channel in `zeph-gateway` auth middleware — both the submitted token and the expected token are now hashed with BLAKE3 (32-byte fixed-length output) before comparison via `subtle::ConstantTimeEq`, preventing length leaks and timing attacks; expected token hash is pre-computed at startup to eliminate per-request rehashing (#1173)
@@ -1680,7 +1682,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.12.6...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/bug-ops/zeph/compare/v0.12.6...v0.13.0
 [0.12.6]: https://github.com/bug-ops/zeph/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/bug-ops/zeph/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/bug-ops/zeph/compare/v0.12.3...v0.12.4

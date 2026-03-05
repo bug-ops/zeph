@@ -228,7 +228,7 @@ show_source_labels = false
 [acp]
 enabled = false
 agent_name = "zeph"
-agent_version = "0.12.6"
+agent_version = "0.13.0"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 available_models = []
