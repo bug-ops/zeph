@@ -1400,6 +1400,8 @@ mod tests {
     use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
     use zeph_tools::registry::ToolDef;
 
+    use serial_test::serial;
+
     use crate::config::SubAgentConfig;
     use crate::subagent::def::MemoryScope;
 
@@ -2567,6 +2569,7 @@ mod tests {
     // ── Memory scope tests ────────────────────────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn spawn_with_memory_scope_project_creates_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2614,6 +2617,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn spawn_with_config_default_memory_scope_applies_when_def_has_none() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2663,6 +2667,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn spawn_with_memory_blocked_by_disallowed_tools_skips_memory() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2715,6 +2720,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn spawn_without_memory_scope_no_directory_created() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2757,6 +2763,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn build_prompt_injects_memory_block_after_behavioral_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2800,6 +2807,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2839,6 +2847,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn spawn_with_explicit_def_memory_overrides_config_default() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -2898,6 +2907,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn spawn_memory_blocked_by_deny_list_policy() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
