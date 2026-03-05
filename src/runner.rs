@@ -468,6 +468,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
+    let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
 
     #[cfg(feature = "index")]
     let (agent, _index_watcher) = agent_setup::apply_code_index(

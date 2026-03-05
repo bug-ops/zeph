@@ -1515,21 +1515,26 @@ impl<C: Channel> Agent<C> {
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
         if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected document RAG context");
         }
         if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
         }
         if let Some(msg) = cross_session_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
         }
         if let Some(msg) = summaries_msg.filter(|_| self.messages.len() > 1) {
-            self.messages.insert(1, self.sanitize_memory_message(msg)); // lgtm[rust/cleartext-logging]
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected summaries into context");
         }
 
@@ -1580,7 +1585,7 @@ impl<C: Channel> Agent<C> {
     /// This is the SOLE sanitization point for the 5 memory retrieval paths (`doc_rag`,
     /// corrections, recall, `cross_session`, summaries). Do not add redundant sanitization
     /// in zeph-memory or at other call sites.
-    fn sanitize_memory_message(&self, mut msg: Message) -> Message {
+    async fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
         let sanitized = self.sanitizer.sanitize(&msg.content, source);
         self.update_metrics(|m| m.sanitizer_runs += 1);
@@ -1596,6 +1601,33 @@ impl<C: Channel> Agent<C> {
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
         }
+
+        // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
+        if self.sanitizer.is_enabled()
+            && let Some(ref qs) = self.quarantine_summarizer
+            && qs.should_quarantine(ContentSourceKind::MemoryRetrieval)
+        {
+            match qs.extract_facts(&sanitized, &self.sanitizer).await {
+                Ok((facts, flags)) => {
+                    self.update_metrics(|m| m.quarantine_invocations += 1);
+                    let escaped = crate::sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    msg.content = crate::sanitizer::ContentSanitizer::apply_spotlight(
+                        &escaped,
+                        &sanitized.source,
+                        &flags,
+                    );
+                    return msg;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "quarantine failed for memory retrieval, using original sanitized content"
+                    );
+                    self.update_metrics(|m| m.quarantine_failures += 1);
+                }
+            }
+        }
+
         msg.content = sanitized.body;
         msg
     }

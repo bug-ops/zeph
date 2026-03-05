@@ -41,7 +41,7 @@ pub use config::{Config, ConfigError};
 pub use hash::content_hash;
 pub use sanitizer::{
     ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, InjectionFlag,
-    SanitizedContent, TrustLevel,
+    QuarantineConfig, SanitizedContent, TrustLevel,
 };
 pub use skill_loader::SkillLoaderExecutor;
 pub use zeph_tools::executor::DiffData;

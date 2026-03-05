@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sanitize A2A inbound messages as `ExternalUntrusted` in `AgentTaskProcessor` before they enter the agent loop; add `all_text_content()` to collect all `Part::Text` entries (#1202)
 - Sanitize code RAG text from `zeph-index` before injection into context with metrics tracking and injection flag logging (#1203)
 - Sanitize tool error messages before `self_reflection` context using `ExternalUntrusted` as conservative default (#1200)
+- Add `QuarantinedSummarizer` — Dual LLM pattern that routes high-risk external content (web scrape, A2A) through an isolated, tool-less LLM extraction call before it enters the main agent context (#1204)
+- Add `[security.content_isolation.quarantine]` config section: `enabled` (default false), `sources`, `model` (#1204)
+- Re-sanitize quarantine LLM output: run `detect_injections` and `escape_delimiter_tags` on extracted facts before spotlighting (#1204)
+- Guard quarantine step behind `sanitizer.is_enabled()` to prevent unnecessary LLM calls when sanitizer is disabled (#1204)
+- Add `quarantine_invocations`, `quarantine_failures` counters to `MetricsSnapshot` (#1204)
+- Refactor `sanitizer.rs` to `sanitizer/mod.rs` + `sanitizer/quarantine.rs` module structure (#1204)
 
 ## [0.13.0] - 2026-03-05
 

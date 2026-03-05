@@ -168,6 +168,21 @@ pub(crate) fn apply_summary_provider<C: Channel>(
     }
 }
 
+pub(crate) fn apply_quarantine_provider<C: Channel>(
+    agent: Agent<C>,
+    quarantine: Option<(
+        zeph_llm::any::AnyProvider,
+        zeph_core::sanitizer::QuarantineConfig,
+    )>,
+) -> Agent<C> {
+    if let Some((provider, config)) = quarantine {
+        let qs = zeph_core::sanitizer::quarantine::QuarantinedSummarizer::new(provider, &config);
+        agent.with_quarantine_summarizer(qs)
+    } else {
+        agent
+    }
+}
+
 #[cfg(feature = "index")]
 pub(crate) async fn apply_code_index<C: Channel>(
     agent: Agent<C>,

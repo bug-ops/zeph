@@ -9,6 +9,8 @@
 //! and wraps content in spotlighting delimiters that signal to the LLM that the
 //! enclosed text is data to analyze, not instructions to follow.
 
+pub mod quarantine;
+
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -50,6 +52,50 @@ pub struct ContentIsolationConfig {
     /// that instruct the LLM to treat the enclosed text as data, not instructions.
     #[serde(default = "default_true")]
     pub spotlight_untrusted: bool,
+
+    /// Quarantine summarizer configuration.
+    #[serde(default)]
+    pub quarantine: QuarantineConfig,
+}
+
+/// Configuration for the quarantine summarizer, nested under
+/// `[security.content_isolation.quarantine]` in the agent config file.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct QuarantineConfig {
+    /// When `false`, quarantine summarization is disabled entirely.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Source kinds to route through the quarantine LLM.
+    ///
+    /// Accepted values: `"tool_result"`, `"web_scrape"`, `"mcp_response"`,
+    /// `"a2a_message"`, `"memory_retrieval"`, `"instruction_file"`.
+    #[serde(default = "default_quarantine_sources")]
+    pub sources: Vec<String>,
+
+    /// Provider name passed to `create_named_provider`.
+    ///
+    /// Accepted values: `"claude"`, `"ollama"`, `"openai"`, or a compatible entry name.
+    #[serde(default = "default_quarantine_model")]
+    pub model: String,
+}
+
+fn default_quarantine_sources() -> Vec<String> {
+    vec!["web_scrape".to_owned(), "a2a_message".to_owned()]
+}
+
+fn default_quarantine_model() -> String {
+    "claude".to_owned()
+}
+
+impl Default for QuarantineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sources: default_quarantine_sources(),
+            model: default_quarantine_model(),
+        }
+    }
 }
 
 impl Default for ContentIsolationConfig {
@@ -59,6 +105,7 @@ impl Default for ContentIsolationConfig {
             max_content_size: default_max_content_size(),
             flag_injection_patterns: true,
             spotlight_untrusted: true,
+            quarantine: QuarantineConfig::default(),
         }
     }
 }
@@ -125,6 +172,23 @@ impl ContentSourceKind {
             Self::A2aMessage => "a2a_message",
             Self::MemoryRetrieval => "memory_retrieval",
             Self::InstructionFile => "instruction_file",
+        }
+    }
+
+    /// Parse a string into a `ContentSourceKind`.
+    ///
+    /// Returns `None` for unrecognized strings (instead of an error) so callers
+    /// can log a warning and skip unknown values without breaking deserialization.
+    #[must_use]
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "tool_result" => Some(Self::ToolResult),
+            "web_scrape" => Some(Self::WebScrape),
+            "mcp_response" => Some(Self::McpResponse),
+            "a2a_message" => Some(Self::A2aMessage),
+            "memory_retrieval" => Some(Self::MemoryRetrieval),
+            "instruction_file" => Some(Self::InstructionFile),
+            _ => None,
         }
     }
 }
@@ -293,6 +357,12 @@ impl ContentSanitizer {
         self.enabled
     }
 
+    /// Returns `true` when injection pattern flagging is enabled (`flag_injection_patterns = true`).
+    #[must_use]
+    pub(crate) fn should_flag_injections(&self) -> bool {
+        self.flag_injections
+    }
+
     /// Run the four-step sanitization pipeline on `content`.
     ///
     /// Steps:
@@ -367,7 +437,7 @@ impl ContentSanitizer {
             .collect()
     }
 
-    fn detect_injections(content: &str) -> Vec<InjectionFlag> {
+    pub(crate) fn detect_injections(content: &str) -> Vec<InjectionFlag> {
         let mut flags = Vec::new();
         for pattern in &*INJECTION_PATTERNS {
             for m in pattern.regex.find_iter(content) {
@@ -384,7 +454,7 @@ impl ContentSanitizer {
     /// Replace delimiter tag names that would allow content to escape the spotlighting
     /// wrapper (CRIT-03). Uses case-insensitive regex replacement so mixed-case variants
     /// like `<Tool-Output>` or `<EXTERNAL-DATA>` are also neutralized (FIX-03).
-    fn escape_delimiter_tags(content: &str) -> String {
+    pub(crate) fn escape_delimiter_tags(content: &str) -> String {
         use std::sync::LazyLock;
         static RE_TOOL_OUTPUT: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?i)</?tool-output").expect("static regex"));
@@ -411,7 +481,11 @@ impl ContentSanitizer {
             .replace('>', "&gt;")
     }
 
-    fn apply_spotlight(content: &str, source: &ContentSource, flags: &[InjectionFlag]) -> String {
+    pub(crate) fn apply_spotlight(
+        content: &str,
+        source: &ContentSource,
+        flags: &[InjectionFlag],
+    ) -> String {
         // Escape attribute values to prevent injection via crafted tool names or URLs (FIX-01).
         let kind_str = Self::xml_attr_escape(source.kind.as_str());
         let id_str = Self::xml_attr_escape(source.identifier.as_deref().unwrap_or("unknown"));
