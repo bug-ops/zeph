@@ -23,8 +23,22 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **layout** — panel arrangement and responsive grid
 - **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry; filter savings percentage shown in the status bar (e.g. `Filters: 78%`)
 - **theme** — color palette and style definitions
-- **widgets** — reusable ratatui widget components
+- **widgets** — reusable ratatui widget components; includes `subagents` widget with a 5-state FSM panel (`List` → `Detail` → `Create` → `Edit` → `ConfirmDelete`) for interactive management of sub-agent definition files
 - **error** — `TuiError` typed error enum (Io, Channel)
+
+## Agents management panel
+
+Press `a` in the TUI to open the interactive agents panel. It provides full CRUD over sub-agent definition files without leaving the terminal UI:
+
+| State | Description |
+|-------|-------------|
+| List | Scrollable list of all discovered definitions with name, scope, model, and permission mode |
+| Detail | Full definition view (tools, skills, system prompt, hooks) |
+| Create | Inline form wizard — name, description, model, max turns; validates name regex and required fields before writing |
+| Edit | Pre-filled form wizard populated from the existing definition |
+| ConfirmDelete | Two-step confirmation for non-project-scoped definitions |
+
+Keybindings: `c` — create, `e` — edit, `d` — delete, Enter — detail view, Esc — go back.
 
 ## Command palette
 

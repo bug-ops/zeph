@@ -326,6 +326,12 @@ You are a code reviewer...
 ```
 $ zeph agents create reviewer --description "Code review helper"
 Created .zeph/agents/reviewer.md
+
+$ zeph agents create reviewer --description "Code review helper" --model claude-sonnet-4-20250514
+Created .zeph/agents/reviewer.md
+
+$ zeph agents create reviewer --description "Global helper" --dir ~/.config/zeph/agents/
+Created /Users/you/.config/zeph/agents/reviewer.md
 ```
 
 Options:
@@ -355,7 +361,9 @@ Use `--yes` / `-y` to skip the confirmation prompt.
 
 ### TUI Panel
 
-The TUI command palette (`/`) includes `agents:*` entries that populate the input bar with the corresponding `/agents` command. The agent manager panel (accessible via `/agents list`) provides an interactive overlay with keyboard navigation:
+The TUI command palette (`/`) includes `agents:*` entries. Select one to open the agent manager overlay or populate the input bar with the corresponding `/agent` command. Open the overlay directly by typing `/agents` in the command palette and selecting `agents:list`.
+
+The agent manager overlay provides keyboard navigation over all loaded definitions:
 
 | Key | Action |
 |-----|--------|

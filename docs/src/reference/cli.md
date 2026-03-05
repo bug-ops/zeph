@@ -13,6 +13,7 @@ zeph [OPTIONS] [COMMAND]
 | Command | Description |
 |---------|-------------|
 | `init`  | Interactive configuration wizard (see [Configuration Wizard](../getting-started/wizard.md)) |
+| `agents` | Manage sub-agent definitions — list, show, create, edit, delete (see [Sub-Agent Orchestration](../advanced/sub-agents.md#managing-definitions)) |
 | `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
@@ -85,6 +86,38 @@ zeph memory import backup.json
 
 The snapshot format is versioned (currently v1). Import uses `INSERT OR IGNORE` — re-importing the same file is safe and skips existing records.
 
+### `zeph agents`
+
+Manage sub-agent definition files. See [Managing Definitions](../advanced/sub-agents.md#managing-definitions) for examples and field details.
+
+| Subcommand | Description |
+|------------|-------------|
+| `agents list` | List all loaded definitions with scope, model, and description |
+| `agents show <name>` | Print details for a single definition |
+| `agents create <name> -d <desc>` | Create a new definition stub in `.zeph/agents/` |
+| `agents edit <name>` | Open the definition in `$VISUAL` / `$EDITOR` and re-validate on save |
+| `agents delete <name>` | Delete a definition file (prompts for confirmation) |
+
+```bash
+# List all definitions (project and user scope)
+zeph agents list
+
+# Inspect a single definition
+zeph agents show code-reviewer
+
+# Create a project-scoped definition
+zeph agents create reviewer --description "Code review helper"
+
+# Create a user-scoped (global) definition
+zeph agents create helper --description "General helper" --dir ~/.config/zeph/agents/
+
+# Edit with $EDITOR
+zeph agents edit reviewer
+
+# Delete without confirmation prompt
+zeph agents delete reviewer --yes
+```
+
 ### `zeph vault`
 
 Manage age-encrypted secrets without manual `age` CLI invocations.
@@ -128,6 +161,7 @@ Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for 
 | `/agent bg <name> <prompt>` | Alias for `spawn` |
 | `/agent status` | Show active sub-agents with state and progress |
 | `/agent cancel <id>` | Cancel a running sub-agent (accepts ID prefix) |
+| `/agent resume <id> <prompt>` | Resume a completed sub-agent from its transcript |
 | `/agent approve <id>` | Approve a pending secret request |
 | `/agent deny <id>` | Deny a pending secret request |
 
@@ -136,6 +170,7 @@ Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for 
 > /agent spawn code-reviewer Review the auth module
 > /agent status
 > /agent cancel a1b2
+> /agent resume a1b2 Fix the remaining warnings
 > @code-reviewer Review the auth module   # shorthand for /agent spawn
 ```
 
