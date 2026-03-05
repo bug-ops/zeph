@@ -176,6 +176,18 @@ strategy = "reactive"         # "reactive" (default) or "proactive"
 # max_summary_tokens = 4000  # Cap for the compressed summary (>= 128)
 # model = ""                 # Reserved — currently unused
 
+[memory.graph]
+enabled = false                        # Enable graph memory (default: false, requires graph-memory feature)
+extract_model = ""                     # LLM model for entity extraction; empty = agent's model
+max_entities_per_message = 10          # Max entities extracted per message (default: 10)
+max_edges_per_message = 15             # Max edges extracted per message (default: 15)
+community_refresh_interval = 100       # Messages between community recalculation (default: 100)
+entity_similarity_threshold = 0.85     # Cosine threshold for entity dedup (default: 0.85)
+extraction_timeout_secs = 15           # Timeout for background extraction (default: 15)
+use_embedding_resolution = false       # Use embedding-based entity resolution (default: false)
+max_hops = 2                           # BFS traversal depth for graph recall (default: 2)
+recall_limit = 10                      # Max graph facts injected into context (default: 10)
+
 [tools]
 enabled = true
 summarize_output = false      # LLM-based summarization for long tool outputs

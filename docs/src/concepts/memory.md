@@ -223,7 +223,23 @@ Proactive compression emits two metrics: `compression_events` (count) and `compr
 
 > **Note:** Validation rejects `threshold_tokens < 1000` and `max_summary_tokens < 128` at startup.
 
+## Graph Memory
+
+With the `graph-memory` feature enabled, Zeph can extract entities and relationships from conversations and store them as a knowledge graph in SQLite. This enables multi-hop reasoning ("how is X related to Y?"), temporal fact tracking ("user switched from vim to neovim"), and cross-session entity linking.
+
+Graph memory is opt-in and complementary to vector + keyword search. When enabled, graph facts are injected into the context alongside recalled messages.
+
+```toml
+[memory.graph]
+enabled = true
+max_hops = 2
+recall_limit = 10
+```
+
+See [Graph Memory](graph-memory.md) for the full concept guide.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide
+- [Graph Memory](graph-memory.md) — entity-relationship tracking and multi-hop reasoning
 - [Context Engineering](../advanced/context.md) — budget allocation, compaction, recall tuning

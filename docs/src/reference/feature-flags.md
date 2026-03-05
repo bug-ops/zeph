@@ -27,6 +27,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `slack` | Slack channel adapter with Events API webhook and HMAC-SHA256 verification ([guide](../advanced/channels.md#slack-channel)) |
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 | `index` | AST-based code indexing and semantic retrieval via tree-sitter ([guide](../advanced/code-indexing.md)) |
+| `graph-memory` | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal ([guide](../concepts/graph-memory.md)) |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
 | `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring. Combined with `a2a`, enables `--daemon` headless mode ([guide](../guides/daemon-mode.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
