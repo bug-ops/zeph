@@ -42,12 +42,22 @@ impl<'a> EntityResolver<'a> {
         Self { store }
     }
 
-    /// Resolve an extracted entity: normalize name, parse entity type, and upsert into the store.
+    /// Resolve an extracted entity using the alias-first canonicalization pipeline.
     ///
-    /// Entity names are:
-    /// - Trimmed and lowercased (case-insensitive deduplication)
-    /// - Stripped of control characters and `BiDi` overrides
-    /// - Truncated to 512 bytes at a `UTF-8` char boundary
+    /// Pipeline:
+    /// 1. Normalize: trim, lowercase, strip control chars, truncate to 512 bytes.
+    /// 2. Parse entity type (fallback to Concept on unknown).
+    /// 3. Alias lookup: search `graph_entity_aliases` by normalized name + `entity_type`.
+    ///    If found, touch `last_seen_at` and return the existing entity id.
+    /// 4. Canonical name lookup: search `graph_entities` by `canonical_name` + `entity_type`.
+    ///    If found, touch `last_seen_at` and return the existing entity id.
+    /// 5. Create: upsert new entity with `canonical_name` = normalized name.
+    /// 6. Register the normalized form (and original trimmed form if different) as aliases.
+    ///
+    /// NOTE: Steps 3-6 are not wrapped in an explicit transaction. `SQLite` serializes all writes
+    /// (single-writer WAL), so concurrent data corruption is impossible. Two concurrent calls with
+    /// the same name would both reach step 5, where `ON CONFLICT(canonical_name, entity_type)`
+    /// makes the second call a no-op update, and step 6 is idempotent via `INSERT OR IGNORE`.
     ///
     /// # Errors
     ///
@@ -58,22 +68,70 @@ impl<'a> EntityResolver<'a> {
         entity_type: &str,
         summary: Option<&str>,
     ) -> Result<i64, MemoryError> {
-        let lowered = name.trim().to_lowercase();
-        let cleaned = strip_control_chars(&lowered);
-        let normalized = truncate_to_bytes(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned();
+        let normalized = Self::normalize_name(name);
 
         if normalized.is_empty() {
             return Err(MemoryError::GraphStore("empty entity name".into()));
         }
 
+        let et = Self::parse_entity_type(entity_type);
+
+        // The surface form preserves the original casing for user-facing display.
+        let surface_name = name.trim().to_owned();
+
+        // Step 3: alias-first lookup (filters by entity_type to prevent cross-type collisions).
+        if let Some(entity) = self.store.find_entity_by_alias(&normalized, et).await? {
+            self.store
+                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .await?;
+            return Ok(entity.id);
+        }
+
+        // Step 4: canonical name lookup.
+        if let Some(entity) = self.store.find_entity(&normalized, et).await? {
+            self.store
+                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .await?;
+            return Ok(entity.id);
+        }
+
+        // Step 5: no match — create new entity with canonical_name = normalized.
+        let id = self
+            .store
+            .upsert_entity(&surface_name, &normalized, et, summary)
+            .await?;
+
+        // Step 6: register the normalized form as alias.
+        self.store.add_alias(id, &normalized).await?;
+
+        // Also register the original trimmed lowercased form if it differs from normalized
+        // (e.g. when control chars were stripped, leaving a shorter string).
+        // Apply same truncation as normalize_name for a consistent security boundary (Fix 3).
+        let original_trimmed = name.trim().to_lowercase();
+        let original_clean_str = strip_control_chars(&original_trimmed);
+        let original_clean = truncate_to_bytes(&original_clean_str, MAX_ENTITY_NAME_BYTES);
+        if original_clean != normalized {
+            self.store.add_alias(id, original_clean).await?;
+        }
+
+        Ok(id)
+    }
+
+    fn normalize_name(name: &str) -> String {
+        let lowered = name.trim().to_lowercase();
+        let cleaned = strip_control_chars(&lowered);
+        let normalized = truncate_to_bytes(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned();
         if normalized.len() < cleaned.len() {
             tracing::debug!(
                 "graph resolver: entity name truncated to {} bytes",
                 MAX_ENTITY_NAME_BYTES
             );
         }
+        normalized
+    }
 
-        let entity_type_parsed = entity_type
+    fn parse_entity_type(entity_type: &str) -> EntityType {
+        entity_type
             .trim()
             .to_lowercase()
             .parse::<EntityType>()
@@ -83,11 +141,7 @@ impl<'a> EntityResolver<'a> {
                     entity_type
                 );
                 EntityType::Concept
-            });
-
-        self.store
-            .upsert_entity(&normalized, entity_type_parsed, summary)
-            .await
+            })
     }
 
     /// Resolve an extracted edge: deduplicate or supersede existing edges.
@@ -242,11 +296,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("src", EntityType::Concept, None)
+            .upsert_entity("src", "src", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("tgt", EntityType::Concept, None)
+            .upsert_entity("tgt", "tgt", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -264,11 +318,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("a", EntityType::Concept, None)
+            .upsert_entity("a", "a", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("b", EntityType::Concept, None)
+            .upsert_entity("b", "b", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -291,11 +345,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("x", EntityType::Concept, None)
+            .upsert_entity("x", "x", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("y", EntityType::Concept, None)
+            .upsert_entity("y", "y", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -325,11 +379,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let a = gs
-            .upsert_entity("node_a", EntityType::Concept, None)
+            .upsert_entity("node_a", "node_a", EntityType::Concept, None)
             .await
             .unwrap();
         let b = gs
-            .upsert_entity("node_b", EntityType::Concept, None)
+            .upsert_entity("node_b", "node_b", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -358,11 +412,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("p", EntityType::Concept, None)
+            .upsert_entity("p", "p", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("q", EntityType::Concept, None)
+            .upsert_entity("q", "q", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -516,5 +570,123 @@ mod tests {
         let s = "élan";
         let truncated = truncate_to_bytes(s, 1);
         assert!(s.is_char_boundary(truncated.len()));
+    }
+
+    // ── Canonicalization / alias tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_creates_entity_with_canonical_name() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+        let id = resolver.resolve("Rust", "language", None).await.unwrap();
+        assert!(id > 0);
+        let entity = gs
+            .find_entity("rust", EntityType::Language)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entity.canonical_name, "rust");
+    }
+
+    #[tokio::test]
+    async fn resolve_adds_alias_on_create() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+        let id = resolver.resolve("Rust", "language", None).await.unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(
+            !aliases.is_empty(),
+            "new entity should have at least one alias"
+        );
+        assert!(aliases.iter().any(|a| a.alias_name == "rust"));
+    }
+
+    #[tokio::test]
+    async fn resolve_reuses_entity_by_alias() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // Create entity and register an alias
+        let id1 = resolver.resolve("rust", "language", None).await.unwrap();
+        gs.add_alias(id1, "rust-lang").await.unwrap();
+
+        // Resolve using the alias — should return the same entity
+        let id2 = resolver
+            .resolve("rust-lang", "language", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            id1, id2,
+            "'rust-lang' alias should resolve to same entity as 'rust'"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_alias_match_respects_entity_type() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "python" as a Language
+        let lang_id = resolver.resolve("python", "language", None).await.unwrap();
+
+        // "python" as a Tool should create a separate entity (different type)
+        let tool_id = resolver.resolve("python", "tool", None).await.unwrap();
+        assert_ne!(
+            lang_id, tool_id,
+            "same name with different type should be separate entities"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_preserves_existing_aliases() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        let id = resolver.resolve("rust", "language", None).await.unwrap();
+        gs.add_alias(id, "rust-lang").await.unwrap();
+
+        // Upserting same entity should not remove prior aliases
+        resolver
+            .resolve("rust", "language", Some("updated"))
+            .await
+            .unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(
+            aliases.iter().any(|a| a.alias_name == "rust-lang"),
+            "prior alias must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_original_form_registered_as_alias() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "  Rust  " — original trimmed lowercased form is "rust", same as normalized
+        // So only one alias should be registered (no duplicate)
+        let id = resolver
+            .resolve("  Rust  ", "language", None)
+            .await
+            .unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(aliases.iter().any(|a| a.alias_name == "rust"));
+    }
+
+    #[tokio::test]
+    async fn resolve_entity_with_many_aliases() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("bigentity", "bigentity", EntityType::Concept, None)
+            .await
+            .unwrap();
+        for i in 0..100 {
+            gs.add_alias(id, &format!("alias-{i}")).await.unwrap();
+        }
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert_eq!(aliases.len(), 100);
+
+        // Fuzzy search should still work via alias
+        let results = gs.find_entities_fuzzy("alias-50", 10).await.unwrap();
+        assert!(results.iter().any(|e| e.id == id));
     }
 }

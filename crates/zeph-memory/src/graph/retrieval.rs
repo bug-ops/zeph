@@ -71,8 +71,12 @@ pub async fn graph_recall(
     for (seed_id, seed_score) in &entity_scores {
         let (entities, edges, depth_map) = store.bfs_with_depth(*seed_id, max_hops).await?;
 
-        let name_map: HashMap<i64, &str> =
-            entities.iter().map(|e| (e.id, e.name.as_str())).collect();
+        // Use canonical_name for stable dedup keys (S5 fix): entities reached via different
+        // aliases have different display names but share canonical_name, preventing duplicates.
+        let name_map: HashMap<i64, &str> = entities
+            .iter()
+            .map(|e| (e.id, e.canonical_name.as_str()))
+            .collect();
 
         for edge in &edges {
             let Some(&hop_distance) = depth_map
@@ -179,11 +183,11 @@ mod tests {
     async fn graph_recall_fuzzy_match_returns_facts() {
         let store = setup_store().await;
         let user_id = store
-            .upsert_entity("Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None)
             .await
             .unwrap();
         let tool_id = store
-            .upsert_entity("neovim", EntityType::Tool, None)
+            .upsert_entity("neovim", "neovim", EntityType::Tool, None)
             .await
             .unwrap();
         store
@@ -205,15 +209,15 @@ mod tests {
     async fn graph_recall_respects_max_hops() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alpha", EntityType::Person, None)
+            .upsert_entity("Alpha", "Alpha", EntityType::Person, None)
             .await
             .unwrap();
         let b = store
-            .upsert_entity("Beta", EntityType::Person, None)
+            .upsert_entity("Beta", "Beta", EntityType::Person, None)
             .await
             .unwrap();
         let c = store
-            .upsert_entity("Gamma", EntityType::Person, None)
+            .upsert_entity("Gamma", "Gamma", EntityType::Person, None)
             .await
             .unwrap();
         store
@@ -239,11 +243,11 @@ mod tests {
     async fn graph_recall_deduplicates_facts() {
         let store = setup_store().await;
         let alice = store
-            .upsert_entity("Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None)
             .await
             .unwrap();
         let bob = store
-            .upsert_entity("Bob", EntityType::Person, None)
+            .upsert_entity("Bob", "Bob", EntityType::Person, None)
             .await
             .unwrap();
         store
@@ -270,15 +274,15 @@ mod tests {
     async fn graph_recall_sorts_by_composite_score() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alpha", EntityType::Person, None)
+            .upsert_entity("Alpha", "Alpha", EntityType::Person, None)
             .await
             .unwrap();
         let b = store
-            .upsert_entity("Beta", EntityType::Tool, None)
+            .upsert_entity("Beta", "Beta", EntityType::Tool, None)
             .await
             .unwrap();
         let c = store
-            .upsert_entity("AlphaGadget", EntityType::Tool, None)
+            .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None)
             .await
             .unwrap();
         // high-confidence direct edge
@@ -309,12 +313,17 @@ mod tests {
     async fn graph_recall_limit_truncates() {
         let store = setup_store().await;
         let root = store
-            .upsert_entity("Root", EntityType::Person, None)
+            .upsert_entity("Root", "Root", EntityType::Person, None)
             .await
             .unwrap();
         for i in 0..10 {
             let target = store
-                .upsert_entity(&format!("Target{i}"), EntityType::Tool, None)
+                .upsert_entity(
+                    &format!("Target{i}"),
+                    &format!("Target{i}"),
+                    EntityType::Tool,
+                    None,
+                )
                 .await
                 .unwrap();
             store

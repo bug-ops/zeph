@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add entity canonicalization with alias table for graph memory: `canonical_name` column on `graph_entities`, `graph_entity_aliases` lookup table, alias-first resolution in `EntityResolver`, deterministic first-registered-wins semantics, canonical-name deduplication in `graph_recall`, migration 023 with FK pragma guards (#1231)
 - Add DAG scheduler (`DagScheduler`) with tick-based execution loop, command pattern (`SchedulerAction`), mpsc event channel (`TaskEvent`/`TaskOutcome`), task timeout monitoring, and cross-task context injection with char-safe truncation (Phase 3, #1238)
 - Add `AgentRouter` trait and `RuleBasedRouter` with 3-step fallback chain (agent_hint, tool keyword matching, first available) for task-to-agent routing (#1238)
 - Add `spawn_for_task()` to `SubAgentManager` with JoinHandle wrapping for orchestration event delivery (#1238)
