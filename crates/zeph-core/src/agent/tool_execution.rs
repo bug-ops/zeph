@@ -217,7 +217,7 @@ impl<C: Channel> Agent<C> {
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             });
-            self.persist_message(Role::Assistant, &response, false)
+            self.persist_message(Role::Assistant, &response, &[], false)
                 .await;
 
             self.inject_active_skill_env();
@@ -631,18 +631,21 @@ impl<C: Channel> Agent<C> {
                 let llm_body = self
                     .sanitize_tool_output(&processed, &output.tool_name)
                     .await;
-                self.push_message(Message::from_parts(
-                    Role::User,
-                    vec![MessagePart::ToolOutput {
-                        tool_name: output.tool_name.clone(),
-                        body: llm_body,
-                        compacted_at: None,
-                    }],
-                ));
+                let tool_output_parts = vec![MessagePart::ToolOutput {
+                    tool_name: output.tool_name.clone(),
+                    body: llm_body,
+                    compacted_at: None,
+                }];
+                self.push_message(Message::from_parts(Role::User, tool_output_parts.clone()));
                 // C1: use flagged_urls state from sanitize_tool_output (may have just been
                 // populated) to guard Qdrant embedding for injection-flagged tool output.
-                self.persist_message(Role::User, &formatted_output, !self.flagged_urls.is_empty())
-                    .await;
+                self.persist_message(
+                    Role::User,
+                    &formatted_output,
+                    &tool_output_parts,
+                    !self.flagged_urls.is_empty(),
+                )
+                .await;
                 let outcome = if output.summary.contains("[error]")
                     || output.summary.contains("[exit code")
                 {
@@ -703,17 +706,23 @@ impl<C: Channel> Agent<C> {
                             )
                             .await?;
                         let llm_body = self.sanitize_tool_output(&processed, &out.tool_name).await;
+                        let tool_output_parts = vec![MessagePart::ToolOutput {
+                            tool_name: out.tool_name.clone(),
+                            body: llm_body,
+                            compacted_at: None,
+                        }];
                         self.push_message(Message::from_parts(
                             Role::User,
-                            vec![MessagePart::ToolOutput {
-                                tool_name: out.tool_name.clone(),
-                                body: llm_body,
-                                compacted_at: None,
-                            }],
+                            tool_output_parts.clone(),
                         ));
                         // C1: same as above — use flagged_urls state from sanitize_tool_output.
-                        self.persist_message(Role::User, &formatted, !self.flagged_urls.is_empty())
-                            .await;
+                        self.persist_message(
+                            Role::User,
+                            &formatted,
+                            &tool_output_parts,
+                            !self.flagged_urls.is_empty(),
+                        )
+                        .await;
                     }
                 } else {
                     self.channel.send("Command cancelled.").await?;
@@ -1054,7 +1063,8 @@ impl<C: Channel> Agent<C> {
                 }
                 self.messages
                     .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
-                self.persist_message(Role::Assistant, &cleaned, false).await;
+                self.persist_message(Role::Assistant, &cleaned, &[], false)
+                    .await;
                 self.channel.flush_chunks().await?;
                 return Ok(());
             }
@@ -1261,8 +1271,13 @@ impl<C: Channel> Agent<C> {
             });
         }
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
-        self.persist_message(Role::Assistant, &assistant_msg.content, false)
-            .await;
+        self.persist_message(
+            Role::Assistant,
+            &assistant_msg.content,
+            &assistant_msg.parts,
+            false,
+        )
+        .await;
         self.push_message(assistant_msg);
 
         // Build tool calls for all requests
@@ -1477,8 +1492,13 @@ impl<C: Channel> Agent<C> {
         // batch result. Individual per-tool granularity would require separate persist_message
         // calls per result, which would change message history structure.
         let tool_results_have_flags = !self.flagged_urls.is_empty();
-        self.persist_message(Role::User, &user_msg.content, tool_results_have_flags)
-            .await;
+        self.persist_message(
+            Role::User,
+            &user_msg.content,
+            &user_msg.parts,
+            tool_results_have_flags,
+        )
+        .await;
         self.push_message(user_msg);
 
         Ok(())
