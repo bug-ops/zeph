@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
+- Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
+- Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)
 - Add DAG scheduler (`DagScheduler`) with tick-based execution loop, command pattern (`SchedulerAction`), mpsc event channel (`TaskEvent`/`TaskOutcome`), task timeout monitoring, and cross-task context injection with char-safe truncation (Phase 3, #1238)
 - Add `AgentRouter` trait and `RuleBasedRouter` with 3-step fallback chain (agent_hint, tool keyword matching, first available) for task-to-agent routing (#1238)
 - Add `spawn_for_task()` to `SubAgentManager` with JoinHandle wrapping for orchestration event delivery (#1238)

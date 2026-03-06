@@ -177,9 +177,43 @@ For reliable routing, set `agent_hint` on each task node during planning. The ke
 
 | Command | Description |
 |---------|-------------|
-| `/plan <goal>` | Decompose goal into a DAG and execute |
+| `/plan <goal>` | Decompose goal into a DAG, show confirmation, then execute |
+| `/plan confirm` | Confirm and execute the pending plan |
 | `/plan status` | Show current graph progress |
+| `/plan status <id>` | Show a specific graph by UUID |
+| `/plan list` | List recent graphs from persistence |
 | `/plan cancel` | Cancel the active graph |
+| `/plan cancel <id>` | Cancel a specific graph by UUID |
+
+> **Parsing ambiguity:** goals that begin with a reserved subcommand name (`status`, `list`, `cancel`, `confirm`, `resume`, `retry`) are interpreted as that subcommand. Rephrase the goal to avoid collisions — e.g., `/plan write a status report` instead of `/plan status report`.
+
+### Confirmation Flow
+
+When `confirm_before_execute` is enabled (the default), `/plan <goal>` does not execute immediately. Instead it:
+
+1. Calls the LLM planner to decompose the goal into a `TaskGraph`.
+2. Displays a summary of planned tasks with agent assignments.
+3. Stores the graph in a pending state.
+
+The user then runs `/plan confirm` to start execution, or `/plan cancel` to discard the pending plan. If a new `/plan <goal>` is submitted while a plan is already pending, the agent rejects it with a warning — cancel or confirm the existing plan first.
+
+### Future Commands
+
+`/plan resume` and `/plan retry` are reserved for a future phase and return a "not yet implemented" error.
+
+## Metrics
+
+`OrchestrationMetrics` tracks plan and task counters. The struct is always present in `MetricsSnapshot` (not feature-gated) and defaults to zero when orchestration is inactive.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `plans_total` | `u64` | Total plans created |
+| `tasks_total` | `u64` | Total tasks across all plans |
+| `tasks_completed` | `u64` | Tasks that finished successfully |
+| `tasks_failed` | `u64` | Tasks that failed after all retries |
+| `tasks_skipped` | `u64` | Tasks skipped due to dependency failures |
+
+Metrics are updated in the agent loop as tasks progress. They are available through the same `watch` channel that feeds the TUI dashboard.
 
 ## Configuration
 

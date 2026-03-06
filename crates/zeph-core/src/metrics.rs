@@ -75,6 +75,18 @@ impl SecurityEvent {
 /// Ring buffer capacity for security events.
 pub const SECURITY_EVENT_CAP: usize = 100;
 
+/// Counters for the task orchestration subsystem.
+///
+/// Always present in [`MetricsSnapshot`]; zero-valued when orchestration is inactive.
+#[derive(Debug, Clone, Default)]
+pub struct OrchestrationMetrics {
+    pub plans_total: u64,
+    pub tasks_total: u64,
+    pub tasks_completed: u64,
+    pub tasks_failed: u64,
+    pub tasks_skipped: u64,
+}
+
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.
 #[derive(Debug, Clone, Default)]
 pub struct SkillConfidence {
@@ -153,6 +165,7 @@ pub struct MetricsSnapshot {
     pub router_thompson_stats: Vec<(String, f64, f64)>,
     /// Ring buffer of recent security events (cap 100, FIFO eviction).
     pub security_events: VecDeque<SecurityEvent>,
+    pub orchestration: OrchestrationMetrics,
 }
 
 pub struct MetricsCollector {
@@ -350,5 +363,41 @@ mod tests {
     fn security_events_empty_by_default() {
         let m = MetricsSnapshot::default();
         assert!(m.security_events.is_empty());
+    }
+
+    #[test]
+    fn orchestration_metrics_default_zero() {
+        let m = OrchestrationMetrics::default();
+        assert_eq!(m.plans_total, 0);
+        assert_eq!(m.tasks_total, 0);
+        assert_eq!(m.tasks_completed, 0);
+        assert_eq!(m.tasks_failed, 0);
+        assert_eq!(m.tasks_skipped, 0);
+    }
+
+    #[test]
+    fn metrics_snapshot_includes_orchestration_default_zero() {
+        let m = MetricsSnapshot::default();
+        assert_eq!(m.orchestration.plans_total, 0);
+        assert_eq!(m.orchestration.tasks_total, 0);
+        assert_eq!(m.orchestration.tasks_completed, 0);
+    }
+
+    #[test]
+    fn orchestration_metrics_update_via_collector() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.orchestration.plans_total += 1;
+            m.orchestration.tasks_total += 5;
+            m.orchestration.tasks_completed += 3;
+            m.orchestration.tasks_failed += 1;
+            m.orchestration.tasks_skipped += 1;
+        });
+        let s = rx.borrow();
+        assert_eq!(s.orchestration.plans_total, 1);
+        assert_eq!(s.orchestration.tasks_total, 5);
+        assert_eq!(s.orchestration.tasks_completed, 3);
+        assert_eq!(s.orchestration.tasks_failed, 1);
+        assert_eq!(s.orchestration.tasks_skipped, 1);
     }
 }
