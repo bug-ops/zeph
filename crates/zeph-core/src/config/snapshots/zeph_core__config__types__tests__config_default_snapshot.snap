@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 2002
 expression: toml_str
 ---
 [agent]
@@ -74,6 +73,7 @@ autosave_assistant = false
 autosave_min_length = 20
 tool_call_cutoff = 6
 sqlite_pool_size = 5
+deferred_apply_threshold = 0.7
 
 [memory.semantic]
 enabled = true

@@ -789,10 +789,16 @@ pub struct MemoryConfig {
     pub routing: RoutingConfig,
     #[serde(default)]
     pub graph: GraphConfig,
+    #[serde(default = "default_deferred_apply_threshold")]
+    pub deferred_apply_threshold: f32,
 }
 
 fn default_sqlite_pool_size() -> u32 {
     5
+}
+
+fn default_deferred_apply_threshold() -> f32 {
+    0.70
 }
 
 fn default_max_history() -> usize {
@@ -1729,6 +1735,7 @@ impl Default for Config {
                 compression: CompressionConfig::default(),
                 routing: RoutingConfig::default(),
                 graph: GraphConfig::default(),
+                deferred_apply_threshold: default_deferred_apply_threshold(),
             },
             telegram: None,
             discord: None,

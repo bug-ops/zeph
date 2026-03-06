@@ -194,6 +194,10 @@ summarization_threshold = 50
 context_budget_tokens = 0
 # Auto-detect context budget from model's context window size
 auto_budget = true
+# Apply deferred tool summaries when context usage exceeds this fraction (0.0-1.0).
+# Summaries are computed eagerly but applied lazily to preserve API cache prefixes.
+# Must be less than compaction_threshold for correct tier ordering.
+# deferred_apply_threshold = 0.70
 # Context compaction threshold (0.0-1.0): compact when usage exceeds this fraction
 compaction_threshold = 0.80
 # Number of recent messages to preserve during compaction

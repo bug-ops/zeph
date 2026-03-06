@@ -1482,6 +1482,12 @@ impl<C: Channel> Agent<C> {
         // Reset per-turn compaction guard at the start of context management phase.
         self.context_manager.compacted_this_turn = false;
 
+        // Tier 0: batch-apply deferred tool summaries when approaching context limit.
+        // This is a pure in-memory operation (no LLM call) — summaries were pre-computed
+        // during the tool loop. Intentionally does NOT set compacted_this_turn, so
+        // proactive/reactive compaction may still fire if tokens remain above their thresholds.
+        self.maybe_apply_deferred_summaries();
+
         // Proactive compression fires first (if configured); if it runs, reactive is skipped.
         if let Err(e) = self.maybe_proactive_compress().await {
             tracing::warn!("proactive compression failed: {e:#}");

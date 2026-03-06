@@ -155,6 +155,7 @@ impl SqliteStore {
                             agent_visible: agent_visible != 0,
                             user_visible: user_visible != 0,
                             compacted_at: None,
+                            deferred_summary: None,
                         },
                     }
                 },
@@ -217,6 +218,7 @@ impl SqliteStore {
                             agent_visible: agent_visible != 0,
                             user_visible: user_visible != 0,
                             compacted_at: None,
+                            deferred_summary: None,
                         },
                     }
                 },
@@ -346,6 +348,7 @@ impl SqliteStore {
                         agent_visible: agent_visible != 0,
                         user_visible: user_visible != 0,
                         compacted_at: None,
+                        deferred_summary: None,
                     },
                 }
             },
