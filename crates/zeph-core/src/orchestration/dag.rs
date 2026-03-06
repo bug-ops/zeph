@@ -256,6 +256,79 @@ pub fn propagate_failure(graph: &mut TaskGraph, failed_id: TaskId) -> Vec<TaskId
     }
 }
 
+/// Reset a graph for retry after it has entered `Failed` or `Paused` status.
+///
+/// - Resets all `Failed` tasks to `Ready` (and clears `retry_count`).
+/// - Resets all `Canceled` tasks to `Pending` (IC2: after an Abort cascade,
+///   running tasks are marked `Canceled`; without this they block their dependents).
+/// - BFS resets all `Skipped` tasks downstream of a failed/canceled task back to
+///   `Pending`, allowing `ready_tasks()` to re-evaluate them on the next tick.
+/// - Sets `graph.status = Running` so the scheduler can continue.
+///
+/// # Errors
+///
+/// Returns `OrchestrationError::InvalidGraph` if the graph is not in `Failed`
+/// or `Paused` status (the only states that make sense to retry from).
+pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> {
+    use super::graph::GraphStatus;
+
+    if graph.status != GraphStatus::Failed && graph.status != GraphStatus::Paused {
+        return Err(OrchestrationError::InvalidGraph(format!(
+            "cannot retry graph in status {}; only Failed or Paused graphs can be retried",
+            graph.status
+        )));
+    }
+
+    let task_count = graph.tasks.len();
+
+    // First pass: reset Failed -> Ready and collect their IDs as BFS seeds.
+    let mut seeds: Vec<TaskId> = Vec::new();
+    for task in &mut graph.tasks {
+        if task.status == TaskStatus::Failed {
+            task.status = TaskStatus::Ready;
+            task.retry_count = 0;
+            seeds.push(task.id);
+        }
+    }
+
+    // IC2: reset Canceled tasks (produced by Abort cascade) to Pending so their
+    // dependents are not permanently blocked.  These are NOT seeds for the BFS
+    // (they were not the direct cause of the failure chain) but must be re-runnable.
+    for task in &mut graph.tasks {
+        if task.status == TaskStatus::Canceled {
+            task.status = TaskStatus::Pending;
+        }
+    }
+
+    if seeds.is_empty() {
+        // Paused with no failed tasks (e.g., Ask strategy hit); just resume.
+        graph.status = GraphStatus::Running;
+        return Ok(());
+    }
+
+    // Build reverse adjacency: dependents[i] = tasks that depend on task i.
+    let mut dependents: Vec<Vec<TaskId>> = vec![Vec::new(); task_count];
+    for task in &graph.tasks {
+        for dep in &task.depends_on {
+            dependents[dep.index()].push(task.id);
+        }
+    }
+
+    // BFS from seeds: reset Skipped dependents back to Pending.
+    let mut queue: std::collections::VecDeque<TaskId> = seeds.into_iter().collect();
+    while let Some(current) = queue.pop_front() {
+        for &dep_id in &dependents[current.index()] {
+            if graph.tasks[dep_id.index()].status == TaskStatus::Skipped {
+                graph.tasks[dep_id.index()].status = TaskStatus::Pending;
+                queue.push_back(dep_id);
+            }
+        }
+    }
+
+    graph.status = GraphStatus::Running;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,5 +665,145 @@ mod tests {
         let to_cancel = propagate_failure(&mut graph, TaskId(0));
         assert!(to_cancel.is_empty());
         assert_eq!(graph.status, GraphStatus::Created);
+    }
+
+    // --- reset_for_retry tests ---
+
+    #[test]
+    fn test_reset_for_retry_resets_failed_to_ready() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
+        assert_eq!(graph.status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_reset_for_retry_resets_skipped_dependents_to_pending() {
+        // A(0) -> B(1): A fails, B skipped. After retry, B should be Pending again.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[1].status = TaskStatus::Skipped;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_reset_for_retry_transitive_skipped_reset() {
+        // A(0) -> B(1) -> C(2): A fails, B and C skipped. All skipped reset to Pending.
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[1]),
+        ]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[1].status = TaskStatus::Skipped;
+        graph.tasks[2].status = TaskStatus::Skipped;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
+        assert_eq!(graph.tasks[2].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_reset_for_retry_completed_tasks_unchanged() {
+        // Only failed/skipped tasks should be touched; completed tasks stay completed.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Failed;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn test_reset_for_retry_rejects_running_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.status = GraphStatus::Running;
+
+        let err = reset_for_retry(&mut graph).unwrap_err();
+        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+    }
+
+    #[test]
+    fn test_reset_for_retry_paused_graph_ok() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[1].status = TaskStatus::Skipped;
+        graph.status = GraphStatus::Paused;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_reset_for_retry_clears_retry_count() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].retry_count = 5;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].retry_count, 0);
+    }
+
+    #[test]
+    fn test_reset_for_retry_paused_no_failed_tasks() {
+        // Paused graph with no failed tasks (e.g. user paused manually)
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.status = GraphStatus::Paused;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.status, GraphStatus::Running);
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn test_reset_for_retry_canceled_tasks_reset_to_pending() {
+        // IC2: after Abort cascade, running tasks are Canceled. They must be reset
+        // to Pending so their dependents can be re-evaluated.
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[0, 1]),
+        ]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[1].status = TaskStatus::Canceled; // was Running, aborted
+        graph.tasks[2].status = TaskStatus::Pending;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
+        assert_eq!(
+            graph.tasks[1].status,
+            TaskStatus::Pending,
+            "Canceled task must be reset to Pending (IC2)"
+        );
+        assert_eq!(graph.tasks[2].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_reset_for_retry_canceled_unblocks_dependents() {
+        // A(0) -> B(1): A fails, B was Running (Canceled after Abort).
+        // After retry B should be Pending so ready_tasks() can pick it up.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[1].status = TaskStatus::Canceled;
+        graph.status = GraphStatus::Failed;
+
+        reset_for_retry(&mut graph).unwrap();
+        assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
     }
 }

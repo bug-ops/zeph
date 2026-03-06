@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1937
+assertion_line: 1951
 expression: toml_str
 ---
 [agent]
@@ -291,3 +291,4 @@ task_timeout_secs = 300
 planner_max_tokens = 4096
 dependency_context_budget = 16384
 confirm_before_execute = true
+aggregator_max_tokens = 4096

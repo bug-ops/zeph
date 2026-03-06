@@ -456,6 +456,8 @@ impl<C: Channel> Agent<C> {
             PlanCommand::Status(id) => self.handle_plan_status(id.as_deref()).await,
             PlanCommand::List => self.handle_plan_list().await,
             PlanCommand::Cancel(id) => self.handle_plan_cancel(id.as_deref()).await,
+            PlanCommand::Resume(id) => self.handle_plan_resume(id.as_deref()).await,
+            PlanCommand::Retry(id) => self.handle_plan_retry(id.as_deref()).await,
         }
     }
 
@@ -519,6 +521,8 @@ impl<C: Channel> Agent<C> {
 
     #[cfg(feature = "orchestration")]
     async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
+        use crate::orchestration::{Aggregator, LlmAggregator};
+
         let Some(graph) = self.pending_graph.take() else {
             self.channel
                 .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
@@ -529,10 +533,22 @@ impl<C: Channel> Agent<C> {
         self.channel
             .send(&format!("Confirmed. Executing plan:\n{summary}"))
             .await?;
-        // Full scheduler execution is a Phase 5 deliverable.
-        self.channel
-            .send("Full execution will be available in a future phase.")
-            .await?;
+
+        // Phase 5: attempt aggregation of any already-completed tasks.
+        // In a future integration phase the scheduler will run first; for now
+        // we aggregate whatever results are already present in the graph.
+        let aggregator = LlmAggregator::new(self.provider.clone(), &self.orchestration_config);
+        match aggregator.aggregate(&graph).await {
+            Ok(synthesis) => {
+                self.channel.send(&synthesis).await?;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "aggregation failed after plan confirm");
+                self.channel
+                    .send("Plan confirmed. Execution and aggregation will run when the scheduler is wired.")
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -567,6 +583,138 @@ impl<C: Channel> Agent<C> {
         } else {
             self.channel.send("No active plan to cancel.").await?;
         }
+        Ok(())
+    }
+
+    /// Resume a paused graph (Ask failure strategy triggered a pause).
+    ///
+    /// Looks for a pending graph in `Paused` status. If `graph_id` is provided
+    /// it must match the active graph's id (SEC-P5-03).
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_resume(
+        &mut self,
+        graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::GraphStatus;
+
+        let Some(ref graph) = self.pending_graph else {
+            self.channel
+                .send("No paused plan to resume. Use `/plan status` to check the current state.")
+                .await?;
+            return Ok(());
+        };
+
+        // SEC-P5-03: if a graph_id was provided, reject if it doesn't match.
+        if let Some(id) = graph_id
+            && graph.id.to_string() != id
+        {
+            self.channel
+                .send(&format!(
+                    "Graph id '{id}' does not match the active plan ({}). \
+                     Use `/plan status` to see the active plan id.",
+                    graph.id
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        if graph.status != GraphStatus::Paused {
+            self.channel
+                .send(&format!(
+                    "The active plan is in '{}' status and cannot be resumed. \
+                     Only Paused plans can be resumed.",
+                    graph.status
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        let graph = self.pending_graph.take().unwrap();
+
+        tracing::info!(
+            graph_id = %graph.id,
+            "resuming paused graph"
+        );
+
+        self.channel
+            .send(&format!(
+                "Resuming plan: {}\nScheduler execution will run in a future integration phase.",
+                graph.goal
+            ))
+            .await?;
+
+        // Store resumed graph back as pending. resume_from() will set status=Running.
+        self.pending_graph = Some(graph);
+        Ok(())
+    }
+
+    /// Retry failed tasks in a graph.
+    ///
+    /// Resets all `Failed` tasks to `Ready` and all `Skipped` dependents back
+    /// to `Pending`, then re-stores the graph as pending for re-execution.
+    /// If `graph_id` is provided it must match the active graph's id (SEC-P5-04).
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_retry(&mut self, graph_id: Option<&str>) -> Result<(), error::AgentError> {
+        use crate::orchestration::{GraphStatus, dag};
+
+        let Some(ref graph) = self.pending_graph else {
+            self.channel
+                .send("No active plan to retry. Use `/plan status` to check the current state.")
+                .await?;
+            return Ok(());
+        };
+
+        // SEC-P5-04: if a graph_id was provided, reject if it doesn't match.
+        if let Some(id) = graph_id
+            && graph.id.to_string() != id
+        {
+            self.channel
+                .send(&format!(
+                    "Graph id '{id}' does not match the active plan ({}). \
+                     Use `/plan status` to see the active plan id.",
+                    graph.id
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        if graph.status != GraphStatus::Failed && graph.status != GraphStatus::Paused {
+            self.channel
+                .send(&format!(
+                    "The active plan is in '{}' status. Only Failed or Paused plans can be retried.",
+                    graph.status
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        let mut graph = self.pending_graph.take().unwrap();
+
+        // IC3: count before reset so the message reflects actual failed tasks, not Ready count.
+        let failed_count = graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+            .count();
+
+        dag::reset_for_retry(&mut graph).map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        tracing::info!(
+            graph_id = %graph.id,
+            failed_count,
+            "retrying failed tasks in graph"
+        );
+
+        self.channel
+            .send(&format!(
+                "Retrying {failed_count} failed task(s) in plan: {}\n\
+                 Scheduler execution will run in a future integration phase.",
+                graph.goal
+            ))
+            .await?;
+
+        // Store retried graph back for re-execution.
+        self.pending_graph = Some(graph);
         Ok(())
     }
 

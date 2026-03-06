@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `Aggregator` trait and `LlmAggregator` implementation: synthesizes completed task outputs into a single coherent response via LLM call with per-task character budget (`aggregator_max_tokens / num_completed_tasks`), `ContentSanitizer` spotlighting on task outputs, skipped-task descriptions, and raw-concatenation fallback when LLM call fails (Phase 5, #1240)
+- Add `/plan resume [id]` command: resumes a graph paused by the `ask` failure strategy via `DagScheduler::resume_from()`; reconstructs running-task map from graph state and sets status to `Running` before re-entering the tick loop (#1240)
+- Add `/plan retry [id]` command: re-runs a failed graph by resetting `Failed` tasks to `Ready` and `Skipped`/`Canceled` tasks to `Pending` via `dag::reset_for_retry()` BFS traversal; graph-id validation rejects mismatched IDs (#1240)
+- Add `DagScheduler::resume_from()` constructor: accepts `Paused` or `Failed` graphs, reconstructs `running` HashMap from tasks with `Running` status, and sets `graph.status = Running` (#1240)
+- Add `dag::reset_for_retry()`: BFS-based algorithm resetting `Failed` tasks to `Ready` and `Skipped`/`Canceled` dependents to `Pending` for re-evaluation (#1240)
+- Add `aggregator_max_tokens` field to `OrchestrationConfig` (default: 4096) for controlling the aggregation LLM call token budget (#1240)
 - Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
 - Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
 - Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)

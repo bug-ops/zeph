@@ -23,6 +23,10 @@ pub enum PlanCommand {
     Cancel(Option<String>),
     /// `/plan confirm` — confirm pending plan before execution.
     Confirm,
+    /// `/plan resume` or `/plan resume <graph-id>` — resume a paused graph (Ask strategy).
+    Resume(Option<String>),
+    /// `/plan retry` or `/plan retry <graph-id>` — re-run failed tasks in a graph.
+    Retry(Option<String>),
 }
 
 impl PlanCommand {
@@ -30,8 +34,7 @@ impl PlanCommand {
     ///
     /// # Errors
     ///
-    /// Returns [`OrchestrationError::InvalidCommand`] if parsing fails or if
-    /// a not-yet-implemented subcommand (`resume`, `retry`) is used.
+    /// Returns [`OrchestrationError::InvalidCommand`] if parsing fails.
     pub fn parse(input: &str) -> Result<Self, OrchestrationError> {
         let rest = input
             .strip_prefix("/plan")
@@ -42,8 +45,9 @@ impl PlanCommand {
 
         if rest.is_empty() {
             return Err(OrchestrationError::InvalidCommand(
-                "usage: /plan <goal> | /plan status [id] | /plan list | /plan cancel [id] | /plan confirm\n\
-                 Note: goals starting with 'status', 'list', 'cancel', 'confirm' are parsed as subcommands."
+                "usage: /plan <goal> | /plan status [id] | /plan list | /plan cancel [id] \
+                 | /plan confirm | /plan resume [id] | /plan retry [id]\n\
+                 Note: goals starting with a reserved word are parsed as subcommands."
                     .into(),
             ));
         }
@@ -79,12 +83,16 @@ impl PlanCommand {
                 }
                 Ok(Self::Confirm)
             }
-            // Not-yet-implemented subcommands: return a clear error rather than
-            // silently treating them as goals (e.g. "/plan resume abc-123" would
-            // otherwise create a plan to "resume abc-123").
-            "resume" | "retry" => Err(OrchestrationError::InvalidCommand(format!(
-                "'{cmd}' is not yet implemented; it will be available in a future phase"
-            ))),
+            "resume" => Ok(Self::Resume(if args.is_empty() {
+                None
+            } else {
+                Some(args.to_owned())
+            })),
+            "retry" => Ok(Self::Retry(if args.is_empty() {
+                None
+            } else {
+                Some(args.to_owned())
+            })),
             // Everything else is treated as a goal (the full `rest` string, not just `cmd`).
             // This means `/plan refactor the auth module` captures the whole phrase.
             _ => Ok(Self::Goal(rest.to_owned())),
@@ -207,21 +215,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_resume_returns_not_implemented_error() {
-        let err = PlanCommand::parse("/plan resume abc-123").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("not yet implemented")),
-            "expected not-yet-implemented error, got: {err:?}"
-        );
+    fn parse_resume_no_id() {
+        let cmd = PlanCommand::parse("/plan resume").unwrap();
+        assert_eq!(cmd, PlanCommand::Resume(None));
     }
 
     #[test]
-    fn parse_retry_returns_not_implemented_error() {
-        let err = PlanCommand::parse("/plan retry").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("not yet implemented")),
-            "expected not-yet-implemented error, got: {err:?}"
-        );
+    fn parse_resume_with_id() {
+        let cmd = PlanCommand::parse("/plan resume abc-123").unwrap();
+        assert_eq!(cmd, PlanCommand::Resume(Some("abc-123".into())));
+    }
+
+    #[test]
+    fn parse_retry_no_id() {
+        let cmd = PlanCommand::parse("/plan retry").unwrap();
+        assert_eq!(cmd, PlanCommand::Retry(None));
+    }
+
+    #[test]
+    fn parse_retry_with_id() {
+        let cmd = PlanCommand::parse("/plan retry abc-123").unwrap();
+        assert_eq!(cmd, PlanCommand::Retry(Some("abc-123".into())));
     }
 
     #[test]
