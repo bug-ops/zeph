@@ -463,20 +463,41 @@ impl GraphStore {
         start_entity_id: i64,
         max_hops: u32,
     ) -> Result<(Vec<Entity>, Vec<Edge>), MemoryError> {
-        use std::collections::HashSet;
+        self.bfs_with_depth(start_entity_id, max_hops)
+            .await
+            .map(|(e, ed, _)| (e, ed))
+    }
 
-        let mut visited: HashSet<i64> = HashSet::new();
+    /// BFS traversal returning entities, edges, and a depth map (`entity_id` → hop distance).
+    ///
+    /// The depth map records the minimum hop distance from `start_entity_id` to each visited
+    /// entity. The start entity itself has depth 0.
+    ///
+    /// **`SQLite` bind parameter limit**: see [`bfs`] for notes on frontier size limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
+    pub async fn bfs_with_depth(
+        &self,
+        start_entity_id: i64,
+        max_hops: u32,
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        use std::collections::HashMap;
+
+        // SQLite binds frontier IDs 3× per hop; at >333 IDs the IN clause exceeds
+        // SQLITE_MAX_VARIABLE_NUMBER (999). Cap to 300 to stay safely within the limit.
+        const MAX_FRONTIER: usize = 300;
+
+        let mut depth_map: HashMap<i64, u32> = HashMap::new();
         let mut frontier: Vec<i64> = vec![start_entity_id];
-        visited.insert(start_entity_id);
+        depth_map.insert(start_entity_id, 0);
 
-        for _ in 0..max_hops {
+        for hop in 0..max_hops {
             if frontier.is_empty() {
                 break;
             }
-            // R-SUG-03: SQLite default SQLITE_MAX_VARIABLE_NUMBER = 999.
-            // Neighbour query binds frontier 3 times → cap at 333 IDs per hop.
-            frontier.truncate(333);
-            // For each entity in the frontier, fetch its active neighbours.
+            frontier.truncate(MAX_FRONTIER);
             // IDs come from our own DB — no user input, no injection risk.
             let placeholders = frontier
                 .iter()
@@ -507,15 +528,19 @@ impl GraphStore {
 
             let mut next_frontier: Vec<i64> = Vec::new();
             for nbr in neighbours {
-                if visited.insert(nbr) {
+                if let std::collections::hash_map::Entry::Vacant(e) = depth_map.entry(nbr) {
+                    e.insert(hop + 1);
                     next_frontier.push(nbr);
                 }
             }
             frontier = next_frontier;
         }
 
-        // edge_sql binds visited_ids twice → cap at 499 to stay under SQLite 999 limit.
-        let mut visited_ids: Vec<i64> = visited.into_iter().collect();
+        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
+        if visited_ids.is_empty() {
+            return Ok((Vec::new(), Vec::new(), depth_map));
+        }
+        // Edge query binds visited_ids twice — cap at 499 to stay under SQLite 999 limit.
         visited_ids.truncate(499);
 
         // Fetch edges between visited entities
@@ -559,7 +584,7 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()?;
         let edges: Vec<Edge> = edge_rows.into_iter().map(edge_from_row).collect();
 
-        Ok((entities, edges))
+        Ok((entities, edges, depth_map))
     }
 }
 

@@ -166,6 +166,8 @@ pub struct SemanticMemory {
     mmr_enabled: bool,
     mmr_lambda: f32,
     pub token_counter: Arc<TokenCounter>,
+    #[cfg(feature = "graph-memory")]
+    pub graph_store: Option<Arc<crate::graph::GraphStore>>,
 }
 
 impl SemanticMemory {
@@ -247,7 +249,20 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         })
+    }
+
+    /// Attach a `GraphStore` for graph-aware retrieval.
+    ///
+    /// When set, `recall_graph` traverses the graph starting from entities
+    /// matched by the query.
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn with_graph_store(mut self, store: Arc<crate::graph::GraphStore>) -> Self {
+        self.graph_store = Some(store);
+        self
     }
 
     /// Configure temporal decay and MMR re-ranking options.
@@ -292,6 +307,8 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter,
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         }
     }
 
@@ -347,6 +364,8 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         })
     }
 
@@ -716,10 +735,51 @@ impl SemanticMemory {
                 let vr = self.recall_vectors_raw(query, limit, filter).await?;
                 (kw, vr)
             }
+            // Graph routing triggers graph_recall separately in agent/context.rs.
+            // For the message-based recall, behave like Hybrid.
+            MemoryRoute::Graph => {
+                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("FTS5 keyword search failed (graph→hybrid fallback): {e:#}");
+                        Vec::new()
+                    }
+                };
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (kw, vr)
+            }
         };
 
         self.recall_merge_and_rank(keyword_results, vector_results, limit)
             .await
+    }
+
+    /// Retrieve graph facts relevant to `query` via BFS traversal.
+    ///
+    /// Returns an empty `Vec` if no `graph_store` is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn recall_graph(
+        &self,
+        query: &str,
+        limit: usize,
+        max_hops: u32,
+    ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        crate::graph::retrieval::graph_recall(
+            store,
+            self.qdrant.as_deref(),
+            &self.provider,
+            query,
+            limit,
+            max_hops,
+        )
+        .await
     }
 
     /// Check whether an embedding exists for a given message ID.
@@ -1326,109 +1386,6 @@ impl SemanticMemory {
             }
         });
     }
-
-    /// Retrieve graph facts related to `query` via fuzzy entity match and BFS edge traversal.
-    ///
-    /// Returns facts sorted by composite score (entity match * hop decay * confidence).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the database query fails.
-    #[cfg(feature = "graph-memory")]
-    pub async fn recall_graph(
-        &self,
-        query: &str,
-        limit: usize,
-        max_hops: u32,
-    ) -> Result<Vec<crate::graph::GraphFact>, MemoryError> {
-        use crate::graph::{GraphFact, GraphStore};
-
-        let store = GraphStore::new(self.sqlite.pool().clone());
-        let matched = store.find_entities_fuzzy(query, limit).await?;
-        if matched.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // R-SUG-01: entity name cache seeded from matched set; populated lazily during BFS
-        // to avoid N+1 find_entity_by_id calls for every edge endpoint.
-        let mut entity_name_cache: std::collections::HashMap<i64, String> =
-            matched.iter().map(|e| (e.id, e.name.clone())).collect();
-
-        let mut facts: Vec<GraphFact> = Vec::new();
-
-        for entity in &matched {
-            let match_score = 1.0f32; // fuzzy match — all returned are equally "matched"
-            // BFS up to max_hops
-            let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
-            let mut queue: std::collections::VecDeque<(i64, u32)> =
-                std::collections::VecDeque::new();
-            queue.push_back((entity.id, 0));
-            visited.insert(entity.id);
-
-            while let Some((current_id, hop)) = queue.pop_front() {
-                if hop >= max_hops {
-                    continue;
-                }
-                let edges = store.edges_for_entity(current_id).await?;
-                for edge in edges {
-                    let (source_id, target_id) = (edge.source_entity_id, edge.target_entity_id);
-                    // Resolve entity names — cache hit avoids a DB round-trip.
-                    let source_name = if let Some(n) = entity_name_cache.get(&source_id).cloned() {
-                        n
-                    } else {
-                        let name = store
-                            .find_entity_by_id(source_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map_or_else(|| source_id.to_string(), |e| e.name);
-                        entity_name_cache.insert(source_id, name.clone());
-                        name
-                    };
-                    let target_name = if let Some(n) = entity_name_cache.get(&target_id).cloned() {
-                        n
-                    } else {
-                        let name = store
-                            .find_entity_by_id(target_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map_or_else(|| target_id.to_string(), |e| e.name);
-                        entity_name_cache.insert(target_id, name.clone());
-                        name
-                    };
-
-                    facts.push(GraphFact {
-                        entity_name: source_name,
-                        relation: edge.relation.clone(),
-                        target_name,
-                        fact: edge.fact.clone(),
-                        entity_match_score: match_score,
-                        hop_distance: hop,
-                        confidence: edge.confidence,
-                    });
-
-                    // Enqueue the other side for BFS
-                    let next_id = if source_id == current_id {
-                        target_id
-                    } else {
-                        source_id
-                    };
-                    if visited.insert(next_id) {
-                        queue.push_back((next_id, hop + 1));
-                    }
-                }
-            }
-        }
-
-        facts.sort_by(|a, b| {
-            b.composite_score()
-                .partial_cmp(&a.composite_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        facts.truncate(limit);
-        Ok(facts)
-    }
 }
 
 /// Config for the spawned background extraction task.
@@ -1567,6 +1524,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         }
     }
 
@@ -2020,6 +1979,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2153,6 +2114,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -2423,6 +2386,8 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
+            #[cfg(feature = "graph-memory")]
+            graph_store: None,
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2761,7 +2726,9 @@ mod tests {
         use crate::graph::{EntityType, GraphStore};
 
         async fn graph_memory() -> SemanticMemory {
-            test_semantic_memory(false).await
+            let mem = test_semantic_memory(false).await;
+            let store = std::sync::Arc::new(GraphStore::new(mem.sqlite.pool().clone()));
+            mem.with_graph_store(store)
         }
 
         #[tokio::test]

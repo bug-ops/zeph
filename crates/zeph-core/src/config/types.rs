@@ -1851,6 +1851,10 @@ pub struct OrchestrationConfig {
     /// per-call token limits are added to the `LlmProvider::chat` API.
     #[serde(default = "default_planner_max_tokens")]
     pub planner_max_tokens: u32,
+    /// Total character budget for cross-task dependency context injection.
+    pub dependency_context_budget: usize,
+    /// Whether to show a confirmation prompt before executing a plan.
+    pub confirm_before_execute: bool,
 }
 
 fn default_planner_max_tokens() -> u32 {
@@ -1868,6 +1872,8 @@ impl Default for OrchestrationConfig {
             task_timeout_secs: 300,
             planner_model: None,
             planner_max_tokens: default_planner_max_tokens(),
+            dependency_context_budget: 16384,
+            confirm_before_execute: true,
         }
     }
 }

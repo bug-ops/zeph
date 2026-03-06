@@ -18,8 +18,6 @@ use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 use crate::redact::scrub_content;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 
-#[cfg(feature = "graph-memory")]
-use super::GRAPH_FACTS_PREFIX;
 use super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, Channel, ContextBudget,
     DOCUMENT_RAG_PREFIX, LlmProvider, Message, RECALL_PREFIX, Role, SUMMARY_PREFIX, Skill,
@@ -1054,6 +1052,50 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    #[cfg(feature = "graph-memory")]
+    async fn fetch_graph_facts(
+        memory_state: &super::MemoryState,
+        query: &str,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::error::AgentError> {
+        if budget_tokens == 0 || !memory_state.graph_config.enabled {
+            return Ok(None);
+        }
+        let Some(ref memory) = memory_state.memory else {
+            return Ok(None);
+        };
+        let recall_limit = memory_state.graph_config.recall_limit;
+        let max_hops = memory_state.graph_config.max_hops;
+        let facts = memory
+            .recall_graph(query, recall_limit, max_hops)
+            .await
+            .map_err(|e| {
+                tracing::warn!("graph recall failed: {e:#}");
+                super::error::AgentError::Memory(e)
+            })?;
+        if facts.is_empty() {
+            return Ok(None);
+        }
+
+        let mut body = String::from(super::GRAPH_FACTS_PREFIX);
+        let mut tokens_so_far = tc.count_tokens(&body);
+        for f in &facts {
+            // Strip newlines and angle-brackets from stored entity names/relations
+            // to prevent graph-stored injection strings from escaping into the prompt.
+            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+            let line_tokens = tc.count_tokens(&line);
+            if tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            tokens_so_far += line_tokens;
+        }
+
+        Ok(Some(Message::from_legacy(Role::System, body)))
+    }
+
     async fn fetch_corrections(
         memory_state: &super::MemoryState,
         query: &str,
@@ -1079,57 +1121,6 @@ impl<C: Channel> Agent<C> {
                 truncate_chars(&scrub_content(&c.original_output), 80),
                 truncate_chars(&scrub_content(&c.correction_text), 200),
             );
-        }
-        Ok(Some(Message::from_legacy(Role::System, text)))
-    }
-
-    #[cfg(feature = "graph-memory")]
-    async fn fetch_graph_facts(
-        memory_state: &super::MemoryState,
-        query: &str,
-        token_budget: usize,
-        tc: &TokenCounter,
-    ) -> Result<Option<Message>, super::error::AgentError> {
-        if token_budget == 0 {
-            return Ok(None);
-        }
-        let (Some(memory), Some(_cid)) = (&memory_state.memory, memory_state.conversation_id)
-        else {
-            return Ok(None);
-        };
-        let cfg = match &memory_state.graph_config {
-            Some(c) if c.enabled => c,
-            _ => return Ok(None),
-        };
-        let facts = memory
-            .recall_graph(query, cfg.recall_limit, cfg.max_hops)
-            .await
-            .unwrap_or_default();
-        if facts.is_empty() {
-            return Ok(None);
-        }
-        let mut text = String::from(GRAPH_FACTS_PREFIX);
-        let mut budget_remaining = token_budget;
-        for fact in &facts {
-            use std::fmt::Write as _;
-            // R-IMP-02: strip newlines and angle-brackets from stored entity names/relations
-            // to prevent graph-stored injection strings from escaping into the system prompt.
-            let entity = fact.entity_name.replace(['\n', '\r', '<', '>'], " ");
-            let relation = fact.relation.replace(['\n', '\r', '<', '>'], " ");
-            let target = fact.target_name.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!(
-                "- {} {} {} (confidence: {:.2})\n",
-                entity, relation, target, fact.confidence
-            );
-            let tokens = tc.count_tokens(&line);
-            if tokens > budget_remaining {
-                break;
-            }
-            budget_remaining = budget_remaining.saturating_sub(tokens);
-            let _ = text.write_str(&line);
-        }
-        if text == GRAPH_FACTS_PREFIX {
-            return Ok(None);
         }
         Ok(Some(Message::from_legacy(Role::System, text)))
     }
@@ -1503,11 +1494,7 @@ impl<C: Channel> Agent<C> {
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
         #[cfg(feature = "graph-memory")]
-        let graph_enabled = self
-            .memory_state
-            .graph_config
-            .as_ref()
-            .is_some_and(|c| c.enabled);
+        let graph_enabled = self.memory_state.graph_config.enabled;
         #[cfg(not(feature = "graph-memory"))]
         let graph_enabled = false;
         let alloc = budget.allocate(
@@ -1730,9 +1717,9 @@ impl<C: Channel> Agent<C> {
     /// into the context. Memory content is `ExternalUntrusted` because prior sessions may
     /// have stored poisoned content retrieved from web scraping or MCP responses.
     ///
-    /// This is the SOLE sanitization point for the 5 memory retrieval paths (`doc_rag`,
-    /// corrections, recall, `cross_session`, summaries). Do not add redundant sanitization
-    /// in zeph-memory or at other call sites.
+    /// This is the SOLE sanitization point for the 6 memory retrieval paths (`doc_rag`,
+    /// corrections, recall, `cross_session`, summaries, `graph_facts`). Do not add redundant
+    /// sanitization in zeph-memory or at other call sites.
     async fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
         let sanitized = self.sanitizer.sanitize(&msg.content, source);
@@ -4688,14 +4675,18 @@ mod tests {
 
     #[cfg(feature = "graph-memory")]
     async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
-        zeph_memory::semantic::SemanticMemory::new(
+        let mem = zeph_memory::semantic::SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
             AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
             "test-model",
         )
         .await
-        .unwrap()
+        .unwrap();
+        let store = std::sync::Arc::new(zeph_memory::graph::GraphStore::new(
+            mem.sqlite().pool().clone(),
+        ));
+        mem.with_graph_store(store)
     }
 
     #[cfg(feature = "graph-memory")]
@@ -4716,10 +4707,10 @@ mod tests {
             tool_call_cutoff: 6,
             unsummarized_count: 0,
             document_config: crate::config::DocumentConfig::default(),
-            graph_config: Some(crate::config::GraphConfig {
+            graph_config: crate::config::GraphConfig {
                 enabled: graph_enabled,
                 ..Default::default()
-            }),
+            },
         }
     }
 
@@ -4793,6 +4784,6 @@ mod tests {
             .unwrap();
         assert!(result.is_some());
         let msg = result.unwrap();
-        assert!(msg.content.starts_with(GRAPH_FACTS_PREFIX));
+        assert!(msg.content.starts_with(super::super::GRAPH_FACTS_PREFIX));
     }
 }

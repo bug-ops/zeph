@@ -172,10 +172,10 @@ impl<C: Channel> Agent<C> {
 
         // Collect extraction config — borrow ends before send_status call
         let extraction_cfg = {
-            let cfg = match &self.memory_state.graph_config {
-                Some(c) if c.enabled => c,
-                _ => return,
-            };
+            let cfg = &self.memory_state.graph_config;
+            if !cfg.enabled {
+                return;
+            }
             GraphExtractionConfig {
                 max_entities: cfg.max_entities_per_message,
                 max_edges: cfg.max_edges_per_message,

@@ -127,6 +127,60 @@ Two config fields control planner behavior:
 
 See [Configuration](../reference/configuration.md) for the full `[orchestration]` section reference.
 
+## Execution
+
+Once a `TaskGraph` is validated and persisted, the **DAG scheduler** drives execution by producing actions for the caller to perform.
+
+### DagScheduler
+
+`DagScheduler` implements a tick-based execution loop. On each tick it inspects the graph, checks for ready tasks, monitors timeouts, and emits `SchedulerAction` values:
+
+| Action | Description |
+|--------|-------------|
+| `Spawn` | Spawn a sub-agent for a ready task (includes task ID, agent definition name, and prompt) |
+| `Cancel` | Cancel a running sub-agent (on graph abort or skip propagation) |
+| `Done` | Graph reached a terminal or paused state |
+
+The scheduler never holds a mutable reference to `SubAgentManager` — it produces actions for the caller to execute (command pattern). This keeps the scheduler testable in isolation and avoids borrow conflicts.
+
+#### Event Channel
+
+Sub-agents report completion via an `mpsc::Sender<TaskEvent>` channel. Each `TaskEvent` carries the task ID, agent handle ID, and an outcome (`Completed` with output/artifacts, or `Failed` with an error message). The scheduler buffers events in a `VecDeque` between `wait_event()` and `tick()` calls.
+
+A **stale event guard** rejects completion events from agents that were timed out and retried — preventing a late response from a previous attempt from overwriting the retry result.
+
+#### Task Timeout
+
+The scheduler monitors wall-clock time for each running task against `task_timeout_secs`. When a task exceeds the timeout, the scheduler marks it as failed with a timeout error and applies the configured failure strategy (retry, abort, skip, or ask).
+
+#### Cross-Task Context Injection
+
+When a task becomes ready, the scheduler collects output from its completed dependencies and injects it into the task prompt as a `<completed-dependencies>` XML block. This gives downstream tasks access to upstream results without manual plumbing.
+
+The injection respects `dependency_context_budget` (total character budget across all dependencies). Output is truncated at character-safe boundaries (no mid-codepoint splits). The `ContentSanitizer` is applied to dependency output before injection to prevent prompt injection from upstream task results.
+
+### Agent Router
+
+The `AgentRouter` trait selects which sub-agent definition to use for a given task. The built-in `RuleBasedRouter` implements a 3-step fallback chain:
+
+1. **Exact match** — `task.agent_hint` matched against available agent names.
+2. **Tool keyword matching** — keywords in the task description (e.g., "implement", "edit", "build") matched against agent tool policies. This is an MVP heuristic (English-only, last resort).
+3. **First available** — unconditional fallback to the first agent in the list.
+
+For reliable routing, set `agent_hint` on each task node during planning. The keyword matching step is a best-effort fallback, not authoritative routing.
+
+### SubAgentManager Integration
+
+`SubAgentManager::spawn_for_task()` wraps the standard `spawn()` method and hooks into the scheduler's event channel. When the sub-agent's `JoinHandle` resolves, it automatically sends a `TaskEvent` to the scheduler. This is minimally invasive — no changes to `SubAgentHandle` or `run_agent_loop` internals.
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `/plan <goal>` | Decompose goal into a DAG and execute |
+| `/plan status` | Show current graph progress |
+| `/plan cancel` | Cancel the active graph |
+
 ## Configuration
 
 Add an `[orchestration]` section to `config.toml`:
@@ -141,6 +195,8 @@ default_max_retries = 3             # Retries for the "retry" strategy (default:
 task_timeout_secs = 300             # Per-task timeout in seconds, 0 = no timeout (default: 300)
 # planner_model = "claude-sonnet-4-20250514"  # Model override for planning LLM calls
 planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
+dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
+confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
 ```
 
 ## Related

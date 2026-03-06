@@ -232,16 +232,17 @@ pub struct BudgetAllocation {
     pub semantic_recall: usize,
     pub cross_session: usize,
     pub code_context: usize,
+    /// Tokens reserved for graph facts. Always present; 0 when graph-memory is disabled.
+    pub graph_facts: usize,
     pub recent_history: usize,
     pub response_reserve: usize,
-    /// Token budget for knowledge graph facts. Zero when graph-memory is disabled or not configured.
-    pub graph_facts: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct ContextBudget {
     max_tokens: usize,
     reserve_ratio: f32,
+    pub(crate) graph_enabled: bool,
 }
 
 impl ContextBudget {
@@ -250,7 +251,15 @@ impl ContextBudget {
         Self {
             max_tokens,
             reserve_ratio,
+            graph_enabled: false,
         }
+    }
+
+    /// Enable or disable graph fact allocation.
+    #[must_use]
+    pub fn with_graph_enabled(mut self, enabled: bool) -> Self {
+        self.graph_enabled = enabled;
+        self
     }
 
     #[must_use]
@@ -279,9 +288,9 @@ impl ContextBudget {
                 semantic_recall: 0,
                 cross_session: 0,
                 code_context: 0,
+                graph_facts: 0,
                 recent_history: 0,
                 response_reserve: 0,
-                graph_facts: 0,
             };
         }
 
@@ -293,19 +302,25 @@ impl ContextBudget {
 
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
-        let summaries = (available as f32 * 0.08) as usize;
-        // When graph is enabled: semantic_recall=5%, graph_facts=3%.
-        // When disabled: semantic_recall=8%, graph_facts=0%.
-        let (semantic_recall, graph_facts) = if graph_enabled {
-            (
-                (available as f32 * 0.05) as usize,
-                (available as f32 * 0.03) as usize,
-            )
-        } else {
-            ((available as f32 * 0.08) as usize, 0)
-        };
-        let cross_session = (available as f32 * 0.04) as usize;
-        let code_context = (available as f32 * 0.30) as usize;
+        // When graph is enabled: take 4% for graph facts, reduce other slices by 1% each.
+        let (summaries, semantic_recall, cross_session, code_context, graph_facts) =
+            if graph_enabled {
+                (
+                    (available as f32 * 0.07) as usize,
+                    (available as f32 * 0.07) as usize,
+                    (available as f32 * 0.03) as usize,
+                    (available as f32 * 0.29) as usize,
+                    (available as f32 * 0.04) as usize,
+                )
+            } else {
+                (
+                    (available as f32 * 0.08) as usize,
+                    (available as f32 * 0.08) as usize,
+                    (available as f32 * 0.04) as usize,
+                    (available as f32 * 0.30) as usize,
+                    0,
+                )
+            };
         let recent_history = (available as f32 * 0.50) as usize;
 
         BudgetAllocation {
@@ -315,9 +330,9 @@ impl ContextBudget {
             semantic_recall,
             cross_session,
             code_context,
+            graph_facts,
             recent_history,
             response_reserve,
-            graph_facts,
         }
     }
 }
@@ -390,8 +405,32 @@ mod tests {
         assert_eq!(alloc.semantic_recall, 0);
         assert_eq!(alloc.cross_session, 0);
         assert_eq!(alloc.code_context, 0);
+        assert_eq!(alloc.graph_facts, 0);
         assert_eq!(alloc.recent_history, 0);
         assert_eq!(alloc.response_reserve, 0);
+    }
+
+    #[test]
+    fn budget_allocation_graph_disabled_no_graph_facts() {
+        let tc = zeph_memory::TokenCounter::new();
+        let budget = ContextBudget::new(10_000, 0.20);
+        let alloc = budget.allocate("", "", &tc, false);
+        assert_eq!(alloc.graph_facts, 0);
+        // Without graph: summaries = 8%, semantic_recall = 8%
+        assert_eq!(alloc.summaries, (8_000_f32 * 0.08) as usize);
+        assert_eq!(alloc.semantic_recall, (8_000_f32 * 0.08) as usize);
+    }
+
+    #[test]
+    fn budget_allocation_graph_enabled_allocates_4_percent() {
+        let tc = zeph_memory::TokenCounter::new();
+        let budget = ContextBudget::new(10_000, 0.20).with_graph_enabled(true);
+        let alloc = budget.allocate("", "", &tc, true);
+        assert!(alloc.graph_facts > 0);
+        // With graph: summaries = 7%, semantic_recall = 7%, graph_facts = 4%
+        assert_eq!(alloc.summaries, (8_000_f32 * 0.07) as usize);
+        assert_eq!(alloc.semantic_recall, (8_000_f32 * 0.07) as usize);
+        assert_eq!(alloc.graph_facts, (8_000_f32 * 0.04) as usize);
     }
 
     #[test]

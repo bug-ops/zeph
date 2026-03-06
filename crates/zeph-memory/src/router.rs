@@ -10,6 +10,9 @@ pub enum MemoryRoute {
     Semantic,
     /// Both backends, results merged by reciprocal rank fusion.
     Hybrid,
+    /// Graph-based retrieval via BFS traversal. Good for relationship queries.
+    /// When the `graph-memory` feature is disabled, callers treat this as `Hybrid`.
+    Graph,
 }
 
 /// Decides which memory backend(s) to query for a given input.
@@ -29,6 +32,21 @@ pub struct HeuristicRouter;
 
 const QUESTION_WORDS: &[&str] = &[
     "what", "how", "why", "when", "where", "who", "which", "explain", "describe",
+];
+
+/// Simple substrings that signal a relationship query (checked via `str::contains`).
+/// Only used when the `graph-memory` feature is enabled.
+#[cfg(feature = "graph-memory")]
+const RELATIONSHIP_PATTERNS: &[&str] = &[
+    "related to",
+    "relates to",
+    "connection between",
+    "relationship",
+    "opinion on",
+    "thinks about",
+    "preference for",
+    "history of",
+    "know about",
 ];
 
 fn starts_with_question(words: &[&str]) -> bool {
@@ -56,6 +74,16 @@ impl MemoryRouter for HeuristicRouter {
     fn route(&self, query: &str) -> MemoryRoute {
         let words: Vec<&str> = query.split_whitespace().collect();
         let word_count = words.len();
+
+        // Relationship queries go to graph retrieval (feature-gated at call site)
+        #[cfg(feature = "graph-memory")]
+        {
+            let lower = query.to_ascii_lowercase();
+            let has_relationship = RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p));
+            if has_relationship {
+                return MemoryRoute::Graph;
+            }
+        }
 
         // Code-like patterns that unambiguously indicate keyword search:
         // file paths (contain '/'), Rust paths (contain '::')
@@ -180,5 +208,58 @@ mod tests {
             route("SemanticMemory configuration and options"),
             MemoryRoute::Hybrid
         );
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[test]
+    fn relationship_query_routes_graph() {
+        assert_eq!(
+            route("what is user's opinion on neovim"),
+            MemoryRoute::Graph
+        );
+        assert_eq!(
+            route("show the relationship between Alice and Bob"),
+            MemoryRoute::Graph
+        );
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[test]
+    fn relationship_query_related_to_routes_graph() {
+        assert_eq!(
+            route("how is Rust related to this project"),
+            MemoryRoute::Graph
+        );
+        assert_eq!(
+            route("how does this relates to the config"),
+            MemoryRoute::Graph
+        );
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[test]
+    fn relationship_know_about_routes_graph() {
+        assert_eq!(route("what do I know about neovim"), MemoryRoute::Graph);
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[test]
+    fn translate_does_not_route_graph() {
+        // "translate" contains "relate" substring but is not in RELATIONSHIP_PATTERNS
+        // (we removed bare "relate", keeping only "related to" and "relates to")
+        assert_ne!(route("translate this code to Python"), MemoryRoute::Graph);
+    }
+
+    #[test]
+    fn non_relationship_stays_semantic() {
+        assert_eq!(
+            route("find similar code patterns in the codebase"),
+            MemoryRoute::Semantic
+        );
+    }
+
+    #[test]
+    fn short_keyword_unchanged() {
+        assert_eq!(route("qdrant"), MemoryRoute::Keyword);
     }
 }

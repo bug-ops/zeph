@@ -65,9 +65,9 @@ pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
-pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 #[cfg(feature = "graph-memory")]
-pub(crate) const GRAPH_FACTS_PREFIX: &str = "[knowledge graph]\n";
+pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
+pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     use std::fmt::Write;
@@ -97,7 +97,7 @@ pub(super) struct MemoryState {
     pub(super) unsummarized_count: usize,
     pub(super) document_config: crate::config::DocumentConfig,
     #[cfg(feature = "graph-memory")]
-    pub(super) graph_config: Option<crate::config::GraphConfig>,
+    pub(super) graph_config: crate::config::GraphConfig,
 }
 
 pub(super) struct SkillState {
@@ -285,7 +285,7 @@ impl<C: Channel> Agent<C> {
                 unsummarized_count: 0,
                 document_config: crate::config::DocumentConfig::default(),
                 #[cfg(feature = "graph-memory")]
-                graph_config: None,
+                graph_config: crate::config::GraphConfig::default(),
             },
             skill_state: SkillState {
                 registry,
@@ -1770,12 +1770,17 @@ impl<C: Channel> Agent<C> {
         self.skill_state.hybrid_search = config.skills.hybrid_search;
 
         if config.memory.context_budget_tokens > 0 {
-            self.context_manager.budget = Some(ContextBudget::new(
-                config.memory.context_budget_tokens,
-                0.20,
-            ));
+            self.context_manager.budget = Some(
+                ContextBudget::new(config.memory.context_budget_tokens, 0.20)
+                    .with_graph_enabled(config.memory.graph.enabled),
+            );
         } else {
             self.context_manager.budget = None;
+        }
+
+        #[cfg(feature = "graph-memory")]
+        {
+            self.memory_state.graph_config = config.memory.graph.clone();
         }
         self.context_manager.compaction_threshold = config.memory.compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;

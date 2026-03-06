@@ -145,7 +145,7 @@ impl<C: Channel> Agent<C> {
                  Do not use with sensitive personal data until redaction is implemented."
             );
         }
-        self.memory_state.graph_config = Some(config);
+        self.memory_state.graph_config = config;
         self
     }
 
