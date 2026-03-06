@@ -59,6 +59,7 @@ opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 pdf-extract = "0.10"
+petgraph = { version = "0.8", default-features = false }
 proptest = "1.10"
 pulldown-cmark = "0.13"
 qdrant-client = { version = "1.17", default-features = false }

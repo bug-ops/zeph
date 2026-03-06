@@ -166,6 +166,7 @@ pub struct MetricsSnapshot {
     /// Ring buffer of recent security events (cap 100, FIFO eviction).
     pub security_events: VecDeque<SecurityEvent>,
     pub orchestration: OrchestrationMetrics,
+    pub graph_community_detection_failures: u64,
 }
 
 pub struct MetricsCollector {

@@ -180,6 +180,9 @@ impl<C: Channel> Agent<C> {
                 max_entities: cfg.max_entities_per_message,
                 max_edges: cfg.max_edges_per_message,
                 extraction_timeout_secs: cfg.extraction_timeout_secs,
+                community_refresh_interval: cfg.community_refresh_interval,
+                expired_edge_retention_days: cfg.expired_edge_retention_days,
+                max_entities_cap: cfg.max_entities,
             }
         };
 
@@ -198,6 +201,7 @@ impl<C: Channel> Agent<C> {
         if let Some(memory) = &self.memory_state.memory {
             memory.spawn_graph_extraction(content.to_owned(), context_messages, extraction_cfg);
         }
+        self.sync_community_detection_failures();
     }
 
     pub(crate) async fn check_summarization(&mut self) {
