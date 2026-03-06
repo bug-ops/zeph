@@ -13,6 +13,7 @@ pub mod context;
 pub mod cost;
 #[cfg(feature = "daemon")]
 pub mod daemon;
+pub mod debug_dump;
 pub mod instructions;
 pub mod metrics;
 pub mod pipeline;

@@ -294,3 +294,7 @@ planner_max_tokens = 4096
 dependency_context_budget = 16384
 confirm_before_execute = true
 aggregator_max_tokens = 4096
+
+[debug]
+enabled = false
+output_dir = ".local/debug"

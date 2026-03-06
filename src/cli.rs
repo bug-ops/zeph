@@ -79,6 +79,11 @@ pub(crate) struct Cli {
     #[arg(long = "agents", value_name = "PATH")]
     pub(crate) agents: Vec<PathBuf>,
 
+    /// Enable debug dump: write LLM requests/responses and raw tool output to files.
+    /// Omit PATH to use the default directory from config (default: .local/debug).
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
+    pub(crate) debug_dump: Option<PathBuf>,
+
     /// Override scheduler tick interval in seconds (requires scheduler feature)
     #[cfg(feature = "scheduler")]
     #[arg(long, value_name = "SECS")]

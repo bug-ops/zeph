@@ -230,6 +230,10 @@ pub struct Agent<C: Channel> {
     /// Graph waiting for `/plan confirm` before execution starts.
     #[cfg(feature = "orchestration")]
     pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
+    /// Active debug dumper. When `Some`, every LLM request/response and raw tool output
+    /// is written to files in the dump directory. Enabled via `--debug-dump` CLI flag or
+    /// `[debug]` config section.
+    pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -393,6 +397,7 @@ impl<C: Channel> Agent<C> {
             flagged_urls: std::collections::HashSet::new(),
             #[cfg(feature = "orchestration")]
             pending_graph: None,
+            debug_dumper: None,
         }
     }
 
@@ -949,6 +954,12 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
+            if trimmed == "/debug-dump" || trimmed.starts_with("/debug-dump ") {
+                self.handle_debug_dump_command(trimmed).await;
+                let _ = self.channel.flush_chunks().await;
+                continue;
+            }
+
             self.process_user_message(text, image_parts).await?;
         }
 
@@ -1060,6 +1071,48 @@ impl<C: Channel> Agent<C> {
             }
             Err(e) => {
                 let _ = self.channel.send(&format!("Error: {e}")).await;
+            }
+        }
+    }
+
+    /// Handle `/debug-dump` and `/debug-dump <path>` commands.
+    async fn handle_debug_dump_command(&mut self, trimmed: &str) {
+        let arg = trimmed.strip_prefix("/debug-dump").map_or("", str::trim);
+        if arg.is_empty() {
+            match &self.debug_dumper {
+                Some(d) => {
+                    let _ = self
+                        .channel
+                        .send(&format!("Debug dump active: {}", d.dir().display()))
+                        .await;
+                }
+                None => {
+                    let _ = self
+                        .channel
+                        .send(
+                            "Debug dump is inactive. Use `/debug-dump <path>` to enable, \
+                             or start with `--debug-dump [dir]`.",
+                        )
+                        .await;
+                }
+            }
+            return;
+        }
+        let dir = std::path::PathBuf::from(arg);
+        match crate::debug_dump::DebugDumper::new(&dir) {
+            Ok(dumper) => {
+                let path = dumper.dir().display().to_string();
+                self.debug_dumper = Some(dumper);
+                let _ = self
+                    .channel
+                    .send(&format!("Debug dump enabled: {path}"))
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .channel
+                    .send(&format!("Failed to enable debug dump: {e}"))
+                    .await;
             }
         }
     }

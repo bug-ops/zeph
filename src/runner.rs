@@ -556,6 +556,37 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
+    // Wire debug dump: CLI flag takes priority over [debug] config section.
+    let agent = {
+        let dump_dir = cli
+            .debug_dump
+            .as_ref()
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    config.debug.output_dir.clone()
+                } else {
+                    p.clone()
+                }
+            })
+            .or_else(|| {
+                config
+                    .debug
+                    .enabled
+                    .then(|| config.debug.output_dir.clone())
+            });
+        if let Some(dir) = dump_dir {
+            match zeph_core::debug_dump::DebugDumper::new(dir.as_path()) {
+                Ok(dumper) => agent.with_debug_dumper(dumper),
+                Err(e) => {
+                    tracing::warn!(error = %e, "debug dump initialization failed");
+                    agent
+                }
+            }
+        } else {
+            agent
+        }
+    };
+
     #[cfg(feature = "gateway")]
     if config.gateway.enabled {
         crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());

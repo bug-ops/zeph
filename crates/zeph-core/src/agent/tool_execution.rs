@@ -259,6 +259,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::error::AgentError> {
@@ -282,6 +283,11 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
         let prompt_estimate = self.cached_prompt_tokens;
+
+        let dump_id = self
+            .debug_dumper
+            .as_ref()
+            .map(|d| d.dump_request(&self.messages));
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
@@ -311,6 +317,9 @@ impl<C: Channel> Agent<C> {
                 self.record_cache_usage();
                 self.record_cost(prompt_estimate, completion_estimate_for_cost);
                 let raw = r?;
+                if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+                    d.dump_response(id, &raw);
+                }
                 // Redact secrets from the full accumulated response before it is persisted to
                 // history. Per-chunk redaction is applied during streaming (see send_chunk above).
                 let redacted = self.maybe_redact(&raw).into_owned();
@@ -351,6 +360,9 @@ impl<C: Channel> Agent<C> {
                     self.record_cost(prompt_estimate, completion_estimate);
                     // S2: scan for markdown image exfiltration in non-streaming path.
                     let cleaned = self.scan_output_and_warn(&resp);
+                    if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+                        d.dump_response(id, &cleaned);
+                    }
                     let display = self.maybe_redact(&cleaned);
                     self.channel.send(&display).await?;
                     self.store_response_in_cache(&cleaned).await;
@@ -585,6 +597,9 @@ impl<C: Channel> Agent<C> {
                         self.parent_tool_use_id.clone(),
                     )
                     .await?;
+                if let Some(ref d) = self.debug_dumper {
+                    d.dump_tool_output(&output.tool_name, &output.summary);
+                }
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
                 let body = if let Some(ref fs) = output.filter_stats
                     && fs.filtered_chars < fs.raw_chars
@@ -667,6 +682,9 @@ impl<C: Channel> Agent<C> {
                                 self.parent_tool_use_id.clone(),
                             )
                             .await?;
+                        if let Some(ref d) = self.debug_dumper {
+                            d.dump_tool_output(&out.tool_name, &out.summary);
+                        }
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         self.channel
@@ -1088,6 +1106,11 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
+        let dump_id = self
+            .debug_dumper
+            .as_ref()
+            .map(|d| d.dump_request(&self.messages));
+
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let chat_fut = tokio::time::timeout(
             llm_timeout,
@@ -1150,6 +1173,22 @@ impl<C: Channel> Agent<C> {
                 .channel
                 .send_usage(input_tokens, output_tokens, context_window)
                 .await;
+        }
+
+        if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+            let dump_text = match &result {
+                ChatResponse::Text(t) => t.clone(),
+                ChatResponse::ToolUse {
+                    text, tool_calls, ..
+                } => {
+                    let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                    format!(
+                        "{}\n\n---TOOL_CALLS---\n{calls}",
+                        text.as_deref().unwrap_or("")
+                    )
+                }
+            };
+            d.dump_response(id, &dump_text);
         }
 
         Ok(Some(result))

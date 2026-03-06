@@ -81,6 +81,8 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_confirm_before_execute: bool,
     pub(crate) orchestration_failure_strategy: String,
     pub(crate) orchestration_planner_model: Option<String>,
+    // Debug settings
+    pub(crate) debug_dump_enabled: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -124,6 +126,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_agents(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
+    step_debug(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -667,6 +670,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         ..OrchestrationConfig::default()
     };
 
+    config.debug.enabled = state.debug_dump_enabled;
+
     config
 }
 
@@ -1040,6 +1045,18 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
         state.detector_mode = Some("regex".into());
     }
 
+    println!();
+    Ok(())
+}
+
+fn step_debug(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Debug ==\n");
+    state.debug_dump_enabled = Confirm::new()
+        .with_prompt(
+            "Enable debug dump on startup? (saves LLM requests/responses and tool output to files)",
+        )
+        .default(false)
+        .interact()?;
     println!();
     Ok(())
 }

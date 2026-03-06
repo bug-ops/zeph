@@ -59,6 +59,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.
+    #[must_use]
+    pub fn with_debug_dumper(mut self, dumper: crate::debug_dump::DebugDumper) -> Self {
+        self.debug_dumper = Some(dumper);
+        self
+    }
+
     #[must_use]
     pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
         self.update_notify_rx = Some(rx);

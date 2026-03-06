@@ -61,6 +61,8 @@ pub struct Config {
     pub agents: SubAgentConfig,
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
+    #[serde(default)]
+    pub debug: DebugConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -1369,6 +1371,24 @@ impl Default for ObservabilityConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    /// Enable debug dump on startup (CLI `--debug-dump` takes priority).
+    pub enabled: bool,
+    /// Directory where per-session debug dump subdirectories are created.
+    pub output_dir: PathBuf,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output_dir: PathBuf::from(".local/debug"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -1726,6 +1746,7 @@ impl Default for Config {
             acp: AcpConfig::default(),
             agents: SubAgentConfig::default(),
             orchestration: OrchestrationConfig::default(),
+            debug: DebugConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
