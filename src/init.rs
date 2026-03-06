@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
-    OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig, ProviderKind,
-    RouterConfig, RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig,
+    AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, McpServerConfig,
+    MemoryConfig, OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig,
+    ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig,
     TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
@@ -86,6 +86,9 @@ pub(crate) struct WizardState {
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
+    // LSP code intelligence via mcpls
+    pub(crate) mcpls_enabled: bool,
+    pub(crate) mcpls_workspace_roots: Vec<String>,
     pub(crate) deferred_apply_threshold: f32,
 }
 
@@ -128,6 +131,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_orchestration(&mut state)?;
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
+    step_mcpls(&mut state)?;
     step_agents(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
@@ -719,6 +723,30 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.debug.enabled = state.debug_dump_enabled;
 
+    if state.mcpls_enabled {
+        let roots = if state.mcpls_workspace_roots.is_empty() {
+            vec![".".to_owned()]
+        } else {
+            state.mcpls_workspace_roots.clone()
+        };
+        // Build args: one "--workspace-root <path>" pair per root.
+        let args = roots
+            .iter()
+            .flat_map(|r| ["--workspace-root".to_owned(), r.clone()])
+            .collect();
+        // LSP servers need warmup time — use 60s timeout rather than the MCP default of 30s.
+        // Language server selection is not passed as args: mcpls auto-detects from project files.
+        config.mcp.servers.push(McpServerConfig {
+            id: "mcpls".to_owned(),
+            command: Some("mcpls".to_owned()),
+            args,
+            env: std::collections::HashMap::new(),
+            url: None,
+            timeout: 60,
+            policy: zeph_mcp::McpPolicy::default(),
+        });
+    }
+
     config
 }
 
@@ -960,6 +988,55 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
 
     println!();
     Ok(())
+}
+
+fn step_mcpls(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== MCP: LSP Code Intelligence ==\n");
+
+    // Detect mcpls by searching PATH — avoids spawning a process that could hang.
+    let detected = mcpls_in_path();
+
+    if detected {
+        println!("mcpls detected.");
+    } else {
+        println!("mcpls not found. Install with: cargo install mcpls");
+    }
+
+    state.mcpls_enabled = Confirm::new()
+        .with_prompt("Enable LSP code intelligence via mcpls?")
+        .default(detected)
+        .interact()?;
+
+    if state.mcpls_enabled {
+        let roots_raw: String = Input::new()
+            .with_prompt(
+                "Workspace root paths (comma-separated, leave empty for current directory)",
+            )
+            .default(String::new())
+            .interact_text()?;
+        state.mcpls_workspace_roots = roots_raw
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // mcpls auto-detects language servers from project files (Cargo.toml, pyproject.toml,
+        // tsconfig.json, go.mod). No language selection is needed at wizard time.
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Returns `true` if `mcpls` exists as an executable file on PATH.
+///
+/// Uses a PATH walk rather than spawning the process to avoid blocking the wizard
+/// on a broken binary that enters an infinite loop.
+fn mcpls_in_path() -> bool {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let exe_name = if cfg!(windows) { "mcpls.exe" } else { "mcpls" };
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(exe_name))
+        .any(|p| p.is_file())
 }
 
 fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
@@ -1471,5 +1548,59 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(!config.memory.graph.enabled);
+    }
+
+    #[test]
+    fn build_config_mcpls_enabled_produces_mcp_server() {
+        let state = WizardState {
+            mcpls_enabled: true,
+            mcpls_workspace_roots: vec!["./crate-a".into(), "./crate-b".into()],
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.mcp.servers.len(), 1);
+        let server = &config.mcp.servers[0];
+        assert_eq!(server.id, "mcpls");
+        assert_eq!(server.command.as_deref(), Some("mcpls"));
+        assert_eq!(
+            server.args,
+            vec![
+                "--workspace-root",
+                "./crate-a",
+                "--workspace-root",
+                "./crate-b"
+            ]
+        );
+        assert_eq!(server.timeout, 60);
+        // mcpls uses command+args, not an HTTP URL.
+        assert!(server.url.is_none());
+        // No env vars are injected for mcpls.
+        assert!(server.env.is_empty());
+    }
+
+    #[test]
+    fn build_config_mcpls_enabled_defaults_root_to_dot() {
+        let state = WizardState {
+            mcpls_enabled: true,
+            mcpls_workspace_roots: vec![],
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.mcp.servers.len(), 1);
+        let server = &config.mcp.servers[0];
+        assert_eq!(server.args, vec!["--workspace-root", "."]);
+    }
+
+    #[test]
+    fn build_config_mcpls_disabled_produces_no_mcp_server() {
+        let state = WizardState {
+            mcpls_enabled: false,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.mcp.servers.is_empty());
     }
 }

@@ -1,0 +1,263 @@
+# LSP Code Intelligence
+
+Zeph can use Language Server Protocol (LSP) servers — rust-analyzer, pyright, gopls, and others — for
+compiler-level code understanding. The integration is provided by **mcpls**, an MCP-to-LSP bridge
+that exposes 16 LSP capabilities as standard MCP tools.
+
+No changes to Zeph itself are required. Enabling LSP intelligence is purely a configuration step.
+
+## What You Get
+
+- **Type information**: ask "what type is this variable?" and get the compiler's answer, not a guess.
+- **Definition navigation**: jump to the source of any function, type, or trait.
+- **Reference analysis**: find every usage of a symbol before renaming or deleting it.
+- **Diagnostics**: get compiler errors and warnings for any file on demand.
+- **Call hierarchy**: trace data flow up and down the call graph.
+- **Symbol search**: find any symbol across the entire workspace by name.
+- **Code actions**: apply quick fixes and refactorings suggested by the language server.
+- **Safe rename**: rename a symbol across all files in one step.
+
+## Prerequisites
+
+- Zeph with MCP support (always-on since v0.13)
+- `mcpls` binary:
+
+  ```bash
+  cargo install mcpls
+  ```
+
+- At least one language server for your project:
+
+  | Language | Language Server | Install |
+  |----------|----------------|---------|
+  | Rust | rust-analyzer | `rustup component add rust-analyzer` |
+  | Python | pyright | `pip install pyright` or `npm install -g pyright` |
+  | TypeScript | typescript-language-server | `npm install -g typescript-language-server` |
+  | Go | gopls | `go install golang.org/x/tools/gopls@latest` |
+
+## Quick Start
+
+Run `zeph --init` and answer **Yes** when asked:
+
+```
+== MCP: LSP Code Intelligence ==
+
+mcpls detected.
+Enable LSP code intelligence via mcpls? (Y/n)
+```
+
+Alternatively, add the configuration manually (see [Configuration](#configuration) below).
+
+## Verify the Setup
+
+Start Zeph and ask a question that triggers LSP:
+
+```
+You: What type does the `build_config` function return in src/init.rs?
+```
+
+The agent will call `get_hover` and return the compiler's type signature. If you see a meaningful
+type instead of an error, mcpls is working.
+
+## Configuration
+
+The wizard generates the following block in `config.toml`:
+
+```toml
+[[mcp.servers]]
+id = "mcpls"
+command = "mcpls"
+args = ["--workspace-root", "."]
+# LSP servers need warmup time. The default MCP timeout is 30s; 60s is recommended for mcpls.
+timeout = 60
+```
+
+For a workspace with multiple roots (e.g. a monorepo):
+
+```toml
+[[mcp.servers]]
+id = "mcpls"
+command = "mcpls"
+args = [
+    "--workspace-root", "./backend",
+    "--workspace-root", "./frontend",
+]
+timeout = 60
+```
+
+### Advanced: mcpls.toml
+
+For multi-language projects or to pin specific language servers, create `mcpls.toml` in your
+workspace root. mcpls auto-detects language servers from project files (`Cargo.toml`,
+`pyproject.toml`, `tsconfig.json`, `go.mod`) when no `mcpls.toml` is present.
+
+**Rust project:**
+
+```toml
+[servers.rust-analyzer]
+command = "rust-analyzer"
+languages = ["rust"]
+```
+
+**Python project:**
+
+```toml
+[servers.pyright]
+command = "pyright-langserver"
+args = ["--stdio"]
+languages = ["python"]
+```
+
+**TypeScript project:**
+
+```toml
+[servers.typescript]
+command = "typescript-language-server"
+args = ["--stdio"]
+languages = ["typescript", "javascript"]
+```
+
+**Go project:**
+
+```toml
+[servers.gopls]
+command = "gopls"
+languages = ["go"]
+```
+
+**Multi-language project:**
+
+```toml
+[servers.rust-analyzer]
+command = "rust-analyzer"
+languages = ["rust"]
+
+[servers.pyright]
+command = "pyright-langserver"
+args = ["--stdio"]
+languages = ["python"]
+```
+
+## Available Tools
+
+mcpls exposes the following MCP tools. Zeph selects the appropriate tool based on context.
+
+### Core (P0 — use these daily)
+
+| Tool | Description |
+|------|-------------|
+| `get_hover` | Type signature, documentation, and inferred type for a symbol at a position |
+| `get_definition` | Location where a symbol is defined |
+| `get_references` | All usages of a symbol across the workspace |
+| `get_diagnostics` | Compiler errors and warnings for a file |
+
+### Navigation (P1)
+
+| Tool | Description |
+|------|-------------|
+| `get_document_symbols` | All symbols defined in a file (functions, types, constants) |
+| `workspace_symbol_search` | Search for symbols by name across the entire workspace |
+| `prepare_call_hierarchy` | Prepare a symbol for call hierarchy queries |
+| `incoming_calls` | Functions that call the given symbol |
+| `outgoing_calls` | Functions called by the given symbol |
+| `get_code_actions` | Quick fixes and refactorings available at a position |
+
+### Editing (P2)
+
+| Tool | Description |
+|------|-------------|
+| `rename_symbol` | Rename a symbol across all files |
+| `format_document` | Format a file according to language rules |
+| `get_completions` | Completion candidates at a position |
+
+### Diagnostics & Debug
+
+| Tool | Description |
+|------|-------------|
+| `get_cached_diagnostics` | Previously cached diagnostics (faster, may be stale) |
+| `server_logs` | Raw log output from the language server |
+| `server_messages` | Raw LSP messages exchanged with the language server |
+
+## Usage Patterns
+
+### Diagnostic-Driven Workflow
+
+After editing a file, verify correctness:
+
+1. Edit the file with the `shell` tool.
+2. Call `get_diagnostics` on the changed file.
+3. For each error, call `get_code_actions` to see available fixes.
+4. Apply fixes or edit manually.
+5. Repeat until `get_diagnostics` returns no errors.
+
+### Impact Analysis Before Refactoring
+
+1. Call `get_references` on the symbol to change.
+2. Review all usage sites.
+3. Make changes.
+4. Call `get_diagnostics` on all affected files.
+
+### Type Exploration
+
+1. Call `get_hover` on an unknown symbol to see its type and docs.
+2. Call `get_definition` to read the implementation.
+3. Call `get_references` to understand usage patterns.
+
+### Call Graph Analysis
+
+1. Call `prepare_call_hierarchy` on a function.
+2. Call `incoming_calls` to see what calls it (data consumers).
+3. Call `outgoing_calls` to see what it calls (dependencies).
+
+## Troubleshooting
+
+**"Server not starting" or no results:**
+
+Check the language server logs:
+
+```
+Ask: Show me the mcpls server logs.
+```
+
+The agent will call `server_logs` and display the raw output. Common causes:
+- Language server not installed or not in PATH.
+- Wrong working directory — confirm `--workspace-root` matches your project root.
+
+**"Stale diagnostics after editing a file":**
+
+mcpls does not forward `textDocument/didChange` notifications to the LSP server. Diagnostics
+reflect the state of the file on disk. After editing, save the file before calling
+`get_diagnostics`.
+
+**"Timeout errors":**
+
+The default `timeout = 60` should be enough for most language servers. If rust-analyzer or another
+slow server times out on first use (it performs initial indexing), increase the timeout:
+
+```toml
+[[mcp.servers]]
+id = "mcpls"
+command = "mcpls"
+args = ["--workspace-root", "."]
+timeout = 120
+```
+
+**"No results for hover or definition":**
+
+mcpls opens files lazily. The first access to a file may be slower. If results are consistently
+empty, verify that the language server is installed and that `mcpls.toml` (if present) has the
+correct `languages` mapping for your file type.
+
+## Limitations
+
+- **No live file sync**: mcpls does not support `textDocument/didChange`. Edits are invisible to
+  the LSP server until the file is saved and mcpls reopens it. Always save before querying.
+- **No file watcher**: `workspace/didChangeWatchedFiles` is not implemented. Adding new files
+  requires restarting mcpls.
+- **Pull-based diagnostics**: diagnostics are fetched on demand, not pushed proactively. Use
+  `get_cached_diagnostics` for fast repeated checks.
+- **Untrusted code**: LSP server output (diagnostics, hover text, `server_logs`) may contain
+  content from the source files being analyzed. If analyzing untrusted code (e.g., cloned
+  repositories), adversarial content in comments or string literals could appear in the LLM
+  context. Zeph's content sanitizer automatically wraps this output for isolation.
+- Automatic diagnostics injection after file writes is planned for a future release.

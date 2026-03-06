@@ -84,21 +84,33 @@ Configure the Agent Client Protocol server (requires `acp` feature):
 - **Agent name** — name advertised in the ACP manifest (default: `zeph`)
 - **Agent version** — version string for the manifest (defaults to the binary version)
 
-## Step 10: Sub-Agents
+## Step 10: LSP Code Intelligence
+
+Configure LSP code intelligence via mcpls:
+
+- **Enable LSP via mcpls** — expose 16 LSP tools (hover, definition, references, diagnostics, call hierarchy, rename, and more) to the agent through the MCP client
+- **Workspace root(s)** — one or more project directories for mcpls to index; defaults to the current directory
+
+When enabled, the wizard generates an `[[mcp.servers]]` block with `command = "mcpls"` and a 60-second timeout (LSP servers need warmup time). If `mcpls` is not found in PATH, the wizard prints the install command: `cargo install mcpls`.
+
+See [LSP Code Intelligence](../guides/lsp.md) for full setup details.
+
+## Step 11: Sub-Agents
+
 
 Configure the sub-agent system:
 
 - **Enable sub-agents** — toggle parallel sub-agent execution
 - **Max concurrent** — maximum sub-agents running at the same time (default: 1)
 
-## Step 11: Router
+## Step 12: Router
 
 Configure the Thompson Sampling model router (requires `router` feature):
 
 - **Enable router** — toggle router on/off
 - **State file path** — where to persist alpha/beta statistics (default: `~/.zeph/router_thompson_state.json`)
 
-## Step 12: Self-Learning
+## Step 13: Self-Learning
 
 Configure the self-learning feedback detector:
 
@@ -107,7 +119,7 @@ Configure the self-learning feedback detector:
   - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
 - **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
 
-## Step 13: Debug Dump
+## Step 14: Debug Dump
 
 Enable debug dump at startup:
 
@@ -115,7 +127,7 @@ Enable debug dump at startup:
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 
-## Step 14: Review and Save
+## Step 15: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

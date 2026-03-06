@@ -304,6 +304,15 @@ max_dynamic_servers = 10
 # url = "http://localhost:3001/mcp"
 # timeout = 30
 
+# LSP code intelligence via mcpls (https://github.com/bug-ops/mcpls)
+# Install: cargo install mcpls
+# mcpls auto-detects language servers from project files (Cargo.toml → rust-analyzer, etc.)
+# [[mcp.servers]]
+# id = "mcpls"
+# command = "mcpls"
+# args = ["--workspace-root", "."]
+# timeout = 60                     # LSP servers need warmup time; 60s recommended
+
 [cost]
 # Track LLM API costs and enforce daily budget
 enabled = false
