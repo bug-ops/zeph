@@ -5,6 +5,7 @@ use futures::Stream;
 use sqlx::SqlitePool;
 
 use crate::error::MemoryError;
+use crate::sqlite::messages::sanitize_fts5_query;
 use crate::types::MessageId;
 
 use super::types::{Community, Edge, Entity, EntityAlias, EntityType};
@@ -85,10 +86,22 @@ impl GraphStore {
         row.map(entity_from_row).transpose()
     }
 
-    /// Find entities whose name or alias matches `query` (case-insensitive), up to `limit` results.
+    /// Find entities matching `query` in name, summary, or aliases, up to `limit` results, ranked by relevance.
     ///
-    /// Uses UNION of entity name LIKE and alias LIKE to find matches without a cross-join.
-    /// Note: leading-wildcard LIKE performs a full table scan. Acceptable for Phase 1 (<10k entities).
+    /// Uses FTS5 MATCH with prefix wildcards (`token*`) and bm25 ranking. Name matches are
+    /// weighted 10x higher than summary matches. Also searches `graph_entity_aliases` for
+    /// alias matches via a UNION query.
+    ///
+    /// # Behavioral note
+    ///
+    /// This replaces the previous `LIKE '%query%'` implementation. FTS5 prefix matching differs
+    /// from substring matching: searching "SQL" will match "`SQLite`" (prefix) but NOT "`GraphQL`"
+    /// (substring). Entity names are indexed as single tokens by the unicode61 tokenizer, so
+    /// mid-word substrings are not matched. This is a known trade-off for index performance.
+    ///
+    /// Single-character queries (e.g., "a") are allowed and produce a broad prefix match ("a*").
+    /// The `limit` parameter caps the result set. No minimum query length is enforced; if this
+    /// causes noise in practice, add a minimum length guard at the call site.
     ///
     /// # Errors
     ///
@@ -98,26 +111,53 @@ impl GraphStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<Entity>, MemoryError> {
-        // Escape LIKE metacharacters to prevent correctness bugs (e.g. "100%" matching "100 things").
-        let escaped = query
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let pattern = format!("%{escaped}%");
+        // FTS5 boolean operator keywords (case-sensitive uppercase). Filtering these
+        // prevents syntax errors when user input contains them as literal search terms
+        // (e.g., "graph OR unrelated" must not produce "graph* OR* unrelated*").
+        const FTS5_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
+        let query = &query[..query.floor_char_boundary(512)];
+        // Sanitize input: split on non-alphanumeric characters, filter empty tokens,
+        // append '*' to each token for FTS5 prefix matching ("graph" -> "graph*").
+        let sanitized = sanitize_fts5_query(query);
+        if sanitized.is_empty() {
+            return Ok(vec![]);
+        }
+        let fts_query: String = sanitized
+            .split_whitespace()
+            .filter(|t| !FTS5_OPERATORS.contains(t))
+            .map(|t| format!("{t}*"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if fts_query.is_empty() {
+            return Ok(vec![]);
+        }
+
         let limit = i64::try_from(limit)?;
+        // bm25(graph_entities_fts, 10.0, 1.0): name column weighted 10x over summary.
+        // bm25() returns negative values; ORDER BY ASC puts best matches first.
         let rows: Vec<EntityRow> = sqlx::query_as(
             "SELECT DISTINCT e.id, e.name, e.canonical_name, e.entity_type, e.summary,
                     e.first_seen_at, e.last_seen_at, e.qdrant_point_id
-             FROM graph_entities e
-             WHERE e.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                OR e.id IN (
-                    SELECT a.entity_id FROM graph_entity_aliases a
-                    WHERE a.alias_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                )
-             ORDER BY e.last_seen_at DESC
-             LIMIT ?2",
+             FROM graph_entities_fts fts
+             JOIN graph_entities e ON e.id = fts.rowid
+             WHERE graph_entities_fts MATCH ?1
+             UNION
+             SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary,
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id
+             FROM graph_entity_aliases a
+             JOIN graph_entities e ON e.id = a.entity_id
+             WHERE a.alias_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE
+             LIMIT ?3",
         )
-        .bind(&pattern)
+        .bind(&fts_query)
+        .bind(format!(
+            "%{}%",
+            query
+                .trim()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -1266,6 +1306,50 @@ mod tests {
         );
     }
 
+    // ── FTS5 fuzzy search tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_matches_summary() {
+        let gs = setup().await;
+        gs.upsert_entity(
+            "Rust",
+            "Rust",
+            EntityType::Language,
+            Some("a systems programming language"),
+        )
+        .await
+        .unwrap();
+        gs.upsert_entity(
+            "Go",
+            "Go",
+            EntityType::Language,
+            Some("a compiled language by Google"),
+        )
+        .await
+        .unwrap();
+        // Search by summary word — should find "Rust" by "systems" in summary.
+        let results = gs.find_entities_fuzzy("systems", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Rust");
+    }
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_empty_query() {
+        let gs = setup().await;
+        gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
+            .await
+            .unwrap();
+        // Empty query returns empty vec without hitting the database.
+        let results = gs.find_entities_fuzzy("", 10).await.unwrap();
+        assert!(results.is_empty(), "empty query should return no results");
+        // Whitespace-only query also returns empty.
+        let results = gs.find_entities_fuzzy("   ", 10).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "whitespace query should return no results"
+        );
+    }
+
     #[tokio::test]
     async fn find_entity_by_alias_case_insensitive() {
         let gs = setup().await;
@@ -1389,17 +1473,17 @@ mod tests {
         );
     }
 
-    /// Validates migration 023 backfill on a pre-canonicalization database state.
+    /// Validates migration 024 backfill on a pre-canonicalization database state.
     ///
     /// Simulates a database at migration 021 state (no canonical_name, no aliases), inserts
-    /// entities and edges, then applies the migration 023 SQL directly via a single acquired
+    /// entities and edges, then applies the migration 024 SQL directly via a single acquired
     /// connection (required so that PRAGMA foreign_keys = OFF takes effect on the same
     /// connection that executes DROP TABLE). Verifies:
     /// - canonical_name is backfilled from name for all existing entities
     /// - initial aliases are seeded from entity names
     /// - graph_edges survive (FK cascade did not wipe them)
     #[tokio::test]
-    async fn migration_023_backfill_preserves_entities_and_edges() {
+    async fn migration_024_backfill_preserves_entities_and_edges() {
         use sqlx::Acquire as _;
         use sqlx::ConnectOptions as _;
         use sqlx::sqlite::SqliteConnectOptions;
@@ -1452,6 +1536,41 @@ mod tests {
         .await
         .unwrap();
 
+        // Create FTS5 table and triggers (migration 023 state).
+        sqlx::query(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS graph_entities_fts USING fts5(
+                name, summary, content='graph_entities', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
+             BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
+             BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
+             BEGIN
+                 INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
+                 INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, ''));
+             END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
         // Insert pre-existing entities and an edge.
         let alice_id: i64 = sqlx::query_scalar(
             "INSERT INTO graph_entities (name, entity_type) VALUES ('Alice', 'person') RETURNING id",
@@ -1477,7 +1596,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Apply migration 023 on a single pinned connection so PRAGMA foreign_keys = OFF
+        // Apply migration 024 on a single pinned connection so PRAGMA foreign_keys = OFF
         // takes effect on the same connection that executes DROP TABLE (required because
         // PRAGMA foreign_keys is per-connection, not per-transaction).
         let mut conn = pool.acquire().await.unwrap();
@@ -1526,6 +1645,35 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("ALTER TABLE graph_entities_new RENAME TO graph_entities")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        // Rebuild FTS5 triggers (dropped with the old table) and rebuild index.
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
+             BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
+             BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
+             BEGIN
+                 INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
+                 INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, ''));
+             END",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO graph_entities_fts(graph_entities_fts) VALUES('rebuild')")
             .execute(&mut *conn)
             .await
             .unwrap();
@@ -1595,7 +1743,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             edge_count, 1,
-            "graph_edges must survive migration 023 table recreation"
+            "graph_edges must survive migration 024 table recreation"
         );
     }
 
@@ -1626,5 +1774,114 @@ mod tests {
             id1,
             "first-registered entity should win on shared alias"
         );
+    }
+
+    // ── FTS5 search tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_special_chars() {
+        let gs = setup().await;
+        gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+            .await
+            .unwrap();
+        // FTS5 special characters in query must not cause an error.
+        let results = gs.find_entities_fuzzy("graph\"()*:^", 10).await.unwrap();
+        // "graph" survives sanitization and matches.
+        assert!(results.iter().any(|e| e.name == "Graph"));
+    }
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_prefix_match() {
+        let gs = setup().await;
+        gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+            .await
+            .unwrap();
+        gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None)
+            .await
+            .unwrap();
+        gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
+            .await
+            .unwrap();
+        // "Gra" prefix should match both "Graph" and "GraphQL" via FTS5 "gra*".
+        let results = gs.find_entities_fuzzy("Gra", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|e| e.name == "Graph"));
+        assert!(results.iter().any(|e| e.name == "GraphQL"));
+    }
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_fts5_operator_injection() {
+        let gs = setup().await;
+        gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+            .await
+            .unwrap();
+        gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
+            .await
+            .unwrap();
+        // "graph OR unrelated" — sanitizer splits on non-alphanumeric chars,
+        // yielding tokens ["graph", "OR", "unrelated"]. The FTS5_OPERATORS filter
+        // removes "OR", producing "graph* unrelated*" (implicit AND).
+        // No entity contains both token prefixes, so the result is empty.
+        let results = gs
+            .find_entities_fuzzy("graph OR unrelated", 10)
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "implicit AND of 'graph*' and 'unrelated*' should match no entity"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_after_entity_update() {
+        let gs = setup().await;
+        // Insert entity with initial summary.
+        gs.upsert_entity(
+            "Foo",
+            "Foo",
+            EntityType::Concept,
+            Some("initial summary bar"),
+        )
+        .await
+        .unwrap();
+        // Update summary via upsert — triggers the FTS UPDATE trigger.
+        gs.upsert_entity(
+            "Foo",
+            "Foo",
+            EntityType::Concept,
+            Some("updated summary baz"),
+        )
+        .await
+        .unwrap();
+        // Old summary term should not match.
+        let old_results = gs.find_entities_fuzzy("bar", 10).await.unwrap();
+        assert!(
+            old_results.is_empty(),
+            "old summary content should not match after update"
+        );
+        // New summary term should match.
+        let new_results = gs.find_entities_fuzzy("baz", 10).await.unwrap();
+        assert_eq!(new_results.len(), 1);
+        assert_eq!(new_results[0].name, "Foo");
+    }
+
+    #[tokio::test]
+    async fn find_entities_fuzzy_only_special_chars() {
+        let gs = setup().await;
+        gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
+            .await
+            .unwrap();
+        // Queries consisting solely of FTS5 special characters produce no alphanumeric
+        // tokens after sanitization, so the function returns early with an empty vec
+        // rather than passing an empty or malformed MATCH expression to FTS5.
+        let results = gs.find_entities_fuzzy("***", 10).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "only special chars should return no results"
+        );
+        let results = gs.find_entities_fuzzy("(((", 10).await.unwrap();
+        assert!(results.is_empty(), "only parens should return no results");
+        let results = gs.find_entities_fuzzy("\"\"\"", 10).await.unwrap();
+        assert!(results.is_empty(), "only quotes should return no results");
     }
 }

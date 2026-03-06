@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Add entity canonicalization with alias table for graph memory: `canonical_name` column on `graph_entities`, `graph_entity_aliases` lookup table, alias-first resolution in `EntityResolver`, deterministic first-registered-wins semantics, canonical-name deduplication in `graph_recall`, migration 023 with FK pragma guards (#1231)
+- Add entity canonicalization with alias table for graph memory: `canonical_name` column on `graph_entities`, `graph_entity_aliases` lookup table, alias-first resolution in `EntityResolver`, deterministic first-registered-wins semantics, canonical-name deduplication in `graph_recall`, migration 024 with FK pragma guards (#1231)
+- Add FTS5 full-text search index for graph entities (`graph_entities_fts`), replacing `LIKE '%query%'` with FTS5 MATCH + bm25 ranking in `find_entities_fuzzy`; migration `023_graph_entities_fts5.sql` with unicode61 tokenizer, content-sync triggers, and backfill (#1232)
 - Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
 - Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
 - Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)

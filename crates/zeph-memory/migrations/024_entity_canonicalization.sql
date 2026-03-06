@@ -1,5 +1,5 @@
 -- @@DISABLE_TRANSACTION
--- Migration 023: Entity canonicalization with alias table.
+-- Migration 024: Entity canonicalization with alias table.
 -- Adds canonical_name column to graph_entities and creates graph_entity_aliases lookup table.
 --
 -- @@DISABLE_TRANSACTION is required because SQLite forbids changing PRAGMA foreign_keys
@@ -15,6 +15,7 @@ UPDATE graph_entities SET canonical_name = name WHERE canonical_name IS NULL;
 -- 2. Drop the old UNIQUE(name, entity_type) constraint by recreating the table.
 --    SQLite does not support DROP CONSTRAINT, so we use the standard
 --    create-new → copy → drop-old → rename pattern.
+--    NOTE: DROP TABLE also drops FTS5 triggers from migration 023. They are recreated below.
 CREATE TABLE graph_entities_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -46,7 +47,35 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_entity_i
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_entity_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_valid ON graph_edges(valid_to) WHERE valid_to IS NULL;
 
--- 3. Alias table: maps variant surface forms to canonical entity IDs.
+-- 3. Rebuild FTS5 triggers dropped when graph_entities was dropped (originally from migration 023).
+DROP TRIGGER IF EXISTS graph_entities_fts_insert;
+DROP TRIGGER IF EXISTS graph_entities_fts_delete;
+DROP TRIGGER IF EXISTS graph_entities_fts_update;
+
+CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
+BEGIN
+    INSERT INTO graph_entities_fts(rowid, name, summary)
+        VALUES (new.id, new.name, COALESCE(new.summary, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
+BEGIN
+    INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary)
+        VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
+BEGIN
+    INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary)
+        VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
+    INSERT INTO graph_entities_fts(rowid, name, summary)
+        VALUES (new.id, new.name, COALESCE(new.summary, ''));
+END;
+
+-- Rebuild FTS5 index content from the new table.
+INSERT INTO graph_entities_fts(graph_entities_fts) VALUES('rebuild');
+
+-- 4. Alias table: maps variant surface forms to canonical entity IDs.
 CREATE TABLE IF NOT EXISTS graph_entity_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_id INTEGER NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
@@ -60,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_entity_aliases_name
 CREATE INDEX IF NOT EXISTS idx_graph_entity_aliases_entity
     ON graph_entity_aliases(entity_id);
 
--- 4. Seed initial aliases from existing entity names (each entity's name becomes its first alias).
+-- 5. Seed initial aliases from existing entity names (each entity's name becomes its first alias).
 INSERT OR IGNORE INTO graph_entity_aliases (entity_id, alias_name)
 SELECT id, name FROM graph_entities;
 
