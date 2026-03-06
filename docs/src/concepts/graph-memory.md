@@ -21,7 +21,7 @@ Graph memory tracks **who/what** (entities), **how they relate** (edges), and **
 
 ### Entities
 
-Named nodes with a type. Stored in `graph_entities` with a `UNIQUE(name, entity_type)` constraint.
+Named nodes with a type. Each entity has a **canonical name** (normalized, lowercased) used as the unique key, and a **display name** (the most recently seen surface form). Stored in `graph_entities` with a `UNIQUE(canonical_name, entity_type)` constraint.
 
 | Entity type | Examples |
 |-------------|----------|
@@ -33,6 +33,19 @@ Named nodes with a type. Stored in `graph_entities` with a `UNIQUE(name, entity_
 | `file` | main.rs, config.toml |
 | `config` | TOML settings, env vars |
 | `organization` | Acme Corp, Mozilla |
+
+### Entity Aliases
+
+Multiple surface forms can refer to the same canonical entity. The `graph_entity_aliases` table maps variant names to entity IDs. For example, "Rust", "rust-lang", and "Rust language" can all resolve to the same entity with canonical name "rust".
+
+The entity resolver checks aliases before creating a new entity:
+
+1. Normalize the input name (trim, lowercase, strip control characters, truncate to 512 bytes)
+2. Search existing aliases for a match with the same entity type
+3. If found, reuse the existing entity and update its display name
+4. If not found, create a new entity and register the normalized name as its first alias
+
+This prevents duplicate entities caused by trivial name variations.
 
 ### Edges
 
@@ -139,9 +152,10 @@ cargo build --features full
 
 ## Schema
 
-Graph memory uses four SQLite tables (always created by migration 021, independent of feature flag):
+Graph memory uses five SQLite tables (created by migrations 021, 023, and 024, independent of feature flag):
 
-- `graph_entities` — entity nodes
+- `graph_entities` — entity nodes with `canonical_name` (unique key) and `name` (display form)
+- `graph_entity_aliases` — maps variant names to entity IDs for canonicalization
 - `graph_edges` — directed relationships with bi-temporal timestamps
 - `graph_communities` — entity groups with summaries
 - `graph_metadata` — persistent key-value counters

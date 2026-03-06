@@ -63,11 +63,20 @@ impl FromStr for EntityType {
 pub struct Entity {
     pub id: i64,
     pub name: String,
+    pub canonical_name: String,
     pub entity_type: EntityType,
     pub summary: Option<String>,
     pub first_seen_at: String,
     pub last_seen_at: String,
     pub qdrant_point_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityAlias {
+    pub id: i64,
+    pub entity_id: i64,
+    pub alias_name: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

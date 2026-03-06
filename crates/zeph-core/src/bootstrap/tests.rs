@@ -873,6 +873,7 @@ fn skill_paths_does_not_duplicate_managed_dir() {
 #[tokio::test]
 async fn create_skill_matcher_when_semantic_disabled() {
     let tmp = std::env::temp_dir().join("zeph_test_skill_matcher_bootstrap.db");
+    let _ = std::fs::remove_file(&tmp);
     let tmp_path = tmp.to_string_lossy().to_string();
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();

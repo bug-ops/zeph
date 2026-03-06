@@ -2744,11 +2744,11 @@ mod tests {
             let store = GraphStore::new(memory.sqlite.pool().clone());
 
             let rust_id = store
-                .upsert_entity("rust", EntityType::Language, Some("a language"))
+                .upsert_entity("rust", "rust", EntityType::Language, Some("a language"))
                 .await
                 .unwrap();
             let tokio_id = store
-                .upsert_entity("tokio", EntityType::Tool, Some("async runtime"))
+                .upsert_entity("tokio", "tokio", EntityType::Tool, Some("async runtime"))
                 .await
                 .unwrap();
             store
@@ -2775,15 +2775,15 @@ mod tests {
             let store = GraphStore::new(memory.sqlite.pool().clone());
 
             let a_id = store
-                .upsert_entity("entity_a", EntityType::Concept, None)
+                .upsert_entity("entity_a", "entity_a", EntityType::Concept, None)
                 .await
                 .unwrap();
             let b_id = store
-                .upsert_entity("entity_b", EntityType::Concept, None)
+                .upsert_entity("entity_b", "entity_b", EntityType::Concept, None)
                 .await
                 .unwrap();
             let c_id = store
-                .upsert_entity("entity_c", EntityType::Concept, None)
+                .upsert_entity("entity_c", "entity_c", EntityType::Concept, None)
                 .await
                 .unwrap();
             store
@@ -2865,13 +2865,13 @@ mod tests {
             let store = GraphStore::new(memory.sqlite.pool().clone());
 
             let root_id = store
-                .upsert_entity("root", EntityType::Concept, None)
+                .upsert_entity("root", "root", EntityType::Concept, None)
                 .await
                 .unwrap();
             for i in 0..5 {
                 let name = format!("target_{i}");
                 let tid = store
-                    .upsert_entity(&name, EntityType::Concept, None)
+                    .upsert_entity(&name, &name, EntityType::Concept, None)
                     .await
                     .unwrap();
                 store
@@ -2900,15 +2900,15 @@ mod tests {
             let store = GraphStore::new(memory.sqlite.pool().clone());
 
             let a_id = store
-                .upsert_entity("a_entity", EntityType::Person, None)
+                .upsert_entity("a_entity", "a_entity", EntityType::Person, None)
                 .await
                 .unwrap();
             let b_id = store
-                .upsert_entity("b_entity", EntityType::Person, None)
+                .upsert_entity("b_entity", "b_entity", EntityType::Person, None)
                 .await
                 .unwrap();
             let c_id = store
-                .upsert_entity("c_entity", EntityType::Concept, None)
+                .upsert_entity("c_entity", "c_entity", EntityType::Concept, None)
                 .await
                 .unwrap();
 
