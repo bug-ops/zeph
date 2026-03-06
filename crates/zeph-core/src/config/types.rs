@@ -1377,7 +1377,7 @@ pub struct DebugConfig {
     pub enabled: bool,
     /// Directory where per-session debug dump subdirectories are created.
     pub output_dir: PathBuf,
-    /// Output format for LLM request files: `"json"` (default) or `"md"`.
+    /// Output format for LLM request files: `"json"` (default) or `"raw"` (API payload).
     pub format: crate::debug_dump::DumpFormat,
 }
 

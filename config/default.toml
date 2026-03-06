@@ -492,6 +492,49 @@ a2a_seconds = 30
 # Maximum number of tool calls to execute in parallel
 max_parallel_tools = 8
 
+[debug]
+# Enable debug dump: write every LLM request/response pair to timestamped files.
+# CLI flag --debug-dump takes priority over this setting.
+# Use /debug-dump in TUI/CLI to toggle at runtime.
+enabled = false
+# Directory where per-session subdirectories are created
+output_dir = ".local/debug"
+# Output format for LLM request files:
+#   "json" — internal zeph-llm representation (default)
+#   "raw"  — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
+format = "json"
+
 [tui]
 # Show role prefix labels ([user], [zeph], etc.) in chat messages
 show_source_labels = false
+
+# Knowledge graph memory (feature-gated: --features graph-memory)
+# Extracts entities and relations from conversations into a persistent graph.
+# WARNING: entity names and facts are stored verbatim without PII redaction.
+# Do not enable when processing conversations with sensitive personal data.
+# [memory.graph]
+# enabled = false
+# # LLM model used for entity/relation extraction (required when enabled)
+# extract_model = "claude-sonnet-4-5-20250929"
+# # Maximum entities extracted per message
+# max_entities_per_message = 10
+# # Maximum edges (relations) extracted per message
+# max_edges_per_message = 15
+# # Messages between community detection runs
+# community_refresh_interval = 100
+# # Cosine similarity threshold for entity deduplication (0.0-1.0)
+# entity_similarity_threshold = 0.85
+# # Use embedding-based entity resolution instead of name matching
+# use_embedding_resolution = false
+# # Ambiguity threshold for embedding resolution (0.0-1.0)
+# entity_ambiguous_threshold = 0.70
+# # Timeout in seconds for extraction LLM calls
+# extraction_timeout_secs = 15
+# # Maximum graph traversal depth for recall queries
+# max_hops = 2
+# # Maximum entities to return per recall query
+# recall_limit = 10
+# # Days to retain expired edges before deletion
+# expired_edge_retention_days = 90
+# # Maximum total entities in the graph (0 = unlimited)
+# max_entities = 0
