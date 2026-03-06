@@ -352,6 +352,10 @@ port = 8090
 # auth_token = "secret"     # Bearer token for gateway auth (from vault ZEPH_GATEWAY_TOKEN); warn logged at startup if unset
 rate_limit = 120
 max_body_size = 1048576     # 1 MiB
+
+[debug]
+enabled = false             # Enable debug dump at startup (default: false)
+output_dir = ".local/debug" # Base directory for dump files (default: ".local/debug")
 ```
 
 ### Orchestrator Sub-Providers

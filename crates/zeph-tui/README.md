@@ -55,6 +55,17 @@ When the `graph-memory` feature is enabled, the TUI provides `/graph` slash comm
 > [!NOTE]
 > These commands require `--features graph-memory` (or `--features full`). The graph must be enabled in config (`[memory.graph] enabled = true`) or via the `--graph-memory` CLI flag.
 
+## Debug dump
+
+Enable debug dump mid-session without restarting the agent:
+
+| Command | Description |
+|---------|-------------|
+| `/debug-dump` | Enable debug dump using `debug.output_dir` from config |
+| `/debug-dump <PATH>` | Enable debug dump writing to a custom directory |
+
+Files are written to `{output_dir}/{unix_timestamp}/` with numbered `request.json`, `response.txt`, and `tool-{name}.txt` files for each LLM call and tool execution.
+
 ## Command palette
 
 The command palette is opened with `:` in normal mode. Type to fuzzy-filter entries, then press Enter to execute.
@@ -82,6 +93,7 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `plan:cancel` | Cancel the active plan |
 | `plan:list` | List recent plans |
 | `plan:toggle` | Toggle Plan View in the side panel (`p` shortcut) — requires `orchestration` feature |
+| `debug:dump` | Enable debug dump to the configured output directory (equivalent to `/debug-dump`) |
 | `ingest` | Usage hint for `zeph ingest <path>` |
 | `session:new` | Start a new conversation session |
 | `session:history` | Browse session history (`H` shortcut) |

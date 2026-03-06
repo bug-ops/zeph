@@ -192,6 +192,22 @@ Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for 
 > @code-reviewer Review the auth module   # shorthand for /agent spawn
 ```
 
+### `/debug-dump`
+
+Enable debug dump mid-session without restarting.
+
+| Usage | Description |
+|-------|-------------|
+| `/debug-dump` | Enable dump using the configured `debug.output_dir` |
+| `/debug-dump <PATH>` | Enable dump writing to a custom directory |
+
+```bash
+> /debug-dump
+> /debug-dump /tmp/my-session-debug
+```
+
+See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read dumps.
+
 ## Global Options
 
 | Flag | Description |
@@ -203,6 +219,8 @@ Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for 
 | `--vault <BACKEND>` | Secrets backend: `env` or `age` (overrides `ZEPH_VAULT_BACKEND` env var) |
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
 | `--vault-path <PATH>` | Path to age-encrypted secrets file (default: `~/.config/zeph/secrets.age`, overrides `ZEPH_VAULT_PATH` env var) |
+| `--graph-memory` | Enable graph-based knowledge memory for this session, overriding `memory.graph.enabled`. See [Graph Memory](../concepts/graph-memory.md) |
+| `--debug-dump [PATH]` | Write LLM requests/responses and raw tool output to files. Omit `PATH` to use `debug.output_dir` from config (default: `.local/debug`). See [Debug Dump](../advanced/debug-dump.md) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |
 

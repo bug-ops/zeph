@@ -41,7 +41,32 @@ Pick the I/O channel:
 - **Discord** — provide bot token and application ID (requires `discord` feature)
 - **Slack** — provide bot token and signing secret (requires `slack` feature)
 
-## Step 5: Daemon
+## Step 5: Update Check
+
+Enable or disable automatic version checks against GitHub Releases (default: enabled).
+
+## Step 6: Scheduler
+
+Configure the cron-based task scheduler (requires `scheduler` feature):
+
+- **Enable scheduler** — toggle scheduled task execution on/off
+- **Tick interval** — how often the scheduler polls for due tasks in seconds (default: 60)
+- **Max tasks** — maximum number of scheduled tasks (default: 100)
+
+Skip this step if you do not use scheduled tasks.
+
+## Step 7: Orchestration
+
+Configure multi-agent task orchestration (requires `orchestration` feature):
+
+- **Enable orchestration** — toggle task graph execution on/off
+- **Max tasks per graph** — upper bound on tasks per `/plan` invocation (default: 20)
+- **Max parallel tasks** — concurrency limit for task execution (default: 4)
+- **Require confirmation** — show plan summary and ask `/plan confirm` before executing (default: true)
+- **Failure strategy** — how to handle task failures: `abort`, `retry`, `skip`, or `ask`
+- **Planner model** — LLM override for plan generation (empty = agent's primary model)
+
+## Step 8: Daemon
 
 Configure headless daemon mode with A2A endpoint (requires `daemon` + `a2a` features):
 
@@ -52,28 +77,45 @@ Configure headless daemon mode with A2A endpoint (requires `daemon` + `a2a` feat
 
 Skip this step if you do not plan to run Zeph in headless mode.
 
-## Step 6: Custom Secrets
+## Step 9: ACP
 
-If the `age` vault backend was selected, the wizard offers to add custom secrets for skill authentication.
+Configure the Agent Client Protocol server (requires `acp` feature):
 
-When prompted, enter a secret name and value. The wizard stores each secret with the `ZEPH_SECRET_` prefix in the vault. If any installed skills declare `x-requires-secrets`, the wizard lists them so you know which keys to provide.
+- **Agent name** — name advertised in the ACP manifest (default: `zeph`)
+- **Agent version** — version string for the manifest (defaults to the binary version)
 
-Skip this step if your skills do not require external API credentials.
+## Step 10: Sub-Agents
 
-## Step 7: Feedback Detector
+Configure the sub-agent system:
 
-Choose the correction detection strategy:
+- **Enable sub-agents** — toggle parallel sub-agent execution
+- **Max concurrent** — maximum sub-agents running at the same time (default: 1)
 
-- **regex** (default) — pattern matching only, zero LLM calls. Detects explicit rejections, alternative requests, and message repetition.
-- **judge** — LLM-backed classifier for borderline or missed cases. When selected, you can specify a dedicated model (e.g. `claude-sonnet-4-6`) or leave empty to use the primary provider.
+## Step 11: Router
 
-The judge does not replace regex — it supplements it for cases where regex confidence is borderline. A rate limiter caps judge calls at 5 per 60 seconds.
+Configure the Thompson Sampling model router (requires `router` feature):
 
-## Step 8: Update Check
+- **Enable router** — toggle router on/off
+- **State file path** — where to persist alpha/beta statistics (default: `~/.zeph/router_thompson_state.json`)
 
-Enable or disable automatic version checks against GitHub Releases (default: enabled).
+## Step 12: Self-Learning
 
-## Step 9: Review and Save
+Configure the self-learning feedback detector:
+
+- **Correction detection strategy** — `regex` (default) or `judge`
+  - **regex** — pattern matching only, zero extra LLM calls
+  - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
+- **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
+
+## Step 13: Debug Dump
+
+Enable debug dump at startup:
+
+- **Enable debug dump** — write LLM requests/responses and raw tool output to numbered files in `.local/debug` (default: disabled)
+
+Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
+
+## Step 14: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

@@ -54,6 +54,7 @@
 - [Channels](advanced/channels.md)
 - [Tool System](advanced/tools.md)
 - [Local Inference (Candle)](advanced/candle.md)
+- [Debug Dump](advanced/debug-dump.md)
 
 # Architecture
 
