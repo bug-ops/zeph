@@ -6,11 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-03-06
+
 ### Fixed
 
 - Fix `persist_message` saving parts from wrong message — `self.messages.last()` returned the previous message's parts instead of the current one, causing 100% parts corruption in SQLite for all tool interactions; now takes explicit `parts` parameter (#1279)
-
-## [0.14.0] - 2026-03-06
 
 ### Added
 
