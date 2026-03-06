@@ -150,6 +150,54 @@ impl<C: Channel> Agent<C> {
         });
 
         self.check_summarization().await;
+
+        #[cfg(feature = "graph-memory")]
+        self.maybe_spawn_graph_extraction(content, has_injection_flags)
+            .await;
+    }
+
+    #[cfg(feature = "graph-memory")]
+    async fn maybe_spawn_graph_extraction(&mut self, content: &str, has_injection_flags: bool) {
+        use zeph_memory::semantic::GraphExtractionConfig;
+
+        if self.memory_state.memory.is_none() || self.memory_state.conversation_id.is_none() {
+            return;
+        }
+
+        // S2: skip extraction when injection flags detected — content is untrusted LLM input
+        if has_injection_flags {
+            tracing::warn!("graph extraction skipped: injection patterns detected in content");
+            return;
+        }
+
+        // Collect extraction config — borrow ends before send_status call
+        let extraction_cfg = {
+            let cfg = &self.memory_state.graph_config;
+            if !cfg.enabled {
+                return;
+            }
+            GraphExtractionConfig {
+                max_entities: cfg.max_entities_per_message,
+                max_edges: cfg.max_edges_per_message,
+                extraction_timeout_secs: cfg.extraction_timeout_secs,
+            }
+        };
+
+        // M1: collect last 4 user messages as context for extraction
+        let context_messages: Vec<String> = self
+            .messages
+            .iter()
+            .rev()
+            .filter(|m| m.role == Role::User)
+            .take(4)
+            .map(|m| m.content.clone())
+            .collect();
+
+        let _ = self.channel.send_status("extracting graph...").await;
+
+        if let Some(memory) = &self.memory_state.memory {
+            memory.spawn_graph_extraction(content.to_owned(), context_messages, extraction_cfg);
+        }
     }
 
     pub(crate) async fn check_summarization(&mut self) {
@@ -530,6 +578,129 @@ mod tests {
         agent.persist_message(Role::User, "hello", false).await;
         // No memory configured — persist_message returns early, counter must stay 0.
         assert_eq!(agent.memory_state.unsummarized_count, 0);
+    }
+
+    // R-CRIT-01: unit tests for maybe_spawn_graph_extraction guard conditions.
+    #[cfg(feature = "graph-memory")]
+    mod graph_extraction_guards {
+        use super::*;
+        use crate::config::GraphConfig;
+        use zeph_memory::graph::GraphStore;
+
+        fn enabled_graph_config() -> GraphConfig {
+            GraphConfig {
+                enabled: true,
+                ..GraphConfig::default()
+            }
+        }
+
+        async fn agent_with_graph(
+            provider: &AnyProvider,
+            config: GraphConfig,
+        ) -> Agent<MockChannel> {
+            let memory =
+                test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+            let cid = memory.sqlite().create_conversation().await.unwrap();
+            Agent::new(
+                provider.clone(),
+                MockChannel::new(vec![]),
+                create_test_registry(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            )
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+            .with_graph_config(config)
+        }
+
+        #[tokio::test]
+        async fn injection_flag_guard_skips_extraction() {
+            // has_injection_flags=true → extraction must be skipped; no counter in graph_metadata.
+            let provider = mock_provider(vec![]);
+            let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
+            let pool = agent
+                .memory_state
+                .memory
+                .as_ref()
+                .unwrap()
+                .sqlite()
+                .pool()
+                .clone();
+
+            agent.maybe_spawn_graph_extraction("I use Rust", true).await;
+
+            // Give any accidental spawn time to settle.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = GraphStore::new(pool);
+            let count = store.get_metadata("extraction_count").await.unwrap();
+            assert!(
+                count.is_none(),
+                "injection flag must prevent extraction_count from being written"
+            );
+        }
+
+        #[tokio::test]
+        async fn disabled_config_guard_skips_extraction() {
+            // graph.enabled=false → extraction must be skipped.
+            let provider = mock_provider(vec![]);
+            let disabled_cfg = GraphConfig {
+                enabled: false,
+                ..GraphConfig::default()
+            };
+            let mut agent = agent_with_graph(&provider, disabled_cfg).await;
+            let pool = agent
+                .memory_state
+                .memory
+                .as_ref()
+                .unwrap()
+                .sqlite()
+                .pool()
+                .clone();
+
+            agent
+                .maybe_spawn_graph_extraction("I use Rust", false)
+                .await;
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = GraphStore::new(pool);
+            let count = store.get_metadata("extraction_count").await.unwrap();
+            assert!(
+                count.is_none(),
+                "disabled graph config must prevent extraction"
+            );
+        }
+
+        #[tokio::test]
+        async fn happy_path_fires_extraction() {
+            // With enabled config and no injection flags, extraction is spawned.
+            // MockProvider returns None (no entities), but the counter must be incremented.
+            let provider = mock_provider(vec![]);
+            let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
+            let pool = agent
+                .memory_state
+                .memory
+                .as_ref()
+                .unwrap()
+                .sqlite()
+                .pool()
+                .clone();
+
+            agent
+                .maybe_spawn_graph_extraction("I use Rust for systems programming", false)
+                .await;
+
+            // Wait for the spawned task to complete.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let store = GraphStore::new(pool);
+            let count = store.get_metadata("extraction_count").await.unwrap();
+            assert!(
+                count.is_some(),
+                "happy-path extraction must increment extraction_count"
+            );
+        }
     }
 
     #[tokio::test]

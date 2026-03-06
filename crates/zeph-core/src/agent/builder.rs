@@ -134,6 +134,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
+        // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
+        // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).
+        if config.enabled {
+            tracing::warn!(
+                "graph-memory is enabled: extracted entities are stored without PII redaction. \
+                 Do not use with sensitive personal data until redaction is implemented."
+            );
+        }
+        self.memory_state.graph_config = config;
+        self
+    }
+
     #[must_use]
     pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
         self.anomaly_detector = Some(detector);

@@ -1347,6 +1347,154 @@ impl SemanticMemory {
         }
         Ok(results)
     }
+
+    /// Spawn background graph extraction for a message. Fire-and-forget — never blocks.
+    ///
+    /// Extraction runs in a separate tokio task with a timeout. Any error or timeout is
+    /// logged and the task exits silently; the agent response is never blocked.
+    #[cfg(feature = "graph-memory")]
+    pub fn spawn_graph_extraction(
+        &self,
+        content: String,
+        context_messages: Vec<String>,
+        config: GraphExtractionConfig,
+    ) {
+        let pool = self.sqlite.pool().clone();
+        let provider = self.provider.clone();
+
+        tokio::spawn(async move {
+            let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
+            match tokio::time::timeout(
+                timeout_dur,
+                extract_and_store(content, context_messages, provider, pool, config),
+            )
+            .await
+            {
+                Ok(Ok(stats)) => {
+                    tracing::debug!(
+                        entities = stats.entities_upserted,
+                        edges = stats.edges_inserted,
+                        "graph extraction completed"
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("graph extraction failed: {e:#}");
+                }
+                Err(_elapsed) => {
+                    tracing::warn!("graph extraction timed out");
+                }
+            }
+        });
+    }
+}
+
+/// Config for the spawned background extraction task.
+///
+/// Owned clone of the relevant fields from `GraphConfig` — no references, safe to send to
+/// spawned tasks.
+#[cfg(feature = "graph-memory")]
+#[derive(Debug, Clone)]
+pub struct GraphExtractionConfig {
+    pub max_entities: usize,
+    pub max_edges: usize,
+    pub extraction_timeout_secs: u64,
+}
+
+/// Stats returned from a completed extraction.
+#[cfg(feature = "graph-memory")]
+#[derive(Debug, Default)]
+pub struct ExtractionStats {
+    pub entities_upserted: usize,
+    pub edges_inserted: usize,
+}
+
+/// Extract entities and edges from `content` and persist them to the graph store.
+///
+/// This function runs inside a spawned task — it receives owned data only.
+#[cfg(feature = "graph-memory")]
+async fn extract_and_store(
+    content: String,
+    context_messages: Vec<String>,
+    provider: AnyProvider,
+    pool: sqlx::SqlitePool,
+    config: GraphExtractionConfig,
+) -> Result<ExtractionStats, MemoryError> {
+    use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
+
+    let extractor = GraphExtractor::new(provider, config.max_entities, config.max_edges);
+    let ctx_refs: Vec<&str> = context_messages.iter().map(String::as_str).collect();
+
+    let store = GraphStore::new(pool);
+
+    // Increment attempt counter before extraction so it reflects every non-empty attempt,
+    // regardless of whether the LLM returns parseable results (S1 fix).
+    let pool = store.pool();
+    sqlx::query(
+        "INSERT INTO graph_metadata (key, value) VALUES ('extraction_count', '0')
+         ON CONFLICT(key) DO NOTHING",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE graph_metadata
+         SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+         WHERE key = 'extraction_count'",
+    )
+    .execute(pool)
+    .await?;
+
+    let Some(result) = extractor.extract(&content, &ctx_refs).await? else {
+        return Ok(ExtractionStats::default());
+    };
+
+    let resolver = EntityResolver::new(&store);
+
+    let mut entities_upserted = 0usize;
+    let mut entity_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+    for entity in &result.entities {
+        match resolver
+            .resolve(&entity.name, &entity.entity_type, entity.summary.as_deref())
+            .await
+        {
+            Ok(id) => {
+                entity_ids.insert(entity.name.clone(), id);
+                entities_upserted += 1;
+            }
+            Err(e) => {
+                tracing::debug!("graph: skipping entity {:?}: {e:#}", entity.name);
+            }
+        }
+    }
+
+    let mut edges_inserted = 0usize;
+    for edge in &result.edges {
+        let (Some(&src_id), Some(&tgt_id)) =
+            (entity_ids.get(&edge.source), entity_ids.get(&edge.target))
+        else {
+            tracing::debug!(
+                "graph: skipping edge {:?}->{:?}: entity not resolved",
+                edge.source,
+                edge.target
+            );
+            continue;
+        };
+        match resolver
+            .resolve_edge(src_id, tgt_id, &edge.relation, &edge.fact, 0.8, None)
+            .await
+        {
+            Ok(Some(_)) => edges_inserted += 1,
+            Ok(None) => {} // deduplicated
+            Err(e) => {
+                tracing::debug!("graph: skipping edge: {e:#}");
+            }
+        }
+    }
+
+    Ok(ExtractionStats {
+        entities_upserted,
+        edges_inserted,
+    })
 }
 
 #[cfg(test)]
@@ -2568,6 +2716,248 @@ mod tests {
             .unwrap();
         // FTS5 finds the message; merged result should be non-empty
         assert!(!recalled.is_empty(), "FTS5 should find the stored message");
+    }
+
+    // graph-memory tests
+
+    #[cfg(feature = "graph-memory")]
+    mod graph_extraction_tests {
+        use super::*;
+        use crate::graph::{EntityType, GraphStore};
+
+        async fn graph_memory() -> SemanticMemory {
+            let mem = test_semantic_memory(false).await;
+            let store = std::sync::Arc::new(GraphStore::new(mem.sqlite.pool().clone()));
+            mem.with_graph_store(store)
+        }
+
+        #[tokio::test]
+        async fn recall_graph_returns_empty_when_no_entities() {
+            let memory = graph_memory().await;
+            let facts = memory.recall_graph("rust", 10, 2).await.unwrap();
+            assert!(facts.is_empty(), "empty graph must return empty vec");
+        }
+
+        #[tokio::test]
+        async fn recall_graph_returns_facts_for_known_entity() {
+            let memory = graph_memory().await;
+            let store = GraphStore::new(memory.sqlite.pool().clone());
+
+            let rust_id = store
+                .upsert_entity("rust", EntityType::Language, Some("a language"))
+                .await
+                .unwrap();
+            let tokio_id = store
+                .upsert_entity("tokio", EntityType::Tool, Some("async runtime"))
+                .await
+                .unwrap();
+            store
+                .insert_edge(
+                    rust_id,
+                    tokio_id,
+                    "uses",
+                    "Rust uses tokio for async",
+                    0.9,
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let facts = memory.recall_graph("rust", 10, 2).await.unwrap();
+            assert!(!facts.is_empty(), "should return at least one fact");
+            assert_eq!(facts[0].entity_name, "rust");
+            assert_eq!(facts[0].relation, "uses");
+        }
+
+        #[tokio::test]
+        async fn recall_graph_sorted_by_composite_score() {
+            let memory = graph_memory().await;
+            let store = GraphStore::new(memory.sqlite.pool().clone());
+
+            let a_id = store
+                .upsert_entity("entity_a", EntityType::Concept, None)
+                .await
+                .unwrap();
+            let b_id = store
+                .upsert_entity("entity_b", EntityType::Concept, None)
+                .await
+                .unwrap();
+            let c_id = store
+                .upsert_entity("entity_c", EntityType::Concept, None)
+                .await
+                .unwrap();
+            store
+                .insert_edge(a_id, b_id, "relates", "a relates b", 0.9, None)
+                .await
+                .unwrap();
+            store
+                .insert_edge(a_id, c_id, "relates", "a relates c", 0.5, None)
+                .await
+                .unwrap();
+
+            let facts = memory.recall_graph("entity_a", 10, 1).await.unwrap();
+            if facts.len() >= 2 {
+                assert!(
+                    facts[0].composite_score() >= facts[1].composite_score(),
+                    "facts must be sorted descending by composite score"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn extract_and_store_returns_zero_stats_for_empty_content() {
+            let memory = graph_memory().await;
+            let pool = memory.sqlite.pool().clone();
+            let provider = test_provider();
+
+            let stats = extract_and_store(
+                String::new(),
+                vec![],
+                provider,
+                pool,
+                GraphExtractionConfig {
+                    max_entities: 10,
+                    max_edges: 10,
+                    extraction_timeout_secs: 5,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(stats.entities_upserted, 0);
+            assert_eq!(stats.edges_inserted, 0);
+        }
+
+        #[tokio::test]
+        async fn extraction_count_increments_atomically() {
+            let memory = graph_memory().await;
+            let pool = memory.sqlite.pool().clone();
+            let provider = test_provider();
+
+            // Run two extractions sequentially to verify count increments
+            for _ in 0..2 {
+                let _ = extract_and_store(
+                    "I use Rust for systems programming".to_owned(),
+                    vec![],
+                    provider.clone(),
+                    pool.clone(),
+                    GraphExtractionConfig {
+                        max_entities: 5,
+                        max_edges: 5,
+                        extraction_timeout_secs: 5,
+                    },
+                )
+                .await;
+            }
+
+            let store = GraphStore::new(pool);
+            let count = store.get_metadata("extraction_count").await.unwrap();
+            // R-SUG-02: assert exact value "2" — two extractions must each increment the counter.
+            assert_eq!(
+                count.as_deref(),
+                Some("2"),
+                "extraction_count must be exactly 2 after two extraction attempts"
+            );
+        }
+
+        #[tokio::test]
+        async fn recall_graph_truncates_to_limit() {
+            let memory = graph_memory().await;
+            let store = GraphStore::new(memory.sqlite.pool().clone());
+
+            let root_id = store
+                .upsert_entity("root", EntityType::Concept, None)
+                .await
+                .unwrap();
+            for i in 0..5 {
+                let name = format!("target_{i}");
+                let tid = store
+                    .upsert_entity(&name, EntityType::Concept, None)
+                    .await
+                    .unwrap();
+                store
+                    .insert_edge(
+                        root_id,
+                        tid,
+                        "links",
+                        &format!("root links {name}"),
+                        0.7,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let facts = memory.recall_graph("root", 3, 1).await.unwrap();
+            assert!(facts.len() <= 3, "recall_graph must respect limit");
+        }
+
+        // R-SUG-05: multi-hop BFS test.
+        #[tokio::test]
+        async fn recall_graph_multi_hop_traverses_two_hops() {
+            // Chain: A -[knows]-> B -[uses]-> C
+            // recall_graph("a", max_hops=2) must return facts for both hops.
+            let memory = graph_memory().await;
+            let store = GraphStore::new(memory.sqlite.pool().clone());
+
+            let a_id = store
+                .upsert_entity("a_entity", EntityType::Person, None)
+                .await
+                .unwrap();
+            let b_id = store
+                .upsert_entity("b_entity", EntityType::Person, None)
+                .await
+                .unwrap();
+            let c_id = store
+                .upsert_entity("c_entity", EntityType::Concept, None)
+                .await
+                .unwrap();
+
+            store
+                .insert_edge(a_id, b_id, "knows", "a knows b", 0.9, None)
+                .await
+                .unwrap();
+            store
+                .insert_edge(b_id, c_id, "uses", "b uses c", 0.8, None)
+                .await
+                .unwrap();
+
+            // max_hops=1: only hop-0 edges visible from A → should find A-B edge
+            let facts_1hop = memory.recall_graph("a_entity", 10, 1).await.unwrap();
+            assert!(!facts_1hop.is_empty(), "hop=1 must find direct edge");
+
+            // max_hops=2: BFS reaches B then C → A-B and B-C edges both visible
+            let facts_2hop = memory.recall_graph("a_entity", 10, 2).await.unwrap();
+            assert!(
+                facts_2hop.len() >= facts_1hop.len(),
+                "hop=2 must find at least as many facts as hop=1"
+            );
+            let has_bc = facts_2hop.iter().any(|f| {
+                (f.entity_name.contains("b_entity") || f.target_name.contains("b_entity"))
+                    && (f.entity_name.contains("c_entity") || f.target_name.contains("c_entity"))
+            });
+            assert!(has_bc, "hop=2 BFS must traverse to c_entity via b_entity");
+        }
+
+        // R-SUG-05: timeout degradation — zero-second timeout returns empty stats, no panic.
+        #[tokio::test]
+        async fn spawn_graph_extraction_zero_timeout_returns_without_panic() {
+            let memory = graph_memory().await;
+            let cfg = GraphExtractionConfig {
+                max_entities: 5,
+                max_edges: 5,
+                extraction_timeout_secs: 0,
+            };
+            // spawn fires and forgets — must not panic regardless of timeout value.
+            memory.spawn_graph_extraction(
+                "I use Rust for systems programming".to_owned(),
+                vec![],
+                cfg,
+            );
+            // Brief wait for the task to settle.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // No assertion on count: with 0s timeout the task may or may not complete.
+            // The test verifies there is no panic.
+        }
     }
 
     // Priority 3: proptest
