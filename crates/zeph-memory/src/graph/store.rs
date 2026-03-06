@@ -151,7 +151,6 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()
     }
 
-
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
     pub fn all_entities_stream(&self) -> impl Stream<Item = Result<Entity, MemoryError>> + '_ {
         use futures::StreamExt as _;
