@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add end-to-end orchestration integration tests (plan graph → execute via DagScheduler tick loop → aggregate with LlmAggregator) covering happy path, single-task, abort-on-failure, skip-on-failure, and retry-exhausted scenarios; gated on `orchestration` + `mock` features (#1242)
+- Add "Limitations" section to `docs/src/concepts/task-orchestration.md` documenting English-only keyword routing, `max_tasks` cap, no dynamic re-planning, no hot-reload of orchestration config, and reserved `planner_model`/`planner_max_tokens` fields (#1242)
 - Add community detection via label propagation (`petgraph::UnGraph`): `detect_communities` groups entities into clusters (max 50 LPA iterations, tie-break by smallest label, min 2 entities per community), generates LLM summaries, and persists to `graph_communities` table (Phase 5, #1228)
 - Add incremental community assignment (`assign_to_community`): new entities are placed into the nearest existing community via neighbor majority vote without triggering full re-detection (#1228)
 - Add graph eviction policy: `run_graph_eviction` deletes expired edges older than `expired_edge_retention_days` (default 90), orphan entities with no active edges, and enforces optional `max_entities` cap; runs during community refresh cycle (#1228)
