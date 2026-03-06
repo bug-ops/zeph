@@ -188,6 +188,10 @@ pub struct App {
     cancel_signal: Option<Arc<Notify>>,
     pub render_cache: RenderCache,
     pending_file_index: Option<oneshot::Receiver<FileIndex>>,
+    /// When `true`, the user has toggled back to subagents view despite an active plan.
+    /// Default `false` = auto-show plan view when a graph is active.
+    /// Toggled with the `p` key.
+    plan_view_active: bool,
 }
 
 impl App {
@@ -231,6 +235,7 @@ impl App {
             cancel_signal: None,
             render_cache: RenderCache::default(),
             pending_file_index: None,
+            plan_view_active: false,
         }
     }
 
@@ -242,6 +247,12 @@ impl App {
     #[must_use]
     pub fn show_side_panels(&self) -> bool {
         self.show_side_panels
+    }
+
+    /// Returns `true` when the user has toggled back to subagents view (plan view overridden).
+    #[must_use]
+    pub fn plan_view_active(&self) -> bool {
+        self.plan_view_active
     }
 
     pub fn load_history(&mut self, messages: &[(&str, &str)]) {
@@ -298,7 +309,22 @@ impl App {
         if let Some(ref mut rx) = self.metrics_rx
             && rx.has_changed().unwrap_or(false)
         {
-            self.metrics = rx.borrow_and_update().clone();
+            let new_metrics = rx.borrow_and_update().clone();
+            // IC2: reset plan_view_active (subagents-override) when a new plan appears.
+            // Detect new plan by comparing graph_id; new plan should be shown immediately.
+            let new_graph_id = new_metrics
+                .orchestration_graph
+                .as_ref()
+                .map(|s| &s.graph_id);
+            let old_graph_id = self
+                .metrics
+                .orchestration_graph
+                .as_ref()
+                .map(|s| &s.graph_id);
+            if new_graph_id != old_graph_id && new_graph_id.is_some() {
+                self.plan_view_active = false;
+            }
+            self.metrics = new_metrics;
         }
     }
 
@@ -644,7 +670,19 @@ impl App {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
         widgets::resources::render(&self.metrics, frame, layout.resources);
-        if self.has_recent_security_events() {
+
+        let tick = self.throbber_state.index().cast_unsigned();
+        let has_graph = self.metrics.orchestration_graph.as_ref().is_some_and(|s| {
+            // Use is_stale() to check if snapshot is too old to show (IC4).
+            !s.is_stale()
+        });
+
+        // `plan_view_active`: false = auto mode (show plan when graph active, default);
+        //                       true = user toggled to show subagents despite active graph.
+        // Pressing `p` switches between the two modes.
+        if has_graph && !self.plan_view_active {
+            widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick);
+        } else if self.has_recent_security_events() {
             widgets::security::render(&self.metrics, frame, layout.subagents);
         } else {
             widgets::subagents::render(&self.metrics, frame, layout.subagents);
@@ -969,6 +1007,21 @@ impl App {
             TuiCommand::SecurityEvents => {
                 self.push_system_message(format_security_report(&self.metrics));
             }
+            TuiCommand::PlanStatus => {
+                let _ = self.user_input_tx.try_send("/plan status".to_owned());
+            }
+            TuiCommand::PlanConfirm => {
+                let _ = self.user_input_tx.try_send("/plan confirm".to_owned());
+            }
+            TuiCommand::PlanCancel => {
+                let _ = self.user_input_tx.try_send("/plan cancel".to_owned());
+            }
+            TuiCommand::PlanList => {
+                let _ = self.user_input_tx.try_send("/plan list".to_owned());
+            }
+            TuiCommand::PlanToggleView => {
+                self.plan_view_active = !self.plan_view_active;
+            }
         }
     }
 
@@ -1049,6 +1102,9 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('p') => {
+                self.plan_view_active = !self.plan_view_active;
             }
             _ => {}
         }
@@ -2681,8 +2737,15 @@ mod tests {
 
             let palette = app.command_palette.as_ref().unwrap();
             assert_eq!(palette.query, "mcp");
-            assert_eq!(palette.filtered.len(), 1);
-            assert_eq!(palette.filtered[0].id, "mcp:list");
+            // mcp:list is the top result; plan:confirm also fuzzy-matches "mcp" (m→c→p in label).
+            assert!(
+                palette.filtered.iter().any(|e| e.id == "mcp:list"),
+                "mcp:list must be in filtered results"
+            );
+            assert_eq!(
+                palette.filtered[0].id, "mcp:list",
+                "mcp:list must rank first"
+            );
         }
 
         #[test]

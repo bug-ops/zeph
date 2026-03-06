@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, MemoryConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, RouterConfig,
-    RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
+    OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig, ProviderKind,
+    RouterConfig, RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig,
+    TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
@@ -73,6 +74,13 @@ pub(crate) struct WizardState {
     pub(crate) router_strategy: Option<String>,
     /// Custom path for Thompson state file (None = use default).
     pub(crate) router_thompson_state_path: Option<String>,
+    // Orchestration settings
+    pub(crate) orchestration_enabled: bool,
+    pub(crate) orchestration_max_tasks: u32,
+    pub(crate) orchestration_max_parallel: u32,
+    pub(crate) orchestration_confirm_before_execute: bool,
+    pub(crate) orchestration_failure_strategy: String,
+    pub(crate) orchestration_planner_model: Option<String>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -97,6 +105,10 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         daemon_port: 8080,
         acp_agent_name: "zeph".into(),
         acp_agent_version: env!("CARGO_PKG_VERSION").into(),
+        orchestration_max_tasks: 20,
+        orchestration_max_parallel: 4,
+        orchestration_confirm_before_execute: true,
+        orchestration_failure_strategy: "abort".into(),
         ..WizardState::default()
     };
 
@@ -106,6 +118,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
     step_scheduler(&mut state)?;
+    step_orchestration(&mut state)?;
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_agents(&mut state)?;
@@ -644,6 +657,16 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         }
     }
 
+    config.orchestration = OrchestrationConfig {
+        enabled: state.orchestration_enabled,
+        max_tasks: state.orchestration_max_tasks,
+        max_parallel: state.orchestration_max_parallel,
+        confirm_before_execute: state.orchestration_confirm_before_execute,
+        default_failure_strategy: state.orchestration_failure_strategy.clone(),
+        planner_model: state.orchestration_planner_model.clone(),
+        ..OrchestrationConfig::default()
+    };
+
     config
 }
 
@@ -759,6 +782,74 @@ fn step_scheduler(state: &mut WizardState) -> anyhow::Result<()> {
             .with_prompt("Maximum scheduled tasks")
             .default(100usize)
             .interact_text()?;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Orchestration (/plan command) ==\n");
+
+    state.orchestration_enabled = Confirm::new()
+        .with_prompt("Enable task orchestration? (enables the /plan command)")
+        .default(false)
+        .interact()?;
+
+    if state.orchestration_enabled {
+        state.orchestration_max_tasks = Input::new()
+            .with_prompt("Maximum tasks per plan")
+            .default(20u32)
+            .interact_text()?;
+
+        state.orchestration_max_parallel = Input::new()
+            .with_prompt("Maximum parallel tasks")
+            .default(4u32)
+            .interact_text()?;
+
+        // MF6: warn if max_parallel > max_tasks.
+        if state.orchestration_max_parallel > state.orchestration_max_tasks {
+            println!(
+                "Warning: max_parallel ({}) is greater than max_tasks ({}). \
+                 Setting max_parallel = max_tasks.",
+                state.orchestration_max_parallel, state.orchestration_max_tasks
+            );
+            state.orchestration_max_parallel = state.orchestration_max_tasks;
+        }
+
+        state.orchestration_confirm_before_execute = Confirm::new()
+            .with_prompt("Require confirmation before executing plans?")
+            .default(true)
+            .interact()?;
+
+        let strategies = ["abort", "retry", "skip", "ask"];
+        let strategy_idx = Select::new()
+            .with_prompt("Default failure strategy")
+            .items(strategies)
+            .default(0)
+            .interact()?;
+        state.orchestration_failure_strategy = strategies[strategy_idx].into();
+
+        let model: String = Input::new()
+            .with_prompt("Planner model override (leave empty for default)")
+            .default(String::new())
+            .interact_text()?;
+        // SEC-P6-02: validate model name — max 128 chars, alphanumeric + `:.-` only.
+        state.orchestration_planner_model = if model.is_empty() {
+            None
+        } else if model.len() > 128
+            || !model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '.' || c == '-')
+        {
+            println!(
+                "Warning: planner model name contains invalid characters or exceeds 128 chars. \
+                 Ignoring and using the default model."
+            );
+            None
+        } else {
+            Some(model)
+        };
     }
 
     println!();

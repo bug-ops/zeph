@@ -45,6 +45,12 @@ pub enum TuiCommand {
     AgentsDelete,
     // Security
     SecurityEvents,
+    // Plan / orchestration
+    PlanStatus,
+    PlanConfirm,
+    PlanCancel,
+    PlanList,
+    PlanToggleView,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -280,6 +286,41 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::SecurityEvents,
         },
+        CommandEntry {
+            id: "plan:status",
+            label: "Show orchestration plan status (/plan status)",
+            category: "plan",
+            shortcut: None,
+            command: TuiCommand::PlanStatus,
+        },
+        CommandEntry {
+            id: "plan:confirm",
+            label: "Confirm and execute pending plan (/plan confirm)",
+            category: "plan",
+            shortcut: None,
+            command: TuiCommand::PlanConfirm,
+        },
+        CommandEntry {
+            id: "plan:cancel",
+            label: "Cancel current plan (/plan cancel)",
+            category: "plan",
+            shortcut: None,
+            command: TuiCommand::PlanCancel,
+        },
+        CommandEntry {
+            id: "plan:list",
+            label: "List recent plans (/plan list)",
+            category: "plan",
+            shortcut: None,
+            command: TuiCommand::PlanList,
+        },
+        CommandEntry {
+            id: "plan:toggle",
+            label: "Toggle plan view / subagents panel (p)",
+            category: "plan",
+            shortcut: Some("p"),
+            command: TuiCommand::PlanToggleView,
+        },
     ];
     EXTRA
 }
@@ -355,8 +396,8 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_fourteen_commands() {
-        assert_eq!(extra_command_registry().len(), 14);
+    fn extra_registry_has_nineteen_commands() {
+        assert_eq!(extra_command_registry().len(), 19);
     }
 
     #[test]
