@@ -1,6 +1,8 @@
 # Task Orchestration
 
-Task orchestration decomposes complex goals into a directed acyclic graph (DAG) of dependent tasks, executes them in parallel where possible, and handles failures with configurable strategies. It is an optional, feature-gated component (`--features orchestration`) that persists graph state in SQLite so execution survives restarts.
+Use task orchestration to break a complex goal into a directed acyclic graph (DAG) of dependent tasks, execute them in parallel where possible, and recover from failures without restarting the entire plan. This page explains the core types, DAG algorithms, scheduling model, result aggregation, and the `/plan` CLI commands.
+
+Task orchestration is an optional, feature-gated component that persists graph state in SQLite so execution survives restarts.
 
 ## Prerequisites
 
@@ -8,6 +10,12 @@ Enable the `orchestration` feature flag before building:
 
 ```bash
 cargo build --release --features orchestration
+```
+
+The `orchestration` feature is also included in the `full` feature set:
+
+```bash
+cargo build --release --features full
 ```
 
 See [Feature Flags](../reference/feature-flags.md) for the full flag list.
@@ -284,13 +292,22 @@ max_tasks = 20                      # Maximum tasks per graph (default: 20)
 max_parallel = 4                    # Maximum concurrent task executions (default: 4)
 default_failure_strategy = "abort"  # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3             # Retries for the "retry" strategy (default: 3)
-task_timeout_secs = 300             # Per-task timeout in seconds, 0 = no timeout (default: 300)
+task_timeout_secs = 300             # Per-task timeout in seconds, 0 = fallback to 600s (default: 300)
 # planner_model = "claude-sonnet-4-20250514"  # Model override for planning LLM calls
 planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
 dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
 confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
 aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call (default: 4096)
 ```
+
+## Limitations
+
+- **English-only keyword routing:** The `RuleBasedRouter` step 2 (tool keyword matching) only recognizes English keywords such as "implement", "build", "edit". Task descriptions in other languages always fall through to the first-available-agent fallback. Use explicit `agent_hint` values in planner output for reliable routing.
+- **Task count cap:** The `max_tasks` limit (default 20) is enforced at planning time. Graphs exceeding this limit are rejected by `dag::validate` and must be decomposed into smaller sub-goals.
+- **No dynamic re-planning:** Once a `TaskGraph` is created and confirmed, its structure is fixed. Tasks cannot be added or removed during execution; only their status and results change.
+- **No hot-reload of orchestration config:** Changes to the `[orchestration]` section of `config.toml` require a restart to take effect.
+- **`planner_model` and `planner_max_tokens` are reserved:** These config fields are parsed and stored but not yet applied at runtime. `LlmPlanner` uses whatever provider it receives at construction time regardless of `planner_model`.
+- **Residual prompt injection risk:** Task descriptions and cross-task context are wrapped in `ContentSanitizer` spotlight tags to mitigate prompt injection, but the risk is not fully eliminated — treat orchestrated task outputs with appropriate caution.
 
 ## Related
 
