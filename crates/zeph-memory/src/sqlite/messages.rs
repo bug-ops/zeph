@@ -9,10 +9,14 @@ use crate::types::{ConversationId, MessageId};
 
 /// Sanitize an arbitrary string into a valid FTS5 query.
 ///
-/// Extracts alphanumeric tokens and joins them with spaces. FTS5 special
-/// characters (`,`, `"`, `*`, `(`, `)`, `^`, `-`, `+`) are stripped to avoid
-/// syntax errors in the `MATCH` clause.
-fn sanitize_fts5_query(query: &str) -> String {
+/// Splits on non-alphanumeric characters, filters empty tokens, and joins
+/// with spaces. This strips FTS5 special characters (`"`, `*`, `(`, `)`,
+/// `^`, `-`, `+`, `:`) to prevent syntax errors in `MATCH` clauses.
+///
+/// Note: FTS5 boolean operators (AND, OR, NOT, NEAR) are preserved in their
+/// original case. Callers that need to prevent operator interpretation must
+/// filter these tokens separately (see `find_entities_fuzzy` in `graph/store.rs`).
+pub(crate) fn sanitize_fts5_query(query: &str) -> String {
     query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())

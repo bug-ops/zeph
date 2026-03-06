@@ -133,7 +133,7 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 - **Communities** — groups of related entities with LLM-generated summaries
 - **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
 - **GraphFact** — retrieval-side type with composite scoring for context injection
-- **`graph_recall`** — query-time retrieval: splits the query into words, fuzzy-matches seed entities via LIKE, runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates, and returns the top-K facts for context injection
+- **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking, runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates, and returns the top-K facts for context injection
 
 `GraphStore` provides 18 CRUD methods over four SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migration 021 and is always present regardless of feature flag.
 
