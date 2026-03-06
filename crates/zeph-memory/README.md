@@ -137,6 +137,7 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 - **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
 - **GraphFact** — retrieval-side type with composite scoring for context injection
 - **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking (including aliases), runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates by canonical name, and returns the top-K facts for context injection
+- **Embedding-based entity resolution** — when `use_embedding_resolution = true`, entities are deduplicated via cosine similarity in Qdrant with a two-threshold approach (auto-merge at >= 0.85, LLM disambiguation at >= 0.70, new entity below); integrated after alias and canonical-name lookup steps; falls back to create-new on failure
 
 `GraphStore` provides CRUD methods over five SQLite tables (`graph_entities`, `graph_entity_aliases`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migrations 021, 023, and 024, and is always present regardless of feature flag.
 
@@ -152,6 +153,9 @@ enabled = true
 max_hops = 2
 recall_limit = 10
 extraction_timeout_secs = 15
+use_embedding_resolution = true     # semantic entity dedup via Qdrant (default: false)
+entity_similarity_threshold = 0.85  # auto-merge threshold
+entity_ambiguous_threshold = 0.70   # LLM disambiguation threshold
 expired_edge_retention_days = 90  # Days to retain superseded edges
 max_entities = 0                  # Max entities cap (0 = unlimited)
 ```

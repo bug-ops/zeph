@@ -86,6 +86,41 @@ impl GraphStore {
         row.map(entity_from_row).transpose()
     }
 
+    /// Find an entity by its numeric ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_entity_by_id(&self, entity_id: i64) -> Result<Option<Entity>, MemoryError> {
+        let row: Option<EntityRow> = sqlx::query_as(
+            "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE id = ?1",
+        )
+        .bind(entity_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(entity_from_row).transpose()
+    }
+
+    /// Update the `qdrant_point_id` for an entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn set_entity_qdrant_point_id(
+        &self,
+        entity_id: i64,
+        point_id: &str,
+    ) -> Result<(), MemoryError> {
+        sqlx::query("UPDATE graph_entities SET qdrant_point_id = ?1 WHERE id = ?2")
+            .bind(point_id)
+            .bind(entity_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Find entities matching `query` in name, summary, or aliases, up to `limit` results, ranked by relevance.
     ///
     /// Uses FTS5 MATCH with prefix wildcards (`token*`) and bm25 ranking. Name matches are
@@ -164,23 +199,6 @@ impl GraphStore {
         rows.into_iter()
             .map(entity_from_row)
             .collect::<Result<Vec<_>, _>>()
-    }
-
-    /// Find an entity by its primary key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the database query fails.
-    pub async fn find_entity_by_id(&self, id: i64) -> Result<Option<Entity>, MemoryError> {
-        let row: Option<EntityRow> = sqlx::query_as(
-            "SELECT id, name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
-             FROM graph_entities
-             WHERE id = ?1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(entity_from_row).transpose()
     }
 
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
@@ -1516,6 +1534,41 @@ mod tests {
     }
 
     // ── FTS5 fuzzy search tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_entity_by_id_found() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("FindById", "finbyid", EntityType::Concept, Some("summary"))
+            .await
+            .unwrap();
+        let entity = gs.find_entity_by_id(id).await.unwrap();
+        assert!(entity.is_some());
+        let entity = entity.unwrap();
+        assert_eq!(entity.id, id);
+        assert_eq!(entity.name, "FindById");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_id_not_found() {
+        let gs = setup().await;
+        let result = gs.find_entity_by_id(99999).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_entity_qdrant_point_id_updates() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("QdrantPoint", "qdrantpoint", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let point_id = "550e8400-e29b-41d4-a716-446655440000";
+        gs.set_entity_qdrant_point_id(id, point_id).await.unwrap();
+
+        let entity = gs.find_entity_by_id(id).await.unwrap().unwrap();
+        assert_eq!(entity.qdrant_point_id.as_deref(), Some(point_id));
+    }
 
     #[tokio::test]
     async fn find_entities_fuzzy_matches_summary() {

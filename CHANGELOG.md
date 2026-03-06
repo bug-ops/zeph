@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Add end-to-end orchestration integration tests (plan graph → execute via DagScheduler tick loop → aggregate with LlmAggregator) covering happy path, single-task, abort-on-failure, skip-on-failure, and retry-exhausted scenarios; gated on `orchestration` + `mock` features (#1242)
 - Add "Limitations" section to `docs/src/concepts/task-orchestration.md` documenting English-only keyword routing, `max_tasks` cap, no dynamic re-planning, no hot-reload of orchestration config, and reserved `planner_model`/`planner_max_tokens` fields (#1242)
+- Add embedding-based entity resolution for graph memory: cosine similarity search via Qdrant `zeph_graph_entities` collection, LLM disambiguation for ambiguous matches, batch resolution with `buffer_unordered(4)`, per-entity-name locking, graceful fallback to exact match on embedding/LLM failures (#1230)
+- Add `entity_ambiguous_threshold` field to `[memory.graph]` config (default 0.70) for disambiguation range lower bound (#1230)
+- Add `ResolutionOutcome` enum (`ExactMatch`, `EmbeddingMatch`, `LlmDisambiguated`, `Created`) to `EntityResolver::resolve()` return type (#1230)
+- Add `GraphStore::find_entity_by_id()` and `GraphStore::set_entity_qdrant_point_id()` methods (#1230)
+- Add `EmbeddingStore::upsert_to_collection()` for point-id-stable Qdrant upserts (#1230)
+- Add `SemanticMemory::embedding_store()` getter for shared `Arc<EmbeddingStore>` access (#1230)
+- Add `PlanView` TUI widget (`crates/zeph-tui/src/widgets/plan_view.rs`): live task graph table with per-row status spinners, status colors (Running=Yellow, Completed=Green, Failed=Red, Pending=White, Cancelled=Gray), goal truncation with ellipsis, 30-second stale-plan auto-dismiss, and `is_stale()` on `TaskGraphSnapshot` (Phase 6, #1241)
+- Add `plan_view_active` toggle (`p` key) to `App`: switches right side panel between Sub-agents and Plan View; auto-resets on new plan detected via graph_id comparison in `poll_metrics()` (#1241)
+- Add `TaskGraphSnapshot` and `TaskSnapshotRow` to `MetricsSnapshot`: always-compiled snapshot types populated from `TaskGraph` via `From<&TaskGraph>` impl (feature-gated `orchestration`); includes `strip_ctrl()` state machine for CSI sequence stripping on task titles, agent names, error strings, and plan goals (#1241)
+- Add five `plan:*` command palette entries: `plan:status`, `plan:confirm`, `plan:cancel`, `plan:list`, `plan:toggle` (#1241)
+- Add `step_orchestration()` to `--init` wizard: configures `enabled`, `max_tasks`, `max_parallel` (with `max_parallel > max_tasks` auto-correction), `confirm_before_execute`, `failure_strategy`, and `planner_model` (validated: max 128 chars, `[a-zA-Z0-9:.-]`) (#1241)
+- Add `[Plan]`/`[Agents]` mode indicator to TUI status bar when an orchestration graph is active (#1241)
 - Add community detection via label propagation (`petgraph::UnGraph`): `detect_communities` groups entities into clusters (max 50 LPA iterations, tie-break by smallest label, min 2 entities per community), generates LLM summaries, and persists to `graph_communities` table (Phase 5, #1228)
 - Add incremental community assignment (`assign_to_community`): new entities are placed into the nearest existing community via neighbor majority vote without triggering full re-detection (#1228)
 - Add graph eviction policy: `run_graph_eviction` deletes expired edges older than `expired_edge_retention_days` (default 90), orphan entities with no active edges, and enforces optional `max_entities` cap; runs during community refresh cycle (#1228)
@@ -27,6 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add `dag::reset_for_retry()`: BFS-based algorithm resetting `Failed` tasks to `Ready` and `Skipped`/`Canceled` dependents to `Pending` for re-evaluation (#1240)
 - Add `aggregator_max_tokens` field to `OrchestrationConfig` (default: 4096) for controlling the aggregation LLM call token budget (#1240)
 - Add FTS5 full-text search index for graph entities (`graph_entities_fts`), replacing `LIKE '%query%'` with FTS5 MATCH + bm25 ranking in `find_entities_fuzzy`; migration `023_graph_entities_fts5.sql` with unicode61 tokenizer, content-sync triggers, and backfill (#1232)
+
+### Changed
+
+- **Breaking**: `EntityResolver::resolve()` now returns `Result<(i64, ResolutionOutcome)>` instead of `Result<i64>` (#1230)
 - Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
 - Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
 - Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)

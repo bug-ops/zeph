@@ -495,9 +495,11 @@ impl<C: Channel> Agent<C> {
             .map_err(|e| error::AgentError::Other(e.to_string()))?;
 
         let task_count = graph.tasks.len() as u64;
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
         self.update_metrics(|m| {
             m.orchestration.plans_total += 1;
             m.orchestration.tasks_total += task_count;
+            m.orchestration_graph = Some(snapshot);
         });
 
         if confirm_before_execute {
@@ -509,11 +511,20 @@ impl<C: Channel> Agent<C> {
             self.pending_graph = Some(graph);
         } else {
             // confirm_before_execute = false: display and proceed (Phase 5 will run scheduler).
+            // TODO(#1241): wire DagScheduler tick updates for Running task state
             let summary = format_plan_summary(&graph);
             self.channel.send(&summary).await?;
             self.channel
                 .send("Plan ready. Full execution will be available in a future phase.")
                 .await?;
+            // IC1: graph was shown but never confirmed; clear snapshot so it doesn't linger.
+            let now = std::time::Instant::now();
+            self.update_metrics(|m| {
+                if let Some(ref mut s) = m.orchestration_graph {
+                    "completed".clone_into(&mut s.status);
+                    s.completed_at = Some(now);
+                }
+            });
         }
 
         Ok(())
@@ -538,17 +549,28 @@ impl<C: Channel> Agent<C> {
         // In a future integration phase the scheduler will run first; for now
         // we aggregate whatever results are already present in the graph.
         let aggregator = LlmAggregator::new(self.provider.clone(), &self.orchestration_config);
-        match aggregator.aggregate(&graph).await {
+        let final_status = match aggregator.aggregate(&graph).await {
             Ok(synthesis) => {
                 self.channel.send(&synthesis).await?;
+                "completed"
             }
             Err(e) => {
                 tracing::error!(error = %e, "aggregation failed after plan confirm");
                 self.channel
                     .send("Plan confirmed. Execution and aggregation will run when the scheduler is wired.")
                     .await?;
+                "failed"
             }
-        }
+        };
+        // Update snapshot status and record completion time so the TUI can
+        // show the result for 30 s before clearing the panel.
+        let now = std::time::Instant::now();
+        self.update_metrics(|m| {
+            if let Some(ref mut s) = m.orchestration_graph {
+                final_status.clone_into(&mut s.status);
+                s.completed_at = Some(now);
+            }
+        });
         Ok(())
     }
 
@@ -579,6 +601,13 @@ impl<C: Channel> Agent<C> {
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
         if self.pending_graph.take().is_some() {
+            let now = std::time::Instant::now();
+            self.update_metrics(|m| {
+                if let Some(ref mut s) = m.orchestration_graph {
+                    "canceled".clone_into(&mut s.status);
+                    s.completed_at = Some(now);
+                }
+            });
             self.channel.send("Plan canceled.").await?;
         } else {
             self.channel.send("No active plan to cancel.").await?;

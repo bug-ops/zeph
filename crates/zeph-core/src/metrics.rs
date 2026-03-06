@@ -75,6 +75,45 @@ impl SecurityEvent {
 /// Ring buffer capacity for security events.
 pub const SECURITY_EVENT_CAP: usize = 100;
 
+/// Lightweight snapshot of a single task row for TUI display.
+///
+/// Cloned from [`TaskGraph`] on each metrics tick; kept minimal on purpose.
+#[derive(Debug, Clone)]
+pub struct TaskSnapshotRow {
+    pub id: u32,
+    pub title: String,
+    /// Stringified `TaskStatus` (e.g. `"pending"`, `"running"`, `"completed"`).
+    pub status: String,
+    pub agent: Option<String>,
+    pub duration_ms: u64,
+    /// Truncated error message (first 80 chars) when the task failed.
+    pub error: Option<String>,
+}
+
+/// Lightweight snapshot of a `TaskGraph` for TUI display.
+///
+/// Always compiled (no feature gate) so the TUI can reference it unconditionally.
+/// When the `orchestration` feature is inactive the field is always `None`.
+#[derive(Debug, Clone, Default)]
+pub struct TaskGraphSnapshot {
+    pub graph_id: String,
+    pub goal: String,
+    /// Stringified `GraphStatus` (e.g. `"created"`, `"running"`, `"completed"`).
+    pub status: String,
+    pub tasks: Vec<TaskSnapshotRow>,
+    pub completed_at: Option<std::time::Instant>,
+}
+
+impl TaskGraphSnapshot {
+    /// Returns `true` if this snapshot represents a terminal plan that finished
+    /// more than 30 seconds ago and should no longer be shown in the TUI.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.completed_at
+            .is_some_and(|t| t.elapsed().as_secs() > 30)
+    }
+}
+
 /// Counters for the task orchestration subsystem.
 ///
 /// Always present in [`MetricsSnapshot`]; zero-valued when orchestration is inactive.
@@ -166,7 +205,89 @@ pub struct MetricsSnapshot {
     /// Ring buffer of recent security events (cap 100, FIFO eviction).
     pub security_events: VecDeque<SecurityEvent>,
     pub orchestration: OrchestrationMetrics,
+    /// Live snapshot of the currently active task graph. `None` when no plan is active.
+    pub orchestration_graph: Option<TaskGraphSnapshot>,
     pub graph_community_detection_failures: u64,
+}
+
+/// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
+///
+/// Allows tab, LF, and CR; removes everything else in the `0x00–0x1F` range including full
+/// ANSI CSI sequences (`ESC[...`). This prevents escape-sequence injection from LLM planner
+/// output into the TUI.
+#[cfg_attr(not(feature = "orchestration"), allow(dead_code))]
+fn strip_ctrl(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Consume an ANSI CSI sequence: ESC [ <params> <final-byte in 0x40–0x7E>
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                for inner in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&inner) {
+                        break;
+                    }
+                }
+            }
+            // Drop ESC and any consumed sequence — write nothing.
+        } else if c.is_control() && c != '\t' && c != '\n' && c != '\r' {
+            // drop other control chars
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Convert a live `TaskGraph` into a lightweight snapshot for TUI display.
+///
+/// Gated behind `orchestration` so it doesn't pull orchestration types into
+/// the always-compiled metrics module unconditionally.
+#[cfg(feature = "orchestration")]
+impl From<&crate::orchestration::TaskGraph> for TaskGraphSnapshot {
+    fn from(graph: &crate::orchestration::TaskGraph) -> Self {
+        let tasks = graph
+            .tasks
+            .iter()
+            .map(|t| {
+                let error = t
+                    .result
+                    .as_ref()
+                    .filter(|_| t.status == crate::orchestration::TaskStatus::Failed)
+                    .and_then(|r| {
+                        if r.output.is_empty() {
+                            None
+                        } else {
+                            // Strip control chars, then truncate at 80 chars (SEC-P6-01).
+                            let s = strip_ctrl(&r.output);
+                            if s.len() > 80 {
+                                let end = s.floor_char_boundary(79);
+                                Some(format!("{}…", &s[..end]))
+                            } else {
+                                Some(s)
+                            }
+                        }
+                    });
+                let duration_ms = t.result.as_ref().map_or(0, |r| r.duration_ms);
+                TaskSnapshotRow {
+                    id: t.id.0,
+                    title: strip_ctrl(&t.title),
+                    status: t.status.to_string(),
+                    agent: t.assigned_agent.as_deref().map(strip_ctrl),
+                    duration_ms,
+                    error,
+                }
+            })
+            .collect();
+        Self {
+            graph_id: graph.id.to_string(),
+            goal: strip_ctrl(&graph.goal),
+            status: graph.status.to_string(),
+            tasks,
+            completed_at: None,
+        }
+    }
 }
 
 pub struct MetricsCollector {
@@ -400,5 +521,125 @@ mod tests {
         assert_eq!(s.orchestration.tasks_completed, 3);
         assert_eq!(s.orchestration.tasks_failed, 1);
         assert_eq!(s.orchestration.tasks_skipped, 1);
+    }
+
+    #[test]
+    fn strip_ctrl_removes_escape_sequences() {
+        let input = "hello\x1b[31mworld\x00end";
+        let result = strip_ctrl(input);
+        assert_eq!(result, "helloworldend");
+    }
+
+    #[test]
+    fn strip_ctrl_allows_tab_lf_cr() {
+        let input = "a\tb\nc\rd";
+        let result = strip_ctrl(input);
+        assert_eq!(result, "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn task_graph_snapshot_is_stale_after_30s() {
+        let mut snap = TaskGraphSnapshot::default();
+        // Not stale if no completed_at.
+        assert!(!snap.is_stale());
+        // Not stale if just completed.
+        snap.completed_at = Some(std::time::Instant::now());
+        assert!(!snap.is_stale());
+        // Stale if completed more than 30s ago.
+        snap.completed_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(31))
+                .unwrap(),
+        );
+        assert!(snap.is_stale());
+    }
+
+    // T1: From<&TaskGraph> correctly maps fields including duration_ms and error truncation.
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn task_graph_snapshot_from_task_graph_maps_fields() {
+        use crate::orchestration::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
+
+        let mut graph = TaskGraph::new("My goal");
+        let mut task = TaskNode::new(0, "Do work", "description");
+        task.status = TaskStatus::Failed;
+        task.assigned_agent = Some("agent-1".into());
+        task.result = Some(TaskResult {
+            output: "error occurred here".into(),
+            artifacts: vec![],
+            duration_ms: 1234,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks.push(task);
+        graph.status = GraphStatus::Failed;
+
+        let snap = TaskGraphSnapshot::from(&graph);
+        assert_eq!(snap.goal, "My goal");
+        assert_eq!(snap.status, "failed");
+        assert_eq!(snap.tasks.len(), 1);
+        let row = &snap.tasks[0];
+        assert_eq!(row.title, "Do work");
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.agent.as_deref(), Some("agent-1"));
+        assert_eq!(row.duration_ms, 1234);
+        assert!(row.error.as_deref().unwrap().contains("error occurred"));
+    }
+
+    // T2: From impl compiles with orchestration feature active.
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn task_graph_snapshot_from_compiles_with_feature() {
+        use crate::orchestration::TaskGraph;
+        let graph = TaskGraph::new("feature flag test");
+        let snap = TaskGraphSnapshot::from(&graph);
+        assert_eq!(snap.goal, "feature flag test");
+        assert!(snap.tasks.is_empty());
+        assert!(!snap.is_stale());
+    }
+
+    // T1-extra: long error is truncated with ellipsis.
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn task_graph_snapshot_error_truncated_at_80_chars() {
+        use crate::orchestration::{TaskGraph, TaskNode, TaskResult, TaskStatus};
+
+        let mut graph = TaskGraph::new("goal");
+        let mut task = TaskNode::new(0, "t", "d");
+        task.status = TaskStatus::Failed;
+        task.result = Some(TaskResult {
+            output: "e".repeat(100),
+            artifacts: vec![],
+            duration_ms: 0,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks.push(task);
+
+        let snap = TaskGraphSnapshot::from(&graph);
+        let err = snap.tasks[0].error.as_ref().unwrap();
+        assert!(err.ends_with('…'), "truncated error must end with ellipsis");
+        assert!(
+            err.len() <= 83,
+            "truncated error must not exceed 80 chars + ellipsis"
+        );
+    }
+
+    // SEC-P6-01: control chars in task title are stripped.
+    #[cfg(feature = "orchestration")]
+    #[test]
+    fn task_graph_snapshot_strips_control_chars_from_title() {
+        use crate::orchestration::{TaskGraph, TaskNode};
+
+        let mut graph = TaskGraph::new("goal\x1b[31m");
+        let task = TaskNode::new(0, "title\x00injected", "d");
+        graph.tasks.push(task);
+
+        let snap = TaskGraphSnapshot::from(&graph);
+        assert!(!snap.goal.contains('\x1b'), "goal must not contain escape");
+        assert!(
+            !snap.tasks[0].title.contains('\x00'),
+            "title must not contain null byte"
+        );
     }
 }

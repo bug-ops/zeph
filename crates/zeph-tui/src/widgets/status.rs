@@ -23,6 +23,21 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 
     let panel = if app.show_side_panels() { "ON" } else { "OFF" };
 
+    // MF3: show current side-panel mode when a plan graph is active.
+    let plan_mode_segment = if metrics
+        .orchestration_graph
+        .as_ref()
+        .is_some_and(|s| !s.is_stale())
+    {
+        if app.plan_view_active() {
+            " | [Agents]"
+        } else {
+            " | [Plan]"
+        }
+    } else {
+        ""
+    };
+
     let cancel_hint = if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         " | [Esc to cancel]"
     } else {
@@ -51,7 +66,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     };
 
     let main_text = format!(
-        " [{mode}] | Panel: {panel} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
+        " [{mode}] | Panel: {panel}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),

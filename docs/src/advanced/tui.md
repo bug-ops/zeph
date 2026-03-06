@@ -69,6 +69,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 | `Mouse wheel` | Scroll chat up/down (3 lines per tick) |
 | `e` | Toggle expanded/compact view for tool output and diffs |
 | `d` | Toggle side panels on/off |
+| `p` | Toggle Plan View / Sub-agents view in the side panel |
 | `Tab` | Cycle side panel focus |
 
 ### Insert Mode
@@ -130,6 +131,11 @@ Available commands:
 | `daemon:status` | Show connection status | |
 | `router:stats` | Show Thompson router alpha/beta per provider | |
 | `security:events` | Show security event history | |
+| `plan:status` | Show current plan progress in chat | |
+| `plan:confirm` | Confirm a pending plan and begin execution | |
+| `plan:cancel` | Cancel the active plan | |
+| `plan:list` | List recent plans from persistence | |
+| `plan:toggle` | Toggle Plan View on/off in the side panel | `p` |
 
 View commands are read-only. Action commands (`session:new`, `app:quit`, `app:theme`) modify application state. Daemon commands manage the remote connection (see [Daemon Mode](../guides/daemon-mode.md)). The palette supports fuzzy matching on both command IDs and labels.
 
@@ -384,6 +390,74 @@ Security events are stored in a FIFO ring buffer (capacity 100) within `MetricsS
 | `detail` | Human-readable description, capped at 128 characters |
 
 Events are emitted by the sanitizer, quarantine, and exfiltration guard subsystems during the agent loop and flow to the TUI via the metrics watch channel.
+
+## Plan View
+
+When the `orchestration` feature is enabled, the TUI shows live plan progress in the side panel.
+
+### Activating Plan View
+
+Press `p` in Normal mode (or use `plan:toggle` from the command palette) to switch the right side panel between the Sub-agents view and the Plan View. The panel switches automatically when a new plan becomes active.
+
+```text
++--------------------+
+| Plan: deploy stag… |  ← goal (truncated with …)
+| ↻ Preparing env    |  Running  agent-1   12s
+| ✓ Build image      |  Done     agent-2   45s
+| ✗ Push artifact    |  Failed   agent-2   8s   image push timeout
+| · Run smoke tests  |  Pending  —         —
++--------------------+
+```
+
+### Status Colors
+
+| Color | Status | Meaning |
+|-------|--------|---------|
+| Yellow (spinner ↻) | Running | Task is currently executing |
+| Green ✓ | Completed | Task finished successfully |
+| Red ✗ | Failed | Task failed; error shown in last column |
+| White · | Pending | Waiting for dependencies |
+| Gray | Skipped / Cancelled | Not executed |
+
+### Panel Header
+
+The panel title shows the plan goal (truncated to fit the panel width with `…`). A spinner appears in the title when at least one task is in Running status:
+
+```
+| Plan: build and deploy… [↻] |
+```
+
+When no plan is active, the panel shows:
+
+```
+| No active plan              |
+```
+
+### Plan Commands in TUI
+
+All `/plan` commands work in TUI mode via the input line. The command palette (`Ctrl+P`) provides quick access without typing the full command:
+
+| Command | Palette entry | Description |
+|---------|---------------|-------------|
+| `/plan <goal>` | — | Decompose goal and queue for confirmation |
+| `/plan confirm` | `plan:confirm` | Start execution of the pending plan |
+| `/plan cancel` | `plan:cancel` | Cancel the active plan |
+| `/plan status` | `plan:status` | Print plan progress to the chat panel |
+| `/plan list` | `plan:list` | List recent plans |
+
+### Stale Plan Cleanup
+
+After a plan reaches a terminal state (completed, failed, or cancelled), the Plan View remains visible for 30 seconds so you can review the final status. After 30 seconds the panel automatically reverts to the Sub-agents view. Press `p` at any time to dismiss it earlier or bring it back.
+
+### Requirements
+
+Plan View requires both the `tui` and `orchestration` feature flags:
+
+```bash
+cargo build --release --features tui,orchestration
+```
+
+Without the `orchestration` feature, the `p` keybinding and `plan:*` palette entries are present but show "No active plan" — they do not cause a build error.
 
 ## Deferred Model Warmup
 
