@@ -260,4 +260,4 @@ correct `languages` mapping for your file type.
   content from the source files being analyzed. If analyzing untrusted code (e.g., cloned
   repositories), adversarial content in comments or string literals could appear in the LLM
   context. Zeph's content sanitizer automatically wraps this output for isolation.
-- Phase 2 (#1289) will add automatic diagnostics injection after file writes.
+- Automatic diagnostics injection after file writes is planned for a future release.
