@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add community detection via label propagation (`petgraph::UnGraph`): `detect_communities` groups entities into clusters (max 50 LPA iterations, tie-break by smallest label, min 2 entities per community), generates LLM summaries, and persists to `graph_communities` table (Phase 5, #1228)
+- Add incremental community assignment (`assign_to_community`): new entities are placed into the nearest existing community via neighbor majority vote without triggering full re-detection (#1228)
+- Add graph eviction policy: `run_graph_eviction` deletes expired edges older than `expired_edge_retention_days` (default 90), orphan entities with no active edges, and enforces optional `max_entities` cap; runs during community refresh cycle (#1228)
+- Add community refresh counter persistence via `graph_metadata` SQLite table; `increment_extraction_count` uses atomic `INSERT ON CONFLICT DO UPDATE` for concurrent-safe increments (#1228)
+- Add `graph_community_detection_failures: u64` to `MetricsSnapshot`; `Arc<AtomicU64>` in `SemanticMemory` incremented on community detection errors for observability (#1228)
+- Add `expired_edge_retention_days` (default 90) and `max_entities` (default 0 = unlimited) fields to `GraphConfig` (#1228)
+- Add `petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }` as optional workspace dependency; included in `graph-memory` feature (#1228)
+- Add prompt injection protection in `generate_community_summary`: entity names and edge facts sanitized via `scrub_content()` before LLM prompt construction (#1228)
+- Add docs: community detection, graph eviction, and configuration sections to `docs/src/concepts/graph-memory.md`; Phase 5 marked complete (#1228)
+
 - Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
 - Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
 - Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)
