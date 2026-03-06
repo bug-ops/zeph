@@ -192,6 +192,26 @@ When all tasks in a graph reach a terminal state (completed, skipped, or failed)
 > [!NOTE]
 > If the graph has no completed or skipped tasks at all (e.g., every task failed before producing output), aggregation returns `OrchestrationError::AggregationFailed`.
 
+## TUI Integration
+
+When running with the TUI dashboard (`--features tui,orchestration`), the right side panel provides live plan progress without leaving the interface.
+
+Press `p` in Normal mode to toggle between the Sub-agents view and the Plan View. The panel shows each task with its current status, assigned agent, elapsed time, and any error message:
+
+```text
++--------------------+
+| Plan: deploy stag… |
+| ↻ Preparing env    |  Running   agent-1   12s
+| ✓ Build image      |  Completed agent-2   45s
+| ✗ Push artifact    |  Failed    agent-2   8s   image push timeout
+| · Run smoke tests  |  Pending   —         —
++--------------------+
+```
+
+Use `plan:confirm`, `plan:cancel`, `plan:status`, and `plan:list` from the command palette (`Ctrl+P`) instead of typing `/plan …` in the input line.
+
+See [TUI Dashboard — Plan View](../advanced/tui.md#plan-view) for the full keybinding and color reference.
+
 ## CLI Commands
 
 | Command | Description |

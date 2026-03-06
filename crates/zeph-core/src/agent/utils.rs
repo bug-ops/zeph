@@ -8,6 +8,17 @@ use crate::channel::Channel;
 use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent, SecurityEventCategory};
 
 impl<C: Channel> Agent<C> {
+    /// Read the community-detection failure counter from `SemanticMemory` and update metrics.
+    #[cfg(feature = "graph-memory")]
+    pub fn sync_community_detection_failures(&self) {
+        if let Some(memory) = self.memory_state.memory.as_ref() {
+            let failures = memory.community_detection_failures();
+            self.update_metrics(|m| {
+                m.graph_community_detection_failures = failures;
+            });
+        }
+    }
+
     /// Perform a real health check on the vector store and update metrics.
     pub async fn check_vector_store_health(&self, backend_name: &str) {
         let connected = match self.memory_state.memory.as_ref() {

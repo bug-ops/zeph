@@ -1780,6 +1780,10 @@ fn default_graph_recall_limit() -> usize {
     10
 }
 
+fn default_graph_expired_edge_retention_days() -> u32 {
+    90
+}
+
 /// Configuration for the knowledge graph memory subsystem (`[memory.graph]` TOML section).
 ///
 /// # Security
@@ -1811,6 +1815,12 @@ pub struct GraphConfig {
     pub max_hops: u32,
     #[serde(default = "default_graph_recall_limit")]
     pub recall_limit: usize,
+    /// Days to retain expired (superseded) edges before deletion. Default: 90.
+    #[serde(default = "default_graph_expired_edge_retention_days")]
+    pub expired_edge_retention_days: u32,
+    /// Maximum entities to retain in the graph. 0 = unlimited.
+    #[serde(default)]
+    pub max_entities: usize,
 }
 
 impl Default for GraphConfig {
@@ -1827,6 +1837,8 @@ impl Default for GraphConfig {
             entity_ambiguous_threshold: default_graph_entity_ambiguous_threshold(),
             max_hops: default_graph_max_hops(),
             recall_limit: default_graph_recall_limit(),
+            expired_edge_retention_days: default_graph_expired_edge_retention_days(),
+            max_entities: 0,
         }
     }
 }
@@ -2387,6 +2399,8 @@ mod tests {
         assert!((cfg.entity_ambiguous_threshold - 0.70).abs() < f32::EPSILON);
         assert_eq!(cfg.max_hops, 2);
         assert_eq!(cfg.recall_limit, 10);
+        assert_eq!(cfg.expired_edge_retention_days, 90);
+        assert_eq!(cfg.max_entities, 0);
     }
 
     #[test]

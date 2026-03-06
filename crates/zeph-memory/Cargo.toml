@@ -18,6 +18,7 @@ futures.workspace = true
 dashmap = { workspace = true }
 tiktoken-rs = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
+petgraph = { workspace = true, optional = true }
 qdrant-client = { workspace = true, features = ["serde"] }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -33,7 +34,7 @@ zeph-llm.workspace = true
 
 [features]
 default = []
-graph-memory = ["zeph-llm/schema"]
+graph-memory = ["dep:petgraph", "zeph-llm/schema"]
 mock = []
 orchestration = []
 pdf = ["dep:pdf-extract"]
