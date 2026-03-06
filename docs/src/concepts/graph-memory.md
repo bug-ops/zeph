@@ -102,6 +102,19 @@ Graph recall uses breadth-first search to find relevant facts:
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
 
+## Entity Search: FTS5 Full-Text Index
+
+Entity lookup (used by `find_entities_fuzzy`) is backed by an FTS5 virtual table (`graph_entities_fts`) that indexes entity names and summaries. This replaces the earlier `LIKE`-based search with ranked full-text matching.
+
+Key details:
+
+- **Tokenizer:** `unicode61` with prefix matching — handles Unicode names and supports prefix queries (e.g., `rust*`).
+- **Ranking:** Uses FTS5 `bm25()` with a 10x weight on the `name` column relative to `summary`, so exact name hits rank above summary-only mentions.
+- **Sync:** Insert/update/delete triggers keep the FTS index in sync with `graph_entities` automatically.
+- **Migration:** The FTS5 table and triggers are created by migration **023**.
+
+No additional configuration is needed — FTS5 search is used automatically when graph memory is enabled.
+
 ## Context Injection
 
 When graph memory contains entities relevant to the current query, Zeph injects a `[knowledge graph]` system message into the context at position 1 (immediately after the base system prompt). Each fact is formatted as:

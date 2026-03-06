@@ -6,7 +6,7 @@ pub mod corrections;
 #[cfg(feature = "orchestration")]
 pub mod graph_store;
 mod history;
-mod messages;
+pub(crate) mod messages;
 mod skills;
 mod summaries;
 mod trust;
