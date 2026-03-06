@@ -49,6 +49,25 @@ When a fact changes (e.g., user switches from vim to neovim), the old edge is in
 
 Groups of related entities with an LLM-generated summary. Community detection runs periodically via label propagation (Phase 5).
 
+## Background Extraction
+
+After each user message is persisted, Zeph spawns a background extraction task (when the `graph-memory` feature and `[memory.graph] enabled = true` are both active). The extraction pipeline:
+
+1. Collects the last 4 user messages as conversational context
+2. Sends the current message plus context to the configured LLM (`extract_model`, or the agent's primary model when empty)
+3. Parses the LLM response into entities and edges, respecting `max_entities_per_message` and `max_edges_per_message` limits
+4. Upserts extracted data into SQLite with bi-temporal timestamps
+
+Extraction runs non-blocking via `spawn_graph_extraction` — the agent loop continues without waiting for it to finish. A configurable timeout (`extraction_timeout_secs`, default: 15) prevents slow LLM calls from accumulating.
+
+### Security
+
+Messages flagged with injection patterns are excluded from extraction. When the content sanitizer detects injection markers (`has_injection_flags = true`), `maybe_spawn_graph_extraction` returns early without queuing any work. This prevents untrusted content from poisoning the knowledge graph.
+
+### TUI Status
+
+During extraction, the TUI displays an "Extracting entities..." spinner so the user knows background work is in progress.
+
 ## Entity Resolution
 
 By default, entities are deduplicated using exact name matching. When `use_embedding_resolution = true`, Zeph uses cosine similarity search in Qdrant to find semantically equivalent entities before creating new ones.
@@ -82,6 +101,19 @@ Graph recall uses breadth-first search to find relevant facts:
 4. Score facts using `composite_score = entity_match * (1 / (1 + hop_distance)) * confidence`
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
+
+## Context Injection
+
+When graph memory contains entities relevant to the current query, Zeph injects a `[knowledge graph]` system message into the context at position 1 (immediately after the base system prompt). Each fact is formatted as:
+
+```text
+- Rust uses cargo (confidence: 0.95)
+- User prefers neovim (confidence: 0.88)
+```
+
+Entity names, relations, and targets are escaped — newlines and angle brackets are stripped — to prevent graph-stored strings from breaking the system prompt structure.
+
+Graph facts receive 3% of the available context budget (carved from the semantic recall allocation, which drops from 8% to 5%). When the budget is zero (unlimited mode) or graph memory is disabled, no budget is allocated and no facts are injected.
 
 ## Configuration
 
@@ -134,7 +166,7 @@ Graph memory is being implemented incrementally:
 1. ~~**Schema & Core Types** — migration, types, CRUD store, config~~
 2. ~~**Entity & Relation Extraction** — LLM-powered extraction pipeline~~
 3. ~~**Graph-Aware Retrieval** — BFS traversal with fuzzy entity matching, composite scoring, and cycle-safe traversal~~
-4. **Background Extraction** — non-blocking extraction in agent loop
+4. ~~**Background Extraction** — non-blocking extraction in agent loop, context injection, budget allocation~~
 5. **Community Detection** — label propagation with petgraph
 6. **TUI & Observability** — `/graph` commands, metrics, init wizard
 

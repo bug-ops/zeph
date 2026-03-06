@@ -19,6 +19,11 @@ impl GraphStore {
         Self { pool }
     }
 
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // ── Entities ─────────────────────────────────────────────────────────────
 
     /// Insert or update an entity by `(name, entity_type)`. Updates `summary` and `last_seen_at`.
@@ -145,6 +150,7 @@ impl GraphStore {
             .map(entity_from_row)
             .collect::<Result<Vec<_>, _>>()
     }
+
 
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
     pub fn all_entities_stream(&self) -> impl Stream<Item = Result<Entity, MemoryError>> + '_ {
@@ -549,10 +555,12 @@ impl GraphStore {
             frontier = next_frontier;
         }
 
-        let visited_ids: Vec<i64> = depth_map.keys().copied().collect();
+        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
         if visited_ids.is_empty() {
             return Ok((Vec::new(), Vec::new(), depth_map));
         }
+        // Edge query binds visited_ids twice — cap at 499 to stay under SQLite 999 limit.
+        visited_ids.truncate(499);
 
         // Fetch edges between visited entities
         let placeholders = visited_ids
