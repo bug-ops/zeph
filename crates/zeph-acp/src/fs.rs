@@ -184,9 +184,10 @@ struct ListDirectoryParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct FindPathParams {
+    /// Directory to search in. Must be an absolute path within the project sandbox.
+    path: String,
+    /// Glob pattern to match file names (e.g. `*.rs`, `config*.toml`).
     pattern: String,
-    #[serde(default)]
-    path: Option<String>,
 }
 
 /// Verify that `resolved` is contained within `sandbox` after symlink resolution.
@@ -524,14 +525,7 @@ impl AcpFileExecutor {
     fn handle_find_path(&self, params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
         const MAX_RESULTS: usize = 1000;
 
-        // path is required; defaulting to "." would bypass sandbox validation.
-        let base_str = params
-            .path
-            .as_deref()
-            .ok_or_else(|| ToolError::InvalidParams {
-                message: "find_path: 'path' parameter is required".into(),
-            })?;
-        let path = validate_path(base_str)?;
+        let path = validate_path(&params.path)?;
         let base = self.resolve_path(&path);
 
         // Reject traversal components in the pattern to prevent escaping the base directory.
@@ -547,7 +541,7 @@ impl AcpFileExecutor {
 
         validate_within_sandbox(&base, &self.cwd)?;
 
-        let glob_str = format!("{base_str}/{}", params.pattern);
+        let glob_str = format!("{}/{}", params.path, params.pattern);
         let mut matches: Vec<String> = Vec::new();
         for entry in glob::glob(&glob_str).map_err(|e| ToolError::InvalidParams {
             message: format!("invalid glob pattern: {e}"),
