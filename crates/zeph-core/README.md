@@ -58,7 +58,8 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 |-------|------|---------|--------------|-------------|
 | `name` | string | `"zeph"` | — | Agent display name |
 | `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
-| `summary_model` | string? | `null` | — | Model used for context summarization. Formats: `ollama/<model>`, `claude[/<model>]`, `openai[/<model>]`, `compatible/<name>`, `candle` |
+| `summary_model` | string? | `null` | — | Shorthand model spec for context summarization. Formats: `ollama/<model>`, `claude[/<model>]`, `openai[/<model>]`, `compatible/<name>`, `candle`. Ignored when `[agent.summary_provider]` is set. |
+| `summary_provider` | table? | `null` | — | Structured provider config for summarization (takes precedence over `summary_model`). Same format as orchestrator sub-providers: `type`, `model`, `base_url`, `device`. |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
 
 Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
@@ -102,9 +103,17 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 ```toml
 [agent]
 auto_update_check = true   # set to false to disable update notifications
+
+# Dedicated provider for tool-pair summarization (optional).
+# Takes precedence over summary_model when both are set.
+[agent.summary_provider]
+type = "claude"
+model = "claude-haiku-4-5-20251001"
 ```
 
-Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable without changing the config file.
+Supported `type` values: `claude`, `openai`, `compatible`, `ollama`, `candle`. The `base_url` field overrides the endpoint for `compatible` and `ollama` providers. The `device` field (`cpu`, `cuda`, `metal`) applies to `candle` only.
+
+Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable update notifications without changing the config file.
 
 Key `DebugConfig` fields (TOML section `[debug]`):
 

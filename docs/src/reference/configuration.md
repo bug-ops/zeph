@@ -65,6 +65,23 @@ name = "Zeph"
 max_tool_iterations = 10  # Max tool loop iterations per response (default: 10)
 auto_update_check = true  # Query GitHub Releases API for newer versions (default: true)
 
+# summary_model = "claude"  # Optional: dedicated provider for tool-pair summarization.
+#   Supported formats:
+#     "claude"                          — Claude, model from [llm.cloud]
+#     "claude/<model>"                  — Claude with explicit model name
+#     "openai"                          — OpenAI, model from [llm.openai]
+#     "openai/<model>"                  — OpenAI with explicit model name
+#     "compatible/<name>"               — OpenAI-compatible server from [llm.compatible.<name>]
+#     "candle"                          — Local candle inference
+#   [agent.summary_provider] takes precedence over summary_model when both are set.
+
+# Structured summary provider (same format as orchestrator sub-providers):
+# [agent.summary_provider]
+# type = "claude"                        # claude, openai, compatible, ollama, candle
+# model = "claude-haiku-4-5-20251001"   # optional: model name override
+# base_url = "..."                       # optional: endpoint override (compatible/ollama only)
+# device = "cpu"                         # optional: cpu, cuda, metal (candle only)
+
 [agent.instructions]
 auto_detect    = true    # Auto-detect provider-specific files: CLAUDE.md, AGENTS.md, GEMINI.md (default: true)
 extra_files    = []      # Additional instruction files (absolute or relative to cwd)

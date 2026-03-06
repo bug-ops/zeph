@@ -137,6 +137,67 @@ After each tool execution, `maybe_summarize_tool_pair()` checks whether the numb
 
 Summarization runs synchronously between tool iterations. If the LLM call fails, the error is logged and the pair is left unsummarized.
 
+### Summary Provider Configuration
+
+By default, tool-pair summarization uses the primary LLM provider. You can dedicate a faster or cheaper model to this task using either the structured `[agent.summary_provider]` section or the `summary_model` string shorthand.
+
+#### Structured config (recommended)
+
+`[agent.summary_provider]` accepts the same fields as orchestrator sub-providers:
+
+```toml
+# Claude
+[agent.summary_provider]
+type = "claude"
+model = "claude-haiku-4-5-20251001"
+
+# OpenAI
+[agent.summary_provider]
+type = "openai"
+model = "gpt-4o-mini"
+
+# OpenAI-compatible local server
+[agent.summary_provider]
+type = "compatible"
+model = "qwen3:1.7b"
+base_url = "http://localhost:8080/v1"
+
+# Ollama
+[agent.summary_provider]
+type = "ollama"
+model = "qwen3:1.7b"
+base_url = "http://localhost:11434"
+
+# Local candle inference (requires candle feature)
+[agent.summary_provider]
+type = "candle"
+model = "mistral-7b-instruct"
+device = "metal"   # "cpu", "cuda", or "metal"
+```
+
+Fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | yes | `claude`, `openai`, `compatible`, `ollama`, or `candle` |
+| `model` | no | Model name; defaults to the value from the primary provider section |
+| `base_url` | no | Override endpoint URL (`compatible` and `ollama` only) |
+| `device` | no | Inference device: `cpu`, `cuda`, `metal` (`candle` only) |
+
+#### String shorthand (`summary_model`)
+
+`summary_model` accepts a compact provider/model string. `[agent.summary_provider]` takes precedence when both are set.
+
+```toml
+[agent]
+summary_model = "claude"                         # Claude with model from [llm.cloud]
+summary_model = "claude/claude-haiku-4-5-20251001"  # Claude with explicit model
+summary_model = "openai"                         # OpenAI with model from [llm.openai]
+summary_model = "openai/gpt-4o-mini"             # OpenAI with explicit model
+summary_model = "compatible/my-server"           # OpenAI-compatible using [llm.compatible.my-server]
+summary_model = "candle"                         # Local candle inference
+```
+
 ## Query-Aware Memory Routing
 
 When semantic memory is enabled, the `MemoryRouter` trait decides which backend(s) to query for each recall request. The default `HeuristicRouter` classifies queries based on lexical cues:
