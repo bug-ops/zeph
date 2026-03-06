@@ -7,6 +7,6 @@ expression: output
 │  Vector: qdrant (connected)│
 │  Conv ID: ---              │
 │  Embeddings: 10            │
-│                            │
-│                            │
+│  Graph: 0 entities, 0 edges│
+│  Graph extractions: 0 ok, 0│
 └────────────────────────────┘

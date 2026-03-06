@@ -180,6 +180,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
 
+    if cli.graph_memory {
+        app.config_mut().memory.graph.enabled = true;
+    }
+
     if let Some(ref thinking_str) = cli.thinking {
         let thinking = parse_thinking_arg(thinking_str)?;
         if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
@@ -642,6 +646,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     agent
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
+    #[cfg(feature = "graph-memory")]
+    agent.sync_graph_counts().await;
 
     agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);
     agent.load_history().await?;

@@ -44,5 +44,8 @@ proptest = "1.6"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
+[features]
+graph-memory = []
+
 [lints]
 workspace = true

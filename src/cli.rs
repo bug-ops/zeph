@@ -79,6 +79,10 @@ pub(crate) struct Cli {
     #[arg(long = "agents", value_name = "PATH")]
     pub(crate) agents: Vec<PathBuf>,
 
+    /// Enable graph-based knowledge memory (experimental)
+    #[arg(long)]
+    pub(crate) graph_memory: bool,
+
     /// Override scheduler tick interval in seconds (requires scheduler feature)
     #[cfg(feature = "scheduler")]
     #[arg(long, value_name = "SECS")]
@@ -275,6 +279,7 @@ pub(crate) enum RouterCommand {
 pub(crate) enum VaultCommand {
     /// Generate age keypair and empty encrypted vault
     Init,
+
     /// Encrypt and store a secret.
     /// Note: VALUE is visible in process listing (ps/history). For sensitive values
     /// prefer setting the variable in the shell and passing via env instead.
@@ -296,4 +301,23 @@ pub(crate) enum VaultCommand {
         #[arg()]
         key: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn cli_parses_graph_memory_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--graph-memory"]).unwrap();
+        assert!(cli.graph_memory);
+    }
+
+    #[test]
+    fn cli_graph_memory_flag_defaults_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.graph_memory);
+    }
 }

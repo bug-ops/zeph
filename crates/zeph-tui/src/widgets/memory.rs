@@ -37,6 +37,19 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         "  Embeddings: {}",
         metrics.embeddings_generated
     )));
+    #[cfg(feature = "graph-memory")]
+    {
+        mem_lines.push(Line::from(format!(
+            "  Graph: {} entities, {} edges, {} communities",
+            metrics.graph_entities_total,
+            metrics.graph_edges_total,
+            metrics.graph_communities_total,
+        )));
+        mem_lines.push(Line::from(format!(
+            "  Graph extractions: {} ok, {} failed",
+            metrics.graph_extraction_count, metrics.graph_extraction_failures,
+        )));
+    }
     let memory = Paragraph::new(mem_lines).block(
         Block::default()
             .borders(Borders::ALL)

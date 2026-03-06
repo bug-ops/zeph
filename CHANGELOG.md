@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `--graph-memory` CLI flag to enable graph memory for the session, overriding `memory.graph.enabled` in config (`src/cli.rs`, `src/runner.rs`) (Phase 6, #1233)
+- Add graph memory questions to `zeph init` wizard: "Enable knowledge graph memory? (experimental)" and "LLM model for entity extraction" prompts; results written to `[memory.graph]` config section (`src/init.rs`) (Phase 6, #1233)
+- Add five `/graph` TUI slash commands handled in agent loop: `/graph` (stats), `/graph entities`, `/graph facts <name>`, `/graph communities`, `/graph backfill [--limit N]`; all with pre-dispatch status messages (`crates/zeph-core/src/agent/graph_commands.rs`) (Phase 6, #1233)
+- Add five graph-memory command palette entries (`graph:stats`, `graph:entities`, `graph:facts`, `graph:communities`, `graph:backfill`) to `extra_command_registry` in `zeph-tui` (Phase 6, #1233)
+- Add five graph metrics fields to `MetricsSnapshot` (always present, no `#[cfg]` gate): `graph_entities_total`, `graph_edges_total`, `graph_communities_total`, `graph_extraction_count`, `graph_extraction_failures` (Phase 6, #1233)
+- Add `graph_extraction_count` and `graph_extraction_failures` `Arc<AtomicU64>` counters to `SemanticMemory`; incremented in `spawn_graph_extraction` success/failure/timeout paths (Phase 6, #1233)
+- Add `sync_graph_extraction_metrics` helper to `AgentUtils` to mirror AtomicU64 counters into `MetricsSnapshot` (Phase 6, #1233)
+- Add `GraphStore` backfill SQL methods: `unprocessed_messages_for_backfill(limit)`, `unprocessed_message_count()`, `mark_messages_graph_processed(ids)` (Phase 6, #1233)
+- Add `find_entity_by_name` convenience wrapper on `GraphStore` delegating to `find_entities_fuzzy` (Phase 6, #1233)
+- Add docs: TUI commands table, CLI flag, configuration wizard, and backfill sections to `docs/src/concepts/graph-memory.md`; Phase 6 marked complete (Phase 6, #1233)
+- Add `PlanView` TUI widget (`crates/zeph-tui/src/widgets/plan_view.rs`): live task graph table with per-row status spinners, status colors (Running=Yellow, Completed=Green, Failed=Red, Pending=White, Cancelled=Gray), goal truncation with ellipsis, 30-second stale-plan auto-dismiss, and `is_stale()` on `TaskGraphSnapshot` (Phase 6, #1241)
+- Add `plan_view_active` toggle (`p` key) to `App`: switches right side panel between Sub-agents and Plan View; auto-resets on new plan detected via graph_id comparison in `poll_metrics()` (#1241)
+- Add `TaskGraphSnapshot` and `TaskSnapshotRow` to `MetricsSnapshot`: always-compiled snapshot types populated from `TaskGraph` via `From<&TaskGraph>` impl (feature-gated `orchestration`); includes `strip_ctrl()` state machine for CSI sequence stripping on task titles, agent names, error strings, and plan goals (#1241)
+- Add five `plan:*` command palette entries: `plan:status`, `plan:confirm`, `plan:cancel`, `plan:list`, `plan:toggle` (#1241)
+- Add `step_orchestration()` to `--init` wizard: configures `enabled`, `max_tasks`, `max_parallel` (with `max_parallel > max_tasks` auto-correction), `confirm_before_execute`, `failure_strategy`, and `planner_model` (validated: max 128 chars, `[a-zA-Z0-9:.-]`) (#1241)
+- Add `[Plan]`/`[Agents]` mode indicator to TUI status bar when an orchestration graph is active (#1241)
 - Add community detection via label propagation (`petgraph::UnGraph`): `detect_communities` groups entities into clusters (max 50 LPA iterations, tie-break by smallest label, min 2 entities per community), generates LLM summaries, and persists to `graph_communities` table (Phase 5, #1228)
 - Add incremental community assignment (`assign_to_community`): new entities are placed into the nearest existing community via neighbor majority vote without triggering full re-detection (#1228)
 - Add graph eviction policy: `run_graph_eviction` deletes expired edges older than `expired_edge_retention_days` (default 90), orphan entities with no active edges, and enforces optional `max_entities` cap; runs during community refresh cycle (#1228)
