@@ -19,6 +19,11 @@ impl GraphStore {
         Self { pool }
     }
 
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // ── Entities ─────────────────────────────────────────────────────────────
 
     /// Insert or update an entity by `(canonical_name, entity_type)`.
@@ -119,6 +124,23 @@ impl GraphStore {
         rows.into_iter()
             .map(entity_from_row)
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Find an entity by its primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_entity_by_id(&self, id: i64) -> Result<Option<Entity>, MemoryError> {
+        let row: Option<EntityRow> = sqlx::query_as(
+            "SELECT id, name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(entity_from_row).transpose()
     }
 
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
@@ -593,10 +615,12 @@ impl GraphStore {
             frontier = next_frontier;
         }
 
-        let visited_ids: Vec<i64> = depth_map.keys().copied().collect();
+        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
         if visited_ids.is_empty() {
             return Ok((Vec::new(), Vec::new(), depth_map));
         }
+        // Edge query binds visited_ids twice — cap at 499 to stay under SQLite 999 limit.
+        visited_ids.truncate(499);
 
         // Fetch edges between visited entities
         let placeholders = visited_ids

@@ -1776,6 +1776,14 @@ fn default_graph_recall_limit() -> usize {
     10
 }
 
+/// Configuration for the knowledge graph memory subsystem (`[memory.graph]` TOML section).
+///
+/// # Security
+///
+/// Entity names, relation labels, and fact strings extracted by the LLM are stored verbatim
+/// without PII redaction. This is a known pre-1.0 MVP limitation. Do not enable graph memory
+/// when processing conversations that may contain personal, medical, or sensitive data until
+/// a redaction pass is implemented on the write path.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GraphConfig {
