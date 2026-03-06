@@ -134,7 +134,29 @@ impl<'a> EntityResolver<'a> {
     fn normalize_name(name: &str) -> String {
         let lowered = name.trim().to_lowercase();
         let cleaned = strip_control_chars(&lowered);
-        truncate_to_bytes(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned()
+        let normalized = truncate_to_bytes(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned();
+        if normalized.len() < cleaned.len() {
+            tracing::debug!(
+                "graph resolver: entity name truncated to {} bytes",
+                MAX_ENTITY_NAME_BYTES
+            );
+        }
+        normalized
+    }
+
+    /// Parse an entity type string, falling back to `Concept` on unknown values.
+    fn parse_entity_type(entity_type: &str) -> EntityType {
+        entity_type
+            .trim()
+            .to_lowercase()
+            .parse::<EntityType>()
+            .unwrap_or_else(|_| {
+                tracing::debug!(
+                    "graph resolver: unknown entity type {:?}, falling back to Concept",
+                    entity_type
+                );
+                EntityType::Concept
+            })
     }
 
     /// Acquire the per-name lock and return the guard. Keeps lock alive for the caller.
@@ -147,16 +169,20 @@ impl<'a> EntityResolver<'a> {
         lock.lock_owned().await
     }
 
-    /// Resolve an extracted entity: normalize name, parse entity type, and upsert into the store.
+    /// Resolve an extracted entity using the alias-first canonicalization pipeline.
     ///
-    /// When `embedding_store` and `provider` are configured, performs embedding-based fuzzy
-    /// matching before creating a new entity. Resolution order:
-    /// 1. Exact name+type match (`SQLite`)
-    /// 2. Embedding similarity search (Qdrant)
-    /// 3. LLM disambiguation in ambiguous range
-    /// 4. Create new entity
-    ///
-    /// Embedding/LLM failures degrade gracefully to step 4 (create new).
+    /// Pipeline:
+    /// 1. Normalize: trim, lowercase, strip control chars, truncate to 512 bytes.
+    /// 2. Parse entity type (fallback to Concept on unknown).
+    /// 3. Alias lookup: search `graph_entity_aliases` by normalized name + `entity_type`.
+    ///    If found, touch `last_seen_at` and return the existing entity id.
+    /// 4. Canonical name lookup: search `graph_entities` by `canonical_name` + `entity_type`.
+    ///    If found, touch `last_seen_at` and return the existing entity id.
+    /// 5. When `embedding_store` and `provider` are configured, performs embedding-based fuzzy
+    ///    matching: cosine similarity search (Qdrant), LLM disambiguation for ambiguous range,
+    ///    merge or create based on result. Failures degrade gracefully to step 6.
+    /// 6. Create: upsert new entity with `canonical_name` = normalized name.
+    /// 7. Register the normalized form (and original trimmed form if different) as aliases.
     ///
     /// # Errors
     ///
@@ -174,49 +200,35 @@ impl<'a> EntityResolver<'a> {
             return Err(MemoryError::GraphStore("empty entity name".into()));
         }
 
-        if normalized.len() < name.trim().to_lowercase().len() {
-            tracing::debug!(
-                "graph resolver: entity name truncated to {} bytes",
-                MAX_ENTITY_NAME_BYTES
-            );
-        }
+        let et = Self::parse_entity_type(entity_type);
 
-        let entity_type_parsed = entity_type
-            .trim()
-            .to_lowercase()
-            .parse::<EntityType>()
-            .unwrap_or_else(|_| {
-                tracing::debug!(
-                    "graph resolver: unknown entity type {:?}, falling back to Concept",
-                    entity_type
-                );
-                EntityType::Concept
-            });
+        // The surface form preserves the original casing for user-facing display.
+        let surface_name = name.trim().to_owned();
 
         // Acquire per-name lock to prevent concurrent duplicate creation.
         let _guard = self.lock_name(&normalized).await;
 
-        // Step 1: Exact match
-        if let Some(existing) = self
-            .store
-            .find_entity(&normalized, entity_type_parsed)
-            .await?
-        {
-            // Update summary if provided
-            if summary.is_some() {
-                self.store
-                    .upsert_entity(&normalized, entity_type_parsed, summary)
-                    .await?;
-            }
-            return Ok((existing.id, ResolutionOutcome::ExactMatch));
+        // Step 3: alias-first lookup (filters by entity_type to prevent cross-type collisions).
+        if let Some(entity) = self.store.find_entity_by_alias(&normalized, et).await? {
+            self.store
+                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .await?;
+            return Ok((entity.id, ResolutionOutcome::ExactMatch));
         }
 
-        // Step 2: Embedding-based resolution
+        // Step 4: canonical name lookup.
+        if let Some(entity) = self.store.find_entity(&normalized, et).await? {
+            self.store
+                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .await?;
+            return Ok((entity.id, ResolutionOutcome::ExactMatch));
+        }
+
+        // Step 5: Embedding-based resolution (when configured).
         if let (Some(emb_store), Some(provider)) = (self.embedding_store, self.provider) {
             let safe_summary = truncate_to_bytes(summary.unwrap_or(""), MAX_FACT_BYTES);
             let embed_text = format!("{normalized}: {safe_summary}");
 
-            // Embed with timeout (critic M4)
             let embed_result = tokio::time::timeout(
                 std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
                 provider.embed(&embed_text),
@@ -225,11 +237,10 @@ impl<'a> EntityResolver<'a> {
 
             match embed_result {
                 Ok(Ok(query_vec)) => {
-                    // Step 3: Search Qdrant with entity_type filter (critic S4)
                     let type_filter = VectorFilter {
                         must: vec![FieldCondition {
                             field: "entity_type".into(),
-                            value: FieldValue::Text(entity_type_parsed.as_str().to_owned()),
+                            value: FieldValue::Text(et.as_str().to_owned()),
                         }],
                         must_not: vec![],
                     };
@@ -242,7 +253,6 @@ impl<'a> EntityResolver<'a> {
                             let score = best.score;
 
                             if score >= self.similarity_threshold {
-                                // High similarity: merge
                                 let entity_id = best
                                     .payload
                                     .get("entity_id")
@@ -257,8 +267,9 @@ impl<'a> EntityResolver<'a> {
                                     emb_store,
                                     provider,
                                     entity_id,
+                                    &surface_name,
                                     &normalized,
-                                    entity_type_parsed,
+                                    et,
                                     summary,
                                 )
                                 .await?;
@@ -268,7 +279,6 @@ impl<'a> EntityResolver<'a> {
                                     ResolutionOutcome::EmbeddingMatch { score },
                                 ));
                             } else if score >= self.ambiguous_threshold {
-                                // Ambiguous range: ask LLM
                                 let entity_id = best
                                     .payload
                                     .get("entity_id")
@@ -295,14 +305,14 @@ impl<'a> EntityResolver<'a> {
                                     .payload
                                     .get("entity_type")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or(entity_type_parsed.as_str())
+                                    .unwrap_or(et.as_str())
                                     .to_owned();
 
                                 match self
                                     .llm_disambiguate(
                                         provider,
                                         &normalized,
-                                        entity_type_parsed.as_str(),
+                                        et.as_str(),
                                         summary.unwrap_or(""),
                                         &existing_name,
                                         &existing_type,
@@ -316,8 +326,9 @@ impl<'a> EntityResolver<'a> {
                                             emb_store,
                                             provider,
                                             entity_id,
+                                            &surface_name,
                                             &normalized,
-                                            entity_type_parsed,
+                                            et,
                                             summary,
                                         )
                                         .await?;
@@ -356,18 +367,20 @@ impl<'a> EntityResolver<'a> {
                         }
                     }
 
-                    // Create new entity and store embedding
+                    // No embedding match — create new entity and store embedding
                     let entity_id = self
                         .store
-                        .upsert_entity(&normalized, entity_type_parsed, summary)
+                        .upsert_entity(&surface_name, &normalized, et, summary)
                         .await?;
+
+                    self.register_aliases(entity_id, &normalized, name).await?;
 
                     self.store_entity_embedding(
                         emb_store,
                         entity_id,
                         None,
                         &normalized,
-                        entity_type_parsed,
+                        et,
                         summary.unwrap_or(""),
                         &query_vec,
                     )
@@ -396,21 +409,47 @@ impl<'a> EntityResolver<'a> {
             }
         }
 
-        // Step 4: Create new entity (no embedding store, or embedding failure)
+        // Step 6: Create new entity (no embedding store, or embedding failure).
         let entity_id = self
             .store
-            .upsert_entity(&normalized, entity_type_parsed, summary)
+            .upsert_entity(&surface_name, &normalized, et, summary)
             .await?;
+
+        self.register_aliases(entity_id, &normalized, name).await?;
+
         Ok((entity_id, ResolutionOutcome::Created))
     }
 
+    /// Register the normalized form and original trimmed form as aliases for an entity.
+    async fn register_aliases(
+        &self,
+        entity_id: i64,
+        normalized: &str,
+        original_name: &str,
+    ) -> Result<(), MemoryError> {
+        self.store.add_alias(entity_id, normalized).await?;
+
+        // Also register the original trimmed lowercased form if it differs from normalized
+        // (e.g. when control chars were stripped, leaving a shorter string).
+        let original_trimmed = original_name.trim().to_lowercase();
+        let original_clean_str = strip_control_chars(&original_trimmed);
+        let original_clean = truncate_to_bytes(&original_clean_str, MAX_ENTITY_NAME_BYTES);
+        if original_clean != normalized {
+            self.store.add_alias(entity_id, original_clean).await?;
+        }
+
+        Ok(())
+    }
+
     /// Merge an existing entity with new information: combine summaries, update Qdrant.
+    #[allow(clippy::too_many_arguments)]
     async fn merge_entity(
         &self,
         emb_store: &EmbeddingStore,
         provider: &AnyProvider,
         entity_id: i64,
-        new_name: &str,
+        new_surface_name: &str,
+        new_canonical_name: &str,
         entity_type: EntityType,
         new_summary: Option<&str>,
     ) -> Result<(), MemoryError> {
@@ -442,12 +481,21 @@ impl<'a> EntityResolver<'a> {
             Some(merged_summary.as_str())
         };
 
-        // Update the EXISTING entity's summary (keep its original name and type).
+        // Update the EXISTING entity's summary (keep its canonical_name, update surface display name).
+        let existing_canonical = existing.as_ref().map_or_else(
+            || new_canonical_name.to_owned(),
+            |e| e.canonical_name.clone(),
+        );
         let existing_name_owned = existing
             .as_ref()
-            .map_or_else(|| new_name.to_owned(), |e| e.name.clone());
+            .map_or_else(|| new_surface_name.to_owned(), |e| e.name.clone());
         self.store
-            .upsert_entity(&existing_name_owned, entity_type, summary_opt)
+            .upsert_entity(
+                &existing_name_owned,
+                &existing_canonical,
+                entity_type,
+                summary_opt,
+            )
             .await?;
 
         // Retrieve existing qdrant_point_id to reuse it (avoids orphaned stale points, IC-S1)
@@ -891,11 +939,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("src", EntityType::Concept, None)
+            .upsert_entity("src", "src", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("tgt", EntityType::Concept, None)
+            .upsert_entity("tgt", "tgt", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -913,11 +961,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("a", EntityType::Concept, None)
+            .upsert_entity("a", "a", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("b", EntityType::Concept, None)
+            .upsert_entity("b", "b", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -940,11 +988,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("x", EntityType::Concept, None)
+            .upsert_entity("x", "x", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("y", EntityType::Concept, None)
+            .upsert_entity("y", "y", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -974,11 +1022,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let a = gs
-            .upsert_entity("node_a", EntityType::Concept, None)
+            .upsert_entity("node_a", "node_a", EntityType::Concept, None)
             .await
             .unwrap();
         let b = gs
-            .upsert_entity("node_b", EntityType::Concept, None)
+            .upsert_entity("node_b", "node_b", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -1007,11 +1055,11 @@ mod tests {
         let resolver = EntityResolver::new(&gs);
 
         let src = gs
-            .upsert_entity("p", EntityType::Concept, None)
+            .upsert_entity("p", "p", EntityType::Concept, None)
             .await
             .unwrap();
         let tgt = gs
-            .upsert_entity("q", EntityType::Concept, None)
+            .upsert_entity("q", "q", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -1178,6 +1226,7 @@ mod tests {
         let existing_id = gs
             .upsert_entity(
                 "python programming lang",
+                "python programming lang",
                 EntityType::Language,
                 Some("a programming language"),
             )
@@ -1233,7 +1282,7 @@ mod tests {
         let (gs, emb) = setup_with_embedding().await;
         // Insert existing entity with orthogonal vector
         let existing_id = gs
-            .upsert_entity("java", EntityType::Language, Some("java language"))
+            .upsert_entity("java", "java", EntityType::Language, Some("java language"))
             .await
             .unwrap();
 
@@ -1366,7 +1415,12 @@ mod tests {
         // "mergetest v1" is stored with embedding; we then resolve "mergetest v2" which
         // embeds to the same vector → similarity = 1.0 > threshold → merge.
         let existing_id = gs
-            .upsert_entity("mergetest v1", EntityType::Concept, Some("first summary"))
+            .upsert_entity(
+                "mergetest v1",
+                "mergetest v1",
+                EntityType::Concept,
+                Some("first summary"),
+            )
             .await
             .unwrap();
 
@@ -1423,7 +1477,12 @@ mod tests {
         let (gs, emb) = setup_with_embedding().await;
         // "legacy entity" stored with embedding; "legacy entity variant" has same vector → merge
         let existing_id = gs
-            .upsert_entity("legacy entity", EntityType::Concept, Some("old info"))
+            .upsert_entity(
+                "legacy entity",
+                "legacy entity",
+                EntityType::Concept,
+                Some("old info"),
+            )
             .await
             .unwrap();
 
@@ -1466,7 +1525,12 @@ mod tests {
 
         // Insert a Person named "python"
         let person_id = gs
-            .upsert_entity("python", EntityType::Person, Some("a person named python"))
+            .upsert_entity(
+                "python",
+                "python",
+                EntityType::Person,
+                Some("a person named python"),
+            )
             .await
             .unwrap();
 
@@ -1516,7 +1580,12 @@ mod tests {
         // (they'd score exactly 1.0 which is NOT > 1.0, so... let's use 0.5 threshold
         // and verify score below 0.5 creates new)
         let existing_id = gs
-            .upsert_entity("threshold_test", EntityType::Concept, Some("base"))
+            .upsert_entity(
+                "threshold_test",
+                "threshold_test",
+                EntityType::Concept,
+                Some("base"),
+            )
             .await
             .unwrap();
 
@@ -1597,7 +1666,7 @@ mod tests {
         vector: Vec<f32>,
     ) -> i64 {
         let id = gs
-            .upsert_entity(name, entity_type, Some(summary))
+            .upsert_entity(name, name, entity_type, Some(summary))
             .await
             .unwrap();
         emb.ensure_named_collection(ENTITY_COLLECTION, u64::try_from(vector.len()).unwrap())
@@ -1740,5 +1809,123 @@ mod tests {
             1,
             "fallback counter should be incremented on LLM chat failure"
         );
+    }
+
+    // ── Canonicalization / alias tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_creates_entity_with_canonical_name() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+        let (id, _) = resolver.resolve("Rust", "language", None).await.unwrap();
+        assert!(id > 0);
+        let entity = gs
+            .find_entity("rust", EntityType::Language)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entity.canonical_name, "rust");
+    }
+
+    #[tokio::test]
+    async fn resolve_adds_alias_on_create() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+        let (id, _) = resolver.resolve("Rust", "language", None).await.unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(
+            !aliases.is_empty(),
+            "new entity should have at least one alias"
+        );
+        assert!(aliases.iter().any(|a| a.alias_name == "rust"));
+    }
+
+    #[tokio::test]
+    async fn resolve_reuses_entity_by_alias() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // Create entity and register an alias
+        let (id1, _) = resolver.resolve("rust", "language", None).await.unwrap();
+        gs.add_alias(id1, "rust-lang").await.unwrap();
+
+        // Resolve using the alias — should return the same entity
+        let (id2, _) = resolver
+            .resolve("rust-lang", "language", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            id1, id2,
+            "'rust-lang' alias should resolve to same entity as 'rust'"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_alias_match_respects_entity_type() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "python" as a Language
+        let (lang_id, _) = resolver.resolve("python", "language", None).await.unwrap();
+
+        // "python" as a Tool should create a separate entity (different type)
+        let (tool_id, _) = resolver.resolve("python", "tool", None).await.unwrap();
+        assert_ne!(
+            lang_id, tool_id,
+            "same name with different type should be separate entities"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_preserves_existing_aliases() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        let (id, _) = resolver.resolve("rust", "language", None).await.unwrap();
+        gs.add_alias(id, "rust-lang").await.unwrap();
+
+        // Upserting same entity should not remove prior aliases
+        resolver
+            .resolve("rust", "language", Some("updated"))
+            .await
+            .unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(
+            aliases.iter().any(|a| a.alias_name == "rust-lang"),
+            "prior alias must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_original_form_registered_as_alias() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "  Rust  " — original trimmed lowercased form is "rust", same as normalized
+        // So only one alias should be registered (no duplicate)
+        let (id, _) = resolver
+            .resolve("  Rust  ", "language", None)
+            .await
+            .unwrap();
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert!(aliases.iter().any(|a| a.alias_name == "rust"));
+    }
+
+    #[tokio::test]
+    async fn resolve_entity_with_many_aliases() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("bigentity", "bigentity", EntityType::Concept, None)
+            .await
+            .unwrap();
+        for i in 0..100 {
+            gs.add_alias(id, &format!("alias-{i}")).await.unwrap();
+        }
+        let aliases = gs.aliases_for_entity(id).await.unwrap();
+        assert_eq!(aliases.len(), 100);
+
+        // Fuzzy search should still work via alias
+        let results = gs.find_entities_fuzzy("alias-50", 10).await.unwrap();
+        assert!(results.iter().any(|e| e.id == id));
     }
 }

@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add `GraphStore::find_entity_by_id()` and `GraphStore::set_entity_qdrant_point_id()` methods (#1230)
 - Add `EmbeddingStore::upsert_to_collection()` for point-id-stable Qdrant upserts (#1230)
 - Add `SemanticMemory::embedding_store()` getter for shared `Arc<EmbeddingStore>` access (#1230)
+- Add entity canonicalization with alias table for graph memory: `canonical_name` column on `graph_entities`, `graph_entity_aliases` lookup table, alias-first resolution in `EntityResolver`, deterministic first-registered-wins semantics, canonical-name deduplication in `graph_recall`, migration 024 with FK pragma guards (#1231)
 - Add `Aggregator` trait and `LlmAggregator` implementation: synthesizes completed task outputs into a single coherent response via LLM call with per-task character budget (`aggregator_max_tokens / num_completed_tasks`), `ContentSanitizer` spotlighting on task outputs, skipped-task descriptions, and raw-concatenation fallback when LLM call fails (Phase 5, #1240)
 - Add `/plan resume [id]` command: resumes a graph paused by the `ask` failure strategy via `DagScheduler::resume_from()`; reconstructs running-task map from graph state and sets status to `Running` before re-entering the tick loop (#1240)
 - Add `/plan retry [id]` command: re-runs a failed graph by resetting `Failed` tasks to `Ready` and `Skipped`/`Canceled` tasks to `Pending` via `dag::reset_for_retry()` BFS traversal; graph-id validation rejects mismatched IDs (#1240)

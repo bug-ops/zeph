@@ -4764,11 +4764,16 @@ mod tests {
         {
             let store = GraphStore::new(memory.sqlite().pool().clone());
             let rust_id = store
-                .upsert_entity("rust", EntityType::Language, Some("systems language"))
+                .upsert_entity(
+                    "rust",
+                    "rust",
+                    EntityType::Language,
+                    Some("systems language"),
+                )
                 .await
                 .unwrap();
             let tokio_id = store
-                .upsert_entity("tokio", EntityType::Tool, Some("async runtime"))
+                .upsert_entity("tokio", "tokio", EntityType::Tool, Some("async runtime"))
                 .await
                 .unwrap();
             store
