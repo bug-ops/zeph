@@ -6,6 +6,8 @@ mod context;
 pub(crate) mod context_manager;
 pub mod error;
 pub(super) mod feedback_detector;
+#[cfg(feature = "graph-memory")]
+mod graph_commands;
 #[cfg(feature = "index")]
 mod index;
 mod learning;
@@ -1261,6 +1263,12 @@ impl<C: Channel> Agent<C> {
                     return Ok(());
                 }
             }
+        }
+
+        #[cfg(feature = "graph-memory")]
+        if trimmed == "/graph" || trimmed.starts_with("/graph ") {
+            self.handle_graph_command(trimmed).await?;
+            return Ok(());
         }
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {

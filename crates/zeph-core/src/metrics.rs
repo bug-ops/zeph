@@ -208,6 +208,11 @@ pub struct MetricsSnapshot {
     /// Live snapshot of the currently active task graph. `None` when no plan is active.
     pub orchestration_graph: Option<TaskGraphSnapshot>,
     pub graph_community_detection_failures: u64,
+    pub graph_entities_total: u64,
+    pub graph_edges_total: u64,
+    pub graph_communities_total: u64,
+    pub graph_extraction_count: u64,
+    pub graph_extraction_failures: u64,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
@@ -641,5 +646,33 @@ mod tests {
             !snap.tasks[0].title.contains('\x00'),
             "title must not contain null byte"
         );
+    }
+
+    #[test]
+    fn graph_metrics_default_zero() {
+        let m = MetricsSnapshot::default();
+        assert_eq!(m.graph_entities_total, 0);
+        assert_eq!(m.graph_edges_total, 0);
+        assert_eq!(m.graph_communities_total, 0);
+        assert_eq!(m.graph_extraction_count, 0);
+        assert_eq!(m.graph_extraction_failures, 0);
+    }
+
+    #[test]
+    fn graph_metrics_update_via_collector() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.graph_entities_total = 5;
+            m.graph_edges_total = 10;
+            m.graph_communities_total = 2;
+            m.graph_extraction_count = 7;
+            m.graph_extraction_failures = 1;
+        });
+        let snapshot = rx.borrow().clone();
+        assert_eq!(snapshot.graph_entities_total, 5);
+        assert_eq!(snapshot.graph_edges_total, 10);
+        assert_eq!(snapshot.graph_communities_total, 2);
+        assert_eq!(snapshot.graph_extraction_count, 7);
+        assert_eq!(snapshot.graph_extraction_failures, 1);
     }
 }

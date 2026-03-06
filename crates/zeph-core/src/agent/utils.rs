@@ -19,6 +19,40 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Sync all graph counters (extraction count/failures) from `SemanticMemory` to metrics.
+    #[cfg(feature = "graph-memory")]
+    pub fn sync_graph_extraction_metrics(&self) {
+        if let Some(memory) = self.memory_state.memory.as_ref() {
+            let count = memory.graph_extraction_count();
+            let failures = memory.graph_extraction_failures();
+            self.update_metrics(|m| {
+                m.graph_extraction_count = count;
+                m.graph_extraction_failures = failures;
+            });
+        }
+    }
+
+    /// Fetch entity/edge/community counts from the graph store and write to metrics.
+    #[cfg(feature = "graph-memory")]
+    pub async fn sync_graph_counts(&self) {
+        let Some(memory) = self.memory_state.memory.as_ref() else {
+            return;
+        };
+        let Some(store) = memory.graph_store.as_ref() else {
+            return;
+        };
+        let (entities, edges, communities) = tokio::join!(
+            store.entity_count(),
+            store.active_edge_count(),
+            store.community_count()
+        );
+        self.update_metrics(|m| {
+            m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
+            m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
+            m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+        });
+    }
+
     /// Perform a real health check on the vector store and update metrics.
     pub async fn check_vector_store_health(&self, backend_name: &str) {
         let connected = match self.memory_state.memory.as_ref() {

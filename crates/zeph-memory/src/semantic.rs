@@ -172,6 +172,10 @@ pub struct SemanticMemory {
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
     #[cfg(feature = "graph-memory")]
     community_detection_failures: Arc<AtomicU64>,
+    #[cfg(feature = "graph-memory")]
+    graph_extraction_count: Arc<AtomicU64>,
+    #[cfg(feature = "graph-memory")]
+    graph_extraction_failures: Arc<AtomicU64>,
 }
 
 impl SemanticMemory {
@@ -257,6 +261,10 @@ impl SemanticMemory {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -276,6 +284,20 @@ impl SemanticMemory {
     #[must_use]
     pub fn community_detection_failures(&self) -> u64 {
         self.community_detection_failures.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cumulative count of successful graph extractions since startup.
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn graph_extraction_count(&self) -> u64 {
+        self.graph_extraction_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cumulative count of failed graph extractions since startup.
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn graph_extraction_failures(&self) -> u64 {
+        self.graph_extraction_failures.load(Ordering::Relaxed)
     }
 
     /// Configure temporal decay and MMR re-ranking options.
@@ -324,6 +346,10 @@ impl SemanticMemory {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -383,6 +409,10 @@ impl SemanticMemory {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1385,6 +1415,8 @@ impl SemanticMemory {
         let pool = self.sqlite.pool().clone();
         let provider = self.provider.clone();
         let failure_counter = self.community_detection_failures.clone();
+        let extraction_count = self.graph_extraction_count.clone();
+        let extraction_failures = self.graph_extraction_failures.clone();
 
         tokio::spawn(async move {
             let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
@@ -1406,14 +1438,17 @@ impl SemanticMemory {
                         edges = stats.edges_inserted,
                         "graph extraction completed"
                     );
+                    extraction_count.fetch_add(1, Ordering::Relaxed);
                     true
                 }
                 Ok(Err(e)) => {
                     tracing::warn!("graph extraction failed: {e:#}");
+                    extraction_failures.fetch_add(1, Ordering::Relaxed);
                     false
                 }
                 Err(_elapsed) => {
                     tracing::warn!("graph extraction timed out");
+                    extraction_failures.fetch_add(1, Ordering::Relaxed);
                     false
                 }
             };
@@ -1495,8 +1530,12 @@ pub struct ExtractionStats {
 /// Extract entities and edges from `content` and persist them to the graph store.
 ///
 /// This function runs inside a spawned task — it receives owned data only.
+///
+/// # Errors
+///
+/// Returns an error if the database query fails or LLM extraction fails.
 #[cfg(feature = "graph-memory")]
-async fn extract_and_store(
+pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
     provider: AnyProvider,
@@ -1612,6 +1651,10 @@ mod tests {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -2069,6 +2112,10 @@ mod tests {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2206,6 +2253,10 @@ mod tests {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -2480,6 +2531,10 @@ mod tests {
             graph_store: None,
             #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "graph-memory")]
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();

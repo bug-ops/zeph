@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `--graph-memory` CLI flag to enable graph memory for the session, overriding `memory.graph.enabled` in config (`src/cli.rs`, `src/runner.rs`) (Phase 6, #1233)
+- Add graph memory questions to `zeph init` wizard: "Enable knowledge graph memory? (experimental)" and "LLM model for entity extraction" prompts; results written to `[memory.graph]` config section (`src/init.rs`) (Phase 6, #1233)
+- Add five `/graph` TUI slash commands handled in agent loop: `/graph` (stats), `/graph entities`, `/graph facts <name>`, `/graph communities`, `/graph backfill [--limit N]`; all with pre-dispatch status messages (`crates/zeph-core/src/agent/graph_commands.rs`) (Phase 6, #1233)
+- Add five graph-memory command palette entries (`graph:stats`, `graph:entities`, `graph:facts`, `graph:communities`, `graph:backfill`) to `extra_command_registry` in `zeph-tui` (Phase 6, #1233)
+- Add five graph metrics fields to `MetricsSnapshot` (always present, no `#[cfg]` gate): `graph_entities_total`, `graph_edges_total`, `graph_communities_total`, `graph_extraction_count`, `graph_extraction_failures` (Phase 6, #1233)
+- Add `graph_extraction_count` and `graph_extraction_failures` `Arc<AtomicU64>` counters to `SemanticMemory`; incremented in `spawn_graph_extraction` success/failure/timeout paths (Phase 6, #1233)
+- Add `sync_graph_extraction_metrics` helper to `AgentUtils` to mirror AtomicU64 counters into `MetricsSnapshot` (Phase 6, #1233)
+- Add `GraphStore` backfill SQL methods: `unprocessed_messages_for_backfill(limit)`, `unprocessed_message_count()`, `mark_messages_graph_processed(ids)` (Phase 6, #1233)
+- Add `find_entity_by_name` convenience wrapper on `GraphStore` delegating to `find_entities_fuzzy` (Phase 6, #1233)
+- Add docs: TUI commands table, CLI flag, configuration wizard, and backfill sections to `docs/src/concepts/graph-memory.md`; Phase 6 marked complete (Phase 6, #1233)
 - Add end-to-end orchestration integration tests (plan graph → execute via DagScheduler tick loop → aggregate with LlmAggregator) covering happy path, single-task, abort-on-failure, skip-on-failure, and retry-exhausted scenarios; gated on `orchestration` + `mock` features (#1242)
 - Add "Limitations" section to `docs/src/concepts/task-orchestration.md` documenting English-only keyword routing, `max_tasks` cap, no dynamic re-planning, no hot-reload of orchestration config, and reserved `planner_model`/`planner_max_tokens` fields (#1242)
 - Add embedding-based entity resolution for graph memory: cosine similarity search via Qdrant `zeph_graph_entities` collection, LLM disambiguation for ambiguous matches, batch resolution with `buffer_unordered(4)`, per-entity-name locking, graceful fallback to exact match on embedding/LLM failures (#1230)

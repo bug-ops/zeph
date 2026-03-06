@@ -1022,6 +1022,33 @@ impl App {
             TuiCommand::PlanToggleView => {
                 self.plan_view_active = !self.plan_view_active;
             }
+            #[cfg(feature = "graph-memory")]
+            TuiCommand::GraphStats => {
+                self.push_system_message("Loading graph stats...".to_owned());
+                let _ = self.user_input_tx.try_send("/graph".to_owned());
+            }
+            #[cfg(feature = "graph-memory")]
+            TuiCommand::GraphEntities => {
+                self.push_system_message("Loading graph entities...".to_owned());
+                let _ = self.user_input_tx.try_send("/graph entities".to_owned());
+            }
+            #[cfg(feature = "graph-memory")]
+            TuiCommand::GraphCommunities => {
+                self.push_system_message("Loading graph communities...".to_owned());
+                let _ = self.user_input_tx.try_send("/graph communities".to_owned());
+            }
+            #[cfg(feature = "graph-memory")]
+            TuiCommand::GraphFactsPrompt => {
+                self.input.clear();
+                self.input.push_str("/graph facts ");
+                self.cursor_position = self.input.len();
+            }
+            #[cfg(feature = "graph-memory")]
+            TuiCommand::GraphBackfillPrompt => {
+                self.input.clear();
+                self.input.push_str("/graph backfill");
+                self.cursor_position = self.input.len();
+            }
         }
     }
 

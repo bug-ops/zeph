@@ -234,6 +234,51 @@ Graph memory uses five SQLite tables (created by migrations 021, 023, and 024, i
 
 A `graph_processed` flag on the existing `messages` table tracks which messages have been processed for entity extraction.
 
+## TUI Commands
+
+All `/graph` commands are available in the interactive session (CLI and TUI):
+
+| Command | Description |
+|---------|-------------|
+| `/graph` | Show graph statistics: entity, edge, and community counts |
+| `/graph entities` | List all known entities with type and last-seen date (capped at 50) |
+| `/graph facts <name>` | Show all facts (edges) connected to a named entity (fuzzy match) |
+| `/graph communities` | List detected communities with names and summaries |
+| `/graph backfill [--limit N]` | Extract graph data from existing conversation messages |
+
+Commands that query the database (`/graph entities`, `/graph communities`, `/graph backfill`) emit a
+status message before results so you always know what is happening.
+
+## CLI Flag
+
+`--graph-memory` enables graph memory for the session, overriding `memory.graph.enabled` in config:
+
+```sh
+zeph --graph-memory
+```
+
+## Configuration Wizard
+
+When running `zeph init`, you will be prompted:
+
+1. **"Enable knowledge graph memory? (experimental)"** — sets `memory.graph.enabled = true`
+2. **"LLM model for entity extraction (empty = same as agent)"** — sets `memory.graph.extract_model`
+   (leave empty to use the same model as the main agent)
+
+## Backfill
+
+To populate the graph from existing conversations, use `/graph backfill`. This processes all messages
+that have not yet been graph-extracted and stores the resulting entities and edges.
+
+```
+/graph backfill             # process all unprocessed messages
+/graph backfill --limit 100 # process at most 100 messages
+```
+
+Backfill runs synchronously in the agent loop and reports progress after each batch of 50 messages.
+For large conversation histories, use `--limit` to spread the work across multiple sessions.
+LLM costs apply per message processed.
+
 ## Implementation Phases
 
 Graph memory is being implemented incrementally:
@@ -243,7 +288,7 @@ Graph memory is being implemented incrementally:
 3. ~~**Graph-Aware Retrieval** — BFS traversal with fuzzy entity matching, composite scoring, and cycle-safe traversal~~
 4. ~~**Background Extraction** — non-blocking extraction in agent loop, context injection, budget allocation~~
 5. ~~**Community Detection** — label propagation with petgraph, graph eviction~~
-6. **TUI & Observability** — `/graph` commands, metrics, init wizard
+6. ~~**TUI & Observability** — `/graph` commands, metrics, init wizard~~
 
 ## See Also
 

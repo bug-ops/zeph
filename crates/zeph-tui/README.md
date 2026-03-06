@@ -40,6 +40,21 @@ Press `a` in the TUI to open the interactive agents panel. It provides full CRUD
 
 Keybindings: `c` — create, `e` — edit, `d` — delete, Enter — detail view, Esc — go back.
 
+## Graph memory commands
+
+When the `graph-memory` feature is enabled, the TUI provides `/graph` slash commands for inspecting the knowledge graph:
+
+| Command | Description |
+|---------|-------------|
+| `/graph` | Show entity, edge, and community counts |
+| `/graph entities` | List all entities with type and last-seen timestamp |
+| `/graph facts <entity>` | Show relationships for a specific entity |
+| `/graph communities` | List detected communities |
+| `/graph backfill [--limit N]` | Process existing messages through graph extraction |
+
+> [!NOTE]
+> These commands require `--features graph-memory` (or `--features full`). The graph must be enabled in config (`[memory.graph] enabled = true`) or via the `--graph-memory` CLI flag.
+
 ## Command palette
 
 The command palette is opened with `:` in normal mode. Type to fuzzy-filter entries, then press Enter to execute.
@@ -54,6 +69,11 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `view:config` | Show active configuration |
 | `view:autonomy` | Show autonomy/trust level |
 | `view:filters` | Display output filter hit rates and invocation counts |
+| `graph:stats` | Show graph memory statistics — requires `graph-memory` feature |
+| `graph:entities` | List graph entities — requires `graph-memory` feature |
+| `graph:facts` | Show entity facts (prompts for entity name) — requires `graph-memory` feature |
+| `graph:communities` | List graph communities — requires `graph-memory` feature |
+| `graph:backfill` | Backfill graph from existing messages — requires `graph-memory` feature |
 | `scheduler:list` | List active scheduled tasks (name, kind, mode, next run) — requires `scheduler` feature |
 | `gateway:status` | Show gateway server state — requires `gateway` feature |
 | `security:events` | Show security event history |

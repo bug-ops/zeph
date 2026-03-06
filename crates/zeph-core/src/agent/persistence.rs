@@ -202,6 +202,10 @@ impl<C: Channel> Agent<C> {
             memory.spawn_graph_extraction(content.to_owned(), context_messages, extraction_cfg);
         }
         self.sync_community_detection_failures();
+        #[cfg(feature = "graph-memory")]
+        self.sync_graph_extraction_metrics();
+        #[cfg(feature = "graph-memory")]
+        self.sync_graph_counts().await;
     }
 
     pub(crate) async fn check_summarization(&mut self) {

@@ -868,6 +868,90 @@ impl GraphStore {
 
         Ok((entities, edges, depth_map))
     }
+
+    // ── Backfill helpers ──────────────────────────────────────────────────────
+
+    /// Find an entity by name only (no type filter). Uses FTS5 prefix search with alias fallback.
+    ///
+    /// This is a convenience wrapper around `find_entities_fuzzy` returning the best match.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn find_entity_by_name(&self, name: &str) -> Result<Vec<Entity>, MemoryError> {
+        self.find_entities_fuzzy(name, 5).await
+    }
+
+    /// Return up to `limit` messages that have not yet been processed by graph extraction.
+    ///
+    /// Reads the `graph_processed` column added by migration 021.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn unprocessed_messages_for_backfill(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(crate::types::MessageId, String)>, MemoryError> {
+        let limit = i64::try_from(limit)?;
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, content FROM messages
+             WHERE graph_processed = 0
+             ORDER BY id ASC
+             LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, content)| (crate::types::MessageId(id), content))
+            .collect())
+    }
+
+    /// Return the count of messages not yet processed by graph extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn unprocessed_message_count(&self) -> Result<i64, MemoryError> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE graph_processed = 0")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
+
+    /// Mark a batch of messages as graph-processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "graph-memory")]
+    pub async fn mark_messages_graph_processed(
+        &self,
+        ids: &[crate::types::MessageId],
+    ) -> Result<(), MemoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("UPDATE messages SET graph_processed = 1 WHERE id IN ({placeholders})");
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id.0);
+        }
+        query.execute(&self.pool).await?;
+        Ok(())
+    }
 }
 
 // ── Row types for sqlx::query_as ─────────────────────────────────────────────
@@ -2145,5 +2229,82 @@ mod tests {
         assert!(results.is_empty(), "only parens should return no results");
         let results = gs.find_entities_fuzzy("\"\"\"", 10).await.unwrap();
         assert!(results.is_empty(), "only quotes should return no results");
+    }
+
+    #[cfg(feature = "graph-memory")]
+    async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {
+        // Insert a conversation first (FK constraint).
+        let conv_id: i64 =
+            sqlx::query_scalar("INSERT INTO conversations DEFAULT VALUES RETURNING id")
+                .fetch_one(&gs.pool)
+                .await
+                .unwrap();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2) RETURNING id",
+        )
+        .bind(conv_id)
+        .bind(content)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+        crate::types::MessageId(id)
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn unprocessed_messages_for_backfill_returns_unprocessed() {
+        let gs = setup().await;
+        let id1 = insert_test_message(&gs, "hello world").await;
+        let id2 = insert_test_message(&gs, "second message").await;
+
+        let rows = gs.unprocessed_messages_for_backfill(10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|(id, _)| *id == id1));
+        assert!(rows.iter().any(|(id, _)| *id == id2));
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn unprocessed_messages_for_backfill_respects_limit() {
+        let gs = setup().await;
+        insert_test_message(&gs, "msg1").await;
+        insert_test_message(&gs, "msg2").await;
+        insert_test_message(&gs, "msg3").await;
+
+        let rows = gs.unprocessed_messages_for_backfill(2).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn mark_messages_graph_processed_updates_flag() {
+        let gs = setup().await;
+        let id1 = insert_test_message(&gs, "to process").await;
+        let _id2 = insert_test_message(&gs, "also to process").await;
+
+        // Before marking: both are unprocessed
+        let count_before = gs.unprocessed_message_count().await.unwrap();
+        assert_eq!(count_before, 2);
+
+        gs.mark_messages_graph_processed(&[id1]).await.unwrap();
+
+        let count_after = gs.unprocessed_message_count().await.unwrap();
+        assert_eq!(count_after, 1);
+
+        // Remaining unprocessed should not contain id1
+        let rows = gs.unprocessed_messages_for_backfill(10).await.unwrap();
+        assert!(!rows.iter().any(|(id, _)| *id == id1));
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn mark_messages_graph_processed_empty_ids_is_noop() {
+        let gs = setup().await;
+        insert_test_message(&gs, "message").await;
+
+        gs.mark_messages_graph_processed(&[]).await.unwrap();
+
+        let count = gs.unprocessed_message_count().await.unwrap();
+        assert_eq!(count, 1);
     }
 }

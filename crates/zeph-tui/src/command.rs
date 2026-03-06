@@ -51,6 +51,17 @@ pub enum TuiCommand {
     PlanCancel,
     PlanList,
     PlanToggleView,
+    // Graph memory
+    #[cfg(feature = "graph-memory")]
+    GraphStats,
+    #[cfg(feature = "graph-memory")]
+    GraphEntities,
+    #[cfg(feature = "graph-memory")]
+    GraphFactsPrompt,
+    #[cfg(feature = "graph-memory")]
+    GraphCommunities,
+    #[cfg(feature = "graph-memory")]
+    GraphBackfillPrompt,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -321,6 +332,46 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: Some("p"),
             command: TuiCommand::PlanToggleView,
         },
+        #[cfg(feature = "graph-memory")]
+        CommandEntry {
+            id: "graph:stats",
+            label: "Show graph memory statistics (/graph)",
+            category: "graph",
+            shortcut: None,
+            command: TuiCommand::GraphStats,
+        },
+        #[cfg(feature = "graph-memory")]
+        CommandEntry {
+            id: "graph:entities",
+            label: "List graph entities (/graph entities)",
+            category: "graph",
+            shortcut: None,
+            command: TuiCommand::GraphEntities,
+        },
+        #[cfg(feature = "graph-memory")]
+        CommandEntry {
+            id: "graph:facts",
+            label: "Show entity facts (/graph facts <name>)",
+            category: "graph",
+            shortcut: None,
+            command: TuiCommand::GraphFactsPrompt,
+        },
+        #[cfg(feature = "graph-memory")]
+        CommandEntry {
+            id: "graph:communities",
+            label: "List graph communities (/graph communities)",
+            category: "graph",
+            shortcut: None,
+            command: TuiCommand::GraphCommunities,
+        },
+        #[cfg(feature = "graph-memory")]
+        CommandEntry {
+            id: "graph:backfill",
+            label: "Backfill graph from existing messages (/graph backfill)",
+            category: "graph",
+            shortcut: None,
+            command: TuiCommand::GraphBackfillPrompt,
+        },
     ];
     EXTRA
 }
@@ -396,7 +447,11 @@ mod tests {
     }
 
     #[test]
-    fn extra_registry_has_nineteen_commands() {
+    fn extra_registry_has_correct_command_count() {
+        // 19 base (14 + 5 plan) + 5 graph-memory commands (when feature enabled)
+        #[cfg(feature = "graph-memory")]
+        assert_eq!(extra_command_registry().len(), 24);
+        #[cfg(not(feature = "graph-memory"))]
         assert_eq!(extra_command_registry().len(), 19);
     }
 
@@ -424,7 +479,8 @@ mod tests {
     #[test]
     fn filter_by_id_prefix() {
         let results = filter_commands("skill");
-        assert_eq!(results.len(), 1);
+        assert!(!results.is_empty());
+        // skill:list must be the top-ranked result
         assert_eq!(results[0].id, "skill:list");
     }
 
@@ -500,5 +556,16 @@ mod tests {
             results.iter().any(|e| e.id == "security:events"),
             "security:events must appear when searching 'security'"
         );
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[test]
+    fn filter_graph_returns_graph_entries() {
+        let results = filter_commands("graph");
+        assert!(results.iter().any(|e| e.id == "graph:stats"));
+        assert!(results.iter().any(|e| e.id == "graph:entities"));
+        assert!(results.iter().any(|e| e.id == "graph:facts"));
+        assert!(results.iter().any(|e| e.id == "graph:communities"));
+        assert!(results.iter().any(|e| e.id == "graph:backfill"));
     }
 }
