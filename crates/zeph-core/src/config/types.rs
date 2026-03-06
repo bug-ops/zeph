@@ -1862,9 +1862,16 @@ pub struct OrchestrationConfig {
     pub dependency_context_budget: usize,
     /// Whether to show a confirmation prompt before executing a plan.
     pub confirm_before_execute: bool,
+    /// Maximum tokens budget for aggregation LLM calls. Default: 4096.
+    #[serde(default = "default_aggregator_max_tokens")]
+    pub aggregator_max_tokens: u32,
 }
 
 fn default_planner_max_tokens() -> u32 {
+    4096
+}
+
+fn default_aggregator_max_tokens() -> u32 {
     4096
 }
 
@@ -1881,6 +1888,7 @@ impl Default for OrchestrationConfig {
             planner_max_tokens: default_planner_max_tokens(),
             dependency_context_budget: 16384,
             confirm_before_execute: true,
+            aggregator_max_tokens: default_aggregator_max_tokens(),
         }
     }
 }

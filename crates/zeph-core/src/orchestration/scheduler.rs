@@ -181,6 +181,82 @@ impl DagScheduler {
         })
     }
 
+    /// Create a scheduler from a graph that is in `Paused` or `Failed` status.
+    ///
+    /// Used for resume and retry flows. The caller is responsible for calling
+    /// [`dag::reset_for_retry`] (for retry) before passing the graph here.
+    ///
+    /// This constructor sets `graph.status = Running` (II3) and reconstructs
+    /// the `running` map from tasks that are still in `Running` state (IC1), so
+    /// their completion events are not silently dropped on the next tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::InvalidGraph` if the graph is in `Completed`
+    /// or `Canceled` status (terminal states that cannot be resumed).
+    pub fn resume_from(
+        mut graph: TaskGraph,
+        config: &OrchestrationConfig,
+        router: Box<dyn AgentRouter>,
+        available_agents: Vec<SubAgentDef>,
+    ) -> Result<Self, OrchestrationError> {
+        if graph.status == GraphStatus::Completed || graph.status == GraphStatus::Canceled {
+            return Err(OrchestrationError::InvalidGraph(format!(
+                "cannot resume a {} graph; only Paused, Failed, or Running graphs are resumable",
+                graph.status
+            )));
+        }
+
+        // II3: ensure the graph is in Running state so tick() does not immediately
+        // return Done{Paused}.
+        graph.status = GraphStatus::Running;
+
+        // IC1: reconstruct the `running` map from tasks that were still Running at
+        // pause time. Without this their completion events would arrive but
+        // process_event would ignore them (it checks self.running), leaving the
+        // task stuck until timeout.
+        let running: HashMap<TaskId, RunningTask> = graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Running)
+            .filter_map(|t| {
+                let handle_id = t.assigned_agent.clone()?;
+                let def_name = t.agent_hint.clone().unwrap_or_default();
+                Some((
+                    t.id,
+                    RunningTask {
+                        agent_handle_id: handle_id,
+                        agent_def_name: def_name,
+                        // Conservative: treat as just-started so timeout window is reset.
+                        started_at: Instant::now(),
+                    },
+                ))
+            })
+            .collect();
+
+        let (event_tx, event_rx) = mpsc::channel(64);
+
+        let task_timeout = if config.task_timeout_secs > 0 {
+            Duration::from_secs(config.task_timeout_secs)
+        } else {
+            Duration::from_secs(600)
+        };
+
+        Ok(Self {
+            graph,
+            max_parallel: config.max_parallel as usize,
+            running,
+            event_rx,
+            event_tx,
+            task_timeout,
+            router,
+            available_agents,
+            dependency_context_budget: config.dependency_context_budget,
+            buffered_events: VecDeque::new(),
+            sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+        })
+    }
+
     /// Get a clone of the event sender for injection into sub-agent loops.
     #[must_use]
     pub fn event_sender(&self) -> mpsc::Sender<TaskEvent> {
@@ -363,11 +439,16 @@ impl DagScheduler {
             Some(event) = self.event_rx.recv() => {
                 // SEC-ORCH-02: guard against unbounded buffer growth.
                 if self.buffered_events.len() >= self.max_parallel * 2 {
-                    tracing::warn!(
-                        buffer_len = self.buffered_events.len(),
-                        "event buffer saturated; dropping oldest event"
-                    );
-                    self.buffered_events.pop_front();
+                    // PERF-SCHED-02: log at error level — a dropped completion event
+                    // leaves a task stuck in Running until its timeout fires.
+                    if let Some(dropped) = self.buffered_events.pop_front() {
+                        tracing::error!(
+                            task_id = %dropped.task_id,
+                            buffer_len = self.buffered_events.len(),
+                            "event buffer saturated; completion event dropped — task may \
+                             remain Running until timeout"
+                        );
+                    }
                 }
                 self.buffered_events.push_back(event);
             }
@@ -764,6 +845,7 @@ mod tests {
             planner_max_tokens: 4096,
             dependency_context_budget: 16384,
             confirm_before_execute: true,
+            aggregator_max_tokens: 4096,
         }
     }
 
@@ -1401,5 +1483,88 @@ mod tests {
             prompt.contains("[truncated:"),
             "prompt must contain truncation notice. Prompt: {prompt}"
         );
+    }
+
+    // --- resume_from tests (MT-1) ---
+
+    #[test]
+    fn test_resume_from_accepts_paused_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Paused;
+        graph.tasks[0].status = TaskStatus::Pending;
+
+        let scheduler =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+                .expect("resume_from should accept Paused graph");
+        assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_resume_from_accepts_failed_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Failed;
+        graph.tasks[0].status = TaskStatus::Failed;
+
+        let scheduler =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+                .expect("resume_from should accept Failed graph");
+        assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_resume_from_rejects_completed_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Completed;
+
+        let err = DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            .unwrap_err();
+        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+    }
+
+    #[test]
+    fn test_resume_from_rejects_canceled_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Canceled;
+
+        let err = DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            .unwrap_err();
+        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+    }
+
+    #[test]
+    fn test_resume_from_reconstructs_running_tasks() {
+        // IC1: tasks that were Running at pause time must appear in the running map.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.status = GraphStatus::Paused;
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[0].assigned_agent = Some("handle-abc".to_string());
+        graph.tasks[0].agent_hint = Some("worker".to_string());
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let scheduler =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+                .expect("should succeed");
+
+        assert!(
+            scheduler.running.contains_key(&TaskId(0)),
+            "Running task must be reconstructed in the running map (IC1)"
+        );
+        assert_eq!(scheduler.running[&TaskId(0)].agent_handle_id, "handle-abc");
+        assert!(
+            !scheduler.running.contains_key(&TaskId(1)),
+            "Pending task must not appear in running map"
+        );
+    }
+
+    #[test]
+    fn test_resume_from_sets_status_running() {
+        // II3: resume_from must set graph.status = Running regardless of input status.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Paused;
+
+        let scheduler =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+                .unwrap();
+        assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }
 }
