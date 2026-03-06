@@ -80,7 +80,10 @@ impl<C: Channel> Agent<C> {
         let parts_json = if parts.is_empty() {
             "[]".to_string()
         } else {
-            serde_json::to_string(parts).unwrap_or_else(|_| "[]".to_string())
+            serde_json::to_string(parts).unwrap_or_else(|e| {
+                tracing::warn!("failed to serialize message parts, storing empty: {e}");
+                "[]".to_string()
+            })
         };
 
         // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
