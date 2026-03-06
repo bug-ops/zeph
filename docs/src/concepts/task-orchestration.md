@@ -1,6 +1,8 @@
 # Task Orchestration
 
-Task orchestration decomposes complex goals into a directed acyclic graph (DAG) of dependent tasks, executes them in parallel where possible, and handles failures with configurable strategies. It is an optional, feature-gated component (`--features orchestration`) that persists graph state in SQLite so execution survives restarts.
+Use task orchestration to break a complex goal into a directed acyclic graph (DAG) of dependent tasks, execute them in parallel where possible, and recover from failures without restarting the entire plan. This page explains the core types, DAG algorithms, scheduling model, result aggregation, and the `/plan` CLI commands.
+
+Task orchestration is an optional, feature-gated component that persists graph state in SQLite so execution survives restarts.
 
 ## Prerequisites
 
@@ -8,6 +10,12 @@ Enable the `orchestration` feature flag before building:
 
 ```bash
 cargo build --release --features orchestration
+```
+
+The `orchestration` feature is also included in the `full` feature set:
+
+```bash
+cargo build --release --features full
 ```
 
 See [Feature Flags](../reference/feature-flags.md) for the full flag list.

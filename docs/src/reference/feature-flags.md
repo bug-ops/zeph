@@ -88,7 +88,7 @@ cargo build --release --features gateway,daemon,scheduler  # with infrastructure
 cargo build --release --features full                      # all optional features
 ```
 
-The `full` feature enables every optional feature except `metal`, `cuda`, and `otel`.
+The `full` feature enables every optional feature except `candle`, `metal`, and `cuda`.
 
 ## Build Profiles
 
