@@ -75,12 +75,13 @@ auto_update_check = true  # Query GitHub Releases API for newer versions (defaul
 #     "candle"                          — Local candle inference
 #   [agent.summary_provider] takes precedence over summary_model when both are set.
 
-# Structured summary provider (same format as orchestrator sub-providers):
+# Structured summary provider (same struct as [llm.orchestrator.providers.*]):
 # [agent.summary_provider]
 # type = "claude"                        # claude, openai, compatible, ollama, candle
-# model = "claude-haiku-4-5-20251001"   # optional: model name override
-# base_url = "..."                       # optional: endpoint override (compatible/ollama only)
-# device = "cpu"                         # optional: cpu, cuda, metal (candle only)
+# model = "claude-haiku-4-5-20251001"   # model override (for compatible: [[llm.compatible]] entry name)
+# base_url = "..."                       # endpoint override (ollama / openai only)
+# embedding_model = "..."               # embedding model override (ollama / openai only)
+# device = "cpu"                         # cpu, cuda, metal (candle only)
 
 [agent.instructions]
 auto_detect    = true    # Auto-detect provider-specific files: CLAUDE.md, AGENTS.md, GEMINI.md (default: true)

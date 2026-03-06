@@ -143,36 +143,40 @@ By default, tool-pair summarization uses the primary LLM provider. You can dedic
 
 #### Structured config (recommended)
 
-`[agent.summary_provider]` accepts the same fields as orchestrator sub-providers:
+`[agent.summary_provider]` uses the same struct as `[llm.orchestrator.providers.*]`:
 
 ```toml
-# Claude
+# Claude — model falls back to [llm.cloud].model when omitted
 [agent.summary_provider]
 type = "claude"
 model = "claude-haiku-4-5-20251001"
 
-# OpenAI
+# OpenAI — model/base_url fall back to [llm.openai] when omitted
 [agent.summary_provider]
 type = "openai"
 model = "gpt-4o-mini"
 
-# OpenAI-compatible local server
-[agent.summary_provider]
-type = "compatible"
-model = "qwen3:1.7b"
-base_url = "http://localhost:8080/v1"
-
-# Ollama
+# Ollama — model/base_url fall back to [llm] when omitted
 [agent.summary_provider]
 type = "ollama"
 model = "qwen3:1.7b"
 base_url = "http://localhost:11434"
 
+# OpenAI-compatible server — `model` is the entry name in [[llm.compatible]]
+[[llm.compatible]]
+name = "lm-studio"
+base_url = "http://localhost:8080/v1"
+model = "llama-3.2-1b"
+
+[agent.summary_provider]
+type = "compatible"
+model = "lm-studio"   # matches [[llm.compatible]] name, not the model name
+
 # Local candle inference (requires candle feature)
 [agent.summary_provider]
 type = "candle"
-model = "mistral-7b-instruct"
-device = "metal"   # "cpu", "cuda", or "metal"
+model = "mistral-7b-instruct"   # HuggingFace repo_id; overrides [llm.candle]
+device = "metal"                 # "cpu", "cuda", or "metal"; overrides [llm.candle].device
 ```
 
 Fields:
@@ -180,8 +184,9 @@ Fields:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `type` | yes | `claude`, `openai`, `compatible`, `ollama`, or `candle` |
-| `model` | no | Model name; defaults to the value from the primary provider section |
-| `base_url` | no | Override endpoint URL (`compatible` and `ollama` only) |
+| `model` | no | Model name override (for `compatible`: the `[[llm.compatible]]` entry name) |
+| `base_url` | no | Override endpoint URL (`ollama` and `openai` only) |
+| `embedding_model` | no | Override embedding model (`ollama` and `openai` only) |
 | `device` | no | Inference device: `cpu`, `cuda`, `metal` (`candle` only) |
 
 #### String shorthand (`summary_model`)

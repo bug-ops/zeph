@@ -111,7 +111,7 @@ type = "claude"
 model = "claude-haiku-4-5-20251001"
 ```
 
-Supported `type` values: `claude`, `openai`, `compatible`, `ollama`, `candle`. The `base_url` field overrides the endpoint for `compatible` and `ollama` providers. The `device` field (`cpu`, `cuda`, `metal`) applies to `candle` only.
+Supported `type` values: `claude`, `openai`, `compatible`, `ollama`, `candle`. For `compatible`, the `model` field is the entry name in `[[llm.compatible]]` (not the model name). The `base_url` field overrides the endpoint for `ollama` and `openai` providers. The `device` field (`cpu`, `cuda`, `metal`) applies to `candle` only.
 
 Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable update notifications without changing the config file.
 
