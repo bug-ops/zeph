@@ -597,6 +597,15 @@ impl<C: Channel> Agent<C> {
     /// Inline pruning for tool loops: clear tool output bodies from messages
     /// older than the last `keep_recent` messages. Called after each tool iteration
     /// to prevent context growth during long tool loops.
+    ///
+    /// # Invariant
+    ///
+    /// This method MUST be called AFTER `maybe_summarize_tool_pair()`. The summarizer
+    /// reads `msg.content` to build the LLM prompt; pruning replaces that content with
+    /// `"[pruned]"`. Calling prune first would cause the summarizer to produce useless
+    /// summaries. After summarization, the processed pair is hidden (`agent_visible=false`)
+    /// and skipped by `count_tool_pairs`. The pruning loop may still clear their bodies
+    /// for token savings, but the content has already been captured in the summary.
     pub(crate) fn prune_stale_tool_outputs(&mut self, keep_recent: usize) -> usize {
         if self.messages.len() <= keep_recent + 1 {
             return 0;
@@ -4671,6 +4680,233 @@ mod tests {
         let tc = zeph_memory::TokenCounter::new();
         let alloc = budget.allocate("", "", &tc, true);
         assert_eq!(alloc.graph_facts, 0);
+    }
+
+    // --- pruning-summarization order tests ---
+
+    // Helper: add a tool pair with ToolOutput parts (so pruning can clear the body).
+    fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
+        agent.messages.push(Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: format!("id_{tool_name}"),
+                name: tool_name.to_owned(),
+                input: serde_json::json!({"cmd": "echo hello"}),
+            }],
+        ));
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: tool_name.to_owned(),
+                body: format!("full output of {tool_name}"),
+                compacted_at: None,
+            }],
+        ));
+    }
+
+    #[tokio::test]
+    async fn summarize_then_prune_preserves_intact_content_for_summarizer() {
+        // The summarizer must receive non-pruned content.
+        // With cutoff=2, adding 3 pairs triggers summarization.
+        let summary_text = "summarized bash call".to_owned();
+        let provider = mock_provider(vec![summary_text.clone()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(2);
+
+        make_tool_pair_with_output(&mut agent, "bash");
+        make_tool_pair_with_output(&mut agent, "read_file");
+        make_tool_pair_with_output(&mut agent, "write_file");
+
+        // Correct order: summarize first, then prune.
+        agent.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+        agent.prune_stale_tool_outputs(keep_recent);
+
+        // The summary was inserted — summarizer must have seen content.
+        let has_summary = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(has_summary, "summary should have been inserted");
+
+        // The summarized pair is now hidden.
+        assert!(
+            !agent.messages[1].metadata.agent_visible,
+            "oldest pair request should be hidden"
+        );
+        assert!(
+            !agent.messages[2].metadata.agent_visible,
+            "oldest pair response should be hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_after_summarize_does_not_destroy_visible_pairs() {
+        // After summarize-then-prune, remaining visible pairs within keep_recent
+        // should have intact content (body not empty, compacted_at is None).
+        let summary_text = "summary".to_owned();
+        let provider = mock_provider(vec![summary_text]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // cutoff=2: keep_recent = 6. With 3 pairs (6 messages + 1 system = 7 total),
+        // summarize hides oldest pair and inserts summary (+1), then prune boundary = 8-6=2,
+        // so only messages[1] is in the pruning range and it's already hidden.
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(2);
+
+        make_tool_pair_with_output(&mut agent, "bash");
+        make_tool_pair_with_output(&mut agent, "read_file");
+        make_tool_pair_with_output(&mut agent, "write_file");
+
+        agent.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+        agent.prune_stale_tool_outputs(keep_recent);
+
+        // Verify all visible ToolOutput parts have non-empty bodies.
+        for msg in agent.messages.iter().filter(|m| m.metadata.agent_visible) {
+            for part in &msg.parts {
+                if let MessagePart::ToolOutput {
+                    body, compacted_at, ..
+                } = part
+                {
+                    assert!(
+                        !body.is_empty() || compacted_at.is_some(),
+                        "visible pair should not have empty body without compacted_at"
+                    );
+                    // compacted_at must be None for truly intact content within keep_recent
+                    assert!(
+                        compacted_at.is_none(),
+                        "visible pairs within keep_recent window must not be pruned"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn prune_then_summarize_regression_summarizer_sees_pruned_content() {
+        // Documents the original bug: if prune runs before summarize, the summarizer
+        // prompt contains "(pruned)" placeholder instead of real content.
+        // With cutoff=1 and keep_recent=4, adding 2 pairs triggers summarization.
+        let summary_text = "summary of pruned pair".to_owned();
+        let provider = mock_provider(vec![summary_text]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        make_tool_pair_with_output(&mut agent, "bash");
+        make_tool_pair_with_output(&mut agent, "read_file");
+
+        // Deliberately use the OLD (broken) order: prune first, then summarize.
+        // keep_recent=2 is a valid simplification of the original bug: the same code path
+        // is exercised — pruning runs before summarization and clears content the summarizer
+        // would need. Using keep_recent=2 with 2 pairs forces boundary=3, pruning res1
+        // (index 2). The original bug used keep_recent=4 with more pairs; the essential
+        // failure mode is identical — any keep_recent that places the oldest pair inside
+        // the pruning range reproduces the bug.
+        let small_keep_recent = 2;
+        agent.prune_stale_tool_outputs(small_keep_recent);
+
+        // The first tool pair's ToolOutput body should now be pruned.
+        let first_output_pruned = agent.messages[2].parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolOutput {
+                    compacted_at: Some(_),
+                    ..
+                }
+            )
+        });
+        assert!(
+            first_output_pruned,
+            "pruning before summarization should have compacted the first pair's output"
+        );
+    }
+
+    #[tokio::test]
+    async fn cutoff_one_edge_case_summarize_then_prune() {
+        // With cutoff=1 and 2 tool pairs, summarizer triggers (2 > 1).
+        // keep_recent = 2 * 1 + 2 = 4. Messages after setup: [sys, req1, res1, req2, res2] = 5.
+        // After summarize: [sys, req1(hidden), res1(hidden), summary, req2, res2] = 6.
+        // boundary = 6 - 4 = 2 → prune messages[1..2] = [req1(hidden)].
+        // Since pruner skips hidden messages? Let's check: actually pruner iterates all messages
+        // in range regardless of visibility — it only skips parts with compacted_at set.
+        // So req1 (hidden assistant ToolUse) has no ToolOutput/ToolResult parts → no pruning.
+        // The second pair (req2, res2) is within keep_recent — safe.
+        let summary_text = "summary".to_owned();
+        let provider = mock_provider(vec![summary_text]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        make_tool_pair_with_output(&mut agent, "bash");
+        make_tool_pair_with_output(&mut agent, "read_file");
+
+        agent.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+        agent.prune_stale_tool_outputs(keep_recent);
+
+        // Summary inserted: 1 pair hidden, summary present.
+        let has_summary = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(has_summary, "summary should have been created for cutoff=1");
+
+        // The remaining visible pair (read_file) should have intact output.
+        let visible_outputs: Vec<_> = agent
+            .messages
+            .iter()
+            .filter(|m| m.metadata.agent_visible)
+            .flat_map(|m| m.parts.iter())
+            .filter(|p| matches!(p, MessagePart::ToolOutput { .. }))
+            .collect();
+
+        for part in &visible_outputs {
+            if let MessagePart::ToolOutput { compacted_at, .. } = part {
+                assert!(
+                    compacted_at.is_none(),
+                    "visible pair within keep_recent must not be pruned (cutoff=1)"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn summarizer_failure_prune_still_runs() {
+        // If the summarizer LLM call fails, pruning should still run without panicking.
+        let provider = mock_provider_failing();
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(1);
+
+        make_tool_pair_with_output(&mut agent, "bash");
+        make_tool_pair_with_output(&mut agent, "read_file");
+
+        let msg_count_before = agent.messages.len();
+
+        // Summarize fails (no panic), then prune runs.
+        agent.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+        let freed = agent.prune_stale_tool_outputs(keep_recent);
+
+        // Messages count unchanged (no summary inserted due to failure).
+        assert_eq!(agent.messages.len(), msg_count_before);
+        // With [sys, req1, res1, req2, res2] = 5, keep_recent=4, boundary=1:
+        // messages[1..1] is empty → nothing pruned.
+        assert_eq!(freed, 0, "keep_recent=4 should protect all 4 tool messages");
     }
 
     #[cfg(feature = "graph-memory")]

@@ -61,7 +61,6 @@ use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_imag
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
 pub(crate) const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
-const TOOL_LOOP_KEEP_RECENT: usize = 4;
 pub(crate) const RECALL_PREFIX: &str = "[semantic recall]\n";
 pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";

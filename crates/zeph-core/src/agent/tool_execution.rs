@@ -8,7 +8,7 @@ use zeph_llm::provider::{
 };
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
-use super::{Agent, DOOM_LOOP_WINDOW, TOOL_LOOP_KEEP_RECENT, format_tool_output};
+use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
@@ -235,9 +235,11 @@ impl<C: Channel> Agent<C> {
                 return Ok(());
             }
 
-            // Prune tool output bodies from older iterations to reduce context growth
-            self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
+            // Summarize before pruning: summarizer must see intact tool output content.
+            // Pruning runs after so it never destroys content the summarizer needs.
             self.maybe_summarize_tool_pair().await;
+            let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
+            self.prune_stale_tool_outputs(keep_recent);
 
             // Doom-loop detection: compare last N outputs by content hash
             if let Some(last_msg) = self.messages.last() {
@@ -1087,9 +1089,11 @@ impl<C: Channel> Agent<C> {
             self.handle_native_tool_calls(text.as_deref(), &tool_calls)
                 .await?;
 
-            // Prune tool output bodies from older iterations to reduce context growth
-            self.prune_stale_tool_outputs(TOOL_LOOP_KEEP_RECENT);
+            // Summarize before pruning: summarizer must see intact tool output content.
+            // Pruning runs after so it never destroys content the summarizer needs.
             self.maybe_summarize_tool_pair().await;
+            let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
+            self.prune_stale_tool_outputs(keep_recent);
 
             if self.check_doom_loop(iteration).await? {
                 break;

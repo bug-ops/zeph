@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix tool output pruning racing with summarization: swap execution order so `maybe_summarize_tool_pair` runs before `prune_stale_tool_outputs`, align pruning window with summarization threshold via `2 * tool_call_cutoff + 2` formula, remove hardcoded `TOOL_LOOP_KEEP_RECENT = 4` constant (#1284)
+
 ## [0.14.0] - 2026-03-06
 
 ### Fixed
