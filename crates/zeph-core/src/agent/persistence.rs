@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::channel::Channel;
-use zeph_llm::provider::Role;
+use zeph_llm::provider::{MessagePart, Role};
 use zeph_memory::sqlite::role_str;
 
 use super::Agent;
@@ -68,6 +68,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         role: Role,
         content: &str,
+        parts: &[MessagePart],
         has_injection_flags: bool,
     ) {
         let (Some(memory), Some(cid)) =
@@ -76,12 +77,14 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        let parts_json = self
-            .messages
-            .last()
-            .filter(|m| !m.parts.is_empty())
-            .and_then(|m| serde_json::to_string(&m.parts).ok())
-            .unwrap_or_else(|| "[]".to_string());
+        let parts_json = if parts.is_empty() {
+            "[]".to_string()
+        } else {
+            serde_json::to_string(parts).unwrap_or_else(|e| {
+                tracing::warn!("failed to serialize message parts, storing empty: {e}");
+                "[]".to_string()
+            })
+        };
 
         // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
         // When has_injection_flags=true, skip embedding to prevent poisoned content from
@@ -377,7 +380,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // Must not panic and must complete
-        agent.persist_message(Role::User, "hello", false).await;
+        agent.persist_message(Role::User, "hello", &[], false).await;
     }
 
     #[tokio::test]
@@ -397,7 +400,7 @@ mod tests {
             .with_autosave_config(false, 20);
 
         agent
-            .persist_message(Role::Assistant, "short assistant reply", false)
+            .persist_message(Role::Assistant, "short assistant reply", &[], false)
             .await;
 
         let history = agent
@@ -433,7 +436,7 @@ mod tests {
             .with_autosave_config(true, 1000);
 
         agent
-            .persist_message(Role::Assistant, "too short", false)
+            .persist_message(Role::Assistant, "too short", &[], false)
             .await;
 
         let history = agent
@@ -472,7 +475,7 @@ mod tests {
         let content_at_boundary = "A".repeat(min_length);
         assert_eq!(content_at_boundary.len(), min_length);
         agent
-            .persist_message(Role::Assistant, &content_at_boundary, false)
+            .persist_message(Role::Assistant, &content_at_boundary, &[], false)
             .await;
 
         // sqlite_message_count must be incremented regardless of embedding success.
@@ -501,7 +504,7 @@ mod tests {
         let content_below_boundary = "A".repeat(min_length - 1);
         assert_eq!(content_below_boundary.len(), min_length - 1);
         agent
-            .persist_message(Role::Assistant, &content_below_boundary, false)
+            .persist_message(Role::Assistant, &content_below_boundary, &[], false)
             .await;
 
         let history = agent
@@ -539,10 +542,12 @@ mod tests {
 
         assert_eq!(agent.memory_state.unsummarized_count, 0);
 
-        agent.persist_message(Role::User, "first", false).await;
+        agent.persist_message(Role::User, "first", &[], false).await;
         assert_eq!(agent.memory_state.unsummarized_count, 1);
 
-        agent.persist_message(Role::User, "second", false).await;
+        agent
+            .persist_message(Role::User, "second", &[], false)
+            .await;
         assert_eq!(agent.memory_state.unsummarized_count, 2);
     }
 
@@ -565,8 +570,8 @@ mod tests {
             1,
         );
 
-        agent.persist_message(Role::User, "msg1", false).await;
-        agent.persist_message(Role::User, "msg2", false).await;
+        agent.persist_message(Role::User, "msg1", &[], false).await;
+        agent.persist_message(Role::User, "msg2", &[], false).await;
 
         // After summarization attempt (summarize returns Ok(None) since no messages qualify),
         // the counter is NOT reset to 0 — only reset on Ok(Some(_)).
@@ -583,7 +588,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.persist_message(Role::User, "hello", false).await;
+        agent.persist_message(Role::User, "hello", &[], false).await;
         // No memory configured — persist_message returns early, counter must stay 0.
         assert_eq!(agent.memory_state.unsummarized_count, 0);
     }
@@ -730,7 +735,7 @@ mod tests {
 
         let long_user_msg = "A".repeat(100);
         agent
-            .persist_message(Role::User, &long_user_msg, false)
+            .persist_message(Role::User, &long_user_msg, &[], false)
             .await;
 
         let history = agent
@@ -746,5 +751,213 @@ mod tests {
         // User messages go through remember_with_parts (embedding path).
         // sqlite_message_count must increment regardless of Qdrant availability.
         assert_eq!(rx.borrow().sqlite_message_count, 1);
+    }
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_parts_for_tool_use() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![zeph_llm::provider::MessagePart::ToolUse {
+            id: "call_abc".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        }];
+        agent
+            .persist_message(Role::Assistant, "content", &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            zeph_llm::provider::MessagePart::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_abc");
+                assert_eq!(name, "shell");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_parts_for_tool_result() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![zeph_llm::provider::MessagePart::ToolResult {
+            tool_use_id: "call_abc".to_string(),
+            content: "output".to_string(),
+            is_error: false,
+        }];
+        agent
+            .persist_message(Role::User, "content", &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            zeph_llm::provider::MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call_abc");
+                assert_eq!(content, "output");
+                assert!(!is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_message_empty_parts_saves_empty_array() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        agent
+            .persist_message(Role::User, "plain text", &[], false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].parts.is_empty(), "parts must be empty");
+    }
+
+    #[tokio::test]
+    async fn persist_message_round_trip_tool_use_then_result() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let assistant_parts = vec![zeph_llm::provider::MessagePart::ToolUse {
+            id: "call_xyz".to_string(),
+            name: "web_scrape".to_string(),
+            input: serde_json::json!({"url": "https://example.com"}),
+        }];
+        agent
+            .persist_message(
+                Role::Assistant,
+                "assistant content",
+                &assistant_parts,
+                false,
+            )
+            .await;
+
+        let user_parts = vec![zeph_llm::provider::MessagePart::ToolResult {
+            tool_use_id: "call_xyz".to_string(),
+            content: "scraped output".to_string(),
+            is_error: false,
+        }];
+        agent
+            .persist_message(Role::User, "user content", &user_parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 2);
+
+        // assistant message must have ToolUse parts
+        assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            zeph_llm::provider::MessagePart::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_xyz");
+                assert_eq!(name, "web_scrape");
+            }
+            other => panic!("expected ToolUse in assistant message, got {other:?}"),
+        }
+
+        // user message must have ToolResult parts (not swapped)
+        assert_eq!(history[1].role, Role::User);
+        assert_eq!(history[1].parts.len(), 1);
+        match &history[1].parts[0] {
+            zeph_llm::provider::MessagePart::ToolResult { tool_use_id, .. } => {
+                assert_eq!(tool_use_id, "call_xyz");
+            }
+            other => panic!("expected ToolResult in user message, got {other:?}"),
+        }
     }
 }
