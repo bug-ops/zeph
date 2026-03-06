@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::channel::Channel;
-use zeph_llm::provider::Role;
+use zeph_llm::provider::{MessagePart, Role};
 use zeph_memory::sqlite::role_str;
 
 use super::Agent;
@@ -68,6 +68,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         role: Role,
         content: &str,
+        parts: &[MessagePart],
         has_injection_flags: bool,
     ) {
         let (Some(memory), Some(cid)) =
@@ -76,12 +77,11 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        let parts_json = self
-            .messages
-            .last()
-            .filter(|m| !m.parts.is_empty())
-            .and_then(|m| serde_json::to_string(&m.parts).ok())
-            .unwrap_or_else(|| "[]".to_string());
+        let parts_json = if parts.is_empty() {
+            "[]".to_string()
+        } else {
+            serde_json::to_string(parts).unwrap_or_else(|_| "[]".to_string())
+        };
 
         // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
         // When has_injection_flags=true, skip embedding to prevent poisoned content from
@@ -377,7 +377,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // Must not panic and must complete
-        agent.persist_message(Role::User, "hello", false).await;
+        agent.persist_message(Role::User, "hello", &[], false).await;
     }
 
     #[tokio::test]
@@ -397,7 +397,7 @@ mod tests {
             .with_autosave_config(false, 20);
 
         agent
-            .persist_message(Role::Assistant, "short assistant reply", false)
+            .persist_message(Role::Assistant, "short assistant reply", &[], false)
             .await;
 
         let history = agent
@@ -433,7 +433,7 @@ mod tests {
             .with_autosave_config(true, 1000);
 
         agent
-            .persist_message(Role::Assistant, "too short", false)
+            .persist_message(Role::Assistant, "too short", &[], false)
             .await;
 
         let history = agent
@@ -472,7 +472,7 @@ mod tests {
         let content_at_boundary = "A".repeat(min_length);
         assert_eq!(content_at_boundary.len(), min_length);
         agent
-            .persist_message(Role::Assistant, &content_at_boundary, false)
+            .persist_message(Role::Assistant, &content_at_boundary, &[], false)
             .await;
 
         // sqlite_message_count must be incremented regardless of embedding success.
@@ -501,7 +501,7 @@ mod tests {
         let content_below_boundary = "A".repeat(min_length - 1);
         assert_eq!(content_below_boundary.len(), min_length - 1);
         agent
-            .persist_message(Role::Assistant, &content_below_boundary, false)
+            .persist_message(Role::Assistant, &content_below_boundary, &[], false)
             .await;
 
         let history = agent
@@ -539,10 +539,12 @@ mod tests {
 
         assert_eq!(agent.memory_state.unsummarized_count, 0);
 
-        agent.persist_message(Role::User, "first", false).await;
+        agent.persist_message(Role::User, "first", &[], false).await;
         assert_eq!(agent.memory_state.unsummarized_count, 1);
 
-        agent.persist_message(Role::User, "second", false).await;
+        agent
+            .persist_message(Role::User, "second", &[], false)
+            .await;
         assert_eq!(agent.memory_state.unsummarized_count, 2);
     }
 
@@ -565,8 +567,8 @@ mod tests {
             1,
         );
 
-        agent.persist_message(Role::User, "msg1", false).await;
-        agent.persist_message(Role::User, "msg2", false).await;
+        agent.persist_message(Role::User, "msg1", &[], false).await;
+        agent.persist_message(Role::User, "msg2", &[], false).await;
 
         // After summarization attempt (summarize returns Ok(None) since no messages qualify),
         // the counter is NOT reset to 0 — only reset on Ok(Some(_)).
@@ -583,7 +585,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.persist_message(Role::User, "hello", false).await;
+        agent.persist_message(Role::User, "hello", &[], false).await;
         // No memory configured — persist_message returns early, counter must stay 0.
         assert_eq!(agent.memory_state.unsummarized_count, 0);
     }
@@ -730,7 +732,7 @@ mod tests {
 
         let long_user_msg = "A".repeat(100);
         agent
-            .persist_message(Role::User, &long_user_msg, false)
+            .persist_message(Role::User, &long_user_msg, &[], false)
             .await;
 
         let history = agent
@@ -746,5 +748,287 @@ mod tests {
         // User messages go through remember_with_parts (embedding path).
         // sqlite_message_count must increment regardless of Qdrant availability.
         assert_eq!(rx.borrow().sqlite_message_count, 1);
+    }
+
+    // Round-trip tests: verify that persist_message saves the correct parts and they
+    // are restored correctly by load_history.
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_tool_use_parts() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![MessagePart::ToolUse {
+            id: "call_abc123".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"path": "/tmp/test.txt"}),
+        }];
+        let content = "[tool_use: read_file(call_abc123)]";
+
+        agent
+            .persist_message(Role::Assistant, content, &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].content, content);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            MessagePart::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_abc123");
+                assert_eq!(name, "read_file");
+            }
+            other => panic!("expected ToolUse part, got {other:?}"),
+        }
+        // Regression guard: assistant message must NOT have ToolResult parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. })),
+            "assistant message must not contain ToolResult parts"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_tool_result_parts() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![MessagePart::ToolResult {
+            tool_use_id: "call_abc123".to_string(),
+            content: "file contents here".to_string(),
+            is_error: false,
+        }];
+        let content = "[tool_result: call_abc123]\nfile contents here";
+
+        agent
+            .persist_message(Role::User, content, &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[0].content, content);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            MessagePart::ToolResult {
+                tool_use_id,
+                content: result_content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call_abc123");
+                assert_eq!(result_content, "file contents here");
+                assert!(!is_error);
+            }
+            other => panic!("expected ToolResult part, got {other:?}"),
+        }
+        // Regression guard: user message with ToolResult must NOT have ToolUse parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "user ToolResult message must not contain ToolUse parts"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_roundtrip_preserves_role_part_alignment() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        // Persist assistant message with ToolUse parts
+        let assistant_parts = vec![MessagePart::ToolUse {
+            id: "id_1".to_string(),
+            name: "list_dir".to_string(),
+            input: serde_json::json!({"path": "/tmp"}),
+        }];
+        agent
+            .persist_message(
+                Role::Assistant,
+                "[tool_use: list_dir(id_1)]",
+                &assistant_parts,
+                false,
+            )
+            .await;
+
+        // Persist user message with ToolResult parts
+        let user_parts = vec![MessagePart::ToolResult {
+            tool_use_id: "id_1".to_string(),
+            content: "file1.txt\nfile2.txt".to_string(),
+            is_error: false,
+        }];
+        agent
+            .persist_message(
+                Role::User,
+                "[tool_result: id_1]\nfile1.txt\nfile2.txt",
+                &user_parts,
+                false,
+            )
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 2);
+
+        // First message: assistant + ToolUse
+        assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].content, "[tool_use: list_dir(id_1)]");
+        assert!(
+            matches!(&history[0].parts[0], MessagePart::ToolUse { id, .. } if id == "id_1"),
+            "first message must be assistant ToolUse"
+        );
+
+        // Second message: user + ToolResult
+        assert_eq!(history[1].role, Role::User);
+        assert_eq!(history[1].content, "[tool_result: id_1]\nfile1.txt\nfile2.txt");
+        assert!(
+            matches!(&history[1].parts[0], MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id_1"),
+            "second message must be user ToolResult"
+        );
+
+        // Cross-role regression guard: no swapped parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. })),
+            "assistant message must not have ToolResult parts"
+        );
+        assert!(
+            !history[1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "user message must not have ToolUse parts"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_tool_output_parts() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![MessagePart::ToolOutput {
+            tool_name: "shell".to_string(),
+            body: "hello from shell".to_string(),
+            compacted_at: None,
+        }];
+        let content = "[tool: shell]\nhello from shell";
+
+        agent
+            .persist_message(Role::User, content, &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[0].content, content);
+        assert_eq!(history[0].parts.len(), 1);
+        match &history[0].parts[0] {
+            MessagePart::ToolOutput { tool_name, body, compacted_at } => {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(body, "hello from shell");
+                assert!(compacted_at.is_none());
+            }
+            other => panic!("expected ToolOutput part, got {other:?}"),
+        }
     }
 }

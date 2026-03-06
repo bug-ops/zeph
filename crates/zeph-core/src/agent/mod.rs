@@ -1516,8 +1516,9 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }
         };
+        self.persist_message(Role::User, &text, &user_msg.parts, false)
+            .await;
         self.push_message(user_msg);
-        self.persist_message(Role::User, &text, false).await;
 
         if let Err(e) = self.process_response().await {
             tracing::error!("Response processing failed: {e:#}");
