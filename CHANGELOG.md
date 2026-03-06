@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Add LSP code intelligence via mcpls: `step_mcpls` wizard step in `zeph --init` with PATH detection, workspace root prompt, and `[mcp.servers.mcpls]` config generation; add `mcpls` to MCP command allowlist in `zeph-mcp`; `docs/src/guides/lsp.md` with full setup guide and all 16 tool descriptions; `skills/code-analysis/SKILL.md` for LLM-guided LSP workflows (Phase 1, #1288, #1287)
+
 ## [0.14.0] - 2026-03-06
 
 ### Fixed

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::error::McpError;
 
 const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
-    "npx", "uvx", "node", "python3", "python", "docker", "deno", "bun",
+    "npx", "uvx", "node", "python3", "python", "docker", "deno", "bun", "mcpls",
 ];
 
 const BLOCKED_ENV_VARS: &[&str] = &[

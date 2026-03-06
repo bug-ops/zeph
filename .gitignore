@@ -7,5 +7,6 @@ data/
 .local/
 .zeph/*
 !.zeph/zeph.md
+**/.zeph/subagents/
 docs/book/
 *.log

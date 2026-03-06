@@ -27,6 +27,7 @@
 - [Run via Telegram](guides/telegram.md)
 - [Add Custom Skills](guides/custom-skills.md)
 - [Connect MCP Servers](guides/mcp.md)
+- [LSP Code Intelligence](guides/lsp.md)
 - [IDE Integration](guides/ide-integration.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
 - [Enable Self-Learning Skills](guides/self-learning.md)
