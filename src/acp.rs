@@ -373,7 +373,10 @@ async fn spawn_acp_agent(
     agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider);
 
     if d.debug_config.enabled {
-        match zeph_core::debug_dump::DebugDumper::new(d.debug_config.output_dir.as_path(), d.debug_config.format) {
+        match zeph_core::debug_dump::DebugDumper::new(
+            d.debug_config.output_dir.as_path(),
+            d.debug_config.format,
+        ) {
             Ok(dumper) => agent = agent.with_debug_dumper(dumper),
             Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
         }
