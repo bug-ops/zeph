@@ -346,7 +346,7 @@ mod tests {
         let store = setup().await;
         let provider = mock_provider();
         store
-            .upsert_entity("Solo", EntityType::Concept, None)
+            .upsert_entity("Solo", "Solo", EntityType::Concept, None)
             .await
             .unwrap();
         let count = detect_communities(&store, &provider).await.unwrap();
@@ -360,19 +360,19 @@ mod tests {
 
         // Create 3 connected entities (cluster A) and 1 isolated entity.
         let a = store
-            .upsert_entity("A", EntityType::Concept, None)
+            .upsert_entity("A", "A", EntityType::Concept, None)
             .await
             .unwrap();
         let b = store
-            .upsert_entity("B", EntityType::Concept, None)
+            .upsert_entity("B", "B", EntityType::Concept, None)
             .await
             .unwrap();
         let c = store
-            .upsert_entity("C", EntityType::Concept, None)
+            .upsert_entity("C", "C", EntityType::Concept, None)
             .await
             .unwrap();
         let _iso = store
-            .upsert_entity("Isolated", EntityType::Concept, None)
+            .upsert_entity("Isolated", "Isolated", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -409,7 +409,7 @@ mod tests {
             for node in 0..3_i64 {
                 let name = format!("c{cluster}_n{node}");
                 let id = store
-                    .upsert_entity(&name, EntityType::Concept, None)
+                    .upsert_entity(&name, &name, EntityType::Concept, None)
                     .await
                     .unwrap();
                 ids.push(id);
@@ -453,7 +453,12 @@ mod tests {
         // Insert 5 entities with no edges at all.
         for i in 0..5_i64 {
             store
-                .upsert_entity(&format!("iso_{i}"), EntityType::Concept, None)
+                .upsert_entity(
+                    &format!("iso_{i}"),
+                    &format!("iso_{i}"),
+                    EntityType::Concept,
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -468,11 +473,11 @@ mod tests {
         let store = setup().await;
 
         let a = store
-            .upsert_entity("EA", EntityType::Concept, None)
+            .upsert_entity("EA", "EA", EntityType::Concept, None)
             .await
             .unwrap();
         let b = store
-            .upsert_entity("EB", EntityType::Concept, None)
+            .upsert_entity("EB", "EB", EntityType::Concept, None)
             .await
             .unwrap();
         let edge_id = store.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
@@ -496,7 +501,7 @@ mod tests {
         let store = setup().await;
 
         let iso = store
-            .upsert_entity("Orphan", EntityType::Concept, None)
+            .upsert_entity("Orphan", "Orphan", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -521,7 +526,7 @@ mod tests {
         for i in 0..5_i64 {
             let name = format!("cap_entity_{i}");
             store
-                .upsert_entity(&name, EntityType::Concept, None)
+                .upsert_entity(&name, &name, EntityType::Concept, None)
                 .await
                 .unwrap();
         }
@@ -538,7 +543,7 @@ mod tests {
     async fn test_assign_to_community_no_neighbors() {
         let store = setup().await;
         let entity_id = store
-            .upsert_entity("Loner", EntityType::Concept, None)
+            .upsert_entity("Loner", "Loner", EntityType::Concept, None)
             .await
             .unwrap();
 
@@ -580,15 +585,15 @@ mod tests {
 
         // Setup: community C1 with members [A, B], then add D with edges to both A and B.
         let a = store
-            .upsert_entity("AA", EntityType::Concept, None)
+            .upsert_entity("AA", "AA", EntityType::Concept, None)
             .await
             .unwrap();
         let b = store
-            .upsert_entity("BB", EntityType::Concept, None)
+            .upsert_entity("BB", "BB", EntityType::Concept, None)
             .await
             .unwrap();
         let d = store
-            .upsert_entity("DD", EntityType::Concept, None)
+            .upsert_entity("DD", "DD", EntityType::Concept, None)
             .await
             .unwrap();
 

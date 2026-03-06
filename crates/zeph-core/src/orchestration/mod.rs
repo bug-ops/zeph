@@ -3,6 +3,7 @@
 
 //! Task orchestration: DAG execution, failure propagation, and persistence.
 
+pub mod aggregator;
 pub mod command;
 pub mod dag;
 pub mod error;
@@ -12,6 +13,7 @@ pub mod router;
 pub mod scheduler;
 
 pub use crate::config::OrchestrationConfig;
+pub use aggregator::{Aggregator, LlmAggregator};
 pub use command::PlanCommand;
 pub use error::OrchestrationError;
 pub use graph::{

@@ -14,7 +14,7 @@ pub mod resolver;
 pub mod retrieval;
 
 pub use store::GraphStore;
-pub use types::{Community, Edge, Entity, EntityType, GraphFact};
+pub use types::{Community, Edge, Entity, EntityAlias, EntityType, GraphFact};
 
 #[cfg(feature = "graph-memory")]
 pub use community::{
