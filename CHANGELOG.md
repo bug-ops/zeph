@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-03-06
+
 ### Added
 
 - Add `--graph-memory` CLI flag to enable graph memory for the session, overriding `memory.graph.enabled` in config (`src/cli.rs`, `src/runner.rs`) (Phase 6, #1233)
@@ -1820,7 +1822,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/bug-ops/zeph/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bug-ops/zeph/compare/v0.12.6...v0.13.0
 [0.12.6]: https://github.com/bug-ops/zeph/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/bug-ops/zeph/compare/v0.12.4...v0.12.5
