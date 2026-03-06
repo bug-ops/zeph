@@ -69,6 +69,26 @@ pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
+#[cfg(feature = "orchestration")]
+fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "Plan: \"{}\"", graph.goal);
+    let _ = writeln!(out, "Tasks: {}", graph.tasks.len());
+    let _ = writeln!(out);
+    for (i, task) in graph.tasks.iter().enumerate() {
+        let deps = if task.depends_on.is_empty() {
+            String::new()
+        } else {
+            let ids: Vec<String> = task.depends_on.iter().map(ToString::to_string).collect();
+            format!(" (after: {})", ids.join(", "))
+        };
+        let agent = task.agent_hint.as_deref().unwrap_or("-");
+        let _ = writeln!(out, "  {}. [{}] {}{}", i + 1, agent, task.title, deps);
+    }
+    out
+}
+
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     use std::fmt::Write;
     let capacity = "[tool output: ".len()
@@ -186,6 +206,8 @@ pub struct Agent<C: Channel> {
     /// forward-compatible multi-agent orchestration.
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
+    #[cfg(feature = "orchestration")]
+    pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
@@ -205,6 +227,9 @@ pub struct Agent<C: Channel> {
     /// URLs extracted from untrusted tool outputs that had injection flags.
     /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
     pub(super) flagged_urls: std::collections::HashSet<String>,
+    /// Graph waiting for `/plan confirm` before execution starts.
+    #[cfg(feature = "orchestration")]
+    pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -352,6 +377,8 @@ impl<C: Channel> Agent<C> {
             custom_task_rx: None,
             subagent_manager: None,
             subagent_config: crate::config::SubAgentConfig::default(),
+            #[cfg(feature = "orchestration")]
+            orchestration_config: crate::config::OrchestrationConfig::default(),
             response_cache: None,
             parent_tool_use_id: None,
             anomaly_detector: None,
@@ -364,6 +391,8 @@ impl<C: Channel> Agent<C> {
                 crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
             ),
             flagged_urls: std::collections::HashSet::new(),
+            #[cfg(feature = "orchestration")]
+            pending_graph: None,
         }
     }
 
@@ -403,6 +432,142 @@ impl<C: Channel> Agent<C> {
             }
         }
         results
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_command(
+        &mut self,
+        cmd: crate::orchestration::PlanCommand,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::PlanCommand;
+
+        if !self.config_for_orchestration().enabled {
+            self.channel
+                .send(
+                    "Task orchestration is disabled. Set `orchestration.enabled = true` in config.",
+                )
+                .await?;
+            return Ok(());
+        }
+
+        match cmd {
+            PlanCommand::Goal(goal) => self.handle_plan_goal(&goal).await,
+            PlanCommand::Confirm => self.handle_plan_confirm().await,
+            PlanCommand::Status(id) => self.handle_plan_status(id.as_deref()).await,
+            PlanCommand::List => self.handle_plan_list().await,
+            PlanCommand::Cancel(id) => self.handle_plan_cancel(id.as_deref()).await,
+        }
+    }
+
+    #[cfg(feature = "orchestration")]
+    fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
+        &self.orchestration_config
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
+        use crate::orchestration::{LlmPlanner, Planner};
+
+        if self.pending_graph.is_some() {
+            self.channel
+                .send(
+                    "A plan is already pending confirmation. \
+                     Use /plan confirm to execute it or /plan cancel to discard.",
+                )
+                .await?;
+            return Ok(());
+        }
+
+        self.channel.send("Planning task decomposition...").await?;
+
+        let available_agents = self
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let confirm_before_execute = self.orchestration_config.confirm_before_execute;
+        let graph = LlmPlanner::new(self.provider.clone(), &self.orchestration_config)
+            .plan(goal, &available_agents)
+            .await
+            .map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        let task_count = graph.tasks.len() as u64;
+        self.update_metrics(|m| {
+            m.orchestration.plans_total += 1;
+            m.orchestration.tasks_total += task_count;
+        });
+
+        if confirm_before_execute {
+            let summary = format_plan_summary(&graph);
+            self.channel.send(&summary).await?;
+            self.channel
+                .send("Type `/plan confirm` to execute, or `/plan cancel` to abort.")
+                .await?;
+            self.pending_graph = Some(graph);
+        } else {
+            // confirm_before_execute = false: display and proceed (Phase 5 will run scheduler).
+            let summary = format_plan_summary(&graph);
+            self.channel.send(&summary).await?;
+            self.channel
+                .send("Plan ready. Full execution will be available in a future phase.")
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
+        let Some(graph) = self.pending_graph.take() else {
+            self.channel
+                .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
+                .await?;
+            return Ok(());
+        };
+        let summary = format_plan_summary(&graph);
+        self.channel
+            .send(&format!("Confirmed. Executing plan:\n{summary}"))
+            .await?;
+        // Full scheduler execution is a Phase 5 deliverable.
+        self.channel
+            .send("Full execution will be available in a future phase.")
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_status(
+        &mut self,
+        _graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        if self.pending_graph.is_some() {
+            self.channel
+                .send("A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort.")
+                .await?;
+        } else {
+            self.channel.send("No active plan.").await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
+        self.channel.send("No recent plans.").await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "orchestration")]
+    async fn handle_plan_cancel(
+        &mut self,
+        _graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        if self.pending_graph.take().is_some() {
+            self.channel.send("Plan canceled.").await?;
+        } else {
+            self.channel.send("No active plan to cancel.").await?;
+        }
+        Ok(())
     }
 
     pub async fn shutdown(&mut self) {
@@ -852,6 +1017,20 @@ impl<C: Channel> Agent<C> {
             return self
                 .handle_image_command(path.trim(), &mut image_parts.into_iter().collect())
                 .await;
+        }
+
+        #[cfg(feature = "orchestration")]
+        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
+            match crate::orchestration::PlanCommand::parse(trimmed) {
+                Ok(cmd) => {
+                    self.handle_plan_command(cmd).await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.channel.send(&e.to_string()).await?;
+                    return Ok(());
+                }
+            }
         }
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {

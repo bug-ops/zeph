@@ -454,6 +454,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[cfg(feature = "orchestration")]
+    #[must_use]
+    pub fn with_orchestration_config(mut self, config: crate::config::OrchestrationConfig) -> Self {
+        self.orchestration_config = config;
+        self
+    }
+
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]

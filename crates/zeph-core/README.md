@@ -44,7 +44,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
 | `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
 | `subagent::memory` | Persistent memory scopes for sub-agents: `MemoryScope` enum (`User`, `Project`, `Local`), `resolve_memory_dir()` / `ensure_memory_dir()` for directory lifecycle, `load_memory_content()` reads MEMORY.md (first 200 lines, 256 KiB cap, symlink boundary check, null byte guard), `escape_memory_content()` prevents prompt injection via `<agent-memory>` tag escaping. Memory is auto-injected into the sub-agent system prompt and Read/Write/Edit tools are auto-enabled |
-| `orchestration` | DAG-based task orchestration (feature-gated: `orchestration`): `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state |
+| `orchestration` | DAG-based task orchestration (feature-gated: `orchestration`): `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state; `PlanCommand` enum with `/plan` CLI commands (goal, status, list, cancel, confirm) integrated into the agent loop; `OrchestrationMetrics` (plans_total, tasks_total/completed/failed/skipped) always present in `MetricsSnapshot`; pending-plan confirmation flow with `confirm_before_execute` config |
 
 **Re-exports:** `Agent`, `content_hash`, `DiffData`
 
@@ -157,6 +157,23 @@ In-session commands for managing sub-agents:
 Sub-agents run as independent tokio tasks with their own LLM provider and filtered tool executor. Each sub-agent receives only explicitly granted tools, skills, and secrets via `PermissionGrants`. Conversation history is persisted as JSONL transcripts with `.meta.json` sidecars, enabling session resumption via `/agent resume <id> <prompt>` — the resumed agent inherits the original definition, tools, and full message history.
 
 Lifecycle hooks can be attached at two levels: config-level `SubagentStart`/`SubagentStop` hooks (in `[agents.hooks]`) fire on spawn and completion, while per-agent `PreToolUse`/`PostToolUse` hooks (defined in the agent YAML frontmatter) fire around each tool call, matched by pipe-separated tool-name patterns. All hooks run as shell commands in an env-cleared sandbox with configurable timeout and fail-open/closed policy.
+
+## Plan Commands
+
+In-session commands for task orchestration (requires `orchestration` feature):
+
+| Command | Description |
+|---------|-------------|
+| `/plan <goal>` | Decompose goal into a DAG, show confirmation, then execute |
+| `/plan confirm` | Confirm and execute the pending plan |
+| `/plan status` | Show current graph progress |
+| `/plan status <id>` | Show a specific graph by UUID |
+| `/plan list` | List recent graphs from persistence |
+| `/plan cancel` | Cancel the active graph |
+| `/plan cancel <id>` | Cancel a specific graph by UUID |
+
+> [!NOTE]
+> When `confirm_before_execute` is enabled (default), `/plan <goal>` stores the plan in a pending state. Run `/plan confirm` to start execution or `/plan cancel` to discard.
 
 ## Agents management CLI
 

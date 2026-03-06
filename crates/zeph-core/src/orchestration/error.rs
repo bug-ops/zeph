@@ -41,6 +41,9 @@ pub enum OrchestrationError {
     #[error("canceled")]
     Canceled,
 
+    #[error("invalid command: {0}")]
+    InvalidCommand(String),
+
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
 }
