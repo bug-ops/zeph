@@ -880,24 +880,37 @@ impl<C: Channel> Agent<C> {
         count
     }
 
-    /// Apply deferred summaries if context usage exceeds the deferred threshold.
+    /// Apply deferred summaries if context usage exceeds the deferred threshold,
+    /// or when enough summaries have accumulated to prevent content loss from pruning.
+    ///
+    /// Two triggers:
+    /// - Token pressure: `cached_prompt_tokens > budget * deferred_apply_threshold`
+    /// - Count pressure: `pending >= tool_call_cutoff` (guards against pruning replacing
+    ///   summaries with `[pruned]` when `prepare_context` recomputes tokens to a low value)
     ///
     /// This is Tier 0 — a pure in-memory operation with no LLM call. Intentionally
     /// does NOT set `compacted_this_turn` so that proactive/reactive compaction may
     /// also fire in the same turn if tokens remain above their respective thresholds.
     pub(super) fn maybe_apply_deferred_summaries(&mut self) {
-        if self.count_deferred_summaries() == 0 {
+        let pending = self.count_deferred_summaries();
+        if pending == 0 {
             return;
         }
-        if !self
+        let token_pressure = self
             .context_manager
-            .should_apply_deferred(self.cached_prompt_tokens)
-        {
+            .should_apply_deferred(self.cached_prompt_tokens);
+        let count_pressure = pending >= self.memory_state.tool_call_cutoff;
+        if !token_pressure && !count_pressure {
             return;
         }
         let applied = self.apply_deferred_summaries();
         if applied > 0 {
-            tracing::info!(applied, "tier-0: batch-applied deferred tool summaries");
+            tracing::info!(
+                applied,
+                token_pressure,
+                count_pressure,
+                "tier-0: batch-applied deferred tool summaries"
+            );
         }
     }
 
@@ -5331,6 +5344,52 @@ mod tests {
         assert!(
             !agent.context_manager.compacted_this_turn,
             "tier-0 must not set compacted_this_turn"
+        );
+    }
+
+    // Regression test: when prepare_context recomputes tokens to a low value after pruning,
+    // the token-based trigger alone would never fire. The count-based trigger ensures deferred
+    // summaries are applied once >= tool_call_cutoff pairs accumulate (default 6).
+    #[test]
+    fn tier0_count_trigger_fires_without_budget_pressure() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // Large budget: 70% threshold = 70_000 tokens — far above cached_prompt_tokens
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.80, 4, 0)
+            .with_deferred_apply_threshold(0.70);
+
+        // tool_call_cutoff defaults to 6; add exactly that many deferred summaries
+        for label in ["a", "b", "c", "d", "e", "f"] {
+            make_tool_pair(&mut agent, label);
+        }
+        // resp messages are at even indices 2,4,6,8,10,12 (system=0, req=odd, resp=even)
+        agent.messages[2].metadata.deferred_summary = Some("s_a".into());
+        agent.messages[4].metadata.deferred_summary = Some("s_b".into());
+        agent.messages[6].metadata.deferred_summary = Some("s_c".into());
+        agent.messages[8].metadata.deferred_summary = Some("s_d".into());
+        agent.messages[10].metadata.deferred_summary = Some("s_e".into());
+        agent.messages[12].metadata.deferred_summary = Some("s_f".into());
+
+        // Token count well below budget threshold (simulates post-pruning state)
+        agent.cached_prompt_tokens = 5_000;
+
+        agent.maybe_apply_deferred_summaries();
+
+        let summaries = agent
+            .messages
+            .iter()
+            .filter(|m| {
+                m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Summary { .. }))
+            })
+            .count();
+        assert_eq!(
+            summaries, 6,
+            "count trigger must apply all 6 deferred summaries"
         );
     }
 

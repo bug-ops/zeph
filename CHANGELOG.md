@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Add LSP code intelligence via mcpls: `step_mcpls` wizard step in `zeph --init` with PATH detection, workspace root prompt, and `[mcp.servers.mcpls]` config generation; add `mcpls` to MCP command allowlist in `zeph-mcp`; `docs/src/guides/lsp.md` with full setup guide and all 16 tool descriptions; `skills/code-analysis/SKILL.md` for LLM-guided LSP workflows (Phase 1, #1288, #1287)
 
+### Fixed
+
+- Fix deferred tool pair summaries never being applied: `prepare_context` recomputes `cached_prompt_tokens` to a low post-pruning value each turn, so the token-based threshold (70% of budget) was never reached. Add count-based fallback: apply deferred summaries when `pending >= tool_call_cutoff`, preventing accumulated deferred summaries from being silently discarded as `[pruned]` content.
+
 ### Changed
 
 - Deferred tool pair summarization: summaries are computed eagerly during the tool loop but applied lazily (Tier 0) when context usage exceeds `deferred_apply_threshold` (default 0.70), preserving the message prefix for Claude API prompt cache hits; add `deferred_apply_threshold` config option, `--init` wizard support, force-apply safety net before compaction drain (#1294)
