@@ -42,6 +42,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
 | `graph` | `GraphStore`, `Entity`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal (feature-gated: `graph-memory`) |
+| `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
@@ -135,6 +136,8 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 
 `GraphStore` provides 18 CRUD methods over four SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migration 021 and is always present regardless of feature flag.
 
+`SemanticMemory::spawn_graph_extraction()` runs LLM-powered extraction as a fire-and-forget background task with configurable timeout. `recall_graph()` performs fuzzy entity matching plus BFS edge traversal, returning composite-scored `GraphFact` values for context injection.
+
 Configure via `[memory.graph]` in `config.toml`:
 
 ```toml
@@ -142,6 +145,7 @@ Configure via `[memory.graph]` in `config.toml`:
 enabled = true
 max_hops = 2
 recall_limit = 10
+extraction_timeout_secs = 15
 ```
 
 ## Features

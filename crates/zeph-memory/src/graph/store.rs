@@ -19,6 +19,11 @@ impl GraphStore {
         Self { pool }
     }
 
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // ── Entities ─────────────────────────────────────────────────────────────
 
     /// Insert or update an entity by `(name, entity_type)`. Updates `summary` and `last_seen_at`.
@@ -109,6 +114,23 @@ impl GraphStore {
         rows.into_iter()
             .map(entity_from_row)
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Find an entity by its primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_entity_by_id(&self, id: i64) -> Result<Option<Entity>, MemoryError> {
+        let row: Option<EntityRow> = sqlx::query_as(
+            "SELECT id, name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(entity_from_row).transpose()
     }
 
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
@@ -451,6 +473,9 @@ impl GraphStore {
             if frontier.is_empty() {
                 break;
             }
+            // R-SUG-03: SQLite default SQLITE_MAX_VARIABLE_NUMBER = 999.
+            // Neighbour query binds frontier 3 times → cap at 333 IDs per hop.
+            frontier.truncate(333);
             // For each entity in the frontier, fetch its active neighbours.
             // IDs come from our own DB — no user input, no injection risk.
             let placeholders = frontier
@@ -489,7 +514,9 @@ impl GraphStore {
             frontier = next_frontier;
         }
 
-        let visited_ids: Vec<i64> = visited.into_iter().collect();
+        // edge_sql binds visited_ids twice → cap at 499 to stay under SQLite 999 limit.
+        let mut visited_ids: Vec<i64> = visited.into_iter().collect();
+        visited_ids.truncate(499);
 
         // Fetch edges between visited entities
         let placeholders = visited_ids

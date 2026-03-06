@@ -48,9 +48,11 @@ When `context_budget_tokens > 0`, the context window is structured as:
 │ <available_skills> matched skills (full body)   │  200-2000 tokens
 │ <other_skills> remaining (description-only)     │  50-200 tokens
 ├─────────────────────────────────────────────────┤
+│ [knowledge graph] entity facts (if graph on)    │  3% of available
+├─────────────────────────────────────────────────┤
 │ <code_context> RAG chunks (if index on)         │  30% of available
 ├─────────────────────────────────────────────────┤
-│ [semantic recall] relevant past messages        │  10-25% of available
+│ [semantic recall] relevant past messages        │  5-8% of available
 ├─────────────────────────────────────────────────┤
 │ [compaction summary] if compacted               │  200-500 tokens
 ├─────────────────────────────────────────────────┤
@@ -66,12 +68,13 @@ Context sources (summaries, cross-session recall, semantic recall, code RAG) are
 
 ## Proportional Budget Allocation
 
-Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history:
+Available tokens (after reserving 20% for response) are split proportionally. When [code indexing](code-indexing.md) is enabled, the code context slot takes a share from summaries, recall, and history. When [graph memory](../concepts/graph-memory.md) is enabled, the graph facts slot (3%) is carved from the semantic recall allocation:
 
 | Allocation | Without code index | With code index | Purpose |
 |-----------|-------------------|-----------------|---------|
 | Summaries | 15% | 10% | Conversation summaries from SQLite |
-| Semantic recall | 25% | 10% | Relevant messages from past conversations via Qdrant |
+| Semantic recall | 8% (5% with graph) | 10% | Relevant messages from past conversations via Qdrant |
+| Graph facts | 3% (0% when off) | 3% (0% when off) | Entity-relationship facts from knowledge graph |
 | Code context | -- | 30% | Retrieved code chunks from project index |
 | Recent history | 60% | 50% | Most recent messages in current conversation |
 

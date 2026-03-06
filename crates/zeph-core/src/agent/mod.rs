@@ -66,6 +66,8 @@ pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
+#[cfg(feature = "graph-memory")]
+pub(crate) const GRAPH_FACTS_PREFIX: &str = "[knowledge graph]\n";
 
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     use std::fmt::Write;
@@ -94,6 +96,8 @@ pub(super) struct MemoryState {
     pub(super) tool_call_cutoff: usize,
     pub(super) unsummarized_count: usize,
     pub(super) document_config: crate::config::DocumentConfig,
+    #[cfg(feature = "graph-memory")]
+    pub(super) graph_config: Option<crate::config::GraphConfig>,
 }
 
 pub(super) struct SkillState {
@@ -280,6 +284,8 @@ impl<C: Channel> Agent<C> {
                 tool_call_cutoff: 6,
                 unsummarized_count: 0,
                 document_config: crate::config::DocumentConfig::default(),
+                #[cfg(feature = "graph-memory")]
+                graph_config: None,
             },
             skill_state: SkillState {
                 registry,

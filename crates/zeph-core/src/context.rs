@@ -234,6 +234,8 @@ pub struct BudgetAllocation {
     pub code_context: usize,
     pub recent_history: usize,
     pub response_reserve: usize,
+    /// Token budget for knowledge graph facts. Zero when graph-memory is disabled or not configured.
+    pub graph_facts: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +269,7 @@ impl ContextBudget {
         system_prompt: &str,
         skills_prompt: &str,
         tc: &TokenCounter,
+        graph_enabled: bool,
     ) -> BudgetAllocation {
         if self.max_tokens == 0 {
             return BudgetAllocation {
@@ -278,6 +281,7 @@ impl ContextBudget {
                 code_context: 0,
                 recent_history: 0,
                 response_reserve: 0,
+                graph_facts: 0,
             };
         }
 
@@ -290,7 +294,16 @@ impl ContextBudget {
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
         let summaries = (available as f32 * 0.08) as usize;
-        let semantic_recall = (available as f32 * 0.08) as usize;
+        // When graph is enabled: semantic_recall=5%, graph_facts=3%.
+        // When disabled: semantic_recall=8%, graph_facts=0%.
+        let (semantic_recall, graph_facts) = if graph_enabled {
+            (
+                (available as f32 * 0.05) as usize,
+                (available as f32 * 0.03) as usize,
+            )
+        } else {
+            ((available as f32 * 0.08) as usize, 0)
+        };
         let cross_session = (available as f32 * 0.04) as usize;
         let code_context = (available as f32 * 0.30) as usize;
         let recent_history = (available as f32 * 0.50) as usize;
@@ -304,6 +317,7 @@ impl ContextBudget {
             code_context,
             recent_history,
             response_reserve,
+            graph_facts,
         }
     }
 }
@@ -344,7 +358,7 @@ mod tests {
         let skills = "skills prompt";
 
         let tc = zeph_memory::TokenCounter::new();
-        let alloc = budget.allocate(system, skills, &tc);
+        let alloc = budget.allocate(system, skills, &tc, false);
 
         assert_eq!(alloc.response_reserve, 200);
         assert!(alloc.system_prompt > 0);
@@ -359,7 +373,7 @@ mod tests {
     fn budget_allocation_reserve() {
         let tc = zeph_memory::TokenCounter::new();
         let budget = ContextBudget::new(1000, 0.30);
-        let alloc = budget.allocate("", "", &tc);
+        let alloc = budget.allocate("", "", &tc, false);
 
         assert_eq!(alloc.response_reserve, 300);
     }
@@ -368,7 +382,7 @@ mod tests {
     fn budget_allocation_zero_disables() {
         let tc = zeph_memory::TokenCounter::new();
         let budget = ContextBudget::new(0, 0.20);
-        let alloc = budget.allocate("test", "test", &tc);
+        let alloc = budget.allocate("test", "test", &tc, false);
 
         assert_eq!(alloc.system_prompt, 0);
         assert_eq!(alloc.skills, 0);
@@ -387,7 +401,7 @@ mod tests {
         let system = "very long system prompt that uses many tokens";
         let skills = "also a long skills prompt";
 
-        let alloc = budget.allocate(system, skills, &tc);
+        let alloc = budget.allocate(system, skills, &tc, false);
 
         assert!(alloc.response_reserve > 0);
     }
@@ -501,9 +515,9 @@ mod tests {
     fn budget_allocation_cross_session_percentage() {
         let budget = ContextBudget::new(10000, 0.20);
         let tc = zeph_memory::TokenCounter::new();
-        let alloc = budget.allocate("", "", &tc);
+        let alloc = budget.allocate("", "", &tc, false);
 
-        // cross_session = 4%, summaries = 8%, recall = 8%
+        // cross_session = 4%, summaries = 8%, recall = 8% (graph disabled)
         assert!(alloc.cross_session > 0);
         assert!(alloc.cross_session < alloc.summaries);
         assert_eq!(alloc.summaries, alloc.semantic_recall);

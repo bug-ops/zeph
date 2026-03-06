@@ -225,9 +225,9 @@ Proactive compression emits two metrics: `compression_events` (count) and `compr
 
 ## Graph Memory
 
-With the `graph-memory` feature enabled, Zeph can extract entities and relationships from conversations and store them as a knowledge graph in SQLite. This enables multi-hop reasoning ("how is X related to Y?"), temporal fact tracking ("user switched from vim to neovim"), and cross-session entity linking.
+With the `graph-memory` feature enabled, Zeph extracts entities and relationships from conversations and stores them as a knowledge graph in SQLite. This enables multi-hop reasoning ("how is X related to Y?"), temporal fact tracking ("user switched from vim to neovim"), and cross-session entity linking.
 
-Graph memory is opt-in and complementary to vector + keyword search. When enabled, graph facts are injected into the context alongside recalled messages.
+Graph memory is opt-in and complementary to vector + keyword search. After each user message, a background task extracts entities and edges via LLM. On subsequent turns, matched graph facts are injected into the context as a `[knowledge graph]` system message alongside recalled messages. Messages flagged with injection patterns skip extraction for security.
 
 ```toml
 [memory.graph]
