@@ -187,19 +187,6 @@ pub struct AgentConfig {
     pub name: String,
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
-    #[serde(default)]
-    pub summary_model: Option<String>,
-    /// Structured provider config for summarization. Takes precedence over `summary_model`.
-    /// Uses the same format as `[llm.orchestrator.providers.*]`.
-    ///
-    /// Example:
-    /// ```toml
-    /// [agent.summary_provider]
-    /// type = "claude"
-    /// model = "claude-haiku-4-5-20251001"
-    /// ```
-    #[serde(default)]
-    pub summary_provider: Option<OrchestratorProviderConfig>,
     #[serde(default = "default_auto_update_check")]
     pub auto_update_check: bool,
     /// Additional instruction files to always load, regardless of provider.
@@ -287,6 +274,15 @@ pub struct LlmConfig {
     /// Merged with `agent.instruction_files` at startup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_file: Option<std::path::PathBuf>,
+    /// Shorthand model spec for tool-pair summarization and context compaction.
+    /// Format: `ollama/<model>`, `claude[/<model>]`, `openai[/<model>]`, `compatible/<name>`, `candle`.
+    /// Ignored when `[llm.summary_provider]` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
+    /// Structured provider config for summarization. Takes precedence over `summary_model`.
+    /// Same format as `[llm.orchestrator.providers.*]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_provider: Option<OrchestratorProviderConfig>,
 }
 
 fn default_response_cache_ttl_secs() -> u64 {
@@ -1685,8 +1681,6 @@ impl Default for Config {
             agent: AgentConfig {
                 name: "Zeph".into(),
                 max_tool_iterations: 10,
-                summary_model: None,
-                summary_provider: None,
                 auto_update_check: default_auto_update_check(),
                 instruction_files: Vec::new(),
                 instruction_auto_detect: default_instruction_auto_detect(),
@@ -1711,6 +1705,8 @@ impl Default for Config {
                 router_ema_alpha: default_router_ema_alpha(),
                 router_reorder_interval: default_router_reorder_interval(),
                 instruction_file: None,
+                summary_model: None,
+                summary_provider: None,
             },
             skills: SkillsConfig {
                 paths: vec!["./skills".into()],

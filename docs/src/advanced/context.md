@@ -143,21 +143,21 @@ By default, tool-pair summarization uses the primary LLM provider. You can dedic
 
 #### Structured config (recommended)
 
-`[agent.summary_provider]` uses the same struct as `[llm.orchestrator.providers.*]`:
+`[llm.summary_provider]` uses the same struct as `[llm.orchestrator.providers.*]`:
 
 ```toml
 # Claude — model falls back to [llm.cloud].model when omitted
-[agent.summary_provider]
+[llm.summary_provider]
 type = "claude"
 model = "claude-haiku-4-5-20251001"
 
 # OpenAI — model/base_url fall back to [llm.openai] when omitted
-[agent.summary_provider]
+[llm.summary_provider]
 type = "openai"
 model = "gpt-4o-mini"
 
 # Ollama — model/base_url fall back to [llm] when omitted
-[agent.summary_provider]
+[llm.summary_provider]
 type = "ollama"
 model = "qwen3:1.7b"
 base_url = "http://localhost:11434"
@@ -168,12 +168,12 @@ name = "lm-studio"
 base_url = "http://localhost:8080/v1"
 model = "llama-3.2-1b"
 
-[agent.summary_provider]
+[llm.summary_provider]
 type = "compatible"
 model = "lm-studio"   # matches [[llm.compatible]] name, not the model name
 
 # Local candle inference (requires candle feature)
-[agent.summary_provider]
+[llm.summary_provider]
 type = "candle"
 model = "mistral-7b-instruct"   # HuggingFace repo_id; overrides [llm.candle]
 device = "metal"                 # "cpu", "cuda", or "metal"; overrides [llm.candle].device
@@ -191,16 +191,17 @@ Fields:
 
 #### String shorthand (`summary_model`)
 
-`summary_model` accepts a compact provider/model string. `[agent.summary_provider]` takes precedence when both are set.
+`summary_model` accepts a compact provider/model string. `[llm.summary_provider]` takes precedence when both are set.
 
 ```toml
-[agent]
-summary_model = "claude"                         # Claude with model from [llm.cloud]
-summary_model = "claude/claude-haiku-4-5-20251001"  # Claude with explicit model
-summary_model = "openai"                         # OpenAI with model from [llm.openai]
-summary_model = "openai/gpt-4o-mini"             # OpenAI with explicit model
-summary_model = "compatible/my-server"           # OpenAI-compatible using [llm.compatible.my-server]
-summary_model = "candle"                         # Local candle inference
+[llm]
+summary_model = "claude"                              # Claude with model from [llm.cloud]
+summary_model = "claude/claude-haiku-4-5-20251001"   # Claude with explicit model
+summary_model = "openai"                              # OpenAI with model from [llm.openai]
+summary_model = "openai/gpt-4o-mini"                 # OpenAI with explicit model
+summary_model = "compatible/my-server"               # OpenAI-compatible using [[llm.compatible]] entry
+summary_model = "ollama/qwen3:1.7b"                  # Ollama with explicit model
+summary_model = "candle"                              # Local candle inference
 ```
 
 ## Query-Aware Memory Routing

@@ -275,13 +275,13 @@ impl AppBuilder {
 
     pub fn build_summary_provider(&self) -> Option<AnyProvider> {
         // Structured config takes precedence over the string-based summary_model.
-        if let Some(ref pcfg) = self.config.agent.summary_provider {
+        if let Some(ref pcfg) = self.config.llm.summary_provider {
             return match create_provider_from_config(pcfg, &self.config) {
                 Ok(sp) => {
                     tracing::info!(
                         provider_type = %pcfg.provider_type,
                         model = ?pcfg.model,
-                        "summary provider configured via [agent.summary_provider]"
+                        "summary provider configured via [llm.summary_provider]"
                     );
                     Some(sp)
                 }
@@ -291,10 +291,10 @@ impl AppBuilder {
                 }
             };
         }
-        self.config.agent.summary_model.as_ref().and_then(
+        self.config.llm.summary_model.as_ref().and_then(
             |model_spec| match create_summary_provider(model_spec, &self.config) {
                 Ok(sp) => {
-                    tracing::info!(model = %model_spec, "summary provider configured via summary_model");
+                    tracing::info!(model = %model_spec, "summary provider configured via llm.summary_model");
                     Some(sp)
                 }
                 Err(e) => {

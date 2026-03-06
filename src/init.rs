@@ -615,6 +615,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         router_ema_alpha: 0.1,
         router_reorder_interval: 10,
         instruction_file: None,
+        summary_model: None,
+        summary_provider: None,
     };
 
     config.memory = MemoryConfig {

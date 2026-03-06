@@ -205,7 +205,7 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
 
 /// Create an `AnyProvider` for use as the summarization provider.
 ///
-/// `model_spec` format (set via `[agent] summary_model`):
+/// `model_spec` format (set via `[llm] summary_model`):
 /// - `ollama/<model>` — Ollama at the configured `base_url`, e.g. `ollama/qwen3:1.7b`
 /// - `claude` or `claude/<model>` — Claude API; requires `ZEPH_CLAUDE_API_KEY`
 /// - `openai` or `openai/<model>` — OpenAI-compatible API; requires `ZEPH_OPENAI_API_KEY`

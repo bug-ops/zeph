@@ -3,9 +3,6 @@
 name = "Zeph"
 # Maximum tool execution iterations per user message (doom-loop protection)
 max_tool_iterations = 10
-# Optional local model for tool output summarization and context compaction.
-# Format: "ollama/<model>". Falls back to primary provider if unset.
-# summary_model = "ollama/llama3.2"
 # Check for new Zeph releases on startup
 # auto_update_check = true
 # Automatically detect provider-specific instruction files (CLAUDE.md, AGENTS.md, etc.)
@@ -24,6 +21,14 @@ model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
 # Provider-specific instruction file to inject into the system prompt (optional)
 # instruction_file = "llm-instructions.md"
+
+# Dedicated provider for tool-pair summarization and context compaction (optional).
+# Falls back to the primary provider when unset.
+# String shorthand (summary_model) or structured table ([llm.summary_provider]) — pick one.
+# summary_model = "ollama/qwen3:1.7b"   # ollama/<model> | claude[/<model>] | openai[/<model>] | compatible/<name> | candle
+# [llm.summary_provider]
+# type = "claude"                          # claude, openai, compatible, ollama, candle
+# model = "claude-haiku-4-5-20251001"     # model override (or [[llm.compatible]] entry name for compatible)
 
 [llm.cloud]
 # Claude API model (used when provider = "claude")
