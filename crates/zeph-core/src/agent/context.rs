@@ -756,8 +756,13 @@ impl<C: Channel> Agent<C> {
 
     fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
         format!(
-            "Summarize this tool invocation in 1-2 sentences. Include the tool name, \
-             key input parameters, and the essential outcome/result.\n\n\
+            "Produce a concise but technically precise summary of this tool invocation.\n\
+             Preserve all facts that would be needed to continue work without re-running the tool:\n\
+             - Tool name and key input parameters (file paths, function names, patterns, line ranges)\n\
+             - Exact findings: line numbers, struct/enum/function names, error messages, numeric values\n\
+             - Outcome: what was found, changed, created, or confirmed\n\
+             Do NOT omit specific identifiers, paths, or numbers — they cannot be recovered later.\n\
+             Use 2-4 sentences maximum.\n\n\
              <tool_request>\n{}\n</tool_request>\n\n<tool_response>\n{}\n</tool_response>",
             req.content, res.content
         )
