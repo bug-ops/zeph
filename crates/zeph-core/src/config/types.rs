@@ -1377,6 +1377,8 @@ pub struct DebugConfig {
     pub enabled: bool,
     /// Directory where per-session debug dump subdirectories are created.
     pub output_dir: PathBuf,
+    /// Output format for LLM request files: `"json"` (default) or `"md"`.
+    pub format: crate::debug_dump::DumpFormat,
 }
 
 impl Default for DebugConfig {
@@ -1384,6 +1386,7 @@ impl Default for DebugConfig {
         Self {
             enabled: false,
             output_dir: PathBuf::from(".local/debug"),
+            format: crate::debug_dump::DumpFormat::default(),
         }
     }
 }

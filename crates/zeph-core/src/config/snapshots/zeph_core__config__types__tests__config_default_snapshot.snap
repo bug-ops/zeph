@@ -298,3 +298,4 @@ aggregator_max_tokens = 4096
 [debug]
 enabled = false
 output_dir = ".local/debug"
+format = "json"

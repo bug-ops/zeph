@@ -236,6 +236,8 @@ pub struct Agent<C: Channel> {
     /// is written to files in the dump directory. Enabled via `--debug-dump` CLI flag or
     /// `[debug]` config section.
     pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
+    /// Format used when creating a dumper via the `/debug-dump` slash command.
+    pub(super) dump_format: crate::debug_dump::DumpFormat,
 }
 
 impl<C: Channel> Agent<C> {
@@ -400,6 +402,7 @@ impl<C: Channel> Agent<C> {
             #[cfg(feature = "orchestration")]
             pending_graph: None,
             debug_dumper: None,
+            dump_format: crate::debug_dump::DumpFormat::default(),
         }
     }
 
@@ -1101,7 +1104,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let dir = std::path::PathBuf::from(arg);
-        match crate::debug_dump::DebugDumper::new(&dir) {
+        match crate::debug_dump::DebugDumper::new(&dir, self.dump_format) {
             Ok(dumper) => {
                 let path = dumper.dir().display().to_string();
                 self.debug_dumper = Some(dumper);

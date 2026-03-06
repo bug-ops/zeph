@@ -579,7 +579,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     .then(|| config.debug.output_dir.clone())
             });
         if let Some(dir) = dump_dir {
-            match zeph_core::debug_dump::DebugDumper::new(dir.as_path()) {
+            match zeph_core::debug_dump::DebugDumper::new(dir.as_path(), config.debug.format) {
                 Ok(dumper) => agent.with_debug_dumper(dumper),
                 Err(e) => {
                     tracing::warn!(error = %e, "debug dump initialization failed");
