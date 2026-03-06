@@ -1012,6 +1012,12 @@ impl SemanticMemory {
         self.qdrant.is_some()
     }
 
+    /// Return a reference to the embedding store, if configured.
+    #[must_use]
+    pub fn embedding_store(&self) -> Option<&Arc<EmbeddingStore>> {
+        self.qdrant.as_ref()
+    }
+
     /// Count messages in a conversation.
     ///
     /// # Errors
@@ -1574,7 +1580,7 @@ pub async fn extract_and_store(
             .resolve(&entity.name, &entity.entity_type, entity.summary.as_deref())
             .await
         {
-            Ok(id) => {
+            Ok((id, _outcome)) => {
                 entity_ids.insert(entity.name.clone(), id);
                 entities_upserted += 1;
             }

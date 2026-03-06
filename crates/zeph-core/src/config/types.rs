@@ -1764,6 +1764,10 @@ fn default_graph_entity_similarity_threshold() -> f32 {
     0.85
 }
 
+fn default_graph_entity_ambiguous_threshold() -> f32 {
+    0.70
+}
+
 fn default_graph_extraction_timeout_secs() -> u64 {
     15
 }
@@ -1805,6 +1809,8 @@ pub struct GraphConfig {
     pub extraction_timeout_secs: u64,
     #[serde(default)]
     pub use_embedding_resolution: bool,
+    #[serde(default = "default_graph_entity_ambiguous_threshold")]
+    pub entity_ambiguous_threshold: f32,
     #[serde(default = "default_graph_max_hops")]
     pub max_hops: u32,
     #[serde(default = "default_graph_recall_limit")]
@@ -1828,6 +1834,7 @@ impl Default for GraphConfig {
             entity_similarity_threshold: default_graph_entity_similarity_threshold(),
             extraction_timeout_secs: default_graph_extraction_timeout_secs(),
             use_embedding_resolution: false,
+            entity_ambiguous_threshold: default_graph_entity_ambiguous_threshold(),
             max_hops: default_graph_max_hops(),
             recall_limit: default_graph_recall_limit(),
             expired_edge_retention_days: default_graph_expired_edge_retention_days(),
@@ -2389,6 +2396,7 @@ mod tests {
         assert!((cfg.entity_similarity_threshold - 0.85).abs() < f32::EPSILON);
         assert_eq!(cfg.extraction_timeout_secs, 15);
         assert!(!cfg.use_embedding_resolution);
+        assert!((cfg.entity_ambiguous_threshold - 0.70).abs() < f32::EPSILON);
         assert_eq!(cfg.max_hops, 2);
         assert_eq!(cfg.recall_limit, 10);
         assert_eq!(cfg.expired_edge_retention_days, 90);

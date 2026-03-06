@@ -295,6 +295,31 @@ impl EmbeddingStore {
         Ok(point_id)
     }
 
+    /// Upsert a vector into a named collection, reusing an existing point ID.
+    ///
+    /// Use this when updating an existing entity to avoid orphaned Qdrant points.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Qdrant upsert fails.
+    pub async fn upsert_to_collection(
+        &self,
+        collection: &str,
+        point_id: &str,
+        payload: serde_json::Value,
+        vector: Vec<f32>,
+    ) -> Result<(), MemoryError> {
+        let payload_map: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_value(payload)?;
+        let point = VectorPoint {
+            id: point_id.to_owned(),
+            vector,
+            payload: payload_map,
+        };
+        self.ops.upsert(collection, vec![point]).await?;
+        Ok(())
+    }
+
     /// Search a named Qdrant collection, returning scored points with payloads.
     ///
     /// # Errors
