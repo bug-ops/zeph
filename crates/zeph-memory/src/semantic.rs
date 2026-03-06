@@ -4,10 +4,9 @@
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
+#[cfg(feature = "graph-memory")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::embedding_store::{EmbeddingStore, MessageKind, SearchFilter};
 use crate::error::MemoryError;
