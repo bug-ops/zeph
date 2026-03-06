@@ -5,6 +5,8 @@ pub mod store;
 pub mod types;
 
 #[cfg(feature = "graph-memory")]
+pub mod community;
+#[cfg(feature = "graph-memory")]
 pub mod extractor;
 #[cfg(feature = "graph-memory")]
 pub mod resolver;
@@ -14,6 +16,11 @@ pub mod retrieval;
 pub use store::GraphStore;
 pub use types::{Community, Edge, Entity, EntityAlias, EntityType, GraphFact};
 
+#[cfg(feature = "graph-memory")]
+pub use community::{
+    GraphEvictionStats, assign_to_community, cleanup_stale_entity_embeddings, detect_communities,
+    run_graph_eviction,
+};
 #[cfg(feature = "graph-memory")]
 pub use extractor::{ExtractedEdge, ExtractedEntity, ExtractionResult, GraphExtractor};
 #[cfg(feature = "graph-memory")]

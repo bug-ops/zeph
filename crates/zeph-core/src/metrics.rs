@@ -207,6 +207,7 @@ pub struct MetricsSnapshot {
     pub orchestration: OrchestrationMetrics,
     /// Live snapshot of the currently active task graph. `None` when no plan is active.
     pub orchestration_graph: Option<TaskGraphSnapshot>,
+    pub graph_community_detection_failures: u64,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

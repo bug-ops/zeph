@@ -561,6 +561,151 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Get the current extraction count from metadata.
+    ///
+    /// Returns 0 if the counter has not been initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn extraction_count(&self) -> Result<i64, MemoryError> {
+        let val = self.get_metadata("extraction_count").await?;
+        Ok(val.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0))
+    }
+
+    /// Stream all active (non-invalidated) edges.
+    pub fn all_active_edges_stream(&self) -> impl Stream<Item = Result<Edge, MemoryError>> + '_ {
+        use futures::StreamExt as _;
+        sqlx::query_as::<_, EdgeRow>(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NULL
+             ORDER BY id ASC",
+        )
+        .fetch(&self.pool)
+        .map(|r| r.map_err(MemoryError::from).map(edge_from_row))
+    }
+
+    /// Find a community by its primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or JSON parsing fails.
+    pub async fn find_community_by_id(&self, id: i64) -> Result<Option<Community>, MemoryError> {
+        let row: Option<CommunityRow> = sqlx::query_as(
+            "SELECT id, name, summary, entity_ids, created_at, updated_at
+             FROM graph_communities
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => {
+                let entity_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                Ok(Some(Community {
+                    id: row.id,
+                    name: row.name,
+                    summary: row.summary,
+                    entity_ids,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Delete all communities (full rebuild before upsert).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn delete_all_communities(&self) -> Result<(), MemoryError> {
+        sqlx::query("DELETE FROM graph_communities")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete expired edges older than `retention_days` and return count deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn delete_expired_edges(&self, retention_days: u32) -> Result<usize, MemoryError> {
+        let days = i64::from(retention_days);
+        let result = sqlx::query(
+            "DELETE FROM graph_edges
+             WHERE expired_at IS NOT NULL
+               AND expired_at < datetime('now', '-' || ?1 || ' days')",
+        )
+        .bind(days)
+        .execute(&self.pool)
+        .await?;
+        Ok(usize::try_from(result.rows_affected())?)
+    }
+
+    /// Delete orphan entities (no active edges, last seen more than `retention_days` ago).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn delete_orphan_entities(&self, retention_days: u32) -> Result<usize, MemoryError> {
+        let days = i64::from(retention_days);
+        let result = sqlx::query(
+            "DELETE FROM graph_entities
+             WHERE id NOT IN (
+                 SELECT DISTINCT source_entity_id FROM graph_edges WHERE valid_to IS NULL
+                 UNION
+                 SELECT DISTINCT target_entity_id FROM graph_edges WHERE valid_to IS NULL
+             )
+             AND last_seen_at < datetime('now', '-' || ?1 || ' days')",
+        )
+        .bind(days)
+        .execute(&self.pool)
+        .await?;
+        Ok(usize::try_from(result.rows_affected())?)
+    }
+
+    /// Delete the oldest excess entities when count exceeds `max_entities`.
+    ///
+    /// Entities are ranked by ascending edge count, then ascending `last_seen_at` (LRU).
+    /// Only deletes when `entity_count() > max_entities`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn cap_entities(&self, max_entities: usize) -> Result<usize, MemoryError> {
+        let current = self.entity_count().await?;
+        let max = i64::try_from(max_entities)?;
+        if current <= max {
+            return Ok(0);
+        }
+        let excess = current - max;
+        let result = sqlx::query(
+            "DELETE FROM graph_entities
+             WHERE id IN (
+                 SELECT e.id
+                 FROM graph_entities e
+                 LEFT JOIN (
+                     SELECT source_entity_id AS eid, COUNT(*) AS cnt
+                     FROM graph_edges WHERE valid_to IS NULL GROUP BY source_entity_id
+                     UNION ALL
+                     SELECT target_entity_id AS eid, COUNT(*) AS cnt
+                     FROM graph_edges WHERE valid_to IS NULL GROUP BY target_entity_id
+                 ) edge_counts ON e.id = edge_counts.eid
+                 ORDER BY COALESCE(edge_counts.cnt, 0) ASC, e.last_seen_at ASC
+                 LIMIT ?1
+             )",
+        )
+        .bind(excess)
+        .execute(&self.pool)
+        .await?;
+        Ok(usize::try_from(result.rows_affected())?)
+    }
+
     // ── BFS Traversal ─────────────────────────────────────────────────────────
 
     /// Breadth-first traversal from `start_entity_id` up to `max_hops` hops.
@@ -1254,6 +1399,70 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(ids, expected, "all 4 nodes reachable, no duplicates");
         assert_eq!(edges.len(), 4, "all 4 edges returned");
+    }
+
+    #[tokio::test]
+    async fn extraction_count_default_zero() {
+        let gs = setup().await;
+        assert_eq!(gs.extraction_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn extraction_count_after_set() {
+        let gs = setup().await;
+        gs.set_metadata("extraction_count", "7").await.unwrap();
+        assert_eq!(gs.extraction_count().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn all_active_edges_stream_excludes_invalidated() {
+        use futures::TryStreamExt as _;
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("SA", "SA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("SB", "SB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("SC", "SC", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
+        gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+        gs.invalidate_edge(e1).await.unwrap();
+
+        let edges: Vec<_> = gs.all_active_edges_stream().try_collect().await.unwrap();
+        assert_eq!(edges.len(), 1, "only the active edge should be returned");
+        assert_eq!(edges[0].source_entity_id, b);
+        assert_eq!(edges[0].target_entity_id, c);
+    }
+
+    #[tokio::test]
+    async fn find_community_by_id_found_and_not_found() {
+        let gs = setup().await;
+        let cid = gs
+            .upsert_community("grp", "summary", &[1, 2])
+            .await
+            .unwrap();
+        let found = gs.find_community_by_id(cid).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "grp");
+
+        let missing = gs.find_community_by_id(9999).await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_all_communities_clears_table() {
+        let gs = setup().await;
+        gs.upsert_community("c1", "s1", &[1]).await.unwrap();
+        gs.upsert_community("c2", "s2", &[2]).await.unwrap();
+        assert_eq!(gs.community_count().await.unwrap(), 2);
+        gs.delete_all_communities().await.unwrap();
+        assert_eq!(gs.community_count().await.unwrap(), 0);
     }
 
     #[tokio::test]

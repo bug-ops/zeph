@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 1951
 expression: toml_str
 ---
 [agent]
@@ -119,6 +118,8 @@ extraction_timeout_secs = 15
 use_embedding_resolution = false
 max_hops = 2
 recall_limit = 10
+expired_edge_retention_days = 90
+max_entities = 0
 
 [tools]
 enabled = true

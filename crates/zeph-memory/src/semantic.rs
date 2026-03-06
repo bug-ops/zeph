@@ -5,6 +5,8 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
 use std::sync::Arc;
+#[cfg(feature = "graph-memory")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::embedding_store::{EmbeddingStore, MessageKind, SearchFilter};
 use crate::error::MemoryError;
@@ -168,6 +170,8 @@ pub struct SemanticMemory {
     pub token_counter: Arc<TokenCounter>,
     #[cfg(feature = "graph-memory")]
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
+    #[cfg(feature = "graph-memory")]
+    community_detection_failures: Arc<AtomicU64>,
 }
 
 impl SemanticMemory {
@@ -251,6 +255,8 @@ impl SemanticMemory {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -263,6 +269,13 @@ impl SemanticMemory {
     pub fn with_graph_store(mut self, store: Arc<crate::graph::GraphStore>) -> Self {
         self.graph_store = Some(store);
         self
+    }
+
+    /// Returns the cumulative count of community detection failures since startup.
+    #[cfg(feature = "graph-memory")]
+    #[must_use]
+    pub fn community_detection_failures(&self) -> u64 {
+        self.community_detection_failures.load(Ordering::Relaxed)
     }
 
     /// Configure temporal decay and MMR re-ranking options.
@@ -309,6 +322,8 @@ impl SemanticMemory {
             token_counter,
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -366,6 +381,8 @@ impl SemanticMemory {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1361,12 +1378,19 @@ impl SemanticMemory {
     ) {
         let pool = self.sqlite.pool().clone();
         let provider = self.provider.clone();
+        let failure_counter = self.community_detection_failures.clone();
 
         tokio::spawn(async move {
             let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
-            match tokio::time::timeout(
+            let extraction_ok = match tokio::time::timeout(
                 timeout_dur,
-                extract_and_store(content, context_messages, provider, pool, config),
+                extract_and_store(
+                    content,
+                    context_messages,
+                    provider.clone(),
+                    pool.clone(),
+                    config.clone(),
+                ),
             )
             .await
             {
@@ -1376,12 +1400,63 @@ impl SemanticMemory {
                         edges = stats.edges_inserted,
                         "graph extraction completed"
                     );
+                    true
                 }
                 Ok(Err(e)) => {
                     tracing::warn!("graph extraction failed: {e:#}");
+                    false
                 }
                 Err(_elapsed) => {
                     tracing::warn!("graph extraction timed out");
+                    false
+                }
+            };
+
+            if extraction_ok && config.community_refresh_interval > 0 {
+                use crate::graph::GraphStore;
+
+                let store = GraphStore::new(pool.clone());
+                let extraction_count = store.extraction_count().await.unwrap_or(0);
+                if extraction_count > 0
+                    && i64::try_from(config.community_refresh_interval)
+                        .is_ok_and(|interval| extraction_count % interval == 0)
+                {
+                    tracing::info!(extraction_count, "triggering community detection refresh");
+                    let store2 = GraphStore::new(pool);
+                    let provider2 = provider;
+                    let retention_days = config.expired_edge_retention_days;
+                    let max_cap = config.max_entities_cap;
+                    tokio::spawn(async move {
+                        match crate::graph::community::detect_communities(&store2, &provider2).await
+                        {
+                            Ok(count) => {
+                                tracing::info!(communities = count, "community detection complete");
+                            }
+                            Err(e) => {
+                                tracing::warn!("community detection failed: {e:#}");
+                                failure_counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        match crate::graph::community::run_graph_eviction(
+                            &store2,
+                            retention_days,
+                            max_cap,
+                        )
+                        .await
+                        {
+                            Ok(stats) => {
+                                tracing::info!(
+                                    expired_edges = stats.expired_edges_deleted,
+                                    orphan_entities = stats.orphan_entities_deleted,
+                                    capped_entities = stats.capped_entities_deleted,
+                                    "graph eviction complete"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("graph eviction failed: {e:#}");
+                            }
+                        }
+                    });
                 }
             }
         });
@@ -1393,11 +1468,14 @@ impl SemanticMemory {
 /// Owned clone of the relevant fields from `GraphConfig` — no references, safe to send to
 /// spawned tasks.
 #[cfg(feature = "graph-memory")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GraphExtractionConfig {
     pub max_entities: usize,
     pub max_edges: usize,
     pub extraction_timeout_secs: u64,
+    pub community_refresh_interval: usize,
+    pub expired_edge_retention_days: u32,
+    pub max_entities_cap: usize,
 }
 
 /// Stats returned from a completed extraction.
@@ -1526,6 +1604,8 @@ mod tests {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1981,6 +2061,8 @@ mod tests {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2116,6 +2198,8 @@ mod tests {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -2388,6 +2472,8 @@ mod tests {
             token_counter: Arc::new(TokenCounter::new()),
             #[cfg(feature = "graph-memory")]
             graph_store: None,
+            #[cfg(feature = "graph-memory")]
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
         };
 
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2819,6 +2905,7 @@ mod tests {
                     max_entities: 10,
                     max_edges: 10,
                     extraction_timeout_secs: 5,
+                    ..Default::default()
                 },
             )
             .await
@@ -2844,6 +2931,7 @@ mod tests {
                         max_entities: 5,
                         max_edges: 5,
                         extraction_timeout_secs: 5,
+                        ..Default::default()
                     },
                 )
                 .await;
@@ -2946,6 +3034,7 @@ mod tests {
                 max_entities: 5,
                 max_edges: 5,
                 extraction_timeout_secs: 0,
+                ..Default::default()
             };
             // spawn fires and forgets — must not panic regardless of timeout value.
             memory.spawn_graph_extraction(

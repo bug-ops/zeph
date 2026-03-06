@@ -92,6 +92,52 @@ Graph recall uses breadth-first search to find relevant facts:
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
 
+## Community Detection
+
+Community detection groups related entities into clusters using label propagation. Instead of treating the knowledge graph as a flat collection of facts, communities reveal thematic clusters — for example, a group of entities related to "Rust tooling" or "deployment infrastructure."
+
+### How It Works
+
+Every `community_refresh_interval` messages (default: 100), a background task runs full community detection:
+
+1. Load all entities and active edges from SQLite
+2. Construct an undirected petgraph graph in memory
+3. Run label propagation for up to 50 iterations until convergence: each node adopts the most frequent label among its neighbors, with ties broken by smallest label value
+4. Discard groups with fewer than 2 entities
+5. Generate an LLM summary (2-3 sentences) for each qualifying group
+6. Persist communities to the `graph_communities` SQLite table, replacing any previous results
+
+### Incremental Assignment
+
+Between full detection runs, newly extracted entities are assigned to existing communities incrementally. When a new entity has edges to entities already in a community, it joins via neighbor majority vote — no full re-detection is triggered. If no neighbors belong to any community, the entity remains unassigned until the next full run.
+
+### Viewing Communities
+
+Use the `/graph communities` TUI command to list detected communities and their summaries (Phase 6).
+
+## Graph Eviction
+
+Graph data grows unboundedly without eviction. Zeph runs three eviction rules during every community refresh cycle to keep the graph manageable.
+
+### Expired Edge Cleanup
+
+Edges invalidated (`valid_to` set) more than `expired_edge_retention_days` days ago are deleted. These are facts superseded by newer information — the active replacement edge is retained.
+
+### Orphan Entity Cleanup
+
+Entities with no active edges and `last_seen_at` older than `expired_edge_retention_days` days are deleted. An entity with no connections that has not been seen recently is stale.
+
+### Entity Count Cap
+
+When `max_entities > 0` and the entity count exceeds the cap, the oldest entities (by `last_seen_at`) with the fewest active edges are deleted first. Set `max_entities = 0` (default) to disable the cap.
+
+### Configuration
+
+Configure eviction in `[memory.graph]`:
+
+- `expired_edge_retention_days` — days to retain expired edges before deletion (default: 90)
+- `max_entities` — maximum entities to retain; `0` means unlimited (default: 0)
+
 ## Entity Search: FTS5 Full-Text Index
 
 Entity lookup (used by `find_entities_fuzzy`) is backed by an FTS5 virtual table (`graph_entities_fts`) that indexes entity names and summaries. This replaces the earlier `LIKE`-based search with ranked full-text matching.
@@ -134,6 +180,8 @@ extraction_timeout_secs = 15
 entity_similarity_threshold = 0.85
 use_embedding_resolution = false
 community_refresh_interval = 100  # Messages between community recalculation
+expired_edge_retention_days = 90  # Days to retain expired (superseded) edges
+max_entities = 0                  # Entity cap (0 = unlimited)
 ```
 
 The `graph-memory` feature flag must be enabled at compile time. When using pre-built binaries compiled with `--features full`, it is already included.
@@ -170,7 +218,7 @@ Graph memory is being implemented incrementally:
 2. ~~**Entity & Relation Extraction** — LLM-powered extraction pipeline~~
 3. ~~**Graph-Aware Retrieval** — BFS traversal with fuzzy entity matching, composite scoring, and cycle-safe traversal~~
 4. ~~**Background Extraction** — non-blocking extraction in agent loop, context injection, budget allocation~~
-5. **Community Detection** — label propagation with petgraph
+5. ~~**Community Detection** — label propagation with petgraph, graph eviction~~
 6. **TUI & Observability** — `/graph` commands, metrics, init wizard
 
 ## See Also

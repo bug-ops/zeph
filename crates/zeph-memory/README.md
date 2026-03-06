@@ -41,7 +41,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
-| `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal and entity canonicalization (feature-gated: `graph-memory`) |
+| `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction (feature-gated: `graph-memory`) |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession (feature-gated: `graph-memory`) |
 | `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
@@ -132,7 +132,8 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 - **Entities** — named nodes with 8 types (person, tool, concept, project, language, file, config, organization)
 - **Entity canonicalization** — `canonical_name` + alias table prevents duplicates from name variations ("Rust", "rust-lang", "Rust language" resolve to one entity). Alias-first resolution with deterministic first-registered-wins semantics
 - **Edges** — directed relationships with bi-temporal timestamps (`valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion)
-- **Communities** — groups of related entities with LLM-generated summaries
+- **Communities** — groups of related entities detected via label propagation (petgraph) with LLM-generated summaries
+- **Graph eviction** — automatic cleanup of expired edges, orphan entities, and entity cap enforcement via `expired_edge_retention_days` and `max_entities` config
 - **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
 - **GraphFact** — retrieval-side type with composite scoring for context injection
 - **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking (including aliases), runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates by canonical name, and returns the top-K facts for context injection
@@ -151,13 +152,15 @@ enabled = true
 max_hops = 2
 recall_limit = 10
 extraction_timeout_secs = 15
+expired_edge_retention_days = 90  # Days to retain superseded edges
+max_entities = 0                  # Max entities cap (0 = unlimited)
 ```
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| `graph-memory` | Knowledge graph with entity-relationship tracking and BFS traversal |
+| `graph-memory` | Knowledge graph with entity-relationship tracking, BFS traversal, community detection via label propagation, and graph eviction |
 | `orchestration` | Task graph persistence via `SqliteGraphStore` (used by `zeph-core` orchestration) |
 | `pdf` | PDF document loading via `pdf-extract` |
 | `mock` | In-memory `VectorStore` implementation for testing |
