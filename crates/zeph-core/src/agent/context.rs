@@ -35,7 +35,7 @@ fn chunk_messages(
     let mut current_tokens = 0usize;
 
     for msg in messages {
-        let msg_tokens = tc.count_tokens(&msg.content);
+        let msg_tokens = tc.count_message_tokens(msg);
 
         if msg_tokens >= oversized {
             // Oversized message gets its own chunk
@@ -545,7 +545,7 @@ impl<C: Channel> Agent<C> {
         let mut protection_boundary = self.messages.len();
         if protect > 0 {
             for (i, msg) in self.messages.iter().enumerate().rev() {
-                tail_tokens += self.token_counter.count_tokens(&msg.content);
+                tail_tokens += self.token_counter.count_message_tokens(msg);
                 if tail_tokens >= protect {
                     protection_boundary = i;
                     break;
@@ -804,7 +804,7 @@ impl<C: Channel> Agent<C> {
         let total_tokens: usize = self
             .messages
             .iter()
-            .map(|m| self.token_counter.count_tokens(&m.content))
+            .map(|m| self.token_counter.count_message_tokens(m))
             .sum();
         let threshold = (budget as f32 * self.context_manager.compaction_threshold) as usize;
         let min_to_free = total_tokens.saturating_sub(threshold);
@@ -1460,7 +1460,7 @@ impl<C: Channel> Agent<C> {
         let mut keep_from = self.messages.len();
 
         for i in (history_start..self.messages.len()).rev() {
-            let msg_tokens = self.token_counter.count_tokens(&self.messages[i].content);
+            let msg_tokens = self.token_counter.count_message_tokens(&self.messages[i]);
             if total + msg_tokens > token_budget {
                 break;
             }

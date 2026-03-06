@@ -99,12 +99,12 @@ impl<C: Channel> Agent<C> {
         self.cached_prompt_tokens = self
             .messages
             .iter()
-            .map(|m| self.token_counter.count_tokens(&m.content) as u64)
+            .map(|m| self.token_counter.count_message_tokens(m) as u64)
             .sum();
     }
 
     pub(super) fn push_message(&mut self, msg: Message) {
-        self.cached_prompt_tokens += self.token_counter.count_tokens(&msg.content) as u64;
+        self.cached_prompt_tokens += self.token_counter.count_message_tokens(&msg) as u64;
         self.messages.push(msg);
     }
 
@@ -166,13 +166,14 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         let before = agent.cached_prompt_tokens;
-        agent.push_message(Message {
+        let msg = Message {
             role: Role::User,
             content: "hello world!!".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
-        });
-        let expected_delta = agent.token_counter.count_tokens("hello world!!") as u64;
+        };
+        let expected_delta = agent.token_counter.count_message_tokens(&msg) as u64;
+        agent.push_message(msg);
         assert_eq!(agent.cached_prompt_tokens, before + expected_delta);
     }
 
@@ -202,7 +203,7 @@ mod tests {
         let expected: u64 = agent
             .messages
             .iter()
-            .map(|m| agent.token_counter.count_tokens(&m.content) as u64)
+            .map(|m| agent.token_counter.count_message_tokens(m) as u64)
             .sum();
         assert_eq!(agent.cached_prompt_tokens, expected);
     }
