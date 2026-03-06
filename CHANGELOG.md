@@ -10,8 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fix tool output pruning racing with summarization: swap execution order so `maybe_summarize_tool_pair` runs before `prune_stale_tool_outputs`, align pruning window with summarization threshold via `2 * tool_call_cutoff + 2` formula, remove hardcoded `TOOL_LOOP_KEEP_RECENT = 4` constant (#1284)
 - Fix `persist_message` saving parts from wrong message — `self.messages.last()` returned the previous message's parts instead of the current one, causing 100% parts corruption in SQLite for all tool interactions; now takes explicit `parts` parameter (#1279)
 - Fix token counting using flattened `content` instead of structured `parts` — add `count_message_tokens` to `TokenCounter` that estimates tokens per `MessagePart` variant matching API payload structure, update 6 call sites in context budget tracking (#1280)
+
 
 ### Added
 
