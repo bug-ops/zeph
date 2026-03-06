@@ -753,8 +753,13 @@ mod tests {
         assert_eq!(rx.borrow().sqlite_message_count, 1);
     }
 
+    // Round-trip tests: verify that persist_message saves the correct parts and they
+    // are restored correctly by load_history.
+
     #[tokio::test]
-    async fn persist_message_saves_correct_parts_for_tool_use() {
+    async fn persist_message_saves_correct_tool_use_parts() {
+        use zeph_llm::provider::MessagePart;
+
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -771,13 +776,15 @@ mod tests {
             100,
         );
 
-        let parts = vec![zeph_llm::provider::MessagePart::ToolUse {
-            id: "call_abc".to_string(),
-            name: "shell".to_string(),
-            input: serde_json::json!({"command": "ls"}),
+        let parts = vec![MessagePart::ToolUse {
+            id: "call_abc123".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"path": "/tmp/test.txt"}),
         }];
+        let content = "[tool_use: read_file(call_abc123)]";
+
         agent
-            .persist_message(Role::Assistant, "content", &parts, false)
+            .persist_message(Role::Assistant, content, &parts, false)
             .await;
 
         let history = agent
@@ -789,19 +796,32 @@ mod tests {
             .load_history(cid, 50)
             .await
             .unwrap();
+
         assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].content, content);
         assert_eq!(history[0].parts.len(), 1);
         match &history[0].parts[0] {
-            zeph_llm::provider::MessagePart::ToolUse { id, name, .. } => {
-                assert_eq!(id, "call_abc");
-                assert_eq!(name, "shell");
+            MessagePart::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_abc123");
+                assert_eq!(name, "read_file");
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other => panic!("expected ToolUse part, got {other:?}"),
         }
+        // Regression guard: assistant message must NOT have ToolResult parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. })),
+            "assistant message must not contain ToolResult parts"
+        );
     }
 
     #[tokio::test]
-    async fn persist_message_saves_correct_parts_for_tool_result() {
+    async fn persist_message_saves_correct_tool_result_parts() {
+        use zeph_llm::provider::MessagePart;
+
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -818,13 +838,15 @@ mod tests {
             100,
         );
 
-        let parts = vec![zeph_llm::provider::MessagePart::ToolResult {
-            tool_use_id: "call_abc".to_string(),
-            content: "output".to_string(),
+        let parts = vec![MessagePart::ToolResult {
+            tool_use_id: "call_abc123".to_string(),
+            content: "file contents here".to_string(),
             is_error: false,
         }];
+        let content = "[tool_result: call_abc123]\nfile contents here";
+
         agent
-            .persist_message(Role::User, "content", &parts, false)
+            .persist_message(Role::User, content, &parts, false)
             .await;
 
         let history = agent
@@ -836,24 +858,37 @@ mod tests {
             .load_history(cid, 50)
             .await
             .unwrap();
+
         assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[0].content, content);
         assert_eq!(history[0].parts.len(), 1);
         match &history[0].parts[0] {
-            zeph_llm::provider::MessagePart::ToolResult {
+            MessagePart::ToolResult {
                 tool_use_id,
-                content,
+                content: result_content,
                 is_error,
             } => {
-                assert_eq!(tool_use_id, "call_abc");
-                assert_eq!(content, "output");
+                assert_eq!(tool_use_id, "call_abc123");
+                assert_eq!(result_content, "file contents here");
                 assert!(!is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => panic!("expected ToolResult part, got {other:?}"),
         }
+        // Regression guard: user message with ToolResult must NOT have ToolUse parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "user ToolResult message must not contain ToolUse parts"
+        );
     }
 
     #[tokio::test]
-    async fn persist_message_empty_parts_saves_empty_array() {
+    async fn persist_message_roundtrip_preserves_role_part_alignment() {
+        use zeph_llm::provider::MessagePart;
+
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -870,62 +905,34 @@ mod tests {
             100,
         );
 
-        agent
-            .persist_message(Role::User, "plain text", &[], false)
-            .await;
-
-        let history = agent
-            .memory_state
-            .memory
-            .as_ref()
-            .unwrap()
-            .sqlite()
-            .load_history(cid, 50)
-            .await
-            .unwrap();
-        assert_eq!(history.len(), 1);
-        assert!(history[0].parts.is_empty(), "parts must be empty");
-    }
-
-    #[tokio::test]
-    async fn persist_message_round_trip_tool_use_then_result() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-
-        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
-        let cid = memory.sqlite().create_conversation().await.unwrap();
-
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
-            std::sync::Arc::new(memory),
-            cid,
-            50,
-            5,
-            100,
-        );
-
-        let assistant_parts = vec![zeph_llm::provider::MessagePart::ToolUse {
-            id: "call_xyz".to_string(),
-            name: "web_scrape".to_string(),
-            input: serde_json::json!({"url": "https://example.com"}),
+        // Persist assistant message with ToolUse parts
+        let assistant_parts = vec![MessagePart::ToolUse {
+            id: "id_1".to_string(),
+            name: "list_dir".to_string(),
+            input: serde_json::json!({"path": "/tmp"}),
         }];
         agent
             .persist_message(
                 Role::Assistant,
-                "assistant content",
+                "[tool_use: list_dir(id_1)]",
                 &assistant_parts,
                 false,
             )
             .await;
 
-        let user_parts = vec![zeph_llm::provider::MessagePart::ToolResult {
-            tool_use_id: "call_xyz".to_string(),
-            content: "scraped output".to_string(),
+        // Persist user message with ToolResult parts
+        let user_parts = vec![MessagePart::ToolResult {
+            tool_use_id: "id_1".to_string(),
+            content: "file1.txt\nfile2.txt".to_string(),
             is_error: false,
         }];
         agent
-            .persist_message(Role::User, "user content", &user_parts, false)
+            .persist_message(
+                Role::User,
+                "[tool_result: id_1]\nfile1.txt\nfile2.txt",
+                &user_parts,
+                false,
+            )
             .await;
 
         let history = agent
@@ -937,27 +944,101 @@ mod tests {
             .load_history(cid, 50)
             .await
             .unwrap();
+
         assert_eq!(history.len(), 2);
 
-        // assistant message must have ToolUse parts
+        // First message: assistant + ToolUse
         assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].content, "[tool_use: list_dir(id_1)]");
+        assert!(
+            matches!(&history[0].parts[0], MessagePart::ToolUse { id, .. } if id == "id_1"),
+            "first message must be assistant ToolUse"
+        );
+
+        // Second message: user + ToolResult
+        assert_eq!(history[1].role, Role::User);
+        assert_eq!(
+            history[1].content,
+            "[tool_result: id_1]\nfile1.txt\nfile2.txt"
+        );
+        assert!(
+            matches!(&history[1].parts[0], MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id_1"),
+            "second message must be user ToolResult"
+        );
+
+        // Cross-role regression guard: no swapped parts
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. })),
+            "assistant message must not have ToolResult parts"
+        );
+        assert!(
+            !history[1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "user message must not have ToolUse parts"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_saves_correct_tool_output_parts() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![MessagePart::ToolOutput {
+            tool_name: "shell".to_string(),
+            body: "hello from shell".to_string(),
+            compacted_at: None,
+        }];
+        let content = "[tool: shell]\nhello from shell";
+
+        agent
+            .persist_message(Role::User, content, &parts, false)
+            .await;
+
+        let history = agent
+            .memory_state
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[0].content, content);
         assert_eq!(history[0].parts.len(), 1);
         match &history[0].parts[0] {
-            zeph_llm::provider::MessagePart::ToolUse { id, name, .. } => {
-                assert_eq!(id, "call_xyz");
-                assert_eq!(name, "web_scrape");
+            MessagePart::ToolOutput {
+                tool_name,
+                body,
+                compacted_at,
+            } => {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(body, "hello from shell");
+                assert!(compacted_at.is_none());
             }
-            other => panic!("expected ToolUse in assistant message, got {other:?}"),
-        }
-
-        // user message must have ToolResult parts (not swapped)
-        assert_eq!(history[1].role, Role::User);
-        assert_eq!(history[1].parts.len(), 1);
-        match &history[1].parts[0] {
-            zeph_llm::provider::MessagePart::ToolResult { tool_use_id, .. } => {
-                assert_eq!(tool_use_id, "call_xyz");
-            }
-            other => panic!("expected ToolResult in user message, got {other:?}"),
+            other => panic!("expected ToolOutput part, got {other:?}"),
         }
     }
 }

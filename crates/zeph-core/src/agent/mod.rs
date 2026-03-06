@@ -1516,9 +1516,9 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }
         };
-        self.push_message(user_msg);
         // Image parts intentionally excluded — base64 payloads too large for message history.
         self.persist_message(Role::User, &text, &[], false).await;
+        self.push_message(user_msg);
 
         if let Err(e) = self.process_response().await {
             tracing::error!("Response processing failed: {e:#}");
