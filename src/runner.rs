@@ -523,6 +523,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         ) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
+        #[cfg(feature = "orchestration")]
+        let agent = agent.with_orchestration_config(config.orchestration.clone());
+        #[cfg(not(feature = "orchestration"))]
+        let agent = agent;
         agent
             .with_subagent_manager(mgr)
             .with_subagent_config(config.agents.clone())

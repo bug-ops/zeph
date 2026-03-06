@@ -1059,7 +1059,7 @@ impl<C: Channel> Agent<C> {
         budget_tokens: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::error::AgentError> {
-        if budget_tokens == 0 {
+        if budget_tokens == 0 || !memory_state.graph_config.enabled {
             return Ok(None);
         }
         let Some(ref memory) = memory_state.memory else {
@@ -1081,7 +1081,10 @@ impl<C: Channel> Agent<C> {
         let mut body = String::from(super::GRAPH_FACTS_PREFIX);
         let mut tokens_so_far = tc.count_tokens(&body);
         for f in &facts {
-            let line = format!("- {} (confidence: {:.2})\n", f.fact, f.confidence);
+            // Strip newlines and angle-brackets from stored entity names/relations
+            // to prevent graph-stored injection strings from escaping into the prompt.
+            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
             let line_tokens = tc.count_tokens(&line);
             if tokens_so_far + line_tokens > budget_tokens {
                 break;
@@ -1490,10 +1493,15 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("recalling context...").await;
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
+        #[cfg(feature = "graph-memory")]
+        let graph_enabled = self.memory_state.graph_config.enabled;
+        #[cfg(not(feature = "graph-memory"))]
+        let graph_enabled = false;
         let alloc = budget.allocate(
             system_prompt,
             &self.skill_state.last_skills_prompt,
             &self.token_counter,
+            graph_enabled,
         );
 
         // Remove stale injected messages before concurrent fetch
@@ -1619,6 +1627,12 @@ impl<C: Channel> Agent<C> {
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
+        #[cfg(feature = "graph-memory")]
+        if let Some(msg) = graph_facts_msg.filter(|_| self.messages.len() > 1) {
+            self.messages
+                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
+            tracing::debug!("injected knowledge graph facts into context");
+        }
         if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
             self.messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
@@ -1628,12 +1642,6 @@ impl<C: Channel> Agent<C> {
             self.messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected past corrections into context");
-        }
-        #[cfg(feature = "graph-memory")]
-        if let Some(msg) = graph_facts_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
-                .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected graph facts into context");
         }
         if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
             self.messages
@@ -2150,6 +2158,8 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "graph-memory")]
+    use super::super::MemoryState;
     #[allow(clippy::wildcard_imports)]
     use super::*;
     #[allow(clippy::wildcard_imports)]
@@ -3130,7 +3140,7 @@ mod tests {
     fn test_budget_allocation_cross_session() {
         let budget = crate::context::ContextBudget::new(1000, 0.20);
         let tc = zeph_memory::TokenCounter::new();
-        let alloc = budget.allocate("", "", &tc);
+        let alloc = budget.allocate("", "", &tc, false);
 
         assert!(alloc.cross_session > 0);
         assert!(alloc.summaries > 0);
@@ -4628,5 +4638,152 @@ mod tests {
         let result = agent.maybe_proactive_compress().await;
         assert!(result.is_ok());
         assert!(!agent.context_manager.compacted_this_turn);
+    }
+
+    // BudgetAllocation.graph_facts tests
+
+    #[test]
+    fn budget_allocation_graph_disabled_preserves_semantic_recall_8pct() {
+        let budget = crate::context::ContextBudget::new(10000, 0.20);
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate("", "", &tc, false);
+        assert_eq!(alloc.graph_facts, 0);
+        let available = 10000 - 2000; // 20% reserve
+        let expected_recall = (available as f32 * 0.08) as usize;
+        assert_eq!(alloc.semantic_recall, expected_recall);
+    }
+
+    #[test]
+    fn budget_allocation_graph_enabled_splits_from_semantic_recall() {
+        let budget = crate::context::ContextBudget::new(10000, 0.20);
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate("", "", &tc, true);
+        assert!(
+            alloc.graph_facts > 0,
+            "graph_facts must be non-zero when enabled"
+        );
+        assert!(alloc.graph_facts < alloc.semantic_recall, "3% < 5%");
+    }
+
+    #[test]
+    fn budget_allocation_zero_tokens_graph_facts_zero() {
+        let budget = crate::context::ContextBudget::new(0, 0.20);
+        let tc = zeph_memory::TokenCounter::new();
+        let alloc = budget.allocate("", "", &tc, true);
+        assert_eq!(alloc.graph_facts, 0);
+    }
+
+    #[cfg(feature = "graph-memory")]
+    async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
+        let mem = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let store = std::sync::Arc::new(zeph_memory::graph::GraphStore::new(
+            mem.sqlite().pool().clone(),
+        ));
+        mem.with_graph_store(store)
+    }
+
+    #[cfg(feature = "graph-memory")]
+    fn make_mem_state(
+        memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+        cid: zeph_memory::ConversationId,
+        graph_enabled: bool,
+    ) -> MemoryState {
+        MemoryState {
+            memory: Some(memory),
+            conversation_id: Some(cid),
+            history_limit: 50,
+            recall_limit: 5,
+            summarization_threshold: 100,
+            cross_session_score_threshold: 0.5,
+            autosave_assistant: false,
+            autosave_min_length: 20,
+            tool_call_cutoff: 6,
+            unsummarized_count: 0,
+            document_config: crate::config::DocumentConfig::default(),
+            graph_config: crate::config::GraphConfig {
+                enabled: graph_enabled,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
+        let memory = build_graph_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, false);
+        let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
+        let result = Agent::<MockChannel>::fetch_graph_facts(&mem_state, "test", 1000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_none_when_budget_zero() {
+        let memory = build_graph_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
+        let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
+        let result = Agent::<MockChannel>::fetch_graph_facts(&mem_state, "test", 0, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_none_when_graph_is_empty() {
+        let memory = build_graph_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
+        let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
+        let result = Agent::<MockChannel>::fetch_graph_facts(&mem_state, "rust", 1000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_none(), "empty graph must return None");
+    }
+
+    #[cfg(feature = "graph-memory")]
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
+        use zeph_memory::graph::{EntityType, GraphStore};
+
+        let memory = build_graph_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        {
+            let store = GraphStore::new(memory.sqlite().pool().clone());
+            let rust_id = store
+                .upsert_entity("rust", EntityType::Language, Some("systems language"))
+                .await
+                .unwrap();
+            let tokio_id = store
+                .upsert_entity("tokio", EntityType::Tool, Some("async runtime"))
+                .await
+                .unwrap();
+            store
+                .insert_edge(rust_id, tokio_id, "uses", "Rust uses tokio", 0.9, None)
+                .await
+                .unwrap();
+        }
+
+        let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
+        let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
+        let result = Agent::<MockChannel>::fetch_graph_facts(&mem_state, "rust", 2000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.starts_with(super::super::GRAPH_FACTS_PREFIX));
     }
 }

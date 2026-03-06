@@ -48,9 +48,11 @@ When `context_budget_tokens > 0`, the context window is structured as:
 │ <available_skills> matched skills (full body)   │  200-2000 tokens
 │ <other_skills> remaining (description-only)     │  50-200 tokens
 ├─────────────────────────────────────────────────┤
+│ [knowledge graph] entity facts (if graph on)    │  3% of available
+├─────────────────────────────────────────────────┤
 │ <code_context> RAG chunks (if index on)         │  30% of available
 ├─────────────────────────────────────────────────┤
-│ [semantic recall] relevant past messages        │  10-25% of available
+│ [semantic recall] relevant past messages        │  5-8% of available
 ├─────────────────────────────────────────────────┤
 │ [known facts] graph entity-relationship facts   │  0-4% of available
 ├─────────────────────────────────────────────────┤

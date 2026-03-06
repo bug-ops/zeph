@@ -42,6 +42,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
 | `graph` | `GraphStore`, `Entity`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal (feature-gated: `graph-memory`) |
+| `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession (feature-gated: `graph-memory`) |
 | `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching, BFS from seed entities, composite scoring, deduplication (feature-gated: `graph-memory`) |
 | `error` | `MemoryError` — unified error type |
 
@@ -137,6 +138,8 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 
 `GraphStore` provides 18 CRUD methods over four SQLite tables (`graph_entities`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migration 021 and is always present regardless of feature flag.
 
+`SemanticMemory::spawn_graph_extraction()` runs LLM-powered extraction as a fire-and-forget background task with configurable timeout. `recall_graph()` performs fuzzy entity matching plus BFS edge traversal, returning composite-scored `GraphFact` values for context injection.
+
 The `HeuristicRouter` in `zeph-memory` includes a `Graph` route variant: relationship queries (e.g., "related to", "connection between", "opinion on") are automatically routed to `graph_recall` when the `graph-memory` feature is enabled.
 
 Configure via `[memory.graph]` in `config.toml`:
@@ -146,6 +149,7 @@ Configure via `[memory.graph]` in `config.toml`:
 enabled = true
 max_hops = 2
 recall_limit = 10
+extraction_timeout_secs = 15
 ```
 
 ## Features
