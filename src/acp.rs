@@ -86,6 +86,8 @@ struct AgentDeps {
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
+    /// Debug dump configuration from `[debug]` config section.
+    debug_config: zeph_core::config::DebugConfig,
 }
 
 /// Build all agent dependencies from config for the ACP server.
@@ -231,6 +233,7 @@ async fn build_acp_deps(
         sqlite_path: config.memory.sqlite_path.clone(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
+        debug_config: config.debug.clone(),
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -368,6 +371,13 @@ async fn spawn_acp_agent(
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider);
+
+    if d.debug_config.enabled {
+        match zeph_core::debug_dump::DebugDumper::new(d.debug_config.output_dir.as_path()) {
+            Ok(dumper) => agent = agent.with_debug_dumper(dumper),
+            Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
+        }
+    }
 
     if let Err(e) = agent.load_history().await {
         tracing::error!("failed to load agent history: {e:#}");
