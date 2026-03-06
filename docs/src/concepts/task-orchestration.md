@@ -173,6 +173,25 @@ For reliable routing, set `agent_hint` on each task node during planning. The ke
 
 `SubAgentManager::spawn_for_task()` wraps the standard `spawn()` method and hooks into the scheduler's event channel. When the sub-agent's `JoinHandle` resolves, it automatically sends a `TaskEvent` to the scheduler. This is minimally invasive — no changes to `SubAgentHandle` or `run_agent_loop` internals.
 
+## Result Aggregation
+
+When all tasks in a graph reach a terminal state (completed, skipped, or failed), the orchestrator synthesizes a single coherent response via the `Aggregator` trait.
+
+### LlmAggregator
+
+`LlmAggregator` is the default implementation. It:
+
+1. Collects all `Completed` task outputs.
+2. Truncates each output to a per-task character budget derived from `aggregator_max_tokens` (budget = `aggregator_max_tokens × 4` characters, divided equally across completed tasks).
+3. Applies the `ContentSanitizer` to each output to guard against prompt injection from task results.
+4. Builds a synthesis prompt listing task outputs under `### Task: <title>` headers. Skipped tasks are listed separately with a note that their output is absent.
+5. Calls the LLM to produce a single summary that directly addresses the original goal.
+
+**Fallback behavior:** if the LLM call fails for any reason, `LlmAggregator` falls back to raw concatenation — goal header followed by each task's output verbatim. The call never fails with an error as long as at least one completed or skipped task exists.
+
+> [!NOTE]
+> If the graph has no completed or skipped tasks at all (e.g., every task failed before producing output), aggregation returns `OrchestrationError::AggregationFailed`.
+
 ## CLI Commands
 
 | Command | Description |
@@ -184,7 +203,12 @@ For reliable routing, set `agent_hint` on each task node during planning. The ke
 | `/plan list` | List recent graphs from persistence |
 | `/plan cancel` | Cancel the active graph |
 | `/plan cancel <id>` | Cancel a specific graph by UUID |
+| `/plan resume` | Resume the active paused graph (`ask` failure strategy) |
+| `/plan resume <id>` | Resume a specific paused graph by UUID |
+| `/plan retry` | Re-run failed tasks in the active graph |
+| `/plan retry <id>` | Re-run failed tasks in a specific graph by UUID |
 
+> [!NOTE]
 > **Parsing ambiguity:** goals that begin with a reserved subcommand name (`status`, `list`, `cancel`, `confirm`, `resume`, `retry`) are interpreted as that subcommand. Rephrase the goal to avoid collisions — e.g., `/plan write a status report` instead of `/plan status report`.
 
 ### Confirmation Flow
@@ -197,9 +221,23 @@ When `confirm_before_execute` is enabled (the default), `/plan <goal>` does not 
 
 The user then runs `/plan confirm` to start execution, or `/plan cancel` to discard the pending plan. If a new `/plan <goal>` is submitted while a plan is already pending, the agent rejects it with a warning — cancel or confirm the existing plan first.
 
-### Future Commands
+### Resume a Paused Graph
 
-`/plan resume` and `/plan retry` are reserved for a future phase and return a "not yet implemented" error.
+A graph enters the `paused` state when a task fails and the effective failure strategy is `ask`. This gives the user a chance to decide how to proceed.
+
+Use `/plan resume` (or `/plan resume <id>` for a specific graph) to continue execution. The scheduler re-evaluates ready tasks from the current state — no previously completed task is re-run.
+
+**When to use:** the `ask` strategy is useful when a task failure may or may not be critical. Configure it per-task in the planner output or as the graph-level `default_failure_strategy`.
+
+### Retry Failed Tasks
+
+Use `/plan retry` (or `/plan retry <id>` for a specific graph) to re-attempt all tasks that did not complete successfully:
+
+- Tasks in `Failed` status are reset to `Ready`.
+- Tasks in `Skipped` status are reset to `Pending` so they can be re-evaluated once their dependencies succeed.
+- Tasks that already `Completed` are not re-run.
+
+This is equivalent to a targeted re-run of the failed subtree without discarding the entire plan.
 
 ## Metrics
 
@@ -231,6 +269,7 @@ task_timeout_secs = 300             # Per-task timeout in seconds, 0 = no timeou
 planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
 dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
 confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
+aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call (default: 4096)
 ```
 
 ## Related
