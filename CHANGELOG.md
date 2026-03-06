@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Deferred tool pair summarization: summaries are computed eagerly during the tool loop but applied lazily (Tier 0) when context usage exceeds `deferred_apply_threshold` (default 0.70), preserving the message prefix for Claude API prompt cache hits; add `deferred_apply_threshold` config option, `--init` wizard support, force-apply safety net before compaction drain (#1294)
+
 ## [0.14.0] - 2026-03-06
 
 ### Fixed

@@ -27,6 +27,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 |-------|-----------|
 | `memory.history_limit` | <= 10,000 |
 | `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
+| `memory.deferred_apply_threshold` | 0.0–1.0, must be < `compaction_threshold` |
 | `memory.compression.threshold_tokens` | >= 1,000 (proactive only) |
 | `memory.compression.max_summary_tokens` | >= 128 (proactive only) |
 | `memory.token_safety_margin` | > 0.0 |
@@ -48,7 +49,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 |---------|--------|
 | `[security]` | `redact_secrets` |
 | `[timeouts]` | `llm_seconds`, `embedding_seconds`, `a2a_seconds` |
-| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
+| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `deferred_apply_threshold`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
 | `[memory.semantic]` | `recall_limit` |
 | `[index]` | `repo_map_ttl_secs`, `watch` |
 | `[agent]` | `max_tool_iterations` |
@@ -145,6 +146,7 @@ sqlite_path = "./data/zeph.db"
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
+deferred_apply_threshold = 0.70  # Apply pre-computed tool pair summaries when usage exceeds this fraction (must be < compaction_threshold; default: 0.70)
 compaction_threshold = 0.75    # Compact when context usage exceeds this fraction
 compaction_preserve_tail = 4   # Keep last N messages during compaction
 prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
@@ -391,6 +393,7 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
 | `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
+| `ZEPH_MEMORY_DEFERRED_APPLY_THRESHOLD` | Apply pre-computed tool pair summaries when context usage exceeds this fraction (default: 0.70, must be < `ZEPH_MEMORY_COMPACTION_THRESHOLD`) |
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold as fraction of context budget (default: 0.75) |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning (default: 40000) |

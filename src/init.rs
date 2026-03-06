@@ -86,6 +86,7 @@ pub(crate) struct WizardState {
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
+    pub(crate) deferred_apply_threshold: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -114,6 +115,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_max_parallel: 4,
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
+        deferred_apply_threshold: 0.70,
         ..WizardState::default()
     };
 
@@ -419,6 +421,21 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
+    state.deferred_apply_threshold = Input::new()
+        .with_prompt(
+            "Apply deferred tool summaries when context usage exceeds this fraction (0.0-1.0, \
+             must be below compaction threshold 0.80)",
+        )
+        .default(0.70f32)
+        .validate_with(|v: &f32| {
+            if *v > 0.0 && *v < 1.0 {
+                Ok(())
+            } else {
+                Err("must be between 0.0 and 1.0 exclusive")
+            }
+        })
+        .interact_text()?;
+
     state.graph_memory_enabled = Confirm::new()
         .with_prompt("Enable knowledge graph memory? (experimental)")
         .default(false)
@@ -618,6 +635,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.graph.enabled = state.graph_memory_enabled;
     if let Some(ref m) = state.graph_extract_model {
         config.memory.graph.extract_model.clone_from(m);
+    }
+    config.memory.deferred_apply_threshold = state.deferred_apply_threshold;
+    if config.memory.deferred_apply_threshold >= config.memory.compaction_threshold {
+        eprintln!(
+            "warning: deferred_apply_threshold ({}) is not less than compaction_threshold ({}); \
+             deferred summaries will fire after compaction, reducing cache savings",
+            config.memory.deferred_apply_threshold, config.memory.compaction_threshold,
+        );
     }
 
     match state.channel {

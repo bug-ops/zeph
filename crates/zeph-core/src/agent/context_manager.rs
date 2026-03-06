@@ -16,6 +16,9 @@ pub(crate) struct ContextManager {
     /// Set to `true` when compaction or proactive compression fires in the current turn.
     /// Cleared at the start of each turn. Prevents double compaction per turn (CRIT-03).
     pub(super) compacted_this_turn: bool,
+    /// Threshold ratio for applying deferred tool pair summaries (default 0.70).
+    /// Must be below `compaction_threshold` so deferred application fires first.
+    pub(super) deferred_apply_threshold: f32,
 }
 
 impl ContextManager {
@@ -29,6 +32,7 @@ impl ContextManager {
             compression: CompressionConfig::default(),
             routing: RoutingConfig::default(),
             compacted_this_turn: false,
+            deferred_apply_threshold: 0.70,
         }
     }
 
@@ -51,6 +55,23 @@ impl ContextManager {
             "context budget check"
         );
         should
+    }
+
+    /// Check whether deferred tool pair summaries should be batch-applied now.
+    ///
+    /// Returns `true` when context usage exceeds `deferred_apply_threshold`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub(super) fn should_apply_deferred(&self, cached_tokens: u64) -> bool {
+        let Some(ref budget) = self.budget else {
+            return false;
+        };
+        let used = usize::try_from(cached_tokens).unwrap_or(usize::MAX);
+        let threshold = (budget.max_tokens() as f32 * self.deferred_apply_threshold) as usize;
+        used > threshold
     }
 
     /// Build a memory router from the current routing configuration.
@@ -173,5 +194,42 @@ mod tests {
         };
         cm.compacted_this_turn = true;
         assert!(cm.should_proactively_compress(100_000).is_none());
+    }
+
+    #[test]
+    fn should_apply_deferred_default_threshold() {
+        let cm = ContextManager::new();
+        assert!((cm.deferred_apply_threshold - 0.70).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn should_apply_deferred_no_budget() {
+        let cm = ContextManager::new();
+        // No budget → always false regardless of token count
+        assert!(!cm.should_apply_deferred(999_999));
+    }
+
+    #[test]
+    fn should_apply_deferred_below_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // threshold = 70_000; 50_000 < 70_000 → false
+        assert!(!cm.should_apply_deferred(50_000));
+    }
+
+    #[test]
+    fn should_apply_deferred_above_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // threshold = 70_000; 75_000 > 70_000 → true
+        assert!(cm.should_apply_deferred(75_000));
+    }
+
+    #[test]
+    fn should_apply_deferred_exact_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // threshold = 70_000; 70_000 is NOT > 70_000 → false (must exceed, not equal)
+        assert!(!cm.should_apply_deferred(70_000));
     }
 }

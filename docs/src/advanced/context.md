@@ -9,6 +9,7 @@ All context engineering features are **disabled by default** (`context_budget_to
 ```toml
 [memory]
 context_budget_tokens = 128000    # Set to your model's context window size (0 = unlimited)
+deferred_apply_threshold = 0.70   # Apply pre-computed tool pair summaries when usage exceeds this (must be < compaction_threshold)
 compaction_threshold = 0.75       # Compact when usage exceeds this fraction
 compaction_preserve_tail = 4      # Keep last N messages during compaction
 prune_protect_tokens = 40000      # Protect recent N tokens from Tier 1 tool output pruning
@@ -115,16 +116,16 @@ Every system prompt rebuild injects an `<environment>` block with:
 
 ## Tool-Pair Summarization
 
-After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of visible tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest visible pair is summarized via LLM and the originals are hidden.
+After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of unsummarized tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest eligible pair is summarized via LLM and the result is stored as a deferred summary. Summaries are applied lazily when context usage exceeds `deferred_apply_threshold` (default: 0.70), preserving the message prefix for API cache hits.
 
 ### How It Works
 
-1. `count_tool_pairs()` scans for consecutive Assistant(`ToolUse`) + User(`ToolResult`/`ToolOutput`) pairs where both have `agent_visible = true`.
-2. If the count exceeds `tool_call_cutoff`, `find_oldest_tool_pair()` locates the first such pair.
+1. `count_unsummarized_pairs()` scans for consecutive Assistant(`ToolUse`) + User(`ToolResult`/`ToolOutput`) pairs where both have `agent_visible = true` and no `deferred_summary` is pending.
+2. If the count exceeds `tool_call_cutoff`, `find_oldest_unsummarized_pair()` locates the first eligible pair (skipping pairs with pruned content).
 3. `build_tool_pair_summary_prompt()` constructs a prompt with XML-delimited sections (`<tool_request>` and `<tool_response>`) to prevent content injection.
 4. The summary provider generates a 1-2 sentence summary capturing tool name, key parameters, and outcome.
-5. Both original messages are set to `agent_visible = false` (hidden from LLM context but still visible in UI).
-6. A new Assistant message with a `Summary` part is inserted, marked `agent_only`.
+5. The summary is stored in `messages[resp_idx].metadata.deferred_summary` — the original messages remain visible.
+6. When context usage exceeds `deferred_apply_threshold`, `apply_deferred_summaries()` batch-applies all pending summaries: hides the original pairs and inserts Assistant `Summary` messages.
 
 ### Visibility After Summarization
 
@@ -171,13 +172,19 @@ Proactive compression runs at the start of the context management phase, before 
 
 Metrics: `compression_events` (count), `compression_tokens_saved` (cumulative tokens freed).
 
-## Two-Tier Context Pruning
+## Three-Tier Context Pruning
 
-When total message tokens exceed `compaction_threshold` (default: 75%) of the context budget, a two-tier pruning strategy activates:
+When context usage crosses predefined thresholds, a three-tier pruning strategy activates in order. Each tier is attempted before escalating to the next.
 
-### Tier 1: Selective Tool Output Pruning
+### Tier 0: Apply Deferred Summaries (at `deferred_apply_threshold`)
 
-Before invoking the LLM for compaction, Zeph scans messages outside the protected tail for `ToolOutput` parts and replaces their content with a short placeholder. This is a cheap, synchronous operation that often frees enough tokens to stay under the threshold without an LLM call.
+When context usage exceeds `deferred_apply_threshold` (default: 0.70), all pending deferred summaries are batch-applied. This is a purely in-memory operation — no LLM call is required, since summaries were pre-computed after each tool execution.
+
+**Why lazy application?** Tool pair summaries are computed eagerly (right after each tool call) but their application to the message array is deferred. As long as context usage stays below 0.70, the original tool call/response messages remain in the array unchanged. This keeps the message prefix stable across consecutive turns, which is the key requirement for the Claude API prompt cache to produce hits. Applying summaries only when space is actually needed ensures the cache prefix is not disturbed unnecessarily.
+
+### Tier 1: Selective Tool Output Pruning (at `compaction_threshold`)
+
+When context usage exceeds `compaction_threshold` (default: 0.75) and Tier 0 did not free enough space, Zeph scans messages outside the protected tail for `ToolOutput` parts and replaces their content with a short placeholder. This is a cheap, synchronous operation that often frees enough tokens to stay under the threshold without an LLM call.
 
 - Only tool outputs in messages older than the protected tail are pruned
 - The most recent `prune_protect_tokens` tokens (default: 40,000) worth of messages are never pruned, preserving recent tool context
@@ -330,6 +337,7 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget in tokens | `0` (unlimited) |
+| `ZEPH_MEMORY_DEFERRED_APPLY_THRESHOLD` | Apply deferred summaries when context usage exceeds this fraction | `0.70` |
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold | `0.75` |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |

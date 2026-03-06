@@ -93,11 +93,11 @@ Key design decisions:
 
 The `token_safety_margin` config multiplier (default: 1.0) still applies on top of the counted value for conservative budgeting.
 
-### Two-Tier Context Pruning
+### Three-Tier Context Pruning
 
-Long conversations accumulate tool outputs that consume significant context space. Zeph uses a two-tier strategy: Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to adaptive chunked LLM compaction — splitting messages into ~4096-token chunks, summarizing up to 4 in parallel, and merging results.
+Long conversations accumulate tool outputs that consume significant context space. Zeph uses a three-tier strategy: Tier 0 batch-applies pre-computed tool pair summaries (no LLM call, deferred until `deferred_apply_threshold` is reached to preserve the message prefix for prompt cache hits), Tier 1 selectively prunes old tool outputs (cheap, no LLM call), and Tier 2 falls back to adaptive chunked LLM compaction — splitting messages into ~4096-token chunks, summarizing up to 4 in parallel, and merging results.
 
-When Tier 2 compaction itself hits a context length error, progressive middle-out tool response removal reduces the input at 10/20/50/100% tiers before retrying. If all LLM attempts fail, a metadata-only fallback produces a summary without any LLM call. LLM calls in the agent loop also reactively intercept context length errors — compacting and retrying up to 2 times before propagating the error. See [Context Engineering](../advanced/context.md) for details.
+When Tier 2 compaction itself hits a context length error, progressive middle-out tool response removal reduces the input at 10/20/50/100% tiers before retrying. If all LLM attempts fail, a metadata-only fallback produces a summary without any LLM call. LLM calls in the agent loop also reactively intercept context length errors — compacting and retrying up to 2 times before propagating the error. See [Context Engineering](../advanced/context.md#three-tier-context-pruning) for details.
 
 ### Message Dual-Visibility
 

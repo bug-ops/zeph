@@ -196,6 +196,10 @@ pub struct MessageMetadata {
     pub user_visible: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted_at: Option<i64>,
+    /// Pre-computed tool pair summary, applied lazily when context pressure rises.
+    /// Stored on the tool response message; cleared after application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_summary: Option<String>,
 }
 
 impl Default for MessageMetadata {
@@ -204,6 +208,7 @@ impl Default for MessageMetadata {
             agent_visible: true,
             user_visible: true,
             compacted_at: None,
+            deferred_summary: None,
         }
     }
 }
@@ -216,6 +221,7 @@ impl MessageMetadata {
             agent_visible: true,
             user_visible: false,
             compacted_at: None,
+            deferred_summary: None,
         }
     }
 
@@ -226,6 +232,7 @@ impl MessageMetadata {
             agent_visible: false,
             user_visible: true,
             compacted_at: None,
+            deferred_summary: None,
         }
     }
 }

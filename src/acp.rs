@@ -44,6 +44,7 @@ struct AgentDeps {
     compaction_threshold: f32,
     compaction_preserve_tail: usize,
     prune_protect_tokens: usize,
+    deferred_apply_threshold: f32,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     security: zeph_core::config::SecurityConfig,
     timeouts: zeph_core::config::TimeoutConfig,
@@ -189,6 +190,7 @@ async fn build_acp_deps(
         compaction_threshold: config.memory.compaction_threshold,
         compaction_preserve_tail: config.memory.compaction_preserve_tail,
         prune_protect_tokens: config.memory.prune_protect_tokens,
+        deferred_apply_threshold: config.memory.deferred_apply_threshold,
         shutdown_rx,
         security: config.security.clone(),
         timeouts: config.timeouts,
@@ -328,6 +330,7 @@ async fn spawn_acp_agent(
         d.compaction_preserve_tail,
         d.prune_protect_tokens,
     )
+    .with_deferred_apply_threshold(d.deferred_apply_threshold)
     .with_shutdown(d.shutdown_rx)
     .with_security(d.security, d.timeouts)
     .with_redact_credentials(d.redact_credentials)

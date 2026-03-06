@@ -453,6 +453,9 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn compact_context(&mut self) -> Result<(), super::error::AgentError> {
+        // Force-apply any pending deferred summaries before draining to avoid losing them (CRIT-01).
+        let _ = self.apply_deferred_summaries();
+
         let preserve_tail = self.context_manager.compaction_preserve_tail;
 
         if self.messages.len() <= preserve_tail + 1 {
@@ -603,9 +606,9 @@ impl<C: Channel> Agent<C> {
     /// This method MUST be called AFTER `maybe_summarize_tool_pair()`. The summarizer
     /// reads `msg.content` to build the LLM prompt; pruning replaces that content with
     /// `"[pruned]"`. Calling prune first would cause the summarizer to produce useless
-    /// summaries. After summarization, the processed pair is hidden (`agent_visible=false`)
-    /// and skipped by `count_tool_pairs`. The pruning loop may still clear their bodies
-    /// for token savings, but the content has already been captured in the summary.
+    /// summaries. After summarization, the processed pair has `deferred_summary` set and
+    /// is skipped by `count_unsummarized_pairs`. The pruning loop may still clear their
+    /// bodies for token savings, but the content has already been captured in the summary.
     pub(crate) fn prune_stale_tool_outputs(&mut self, keep_recent: usize) -> usize {
         if self.messages.len() <= keep_recent + 1 {
             return 0;
@@ -658,7 +661,7 @@ impl<C: Channel> Agent<C> {
         freed
     }
 
-    fn count_tool_pairs(&self) -> usize {
+    fn count_unsummarized_pairs(&self) -> usize {
         let mut count = 0usize;
         let mut i = 1; // skip system prompt
         while i < self.messages.len() {
@@ -682,6 +685,7 @@ impl<C: Channel> Agent<C> {
                             MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
                         )
                     })
+                    && next.metadata.deferred_summary.is_none()
                 {
                     count += 1;
                     i += 2;
@@ -693,7 +697,13 @@ impl<C: Channel> Agent<C> {
         count
     }
 
-    fn find_oldest_tool_pair(&self) -> Option<(usize, usize)> {
+    /// Find the oldest tool request/response pair that has not yet been summarized.
+    ///
+    /// Skips pairs where:
+    /// - `deferred_summary` is already set (already queued for application), or
+    /// - the response content was pruned (all ToolResult/ToolOutput bodies are empty or
+    ///   contain only `"[pruned]"`), which would produce a useless summary (IMP-03 fix).
+    fn find_oldest_unsummarized_pair(&self) -> Option<(usize, usize)> {
         let mut i = 1; // skip system prompt
         while i < self.messages.len() {
             let msg = &self.messages[i];
@@ -716,13 +726,32 @@ impl<C: Channel> Agent<C> {
                             MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
                         )
                     })
+                    && next.metadata.deferred_summary.is_none()
                 {
-                    return Some((i, i + 1));
+                    // Skip pairs whose response content has been fully pruned — summarizing
+                    // "[pruned]" produces a useless result (IMP-03).
+                    let all_pruned = next.parts.iter().all(|p| match p {
+                        MessagePart::ToolOutput { body, .. } => body.is_empty(),
+                        MessagePart::ToolResult { content, .. } => {
+                            content.trim() == "[pruned]" || content.is_empty()
+                        }
+                        _ => true,
+                    });
+                    if !all_pruned {
+                        return Some((i, i + 1));
+                    }
                 }
             }
             i += 1;
         }
         None
+    }
+
+    fn count_deferred_summaries(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| m.metadata.deferred_summary.is_some())
+            .count()
     }
 
     fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
@@ -735,11 +764,11 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn maybe_summarize_tool_pair(&mut self) {
-        let pair_count = self.count_tool_pairs();
+        let pair_count = self.count_unsummarized_pairs();
         if pair_count <= self.memory_state.tool_call_cutoff {
             return;
         }
-        let Some((req_idx, resp_idx)) = self.find_oldest_tool_pair() else {
+        let Some((req_idx, resp_idx)) = self.find_oldest_unsummarized_pair() else {
             return;
         };
         let prompt =
@@ -769,25 +798,107 @@ impl<C: Channel> Agent<C> {
                 return;
             }
         };
-        self.messages[req_idx].metadata.agent_visible = false;
-        self.messages[resp_idx].metadata.agent_visible = false;
-        let summary = self.maybe_redact(&summary).into_owned();
-        let content = format!("[tool summary] {summary}");
-        let summary_msg = Message {
-            role: Role::Assistant,
-            content,
-            parts: vec![MessagePart::Summary { text: summary }],
-            metadata: MessageMetadata::agent_only(),
-        };
-        self.messages.insert(resp_idx + 1, summary_msg);
+        // DEFERRED: store summary on response metadata instead of immediately mutating the array.
+        // The summary is applied lazily by apply_deferred_summaries() when context pressure rises,
+        // preserving the message prefix for Claude API cache hits.
+        let summary = cap_summary(self.maybe_redact(&summary).into_owned(), 8_000);
+        self.messages[resp_idx].metadata.deferred_summary = Some(summary.clone());
         let _ = self.channel.send_status("").await;
         tracing::debug!(
             pair_count,
             cutoff = self.memory_state.tool_call_cutoff,
             req_idx,
             resp_idx,
-            "summarized oldest tool pair"
+            summary_len = summary.len(),
+            "deferred tool pair summary stored"
         );
+    }
+
+    /// Batch-apply all pending deferred tool pair summaries.
+    ///
+    /// Processes in reverse index order (highest first) so that inserting a summary message
+    /// at `resp_idx + 1` does not shift the indices of not-yet-processed pairs.
+    ///
+    /// Returns the number of summaries applied.
+    pub(super) fn apply_deferred_summaries(&mut self) -> usize {
+        // Phase 1: collect (resp_idx, req_idx, summary) for all messages with deferred_summary.
+        let mut targets: Vec<(usize, usize, String)> = Vec::new();
+        for i in 1..self.messages.len() {
+            if self.messages[i].metadata.deferred_summary.is_none() {
+                continue;
+            }
+            // Verify the structural invariant: tool response preceded by matching tool request.
+            if self.messages[i].role == Role::User
+                && self.messages[i].metadata.agent_visible
+                && i > 0
+                && self.messages[i - 1].role == Role::Assistant
+                && self.messages[i - 1].metadata.agent_visible
+                && self.messages[i - 1]
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+            {
+                let summary = self.messages[i]
+                    .metadata
+                    .deferred_summary
+                    .clone()
+                    .expect("checked above");
+                targets.push((i, i - 1, summary));
+            } else {
+                tracing::warn!(
+                    resp_idx = i,
+                    "deferred summary orphaned: req message not found at resp_idx={i}"
+                );
+            }
+        }
+
+        if targets.is_empty() {
+            return 0;
+        }
+
+        // Phase 2: sort descending by resp_idx so insertions do not invalidate lower indices.
+        targets.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let count = targets.len();
+        for (resp_idx, req_idx, summary) in targets {
+            self.messages[req_idx].metadata.agent_visible = false;
+            self.messages[resp_idx].metadata.agent_visible = false;
+            self.messages[resp_idx].metadata.deferred_summary = None;
+
+            let content = format!("[tool summary] {summary}");
+            let summary_msg = Message {
+                role: Role::Assistant,
+                content,
+                parts: vec![MessagePart::Summary { text: summary }],
+                metadata: MessageMetadata::agent_only(),
+            };
+            self.messages.insert(resp_idx + 1, summary_msg);
+        }
+
+        self.recompute_prompt_tokens();
+        tracing::info!(count, "applied deferred tool pair summaries");
+        count
+    }
+
+    /// Apply deferred summaries if context usage exceeds the deferred threshold.
+    ///
+    /// This is Tier 0 — a pure in-memory operation with no LLM call. Intentionally
+    /// does NOT set `compacted_this_turn` so that proactive/reactive compaction may
+    /// also fire in the same turn if tokens remain above their respective thresholds.
+    pub(super) fn maybe_apply_deferred_summaries(&mut self) {
+        if self.count_deferred_summaries() == 0 {
+            return;
+        }
+        if !self
+            .context_manager
+            .should_apply_deferred(self.cached_prompt_tokens)
+        {
+            return;
+        }
+        let applied = self.apply_deferred_summaries();
+        if applied > 0 {
+            tracing::info!(applied, "tier-0: batch-applied deferred tool summaries");
+        }
     }
 
     /// Two-tier compaction: Tier 1 prunes tool outputs, Tier 2 falls back to full LLM compaction.
@@ -884,6 +995,9 @@ impl<C: Channel> Agent<C> {
         &mut self,
         max_summary_tokens: Option<usize>,
     ) -> Result<(), super::error::AgentError> {
+        // Force-apply any pending deferred summaries before draining to avoid losing them (CRIT-01).
+        let _ = self.apply_deferred_summaries();
+
         let preserve_tail = self.context_manager.compaction_preserve_tail;
 
         if self.messages.len() <= preserve_tail + 1 {
@@ -4259,24 +4373,24 @@ mod tests {
     }
 
     #[test]
-    fn count_tool_pairs_counts_visible_native_pairs() {
+    fn count_unsummarized_pairs_counts_visible_native_pairs() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        assert_eq!(agent.count_tool_pairs(), 0);
+        assert_eq!(agent.count_unsummarized_pairs(), 0);
 
         make_tool_pair(&mut agent, "bash");
-        assert_eq!(agent.count_tool_pairs(), 1);
+        assert_eq!(agent.count_unsummarized_pairs(), 1);
 
         make_tool_pair(&mut agent, "read_file");
-        assert_eq!(agent.count_tool_pairs(), 2);
+        assert_eq!(agent.count_unsummarized_pairs(), 2);
     }
 
     #[test]
-    fn count_tool_pairs_ignores_hidden_pairs() {
+    fn count_unsummarized_pairs_ignores_hidden_pairs() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -4288,30 +4402,30 @@ mod tests {
         agent.messages[1].metadata.agent_visible = false;
         agent.messages[2].metadata.agent_visible = false;
 
-        assert_eq!(agent.count_tool_pairs(), 0);
+        assert_eq!(agent.count_unsummarized_pairs(), 0);
     }
 
     #[test]
-    fn find_oldest_tool_pair_returns_correct_indices() {
+    fn find_oldest_unsummarized_pair_returns_correct_indices() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        assert_eq!(agent.find_oldest_tool_pair(), None);
+        assert_eq!(agent.find_oldest_unsummarized_pair(), None);
 
         make_tool_pair(&mut agent, "bash");
         // system = 0, request = 1, response = 2
-        assert_eq!(agent.find_oldest_tool_pair(), Some((1, 2)));
+        assert_eq!(agent.find_oldest_unsummarized_pair(), Some((1, 2)));
 
         make_tool_pair(&mut agent, "read_file");
         // oldest pair is still (1, 2)
-        assert_eq!(agent.find_oldest_tool_pair(), Some((1, 2)));
+        assert_eq!(agent.find_oldest_unsummarized_pair(), Some((1, 2)));
     }
 
     #[test]
-    fn find_oldest_tool_pair_skips_hidden() {
+    fn find_oldest_unsummarized_pair_skips_hidden() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -4325,7 +4439,7 @@ mod tests {
         agent.messages[2].metadata.agent_visible = false;
 
         // second pair: request = 3, response = 4
-        assert_eq!(agent.find_oldest_tool_pair(), Some((3, 4)));
+        assert_eq!(agent.find_oldest_unsummarized_pair(), Some((3, 4)));
     }
 
     #[tokio::test]
@@ -4367,7 +4481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maybe_summarize_tool_pair_above_cutoff_hides_oldest_and_inserts_summary() {
+    async fn maybe_summarize_tool_pair_above_cutoff_stores_deferred_summary() {
         let summary_text = "summarized tool call".to_owned();
         let provider = mock_provider(vec![summary_text.clone()]);
         let channel = MockChannel::new(vec![]);
@@ -4384,24 +4498,16 @@ mod tests {
         let msg_count_before = agent.messages.len();
         agent.maybe_summarize_tool_pair().await;
 
-        // one summary message inserted
-        assert_eq!(agent.messages.len(), msg_count_before + 1);
-        // oldest pair (indices 1, 2) should be hidden
-        assert!(!agent.messages[1].metadata.agent_visible);
-        assert!(!agent.messages[2].metadata.agent_visible);
-        // summary inserted at index 3
-        let summary_msg = &agent.messages[3];
-        assert!(
-            summary_msg.content.contains(&summary_text),
-            "summary message should contain the LLM response"
-        );
-        assert!(!summary_msg.metadata.user_visible);
-        assert!(summary_msg.metadata.agent_visible);
-        assert!(
-            summary_msg
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        // message count must NOT change — deferred, no immediate mutation
+        assert_eq!(agent.messages.len(), msg_count_before);
+        // oldest pair (indices 1, 2) must remain visible
+        assert!(agent.messages[1].metadata.agent_visible);
+        assert!(agent.messages[2].metadata.agent_visible);
+        // deferred_summary must be set on the response message (index 2)
+        assert_eq!(
+            agent.messages[2].metadata.deferred_summary.as_deref(),
+            Some(summary_text.as_str()),
+            "deferred_summary should hold the LLM response"
         );
     }
 
@@ -4708,6 +4814,8 @@ mod tests {
     async fn summarize_then_prune_preserves_intact_content_for_summarizer() {
         // The summarizer must receive non-pruned content.
         // With cutoff=2, adding 3 pairs triggers summarization.
+        // maybe_summarize_tool_pair() stores deferred_summary; apply_deferred_summaries()
+        // actually hides the pair and inserts the Summary message.
         let summary_text = "summarized bash call".to_owned();
         let provider = mock_provider(vec![summary_text.clone()]);
         let channel = MockChannel::new(vec![]);
@@ -4720,8 +4828,9 @@ mod tests {
         make_tool_pair_with_output(&mut agent, "read_file");
         make_tool_pair_with_output(&mut agent, "write_file");
 
-        // Correct order: summarize first, then prune.
+        // Correct order: summarize (deferred), then apply, then prune.
         agent.maybe_summarize_tool_pair().await;
+        agent.apply_deferred_summaries();
         let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
         agent.prune_stale_tool_outputs(keep_recent);
 
@@ -4764,6 +4873,7 @@ mod tests {
         make_tool_pair_with_output(&mut agent, "write_file");
 
         agent.maybe_summarize_tool_pair().await;
+        agent.apply_deferred_summaries();
         let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
         agent.prune_stale_tool_outputs(keep_recent);
 
@@ -4833,13 +4943,9 @@ mod tests {
     #[tokio::test]
     async fn cutoff_one_edge_case_summarize_then_prune() {
         // With cutoff=1 and 2 tool pairs, summarizer triggers (2 > 1).
-        // keep_recent = 2 * 1 + 2 = 4. Messages after setup: [sys, req1, res1, req2, res2] = 5.
-        // After summarize: [sys, req1(hidden), res1(hidden), summary, req2, res2] = 6.
-        // boundary = 6 - 4 = 2 → prune messages[1..2] = [req1(hidden)].
-        // Since pruner skips hidden messages? Let's check: actually pruner iterates all messages
-        // in range regardless of visibility — it only skips parts with compacted_at set.
-        // So req1 (hidden assistant ToolUse) has no ToolOutput/ToolResult parts → no pruning.
-        // The second pair (req2, res2) is within keep_recent — safe.
+        // maybe_summarize_tool_pair() stores deferred_summary on the response.
+        // apply_deferred_summaries() then hides the pair and inserts a Summary message.
+        // keep_recent = 2 * 1 + 2 = 4. The second pair stays visible within keep_recent.
         let summary_text = "summary".to_owned();
         let provider = mock_provider(vec![summary_text]);
         let channel = MockChannel::new(vec![]);
@@ -4852,6 +4958,9 @@ mod tests {
         make_tool_pair_with_output(&mut agent, "read_file");
 
         agent.maybe_summarize_tool_pair().await;
+        // Apply deferred summaries so the Summary message is actually inserted.
+        agent.apply_deferred_summaries();
+
         let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
         agent.prune_stale_tool_outputs(keep_recent);
 
@@ -4987,6 +5096,279 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none(), "empty graph must return None");
+    }
+
+    // --- Deferred summarization tests ---
+
+    #[tokio::test]
+    async fn deferred_summary_stored_not_applied() {
+        let summary_text = "deferred result".to_owned();
+        let provider = mock_provider(vec![summary_text.clone()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(2);
+
+        make_tool_pair(&mut agent, "bash");
+        make_tool_pair(&mut agent, "read_file");
+        make_tool_pair(&mut agent, "write_file");
+
+        let msg_count_before = agent.messages.len();
+        agent.maybe_summarize_tool_pair().await;
+
+        // No new messages inserted — deferred, not immediate
+        assert_eq!(agent.messages.len(), msg_count_before);
+        // All messages stay visible
+        for msg in &agent.messages {
+            assert!(
+                msg.metadata.agent_visible,
+                "no message should be hidden after deferred storage"
+            );
+        }
+        // deferred_summary set on oldest response (index 2)
+        assert!(
+            agent.messages[2].metadata.deferred_summary.is_some(),
+            "deferred_summary must be set on response message"
+        );
+    }
+
+    #[test]
+    fn count_unsummarized_pairs_excludes_deferred() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // 4 pairs: system=0, req1=1,resp1=2, req2=3,resp2=4, req3=5,resp3=6, req4=7,resp4=8
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+        make_tool_pair(&mut agent, "c");
+        make_tool_pair(&mut agent, "d");
+
+        // Mark 2 of the 4 response messages as deferred
+        agent.messages[2].metadata.deferred_summary = Some("s1".into());
+        agent.messages[4].metadata.deferred_summary = Some("s2".into());
+
+        assert_eq!(agent.count_unsummarized_pairs(), 2);
+    }
+
+    #[test]
+    fn find_oldest_unsummarized_pair_skips_deferred() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // system=0, req1=1,resp1=2, req2=3,resp2=4, req3=5,resp3=6
+        make_tool_pair(&mut agent, "first");
+        make_tool_pair(&mut agent, "second");
+        make_tool_pair(&mut agent, "third");
+
+        // Mark oldest response as deferred
+        agent.messages[2].metadata.deferred_summary = Some("already queued".into());
+
+        // Should skip (1,2) and return (3,4)
+        assert_eq!(agent.find_oldest_unsummarized_pair(), Some((3, 4)));
+    }
+
+    #[test]
+    fn count_deferred_summaries_correct() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+        make_tool_pair(&mut agent, "c");
+
+        assert_eq!(agent.count_deferred_summaries(), 0);
+
+        agent.messages[2].metadata.deferred_summary = Some("s1".into());
+        agent.messages[4].metadata.deferred_summary = Some("s2".into());
+        agent.messages[6].metadata.deferred_summary = Some("s3".into());
+
+        assert_eq!(agent.count_deferred_summaries(), 3);
+    }
+
+    #[test]
+    fn apply_deferred_summaries_batch() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // system=0, req1=1,resp1=2, req2=3,resp2=4, req3=5,resp3=6
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+        make_tool_pair(&mut agent, "c");
+
+        agent.messages[2].metadata.deferred_summary = Some("sum_a".into());
+        agent.messages[4].metadata.deferred_summary = Some("sum_b".into());
+        agent.messages[6].metadata.deferred_summary = Some("sum_c".into());
+
+        let applied = agent.apply_deferred_summaries();
+
+        assert_eq!(applied, 3);
+
+        // 6 messages hidden (2 per pair)
+        let hidden = agent
+            .messages
+            .iter()
+            .filter(|m| !m.metadata.agent_visible)
+            .count();
+        assert_eq!(hidden, 6);
+
+        // 3 Summary parts inserted
+        let summaries = agent
+            .messages
+            .iter()
+            .filter(|m| {
+                m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Summary { .. }))
+            })
+            .count();
+        assert_eq!(summaries, 3);
+
+        // deferred_summary cleared everywhere
+        for msg in &agent.messages {
+            assert!(msg.metadata.deferred_summary.is_none());
+        }
+    }
+
+    #[test]
+    fn apply_deferred_summaries_empty() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+
+        let msg_count_before = agent.messages.len();
+        let applied = agent.apply_deferred_summaries();
+
+        assert_eq!(applied, 0);
+        assert_eq!(agent.messages.len(), msg_count_before);
+    }
+
+    #[test]
+    fn apply_deferred_summaries_reverse_order() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // system=0, req1=1,resp1=2, req2=3,resp2=4, req3=5,resp3=6,
+        //           req4=7,resp4=8, req5=9,resp5=10
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+        make_tool_pair(&mut agent, "c");
+        make_tool_pair(&mut agent, "d");
+        make_tool_pair(&mut agent, "e");
+
+        // Set deferred at resp3 (index 6) and resp5 (index 10)
+        agent.messages[6].metadata.deferred_summary = Some("sum_c".into());
+        agent.messages[10].metadata.deferred_summary = Some("sum_e".into());
+
+        let applied = agent.apply_deferred_summaries();
+
+        assert_eq!(applied, 2);
+
+        // req3 and resp3 are hidden
+        assert!(!agent.messages[5].metadata.agent_visible);
+        assert!(!agent.messages[6].metadata.agent_visible);
+
+        // 4 total messages hidden
+        let hidden = agent
+            .messages
+            .iter()
+            .filter(|m| !m.metadata.agent_visible)
+            .count();
+        assert_eq!(hidden, 4);
+
+        // 2 summary messages
+        let summaries = agent
+            .messages
+            .iter()
+            .filter(|m| {
+                m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Summary { .. }))
+            })
+            .count();
+        assert_eq!(summaries, 2);
+    }
+
+    #[test]
+    fn tier0_does_not_set_compacted_this_turn() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.80, 4, 0)
+            .with_deferred_apply_threshold(0.70);
+
+        make_tool_pair(&mut agent, "a");
+        make_tool_pair(&mut agent, "b");
+
+        agent.messages[2].metadata.deferred_summary = Some("s".into());
+        // Simulate token usage above 70% threshold
+        agent.cached_prompt_tokens = 75_000;
+
+        assert!(!agent.context_manager.compacted_this_turn);
+        agent.maybe_apply_deferred_summaries();
+        assert!(
+            !agent.context_manager.compacted_this_turn,
+            "tier-0 must not set compacted_this_turn"
+        );
+    }
+
+    #[test]
+    fn find_oldest_unsummarized_skips_pruned_content() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // First pair: response with pruned (empty) ToolOutput body
+        agent.messages.push(Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "id_pruned".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            }],
+        ));
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: String::new(), // empty = pruned
+                compacted_at: None,
+            }],
+        ));
+
+        // Second pair: real content
+        make_tool_pair(&mut agent, "real_tool");
+
+        // Pruned pair at (1,2); real pair at (3,4)
+        assert_eq!(
+            agent.find_oldest_unsummarized_pair(),
+            Some((3, 4)),
+            "pruned pair should be skipped"
+        );
     }
 
     #[cfg(feature = "graph-memory")]

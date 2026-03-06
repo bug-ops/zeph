@@ -373,6 +373,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_deferred_apply_threshold(mut self, threshold: f32) -> Self {
+        self.context_manager.deferred_apply_threshold = threshold;
+        self
+    }
+
+    #[must_use]
     pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
         self.runtime.model_name = name.into();
         self
