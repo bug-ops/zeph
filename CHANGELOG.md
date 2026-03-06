@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Extend `[agent] summary_model` to support all provider backends: `claude[/<model>]` (requires `ZEPH_CLAUDE_API_KEY`), `openai[/<model>]` (requires `ZEPH_OPENAI_API_KEY`), `compatible/<name>` (named entry from `[[llm.compatible]]`), `candle` (uses `[llm.candle]` config, feature-gated). Previously only `ollama/<model>` was supported.
+
 - Add LSP code intelligence via mcpls: `step_mcpls` wizard step in `zeph --init` with PATH detection, workspace root prompt, and `[mcp.servers.mcpls]` config generation; add `mcpls` to MCP command allowlist in `zeph-mcp`; `docs/src/guides/lsp.md` with full setup guide and all 16 tool descriptions; `skills/code-analysis/SKILL.md` for LLM-guided LSP workflows (Phase 1, #1288, #1287)
 
 ### Changed

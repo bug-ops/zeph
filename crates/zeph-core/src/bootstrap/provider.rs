@@ -203,13 +203,128 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
     }
 }
 
+/// Create an `AnyProvider` for use as the summarization provider.
+///
+/// `model_spec` format (set via `[agent] summary_model`):
+/// - `ollama/<model>` — Ollama at the configured `base_url`, e.g. `ollama/qwen3:1.7b`
+/// - `claude` or `claude/<model>` — Claude API; requires `ZEPH_CLAUDE_API_KEY`
+/// - `openai` or `openai/<model>` — OpenAI-compatible API; requires `ZEPH_OPENAI_API_KEY`
+/// - `compatible/<name>` — named entry from `[[llm.compatible]]`
+/// - `candle` — local candle model (requires `[llm.candle]` config; feature-gated)
+#[allow(clippy::too_many_lines)]
 pub fn create_summary_provider(model_spec: &str, config: &Config) -> anyhow::Result<AnyProvider> {
-    if let Some(model) = model_spec.strip_prefix("ollama/") {
-        let base_url = &config.llm.base_url;
-        let provider = OllamaProvider::new(base_url, model.to_owned(), String::new());
-        Ok(AnyProvider::Ollama(provider))
+    let (backend, model_override) = if let Some((b, m)) = model_spec.split_once('/') {
+        (b, Some(m))
     } else {
-        bail!("unsupported summary_model format: {model_spec} (expected 'ollama/<model>')")
+        (model_spec, None)
+    };
+
+    match backend {
+        "ollama" => {
+            let model =
+                model_override.context("ollama summary_model requires format 'ollama/<model>'")?;
+            Ok(AnyProvider::Ollama(OllamaProvider::new(
+                &config.llm.base_url,
+                model.to_owned(),
+                String::new(),
+            )))
+        }
+        "claude" => {
+            let api_key = config
+                .secrets
+                .claude_api_key
+                .as_ref()
+                .context("ZEPH_CLAUDE_API_KEY required for claude summary provider")?
+                .expose()
+                .to_owned();
+            let cloud = config.llm.cloud.as_ref();
+            let model = model_override
+                .map(str::to_owned)
+                .or_else(|| cloud.map(|c| c.model.clone()))
+                .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_owned());
+            // Cap summary max_tokens at 4096 — summaries are short.
+            let max_tokens = cloud.map_or(4096, |c| c.max_tokens.min(4096));
+            let provider = ClaudeProvider::new(api_key, model, max_tokens)
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+            Ok(AnyProvider::Claude(provider))
+        }
+        "openai" => {
+            let api_key = config
+                .secrets
+                .openai_api_key
+                .as_ref()
+                .context("ZEPH_OPENAI_API_KEY required for openai summary provider")?
+                .expose()
+                .to_owned();
+            let openai_cfg = config.llm.openai.as_ref();
+            let base_url = openai_cfg.map_or_else(
+                || "https://api.openai.com/v1".to_owned(),
+                |c| c.base_url.clone(),
+            );
+            let model = model_override
+                .map(str::to_owned)
+                .or_else(|| openai_cfg.map(|c| c.model.clone()))
+                .unwrap_or_else(|| "gpt-4o-mini".to_owned());
+            let max_tokens = openai_cfg.map_or(4096, |c| c.max_tokens);
+            Ok(AnyProvider::OpenAi(
+                OpenAiProvider::new(api_key, base_url, model, max_tokens, None, None)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
+        }
+        "compatible" => {
+            let name = model_override
+                .context("compatible summary_model requires format 'compatible/<name>'")?;
+            // Delegate to create_named_provider which resolves the entry by name.
+            create_named_provider(name, config)
+        }
+        #[cfg(feature = "candle")]
+        "candle" => {
+            let candle_cfg = config
+                .llm
+                .candle
+                .as_ref()
+                .context("llm.candle config section required for candle summary provider")?;
+            let source = match candle_cfg.source.as_str() {
+                "local" => zeph_llm::candle_provider::loader::ModelSource::Local {
+                    path: std::path::PathBuf::from(&candle_cfg.local_path),
+                },
+                _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
+                    repo_id: config.llm.model.clone(),
+                    filename: candle_cfg.filename.clone(),
+                },
+            };
+            let template = zeph_llm::candle_provider::template::ChatTemplate::parse_str(
+                &candle_cfg.chat_template,
+            );
+            let gen_config = zeph_llm::candle_provider::generate::GenerationConfig {
+                temperature: candle_cfg.generation.temperature,
+                top_p: candle_cfg.generation.top_p,
+                top_k: candle_cfg.generation.top_k,
+                max_tokens: candle_cfg.generation.capped_max_tokens(),
+                seed: candle_cfg.generation.seed,
+                repeat_penalty: candle_cfg.generation.repeat_penalty,
+                repeat_last_n: candle_cfg.generation.repeat_last_n,
+            };
+            let device = select_device(&candle_cfg.device)?;
+            let provider = zeph_llm::candle_provider::CandleProvider::new(
+                &source,
+                template,
+                gen_config,
+                candle_cfg.embedding_repo.as_deref(),
+                device,
+            )?;
+            Ok(AnyProvider::Candle(provider))
+        }
+        _ => bail!(
+            "unsupported summary_model format: '{model_spec}'. \
+             Supported: ollama/<model>, claude[/<model>], openai[/<model>], \
+             compatible/<name>{candle}",
+            candle = if cfg!(feature = "candle") {
+                ", candle"
+            } else {
+                ""
+            }
+        ),
     }
 }
 
@@ -240,6 +355,130 @@ pub fn select_device(preference: &str) -> anyhow::Result<zeph_llm::candle_provid
             Ok(zeph_llm::candle_provider::Device::Cpu)
         }
         _ => Ok(zeph_llm::candle_provider::Device::Cpu),
+    }
+}
+
+/// Create an `AnyProvider` from a structured provider config (`OrchestratorProviderConfig`).
+///
+/// Mirrors the per-entry creation logic in `build_orchestrator` but returns `AnyProvider`
+/// so the result can be used outside the orchestrator context (e.g. as a summary provider).
+#[allow(clippy::too_many_lines)]
+pub fn create_provider_from_config(
+    pcfg: &crate::config::OrchestratorProviderConfig,
+    config: &Config,
+) -> anyhow::Result<AnyProvider> {
+    match pcfg.provider_type.as_str() {
+        "ollama" => {
+            let base_url = pcfg.base_url.as_deref().unwrap_or(&config.llm.base_url);
+            let model = pcfg.model.as_deref().unwrap_or(&config.llm.model);
+            let embed = pcfg
+                .embedding_model
+                .clone()
+                .unwrap_or_else(|| config.llm.embedding_model.clone());
+            Ok(AnyProvider::Ollama(OllamaProvider::new(
+                base_url,
+                model.to_owned(),
+                embed,
+            )))
+        }
+        "claude" => {
+            let api_key = config
+                .secrets
+                .claude_api_key
+                .as_ref()
+                .context("ZEPH_CLAUDE_API_KEY required for claude provider")?
+                .expose()
+                .to_owned();
+            let cloud = config.llm.cloud.as_ref();
+            let model = pcfg
+                .model
+                .as_deref()
+                .or_else(|| cloud.map(|c| c.model.as_str()))
+                .unwrap_or("claude-haiku-4-5-20251001");
+            let max_tokens = cloud.map_or(4096, |c| c.max_tokens);
+            let provider = ClaudeProvider::new(api_key, model.to_owned(), max_tokens)
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+            Ok(AnyProvider::Claude(provider))
+        }
+        "openai" => {
+            let api_key = config
+                .secrets
+                .openai_api_key
+                .as_ref()
+                .context("ZEPH_OPENAI_API_KEY required for openai provider")?
+                .expose()
+                .to_owned();
+            let openai_cfg = config.llm.openai.as_ref();
+            let base_url = pcfg
+                .base_url
+                .clone()
+                .or_else(|| openai_cfg.map(|c| c.base_url.clone()))
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
+            let model = pcfg
+                .model
+                .as_deref()
+                .or_else(|| openai_cfg.map(|c| c.model.as_str()))
+                .unwrap_or("gpt-4o-mini");
+            let max_tokens = openai_cfg.map_or(4096, |c| c.max_tokens);
+            let embed = pcfg
+                .embedding_model
+                .clone()
+                .or_else(|| openai_cfg.and_then(|c| c.embedding_model.clone()));
+            Ok(AnyProvider::OpenAi(
+                OpenAiProvider::new(api_key, base_url, model.to_owned(), max_tokens, embed, None)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
+        }
+        "compatible" => {
+            let name = pcfg
+                .model
+                .as_deref()
+                .context("compatible provider requires 'model' set to the entry name")?;
+            create_named_provider(name, config)
+        }
+        #[cfg(feature = "candle")]
+        "candle" => {
+            let candle_cfg = config
+                .llm
+                .candle
+                .as_ref()
+                .context("llm.candle config section required for candle provider")?;
+            let source = match candle_cfg.source.as_str() {
+                "local" => zeph_llm::candle_provider::loader::ModelSource::Local {
+                    path: std::path::PathBuf::from(&candle_cfg.local_path),
+                },
+                _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
+                    repo_id: pcfg
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| config.llm.model.clone()),
+                    filename: candle_cfg.filename.clone(),
+                },
+            };
+            let template = zeph_llm::candle_provider::template::ChatTemplate::parse_str(
+                &candle_cfg.chat_template,
+            );
+            let device_pref = pcfg.device.as_deref().unwrap_or(&candle_cfg.device);
+            let device = select_device(device_pref)?;
+            let gen_config = zeph_llm::candle_provider::generate::GenerationConfig {
+                temperature: candle_cfg.generation.temperature,
+                top_p: candle_cfg.generation.top_p,
+                top_k: candle_cfg.generation.top_k,
+                max_tokens: candle_cfg.generation.capped_max_tokens(),
+                seed: candle_cfg.generation.seed,
+                repeat_penalty: candle_cfg.generation.repeat_penalty,
+                repeat_last_n: candle_cfg.generation.repeat_last_n,
+            };
+            let provider = zeph_llm::candle_provider::CandleProvider::new(
+                &source,
+                template,
+                gen_config,
+                candle_cfg.embedding_repo.as_deref(),
+                device,
+            )?;
+            Ok(AnyProvider::Candle(provider))
+        }
+        other => bail!("unknown provider type: '{other}'"),
     }
 }
 

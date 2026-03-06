@@ -58,7 +58,7 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 |-------|------|---------|--------------|-------------|
 | `name` | string | `"zeph"` | — | Agent display name |
 | `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
-| `summary_model` | string? | `null` | — | Model used for context summarization |
+| `summary_model` | string? | `null` | — | Model used for context summarization. Formats: `ollama/<model>`, `claude[/<model>]`, `openai[/<model>]`, `compatible/<name>`, `candle` |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
 
 Key `InstructionConfig` fields (TOML section `[agent.instructions]`):

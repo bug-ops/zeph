@@ -189,6 +189,17 @@ pub struct AgentConfig {
     pub max_tool_iterations: usize,
     #[serde(default)]
     pub summary_model: Option<String>,
+    /// Structured provider config for summarization. Takes precedence over `summary_model`.
+    /// Uses the same format as `[llm.orchestrator.providers.*]`.
+    ///
+    /// Example:
+    /// ```toml
+    /// [agent.summary_provider]
+    /// type = "claude"
+    /// model = "claude-haiku-4-5-20251001"
+    /// ```
+    #[serde(default)]
+    pub summary_provider: Option<OrchestratorProviderConfig>,
     #[serde(default = "default_auto_update_check")]
     pub auto_update_check: bool,
     /// Additional instruction files to always load, regardless of provider.
@@ -1675,6 +1686,7 @@ impl Default for Config {
                 name: "Zeph".into(),
                 max_tool_iterations: 10,
                 summary_model: None,
+                summary_provider: None,
                 auto_update_check: default_auto_update_check(),
                 instruction_files: Vec::new(),
                 instruction_auto_detect: default_instruction_auto_detect(),

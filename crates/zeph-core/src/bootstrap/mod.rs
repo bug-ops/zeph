@@ -15,7 +15,8 @@ pub use mcp::{create_mcp_manager, create_mcp_registry};
 #[cfg(feature = "candle")]
 pub use provider::select_device;
 pub use provider::{
-    build_orchestrator, create_named_provider, create_provider, create_summary_provider,
+    build_orchestrator, create_named_provider, create_provider, create_provider_from_config,
+    create_summary_provider,
 };
 pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills_dir};
 
@@ -273,10 +274,27 @@ impl AppBuilder {
     }
 
     pub fn build_summary_provider(&self) -> Option<AnyProvider> {
+        // Structured config takes precedence over the string-based summary_model.
+        if let Some(ref pcfg) = self.config.agent.summary_provider {
+            return match create_provider_from_config(pcfg, &self.config) {
+                Ok(sp) => {
+                    tracing::info!(
+                        provider_type = %pcfg.provider_type,
+                        model = ?pcfg.model,
+                        "summary provider configured via [agent.summary_provider]"
+                    );
+                    Some(sp)
+                }
+                Err(e) => {
+                    tracing::warn!("failed to create summary provider: {e:#}, using primary");
+                    None
+                }
+            };
+        }
         self.config.agent.summary_model.as_ref().and_then(
             |model_spec| match create_summary_provider(model_spec, &self.config) {
                 Ok(sp) => {
-                    tracing::info!(model = %model_spec, "summary provider configured");
+                    tracing::info!(model = %model_spec, "summary provider configured via summary_model");
                     Some(sp)
                 }
                 Err(e) => {
