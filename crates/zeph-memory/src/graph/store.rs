@@ -75,6 +75,41 @@ impl GraphStore {
         row.map(entity_from_row).transpose()
     }
 
+    /// Find an entity by its numeric ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_entity_by_id(&self, entity_id: i64) -> Result<Option<Entity>, MemoryError> {
+        let row: Option<EntityRow> = sqlx::query_as(
+            "SELECT id, name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE id = ?1",
+        )
+        .bind(entity_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(entity_from_row).transpose()
+    }
+
+    /// Update the `qdrant_point_id` for an entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn set_entity_qdrant_point_id(
+        &self,
+        entity_id: i64,
+        point_id: &str,
+    ) -> Result<(), MemoryError> {
+        sqlx::query("UPDATE graph_entities SET qdrant_point_id = ?1 WHERE id = ?2")
+            .bind(point_id)
+            .bind(entity_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Find entities whose name contains `query` (case-insensitive), up to `limit` results.
     ///
     /// Note: uses `LIKE '%query%'` with a leading wildcard, which bypasses the name B-tree index
@@ -1105,5 +1140,40 @@ mod tests {
             results.is_empty(),
             "no entities should match an unknown term"
         );
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_id_found() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("FindById", EntityType::Concept, Some("summary"))
+            .await
+            .unwrap();
+        let entity = gs.find_entity_by_id(id).await.unwrap();
+        assert!(entity.is_some());
+        let entity = entity.unwrap();
+        assert_eq!(entity.id, id);
+        assert_eq!(entity.name, "FindById");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_id_not_found() {
+        let gs = setup().await;
+        let result = gs.find_entity_by_id(99999).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_entity_qdrant_point_id_updates() {
+        let gs = setup().await;
+        let id = gs
+            .upsert_entity("QdrantPoint", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let point_id = "550e8400-e29b-41d4-a716-446655440000";
+        gs.set_entity_qdrant_point_id(id, point_id).await.unwrap();
+
+        let entity = gs.find_entity_by_id(id).await.unwrap().unwrap();
+        assert_eq!(entity.qdrant_point_id.as_deref(), Some(point_id));
     }
 }

@@ -49,6 +49,29 @@ When a fact changes (e.g., user switches from vim to neovim), the old edge is in
 
 Groups of related entities with an LLM-generated summary. Community detection runs periodically via label propagation (Phase 5).
 
+## Entity Resolution
+
+By default, entities are deduplicated using exact name matching. When `use_embedding_resolution = true`, Zeph uses cosine similarity search in Qdrant to find semantically equivalent entities before creating new ones.
+
+The resolution logic uses a two-threshold approach:
+
+| Similarity | Action |
+|-----------|--------|
+| >= `entity_similarity_threshold` (default: 0.85) | Auto-merge with the existing entity |
+| >= `entity_ambiguous_threshold` (default: 0.70) | LLM disambiguation — the model decides whether to merge or create |
+| Below 0.70 | Create a new entity |
+
+This handles cases where the same concept appears under different names (e.g., "VS Code" and "Visual Studio Code", "k8s" and "Kubernetes"). On any failure (Qdrant unavailable, embedding error), resolution falls back to exact match silently.
+
+Configure in `[memory.graph]`:
+
+```toml
+[memory.graph]
+use_embedding_resolution = true     # default: false
+entity_similarity_threshold = 0.85  # auto-merge threshold
+entity_ambiguous_threshold = 0.70   # LLM disambiguation threshold
+```
+
 ## Retrieval: BFS Traversal
 
 Graph recall uses breadth-first search to find relevant facts:
@@ -74,7 +97,8 @@ max_hops = 2                 # BFS traversal depth (default: 2)
 recall_limit = 10            # Max graph facts injected into context
 extraction_timeout_secs = 15
 entity_similarity_threshold = 0.85
-use_embedding_resolution = false
+entity_ambiguous_threshold = 0.70
+use_embedding_resolution = false  # Enable embedding-based entity dedup
 community_refresh_interval = 100  # Messages between community recalculation
 ```
 

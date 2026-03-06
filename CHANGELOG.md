@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add embedding-based entity resolution for graph memory: cosine similarity search via Qdrant `zeph_graph_entities` collection, LLM disambiguation for ambiguous matches, batch resolution with `buffer_unordered(4)`, per-entity-name locking, graceful fallback to exact match on embedding/LLM failures (#1230)
+- Add `entity_ambiguous_threshold` field to `[memory.graph]` config (default 0.70) for disambiguation range lower bound (#1230)
+- Add `ResolutionOutcome` enum (`ExactMatch`, `EmbeddingMatch`, `LlmDisambiguated`, `Created`) to `EntityResolver::resolve()` return type (#1230)
+- Add `GraphStore::find_entity_by_id()` and `GraphStore::set_entity_qdrant_point_id()` methods (#1230)
+- Add `EmbeddingStore::upsert_to_collection()` for point-id-stable Qdrant upserts (#1230)
+- Add `SemanticMemory::embedding_store()` getter for shared `Arc<EmbeddingStore>` access (#1230)
+
+### Changed
+
+- **Breaking**: `EntityResolver::resolve()` now returns `Result<(i64, ResolutionOutcome)>` instead of `Result<i64>` (#1230)
+
 - Add `/plan` CLI commands: `PlanCommand` enum with Goal, Status, List, Cancel, Confirm variants; `/plan <goal>` decomposes goals via LlmPlanner with pending-confirmation flow (`confirm_before_execute`), `/plan status`/`list`/`cancel` for graph management (Phase 4, #1239)
 - Add `OrchestrationMetrics` (plans_total, tasks_total, tasks_completed, tasks_failed, tasks_skipped) always present in `MetricsSnapshot` — no `#[cfg]` gating (#1239)
 - Add agent loop integration for `/plan` dispatch with feature-gated handlers, `pending_graph` confirmation state, `format_plan_summary()` display, and overwrite guard (#1239)

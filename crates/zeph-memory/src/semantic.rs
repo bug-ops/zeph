@@ -965,6 +965,12 @@ impl SemanticMemory {
         self.qdrant.is_some()
     }
 
+    /// Return a reference to the embedding store, if configured.
+    #[must_use]
+    pub fn embedding_store(&self) -> Option<&Arc<EmbeddingStore>> {
+        self.qdrant.as_ref()
+    }
+
     /// Count messages in a conversation.
     ///
     /// # Errors

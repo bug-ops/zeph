@@ -17,6 +17,6 @@ pub use types::{Community, Edge, Entity, EntityType, GraphFact};
 #[cfg(feature = "graph-memory")]
 pub use extractor::{ExtractedEdge, ExtractedEntity, ExtractionResult, GraphExtractor};
 #[cfg(feature = "graph-memory")]
-pub use resolver::EntityResolver;
+pub use resolver::{EntityResolver, ResolutionOutcome};
 #[cfg(feature = "graph-memory")]
 pub use retrieval::graph_recall;
