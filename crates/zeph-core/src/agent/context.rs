@@ -764,54 +764,66 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn maybe_summarize_tool_pair(&mut self) {
-        let pair_count = self.count_unsummarized_pairs();
-        if pair_count <= self.memory_state.tool_call_cutoff {
-            return;
-        }
-        let Some((req_idx, resp_idx)) = self.find_oldest_unsummarized_pair() else {
-            return;
-        };
-        let prompt =
-            Self::build_tool_pair_summary_prompt(&self.messages[req_idx], &self.messages[resp_idx]);
+        // Drain the entire backlog above cutoff in one turn so that a resumed session
+        // with many accumulated pairs catches up before Tier 1 pruning fires.
+        let cutoff = self.memory_state.tool_call_cutoff;
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
-        let msgs = [Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        let _ = self.channel.send_status("summarizing output...").await;
-        let chat_fut = self.summary_or_primary_provider().chat(&msgs);
-        let summary = match tokio::time::timeout(llm_timeout, chat_fut).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                tracing::warn!(%e, "tool pair summarization failed, skipping");
-                let _ = self.channel.send_status("").await;
-                return;
+        let mut summarized = 0usize;
+        loop {
+            let pair_count = self.count_unsummarized_pairs();
+            if pair_count <= cutoff {
+                break;
             }
-            Err(_elapsed) => {
-                tracing::warn!(
-                    timeout_secs = self.runtime.timeouts.llm_seconds,
-                    "tool pair summarization timed out, skipping"
-                );
-                let _ = self.channel.send_status("").await;
-                return;
-            }
-        };
-        // DEFERRED: store summary on response metadata instead of immediately mutating the array.
-        // The summary is applied lazily by apply_deferred_summaries() when context pressure rises,
-        // preserving the message prefix for Claude API cache hits.
-        let summary = cap_summary(self.maybe_redact(&summary).into_owned(), 8_000);
-        self.messages[resp_idx].metadata.deferred_summary = Some(summary.clone());
+            let Some((req_idx, resp_idx)) = self.find_oldest_unsummarized_pair() else {
+                break;
+            };
+            let prompt = Self::build_tool_pair_summary_prompt(
+                &self.messages[req_idx],
+                &self.messages[resp_idx],
+            );
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            let _ = self.channel.send_status("summarizing output...").await;
+            let chat_fut = self.summary_or_primary_provider().chat(&msgs);
+            let summary = match tokio::time::timeout(llm_timeout, chat_fut).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    tracing::warn!(%e, "tool pair summarization failed, stopping batch");
+                    let _ = self.channel.send_status("").await;
+                    break;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        timeout_secs = self.runtime.timeouts.llm_seconds,
+                        "tool pair summarization timed out, stopping batch"
+                    );
+                    let _ = self.channel.send_status("").await;
+                    break;
+                }
+            };
+            // DEFERRED: store summary on response metadata instead of immediately mutating the
+            // array. Applied lazily by apply_deferred_summaries() when context pressure rises,
+            // preserving the message prefix for Claude API cache hits.
+            let summary = cap_summary(self.maybe_redact(&summary).into_owned(), 8_000);
+            self.messages[resp_idx].metadata.deferred_summary = Some(summary.clone());
+            summarized += 1;
+            tracing::debug!(
+                pair_count,
+                cutoff,
+                req_idx,
+                resp_idx,
+                summary_len = summary.len(),
+                "deferred tool pair summary stored"
+            );
+        }
         let _ = self.channel.send_status("").await;
-        tracing::debug!(
-            pair_count,
-            cutoff = self.memory_state.tool_call_cutoff,
-            req_idx,
-            resp_idx,
-            summary_len = summary.len(),
-            "deferred tool pair summary stored"
-        );
+        if summarized > 0 {
+            tracing::info!(summarized, "batch-summarized tool pairs above cutoff");
+        }
     }
 
     /// Batch-apply all pending deferred tool pair summaries.
@@ -4522,6 +4534,39 @@ mod tests {
             Some(summary_text.as_str()),
             "deferred_summary should hold the LLM response"
         );
+    }
+
+    /// Regression test: resumed session with large backlog must drain all pairs above cutoff
+    /// in a single `maybe_summarize_tool_pair()` call, before Tier 1 pruning can fire.
+    #[tokio::test]
+    async fn maybe_summarize_tool_pair_drains_backlog_above_cutoff() {
+        // cutoff=2, 6 pairs → 4 pairs need summaries; provider returns one reply per call
+        let replies = vec!["s1".into(), "s2".into(), "s3".into(), "s4".into()];
+        let provider = mock_provider(replies);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_tool_call_cutoff(2);
+
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            make_tool_pair(&mut agent, name);
+        }
+
+        agent.maybe_summarize_tool_pair().await;
+
+        let deferred_count = agent
+            .messages
+            .iter()
+            .filter(|m| m.metadata.deferred_summary.is_some())
+            .count();
+        // all 4 pairs above cutoff must have deferred summaries after one call
+        assert_eq!(
+            deferred_count, 4,
+            "expected 4 deferred summaries, got {deferred_count}"
+        );
+        // remaining unsummarized count must equal cutoff
+        assert_eq!(agent.count_unsummarized_pairs(), 2);
     }
 
     #[tokio::test]
