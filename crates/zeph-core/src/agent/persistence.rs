@@ -954,7 +954,10 @@ mod tests {
 
         // Second message: user + ToolResult
         assert_eq!(history[1].role, Role::User);
-        assert_eq!(history[1].content, "[tool_result: id_1]\nfile1.txt\nfile2.txt");
+        assert_eq!(
+            history[1].content,
+            "[tool_result: id_1]\nfile1.txt\nfile2.txt"
+        );
         assert!(
             matches!(&history[1].parts[0], MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id_1"),
             "second message must be user ToolResult"
@@ -1023,7 +1026,11 @@ mod tests {
         assert_eq!(history[0].content, content);
         assert_eq!(history[0].parts.len(), 1);
         match &history[0].parts[0] {
-            MessagePart::ToolOutput { tool_name, body, compacted_at } => {
+            MessagePart::ToolOutput {
+                tool_name,
+                body,
+                compacted_at,
+            } => {
                 assert_eq!(tool_name, "shell");
                 assert_eq!(body, "hello from shell");
                 assert!(compacted_at.is_none());
