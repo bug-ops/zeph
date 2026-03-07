@@ -22,6 +22,20 @@ impl McpToolExecutor {
     }
 
     pub fn set_tools(&self, tools: Vec<McpTool>) {
+        // Warn on sanitized_id collisions: two tools mapping to the same id means
+        // the second will be unreachable via execute_tool_call.
+        let mut seen = std::collections::HashMap::new();
+        for t in &tools {
+            let sid = t.sanitized_id();
+            if let Some(prev) = seen.insert(sid.clone(), t.qualified_name()) {
+                tracing::warn!(
+                    sanitized_id = %sid,
+                    first = %prev,
+                    second = %t.qualified_name(),
+                    "MCP tool sanitized_id collision: second tool will be unreachable"
+                );
+            }
+        }
         let mut guard = self
             .tools
             .write()
@@ -39,7 +53,7 @@ impl ToolExecutor for McpToolExecutor {
         tools
             .iter()
             .map(|t| ToolDef {
-                id: t.qualified_name().into(),
+                id: t.sanitized_id().into(),
                 description: t.description.clone().into(),
                 schema: serde_json::from_value(t.input_schema.clone())
                     .unwrap_or_else(|_| schemars::Schema::default()),
@@ -49,27 +63,30 @@ impl ToolExecutor for McpToolExecutor {
     }
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        let Some((server_id, tool_name)) = call.tool_id.split_once(':') else {
-            return Ok(None);
-        };
-
-        let is_known = {
+        // Lookup by sanitized_id because the LLM sees sanitized names (no ':' character).
+        //
+        // IMPORTANT: ToolOutput.tool_name MUST be set to qualified_name() (not sanitized_id()).
+        // sanitize_tool_output() in zeph-core classifies tool output as external/untrusted MCP
+        // content by checking tool_name.contains(':').  Breaking this invariant would silently
+        // route MCP responses through the local/trusted pipeline, bypassing quarantine.
+        let found = {
             let tools = self
                 .tools
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             tools
                 .iter()
-                .any(|t| t.server_id == server_id && t.name == tool_name)
+                .find(|t| t.sanitized_id() == call.tool_id)
+                .cloned()
         };
-        if !is_known {
+        let Some(tool) = found else {
             return Ok(None);
-        }
+        };
 
         let args = serde_json::Value::Object(call.params.clone());
         let result = self
             .manager
-            .call_tool(server_id, tool_name, args)
+            .call_tool(&tool.server_id, &tool.name, args)
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
@@ -87,7 +104,7 @@ impl ToolExecutor for McpToolExecutor {
             .join("\n");
 
         Ok(Some(ToolOutput {
-            tool_name: call.tool_id.clone(),
+            tool_name: tool.qualified_name(),
             summary: text,
             blocks_executed: 1,
             filter_stats: None,
@@ -307,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_returns_qualified_names() {
+    fn tool_definitions_returns_sanitized_names() {
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
         let tools = Arc::new(RwLock::new(vec![McpTool {
             server_id: "gh".into(),
@@ -318,7 +335,7 @@ mod tests {
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].id.as_ref(), "gh:create_issue");
+        assert_eq!(defs[0].id.as_ref(), "gh_create_issue");
         assert_eq!(defs[0].description.as_ref(), "Create a GitHub issue");
     }
 
@@ -334,7 +351,7 @@ mod tests {
         }]);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].id.as_ref(), "fs:list_dir");
+        assert_eq!(defs[0].id.as_ref(), "fs_list_dir");
     }
 
     #[tokio::test]
@@ -380,5 +397,102 @@ mod tests {
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
+    }
+
+    // --- sanitized_id routing tests ---
+
+    #[tokio::test]
+    async fn execute_tool_call_by_sanitized_id_not_found_returns_none() {
+        // Register a tool whose sanitized_id is "gh_create_issue".
+        // A call with tool_id "gh_create_issue" matches; a call with a different id does not.
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
+        let tools = Arc::new(RwLock::new(vec![McpTool {
+            server_id: "gh".into(),
+            name: "create_issue".into(),
+            description: "desc".into(),
+            input_schema: serde_json::json!({}),
+        }]));
+        let executor = McpToolExecutor::new(mgr, tools);
+
+        // A different sanitized id must not match.
+        let call = ToolCall {
+            tool_id: "gh_list_issues".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = executor.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_by_sanitized_id_matched_but_server_missing_returns_err() {
+        // Register a tool so the lookup succeeds, but the manager has no connected server —
+        // the call_tool on the manager must return an error (not None).
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
+        let tools = Arc::new(RwLock::new(vec![McpTool {
+            server_id: "missing_server".into(),
+            name: "some_tool".into(),
+            description: "desc".into(),
+            input_schema: serde_json::json!({}),
+        }]));
+        let executor = McpToolExecutor::new(mgr, tools);
+
+        // tool_id matches the sanitized_id "missing_server_some_tool".
+        let call = ToolCall {
+            tool_id: "missing_server_some_tool".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(result.is_err(), "expected Err when server is not connected");
+    }
+
+    #[test]
+    fn tool_definitions_sanitized_id_has_no_colon() {
+        // After the fix, no tool definition id may contain ':'.
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
+        let tools = Arc::new(RwLock::new(vec![
+            McpTool {
+                server_id: "srv-one".into(),
+                name: "tool:with:colons".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({}),
+            },
+            McpTool {
+                server_id: "srv.two".into(),
+                name: "normal_tool".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({}),
+            },
+        ]));
+        let executor = McpToolExecutor::new(mgr, tools);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 2);
+        for def in &defs {
+            assert!(
+                !def.id.contains(':'),
+                "tool id must not contain ':' but got: {}",
+                def.id
+            );
+        }
+    }
+
+    #[test]
+    fn tool_definitions_sanitized_id_matches_expected_pattern() {
+        // Verify that every character in every id matches [a-zA-Z0-9_-].
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
+        let tools = Arc::new(RwLock::new(vec![McpTool {
+            server_id: "my.server".into(),
+            name: "tool name!".into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({}),
+        }]));
+        let executor = McpToolExecutor::new(mgr, tools);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        let id = defs[0].id.as_ref();
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "id contains invalid chars: {id}"
+        );
     }
 }
