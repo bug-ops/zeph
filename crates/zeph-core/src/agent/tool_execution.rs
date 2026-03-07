@@ -1047,6 +1047,26 @@ impl<C: Channel> Agent<C> {
 
             self.channel.send_typing().await?;
 
+            // Inject any pending LSP notes as a Role::System message before calling
+            // the LLM. Stale notes are cleared unconditionally each iteration so they
+            // never accumulate when no new notes were produced.
+            // Role::System ensures they are skipped by tool-pair summarization.
+            #[cfg(feature = "lsp-context")]
+            if self.lsp_hooks.is_some() {
+                // Clear stale notes before borrowing lsp_hooks mutably (borrow checker).
+                self.remove_lsp_messages();
+                let tc = std::sync::Arc::clone(&self.token_counter);
+                if let Some(ref mut lsp) = self.lsp_hooks
+                    && let Some(note_text) = lsp.drain_notes(&tc)
+                {
+                    self.push_message(zeph_llm::provider::Message::from_legacy(
+                        zeph_llm::provider::Role::System,
+                        &note_text,
+                    ));
+                    self.recompute_prompt_tokens();
+                }
+            }
+
             if let Some(ref budget) = self.context_manager.budget {
                 let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
@@ -1413,6 +1433,10 @@ impl<C: Channel> Agent<C> {
         };
         self.tool_executor.set_skill_env(None);
 
+        // Collect (name, params, output) for LSP hooks. Built during the results loop below.
+        #[cfg(feature = "lsp-context")]
+        let mut lsp_tool_calls: Vec<(String, serde_json::Value, String)> = Vec::new();
+
         // Process results sequentially (metrics, channel sends, message parts)
         let mut result_parts: Vec<MessagePart> = Vec::new();
         for (((tc, tool_result), tool_call_id), started_at) in tool_calls
@@ -1505,6 +1529,12 @@ impl<C: Channel> Agent<C> {
                 )
                 .await?;
 
+            // Capture tool call details for LSP hooks before building result part.
+            #[cfg(feature = "lsp-context")]
+            if !is_error {
+                lsp_tool_calls.push((tc.name.clone(), tc.input.clone(), processed.clone()));
+            }
+
             result_parts.push(MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
                 content: processed,
@@ -1528,6 +1558,23 @@ impl<C: Channel> Agent<C> {
         )
         .await;
         self.push_message(user_msg);
+
+        // Fire LSP hooks for each completed tool call (non-blocking: diagnostics fetch
+        // is spawned in background; hover calls are awaited but short-lived).
+        // `lsp_tool_calls` collects (name, params, output) tuples built during the
+        // results loop above. They are captured into a separate Vec so we can call
+        // `&mut self.lsp_hooks` without conflicting borrows.
+        #[cfg(feature = "lsp-context")]
+        if self.lsp_hooks.is_some() {
+            let tc_arc = std::sync::Arc::clone(&self.token_counter);
+            let sanitizer = self.sanitizer.clone();
+            for (name, input, output) in lsp_tool_calls {
+                if let Some(ref mut lsp) = self.lsp_hooks {
+                    lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
+                        .await;
+                }
+            }
+        }
 
         Ok(())
     }

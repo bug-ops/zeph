@@ -192,6 +192,19 @@ Manage sub-agents. See [Sub-Agent Orchestration](../advanced/sub-agents.md) for 
 > @code-reviewer Review the auth module   # shorthand for /agent spawn
 ```
 
+### `/lsp`
+
+Show LSP context injection status. Requires the `lsp-context` feature and mcpls configured under
+`[[mcp.servers]]`.
+
+| Usage | Description |
+|-------|-------------|
+| `/lsp` | Show hook state, MCP server connection status, injection counts per hook type, and current turn token budget usage |
+
+```bash
+> /lsp
+```
+
 ### `/debug-dump`
 
 Enable debug dump mid-session without restarting.
@@ -220,6 +233,7 @@ See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read 
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
 | `--vault-path <PATH>` | Path to age-encrypted secrets file (default: `~/.config/zeph/secrets.age`, overrides `ZEPH_VAULT_PATH` env var) |
 | `--graph-memory` | Enable graph-based knowledge memory for this session, overriding `memory.graph.enabled`. See [Graph Memory](../concepts/graph-memory.md) |
+| `--lsp-context` | Enable automatic LSP context injection for this session, overriding `agent.lsp.enabled`. Injects diagnostics after file writes and hover info on reads. Requires mcpls MCP server and `lsp-context` feature. See [LSP Code Intelligence](../guides/lsp.md#lsp-context-injection) |
 | `--debug-dump [PATH]` | Write LLM requests/responses and raw tool output to files. Omit `PATH` to use `debug.output_dir` from config (default: `.local/debug`). See [Debug Dump](../advanced/debug-dump.md) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |

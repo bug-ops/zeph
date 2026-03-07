@@ -89,6 +89,8 @@ pub(crate) struct WizardState {
     // LSP code intelligence via mcpls
     pub(crate) mcpls_enabled: bool,
     pub(crate) mcpls_workspace_roots: Vec<String>,
+    // LSP context injection
+    pub(crate) lsp_context_enabled: bool,
     pub(crate) deferred_apply_threshold: f32,
 }
 
@@ -132,6 +134,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_mcpls(&mut state)?;
+    step_lsp_context(&mut state)?;
     step_agents(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
@@ -725,6 +728,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.debug.enabled = state.debug_dump_enabled;
 
+    #[cfg(feature = "lsp-context")]
+    if state.lsp_context_enabled {
+        config.lsp.enabled = true;
+    }
+
     if state.mcpls_enabled {
         let roots = if state.mcpls_workspace_roots.is_empty() {
             vec![".".to_owned()]
@@ -1039,6 +1047,25 @@ fn mcpls_in_path() -> bool {
     std::env::split_paths(&path_var)
         .map(|dir| dir.join(exe_name))
         .any(|p| p.is_file())
+}
+
+fn step_lsp_context(state: &mut WizardState) -> anyhow::Result<()> {
+    if !state.mcpls_enabled {
+        // LSP context injection requires mcpls to be configured.
+        state.lsp_context_enabled = false;
+        return Ok(());
+    }
+
+    println!("== LSP Context Injection ==\n");
+    println!("Automatically injects diagnostics and hover info into agent context.");
+
+    state.lsp_context_enabled = dialoguer::Confirm::new()
+        .with_prompt("Enable automatic LSP context injection (diagnostics after writes)?")
+        .default(true)
+        .interact()?;
+
+    println!();
+    Ok(())
 }
 
 fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {

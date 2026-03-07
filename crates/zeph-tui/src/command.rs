@@ -62,6 +62,9 @@ pub enum TuiCommand {
     GraphCommunities,
     #[cfg(feature = "graph-memory")]
     GraphBackfillPrompt,
+    // LSP context injection
+    #[cfg(feature = "lsp-context")]
+    LspStatus,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -372,6 +375,14 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphBackfillPrompt,
         },
+        #[cfg(feature = "lsp-context")]
+        CommandEntry {
+            id: "lsp:status",
+            label: "Show LSP context injection status (/lsp)",
+            category: "lsp",
+            shortcut: None,
+            command: TuiCommand::LspStatus,
+        },
     ];
     EXTRA
 }
@@ -448,10 +459,16 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 19 base (14 + 5 plan) + 5 graph-memory commands (when feature enabled)
-        #[cfg(feature = "graph-memory")]
+        // 19 base (14 + 5 plan)
+        // + 5 graph-memory commands (when feature enabled)
+        // + 1 lsp:status command (when lsp-context feature enabled)
+        #[cfg(all(feature = "graph-memory", feature = "lsp-context"))]
+        assert_eq!(extra_command_registry().len(), 25);
+        #[cfg(all(feature = "graph-memory", not(feature = "lsp-context")))]
         assert_eq!(extra_command_registry().len(), 24);
-        #[cfg(not(feature = "graph-memory"))]
+        #[cfg(all(not(feature = "graph-memory"), feature = "lsp-context"))]
+        assert_eq!(extra_command_registry().len(), 20);
+        #[cfg(all(not(feature = "graph-memory"), not(feature = "lsp-context")))]
         assert_eq!(extra_command_registry().len(), 19);
     }
 

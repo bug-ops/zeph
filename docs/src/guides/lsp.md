@@ -248,6 +248,98 @@ mcpls opens files lazily. The first access to a file may be slower. If results a
 empty, verify that the language server is installed and that `mcpls.toml` (if present) has the
 correct `languages` mapping for your file type.
 
+## LSP Context Injection
+
+> [!NOTE]
+> Requires the `lsp-context` feature flag (included in `--features full`).
+
+Zeph can automatically inject LSP-derived data into the agent's context without the LLM needing to
+make explicit tool calls. Three hooks are provided:
+
+- **Diagnostics on save** — after every `write_file` tool call, Zeph fetches diagnostics from the
+  LSP server and injects errors directly into the next LLM turn. The agent sees compiler errors
+  immediately and can fix them without manual intervention.
+- **Hover on read** *(opt-in)* — after `read_file`, Zeph pre-fetches hover information for key
+  symbol definitions in the file and injects it as annotations. Disabled by default.
+- **References on rename** — before `rename_symbol`, Zeph fetches all reference locations and
+  presents them to the LLM for review.
+
+### Enabling
+
+```bash
+# CLI flag — enable for this session
+zeph --lsp-context
+
+# Config file — enable permanently
+```
+
+```toml
+[agent.lsp]
+enabled = true
+```
+
+The wizard (`zeph --init`) prompts for this setting after the mcpls step. It is skipped
+automatically when mcpls is not configured.
+
+### Configuration
+
+```toml
+[agent.lsp]
+enabled = true
+mcp_server_id = "mcpls"   # MCP server that provides LSP tools (default: "mcpls")
+token_budget = 2000        # Max tokens to spend on injected LSP context per turn
+
+[agent.lsp.diagnostics]
+enabled = true             # Inject diagnostics after write_file (default: true when [agent.lsp] is enabled)
+max_per_file = 20          # Max diagnostics per file
+max_files = 5              # Max files per injection batch
+min_severity = "error"     # Minimum severity: "error", "warning", "info", or "hint"
+
+[agent.lsp.hover]
+enabled = false            # Pre-fetch hover info on read_file (default: false — opt-in)
+max_symbols = 10           # Max symbols to fetch hover for per file
+
+[agent.lsp.references]
+enabled = true             # Inject reference list before rename_symbol (default: true)
+max_refs = 50              # Max references to show per symbol
+```
+
+### How Injection Works
+
+LSP notes are injected into the message history (not the system prompt) as a `[lsp ...]` prefixed
+user message, following the same pattern used by semantic recall, graph facts, and code context:
+
+```
+[lsp diagnostics]
+src/main.rs:42:5 error[E0308]: mismatched types — expected `u32`, found `String`
+src/main.rs:55:1 error[E0599]: no method named `foo` found for struct `Bar`
+```
+
+Notes exceeding `token_budget` are dropped with a truncation marker. The budget resets each turn.
+
+### Graceful Degradation
+
+LSP context injection is fully optional. When the configured MCP server is unavailable:
+
+- Hooks silently skip — the agent continues working normally
+- No error is logged or shown to the user
+- Individual tool call failures are logged at `debug` level only
+
+This means the agent works correctly whether or not mcpls is installed or running.
+
+### TUI: `/lsp` Command
+
+In TUI mode, type `/lsp` to show LSP context injection status:
+
+- Whether hooks are active and the configured MCP server is connected
+- Count of diagnostics, hover entries, and references injected this session
+- Token budget usage for the current turn
+
+### Requirements
+
+The `lsp-context` feature requires the `mcp` feature (always-on since v0.13) and a configured
+mcpls MCP server. See the [Configuration](#configuration) section above for mcpls setup.
+
 ## Limitations
 
 - **No live file sync**: mcpls does not support `textDocument/didChange`. Edits are invisible to
@@ -255,9 +347,12 @@ correct `languages` mapping for your file type.
 - **No file watcher**: `workspace/didChangeWatchedFiles` is not implemented. Adding new files
   requires restarting mcpls.
 - **Pull-based diagnostics**: diagnostics are fetched on demand, not pushed proactively. Use
-  `get_cached_diagnostics` for fast repeated checks.
+  `get_cached_diagnostics` for fast repeated checks. When `lsp-context` injection is enabled,
+  diagnostics are fetched automatically after `write_file` with a short delay for LSP re-analysis.
+- **Stale diagnostics on first fetch**: After a file write, there is a 200ms delay before
+  fetching to allow the language server to begin re-analysis. Diagnostics may still reflect the
+  previous file state if the server is slow.
 - **Untrusted code**: LSP server output (diagnostics, hover text, `server_logs`) may contain
   content from the source files being analyzed. If analyzing untrusted code (e.g., cloned
   repositories), adversarial content in comments or string literals could appear in the LLM
   context. Zeph's content sanitizer automatically wraps this output for isolation.
-- Automatic diagnostics injection after file writes is planned for a future release.

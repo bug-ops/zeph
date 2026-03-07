@@ -93,7 +93,18 @@ Configure LSP code intelligence via mcpls:
 
 When enabled, the wizard generates an `[[mcp.servers]]` block with `command = "mcpls"` and a 60-second timeout (LSP servers need warmup time). If `mcpls` is not found in PATH, the wizard prints the install command: `cargo install mcpls`.
 
-See [LSP Code Intelligence](../guides/lsp.md) for full setup details.
+After answering this step, the wizard prompts for **LSP context injection** (requires the `lsp-context`
+feature):
+
+- **Enable automatic LSP context injection** — automatically inject diagnostics after `write_file`
+  calls so the agent sees compiler errors without making explicit tool calls. Defaults to enabled when
+  mcpls is configured. Skipped automatically when mcpls is not enabled.
+
+When enabled, the wizard generates an `[agent.lsp]` config section with `enabled = true` and
+default sub-section values.
+
+See [LSP Code Intelligence](../guides/lsp.md) for full setup details, including hover-on-read and
+references-on-rename configuration.
 
 ## Step 11: Sub-Agents
 

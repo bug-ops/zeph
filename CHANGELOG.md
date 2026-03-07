@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add LSP context injection (`lsp-context` feature, #1287 Phase 2): automatic diagnostics injection after `write_file`, optional hover pre-fetch after `read_file`, and reference listing before `rename_symbol`. Hooks run inside the tool execution pipeline via `LspHookRunner`, which calls mcpls through the existing `McpManager`. Notes are injected as `[lsp ...]` prefixed user messages into the message history, subject to a configurable `token_budget` (default 2000). Gracefully degrades to no-op when mcpls is unavailable.
+- Add `[agent.lsp]` config section with `LspConfig`, `DiagnosticsConfig`, `HoverConfig`, and `ReferencesConfig` types in `zeph-core`. Defaults: diagnostics enabled (errors-only, max 20 per file, max 5 files), hover disabled, references enabled (max 50).
+- Add `--lsp-context` CLI flag to enable LSP context injection for a session, overriding `agent.lsp.enabled` in config.
+- Add `step_lsp_context()` to `zeph --init` wizard: prompts for context injection after the mcpls step; skipped when mcpls is not configured. Generates `[agent.lsp]` config section with defaults.
+- Add `/lsp` interactive command and `lsp:status` TUI command palette entry: shows hook state, MCP server connection status, per-hook injection counts, and token budget usage.
+- Add `LspConfig` to `AgentConfig` behind `#[cfg(feature = "lsp-context")]`.
+- Add autonomous self-experimentation engine (Phase 1): `experiments` feature flag (opt-in), `ExperimentConfig` with `enabled = false` default and numeric bounds validation, `Variation`/`ParameterKind`/`ExperimentResult` types with `ordered-float` for deterministic hashing, SQLite storage with CRUD operations (`insert_result`, `list_results`, `best_result`, `results_since`, `session_summary`), timestamp format validation, safety caps on query results (#1313, #1312)
 - Add benchmark dataset and LLM-as-judge evaluator for autonomous experiments engine (`experiments` feature flag): TOML benchmark format with prompt/context/reference/tags fields, `Evaluator` with configurable judge model and parallel scoring via `FuturesUnordered`, `EvalReport` with mean score, p50/p95 latency, partial result indicators, budget enforcement with per-invocation token tracking, XML boundary tags for prompt injection defense, path traversal protection and file size limits on benchmark files (#1314)
 
 ## [0.14.1] - 2026-03-07

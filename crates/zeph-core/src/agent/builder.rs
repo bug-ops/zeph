@@ -66,6 +66,14 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
+    #[cfg(feature = "lsp-context")]
+    #[must_use]
+    pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
+        self.lsp_hooks = Some(runner);
+        self
+    }
+
     #[must_use]
     pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
         self.update_notify_rx = Some(rx);

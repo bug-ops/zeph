@@ -17,10 +17,11 @@ default = []
 candle = ["zeph-llm/candle"]
 cuda = ["zeph-llm/cuda"]
 daemon = []
-experiments = []
+experiments = ["dep:ordered-float"]
 graph-memory = ["zeph-memory/graph-memory"]
 index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
+lsp-context = []
 mock = ["zeph-llm/mock", "zeph-memory/mock"]
 orchestration = ["zeph-memory/orchestration"]
 
@@ -32,6 +33,7 @@ reqwest = { workspace = true, features = ["rustls"] }
 futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
+ordered-float = { workspace = true, optional = true }
 regex.workspace = true
 schemars.workspace = true
 dirs.workspace = true

@@ -1205,6 +1205,18 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    /// Remove previously injected LSP context notes from the message history.
+    ///
+    /// Called before injecting fresh notes each turn so stale diagnostics/hover
+    /// data from the previous tool call do not accumulate across iterations.
+    /// LSP notes use `Role::System` (consistent with graph facts and recall),
+    /// so they are skipped by tool-pair summarization automatically.
+    #[cfg(feature = "lsp-context")]
+    pub(super) fn remove_lsp_messages(&mut self) {
+        self.messages
+            .retain(|m| m.role != Role::System || !m.content.starts_with(super::LSP_NOTE_PREFIX));
+    }
+
     #[cfg(feature = "graph-memory")]
     async fn fetch_graph_facts(
         memory_state: &super::MemoryState,
@@ -5517,5 +5529,57 @@ mod tests {
         assert!(result.is_some());
         let msg = result.unwrap();
         assert!(msg.content.starts_with(super::super::GRAPH_FACTS_PREFIX));
+    }
+
+    #[cfg(feature = "lsp-context")]
+    #[test]
+    fn remove_lsp_messages_removes_lsp_system_keeps_others() {
+        use crate::agent::LSP_NOTE_PREFIX;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Push a non-LSP system message that must survive.
+        agent.push_message(Message {
+            role: Role::System,
+            content: "[recall] some recall data".to_owned(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        // Push an LSP system note that must be removed.
+        agent.push_message(Message {
+            role: Role::System,
+            content: format!("{LSP_NOTE_PREFIX}diagnostics]\nsrc/main.rs:1 error: foo"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        // Push a user message that must survive.
+        agent.push_message(Message {
+            role: Role::User,
+            content: "hello".to_owned(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        let before = agent.messages.len();
+        agent.remove_lsp_messages();
+        // Only the LSP system note should be gone.
+        assert_eq!(agent.messages.len(), before - 1);
+        assert!(
+            agent
+                .messages
+                .iter()
+                .all(|m| !m.content.starts_with(LSP_NOTE_PREFIX))
+        );
+        // Non-LSP system message preserved.
+        assert!(
+            agent
+                .messages
+                .iter()
+                .any(|m| m.content.starts_with("[recall]"))
+        );
     }
 }

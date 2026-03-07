@@ -24,6 +24,9 @@ pub mod vault;
 #[cfg(feature = "experiments")]
 pub mod experiments;
 
+#[cfg(feature = "lsp-context")]
+pub mod lsp_hooks;
+
 #[cfg(feature = "orchestration")]
 pub mod orchestration;
 

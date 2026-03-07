@@ -46,8 +46,9 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
 | `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
 | `subagent::memory` | Persistent memory scopes for sub-agents: `MemoryScope` enum (`User`, `Project`, `Local`), `resolve_memory_dir()` / `ensure_memory_dir()` for directory lifecycle, `load_memory_content()` reads MEMORY.md (first 200 lines, 256 KiB cap, symlink boundary check, null byte guard), `escape_memory_content()` prevents prompt injection via `<agent-memory>` tag escaping. Memory is auto-injected into the sub-agent system prompt and Read/Write/Edit tools are auto-enabled |
-| `experiments` | Benchmark dataset & LLM-as-Judge evaluation engine (feature-gated: `experiments`): `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with validation; `Evaluator` runs each case against a subject model then scores responses in parallel using a judge model via `chat_typed_erased` structured output (`JudgeOutput` schema — score + reason); `CaseScore` per-case results with latency and token tracking; `EvalReport` aggregate metrics (mean score, p50/p95 latency percentiles, total tokens, partial-run detection); semaphore-based concurrency (`DEFAULT_PARALLEL_EVALS = 3`), per-invocation token budget enforcement via `AtomicU64` counter, XML boundary tags (`<subject_response>`) with entity escaping for subject response isolation; `EvalError` typed errors for load/parse/budget/judge failures |
+| `experiments` | Autonomous self-experimentation engine (feature-gated: `experiments`): `Variation` config mutations (temperature, top-p, system prompt), `ExperimentResult` with LLM-as-judge scoring, `ExperimentStatus` lifecycle; `ExperimentConfig` under `[experiments]` with `max_experiments`, `max_wall_time_secs`, `eval_budget_tokens`, `min_improvement`, optional `eval_model` and `benchmark_file`; `ExperimentSchedule` for cron-based periodic runs; `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with path traversal protection and file size limit; `Evaluator` with parallel judge scoring via `FuturesUnordered`, per-invocation token budget enforcement via `AtomicU64`, XML boundary tags for prompt injection defense; `EvalReport` with mean score, p50/p95 latency, partial-run detection, error count |
 | `orchestration` | DAG-based task orchestration (feature-gated: `orchestration`): `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state; `Aggregator` trait + `LlmAggregator<P>` — synthesizes completed task outputs into a coherent response via a single LLM call; per-task character budget derived from `aggregator_max_tokens` (default 4096), task results spotlighted via `ContentSanitizer` before inclusion, raw-concatenation fallback on LLM failure; `PlanCommand` enum with `/plan` CLI commands (goal, status, list, cancel, confirm, resume, retry) integrated into the agent loop; `OrchestrationMetrics` (plans_total, tasks_total/completed/failed/skipped) always present in `MetricsSnapshot`; pending-plan confirmation flow with `confirm_before_execute` config |
+| `lsp_hooks` | LSP context injection hooks (feature-gated: `lsp-context`): `LspHookRunner` integrates with the agent tool loop to automatically inject LSP-derived context before each LLM call; `LspNote` type carries formatted content with estimated token counts; `DiagnosticsOnSave` hook fetches compiler diagnostics from mcpls after `write_file` completes; `HoverOnRead` hook pre-fetches hover info for key symbols (function/struct/enum/trait definitions) after `read_file` completes using concurrent `join_all` MCP calls; `ReferencesOnRename` hook fetches all reference sites before `rename_symbol` executes so the model sees the full impact; notes are injected as `Role::User` messages with `[lsp ...]` prefix, following the established pattern of `[semantic recall]`, `[known facts]`, and `[code context]`; per-turn token budget enforced in `drain_notes()` — notes exceeding the budget are dropped with a debug log; graceful degradation when mcpls is unavailable: `is_available()` checks the `McpManager` client list, individual MCP call failures are swallowed at `debug` level, and the agent loop continues normally |
 
 **Re-exports:** `Agent`, `content_hash`, `DiffData`
 
@@ -74,6 +75,46 @@ Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
 
 > [!TIP]
 > Instruction files support hot reload — edit any watched `.md` file while the agent is running and the updated content is applied within 500 ms on the next inference turn. The watcher starts automatically when at least one instruction path is resolved.
+
+Key `LspConfig` fields (TOML section `[agent.lsp]`, requires `lsp-context` feature):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable LSP context injection hooks |
+| `mcp_server_id` | string | `"mcpls"` | MCP server ID to use for LSP calls |
+| `token_budget` | usize | `2000` | Maximum tokens spent on LSP-injected context per turn |
+| `diagnostics.enabled` | bool | `true` | Fetch compiler diagnostics after `write_file` |
+| `diagnostics.max_per_file` | usize | `20` | Maximum diagnostics per file |
+| `diagnostics.max_files` | usize | `5` | Maximum files per diagnostic batch |
+| `diagnostics.min_severity` | string | `"error"` | Minimum severity to include: `"error"`, `"warning"`, `"info"`, `"hint"` |
+| `hover.enabled` | bool | `false` | Pre-fetch hover info for key symbols after `read_file` |
+| `hover.max_symbols` | usize | `10` | Maximum hover entries per file |
+| `references.enabled` | bool | `true` | Fetch reference sites before `rename_symbol` |
+| `references.max_refs` | usize | `50` | Maximum references to show per symbol |
+
+```toml
+[agent.lsp]
+enabled = true
+mcp_server_id = "mcpls"
+token_budget = 2000
+
+[agent.lsp.diagnostics]
+enabled = true
+max_per_file = 20
+max_files = 5
+min_severity = "error"
+
+[agent.lsp.hover]
+enabled = false
+max_symbols = 10
+
+[agent.lsp.references]
+enabled = true
+max_refs = 50
+```
+
+> [!NOTE]
+> LSP context injection requires the [mcpls](https://github.com/bug-ops/mcpls) MCP server to be configured. If mcpls is unavailable, hooks degrade silently — the agent continues normally with no LSP context injected. Enable via `--lsp-context` CLI flag or `zeph init` wizard.
 
 Key `DocumentConfig` fields (TOML section `[memory.documents]`):
 

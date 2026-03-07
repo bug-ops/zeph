@@ -62,7 +62,12 @@ pub struct Config {
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
     #[serde(default)]
+    pub experiments: ExperimentConfig,
+    #[serde(default)]
     pub debug: DebugConfig,
+    #[cfg(feature = "lsp-context")]
+    #[serde(default)]
+    pub lsp: LspConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -1764,7 +1769,10 @@ impl Default for Config {
             acp: AcpConfig::default(),
             agents: SubAgentConfig::default(),
             orchestration: OrchestrationConfig::default(),
+            experiments: ExperimentConfig::default(),
             debug: DebugConfig::default(),
+            #[cfg(feature = "lsp-context")]
+            lsp: LspConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
@@ -1882,6 +1890,133 @@ impl Default for GraphConfig {
     }
 }
 
+// ── LSP context injection ─────────────────────────────────────────────────────
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_mcp_server_id() -> String {
+    "mcpls".into()
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_token_budget() -> usize {
+    2000
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_max_per_file() -> usize {
+    20
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_max_symbols() -> usize {
+    10
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_call_timeout_secs() -> u64 {
+    5
+}
+
+/// Minimum diagnostic severity to include in LSP context injection.
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticSeverity {
+    #[default]
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+/// Configuration for the diagnostics-on-save hook (`[agent.lsp.diagnostics]`).
+///
+/// Flood control relies on `token_budget` in [`LspConfig`], not a per-file count.
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// Enable automatic diagnostics fetching after the `write` tool.
+    pub enabled: bool,
+    /// Maximum diagnostics entries per file.
+    #[serde(default = "default_lsp_max_per_file")]
+    pub max_per_file: usize,
+    /// Minimum severity to include.
+    #[serde(default)]
+    pub min_severity: DiagnosticSeverity,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_per_file: default_lsp_max_per_file(),
+            min_severity: DiagnosticSeverity::default(),
+        }
+    }
+}
+
+/// Configuration for the hover-on-read hook (`[agent.lsp.hover]`).
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HoverConfig {
+    /// Enable hover info pre-fetch after the `read` tool. Disabled by default.
+    pub enabled: bool,
+    /// Maximum hover entries per file (Rust-only for MVP).
+    #[serde(default = "default_lsp_max_symbols")]
+    pub max_symbols: usize,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for HoverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_symbols: default_lsp_max_symbols(),
+        }
+    }
+}
+
+/// Top-level LSP context injection configuration (`[agent.lsp]` TOML section).
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LspConfig {
+    /// Enable LSP context injection hooks.
+    pub enabled: bool,
+    /// MCP server ID to route LSP calls through (default: "mcpls").
+    #[serde(default = "default_lsp_mcp_server_id")]
+    pub mcp_server_id: String,
+    /// Maximum tokens to spend on injected LSP context per turn.
+    #[serde(default = "default_lsp_token_budget")]
+    pub token_budget: usize,
+    /// Timeout in seconds for each MCP LSP call.
+    #[serde(default = "default_lsp_call_timeout_secs")]
+    pub call_timeout_secs: u64,
+    /// Diagnostics-on-save hook configuration.
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
+    /// Hover-on-read hook configuration.
+    #[serde(default)]
+    pub hover: HoverConfig,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mcp_server_id: default_lsp_mcp_server_id(),
+            token_budget: default_lsp_token_budget(),
+            call_timeout_secs: default_lsp_call_timeout_secs(),
+            diagnostics: DiagnosticsConfig::default(),
+            hover: HoverConfig::default(),
+        }
+    }
+}
+
 /// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -1959,6 +2094,128 @@ impl OrchestrationConfig {
     ) -> Result<crate::orchestration::FailureStrategy, crate::orchestration::OrchestrationError>
     {
         self.default_failure_strategy.parse()
+    }
+}
+
+fn default_experiment_max_experiments() -> u32 {
+    20
+}
+
+fn default_experiment_max_wall_time_secs() -> u64 {
+    3600
+}
+
+fn default_experiment_min_improvement() -> f64 {
+    0.5
+}
+
+fn default_experiment_eval_budget_tokens() -> u64 {
+    100_000
+}
+
+fn default_experiment_schedule_cron() -> String {
+    "0 3 * * *".to_string()
+}
+
+fn default_experiment_max_experiments_per_run() -> u32 {
+    20
+}
+
+/// Configuration for the autonomous self-experimentation engine (`[experiments]` TOML section).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExperimentConfig {
+    pub enabled: bool,
+    pub eval_model: Option<String>,
+    pub benchmark_file: Option<std::path::PathBuf>,
+    #[serde(default = "default_experiment_max_experiments")]
+    pub max_experiments: u32,
+    #[serde(default = "default_experiment_max_wall_time_secs")]
+    pub max_wall_time_secs: u64,
+    #[serde(default = "default_experiment_min_improvement")]
+    pub min_improvement: f64,
+    #[serde(default = "default_experiment_eval_budget_tokens")]
+    pub eval_budget_tokens: u64,
+    pub auto_apply: bool,
+    #[serde(default)]
+    pub schedule: ExperimentSchedule,
+}
+
+impl Default for ExperimentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            eval_model: None,
+            benchmark_file: None,
+            max_experiments: default_experiment_max_experiments(),
+            max_wall_time_secs: default_experiment_max_wall_time_secs(),
+            min_improvement: default_experiment_min_improvement(),
+            eval_budget_tokens: default_experiment_eval_budget_tokens(),
+            auto_apply: false,
+            schedule: ExperimentSchedule::default(),
+        }
+    }
+}
+
+/// Cron scheduling configuration for automatic experiment runs.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExperimentSchedule {
+    pub enabled: bool,
+    #[serde(default = "default_experiment_schedule_cron")]
+    pub cron: String,
+    #[serde(default = "default_experiment_max_experiments_per_run")]
+    pub max_experiments_per_run: u32,
+}
+
+impl Default for ExperimentSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cron: default_experiment_schedule_cron(),
+            max_experiments_per_run: default_experiment_max_experiments_per_run(),
+        }
+    }
+}
+
+impl ExperimentConfig {
+    /// Validate that numeric bounds are within sane operating limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Validation` if any field is outside allowed range.
+    pub fn validate(&self) -> Result<(), crate::config::ConfigError> {
+        if !(1..=1_000).contains(&self.max_experiments) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.max_experiments must be in 1..=1000, got {}",
+                self.max_experiments
+            )));
+        }
+        if !(60..=86_400).contains(&self.max_wall_time_secs) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.max_wall_time_secs must be in 60..=86400, got {}",
+                self.max_wall_time_secs
+            )));
+        }
+        if !(1_000..=10_000_000).contains(&self.eval_budget_tokens) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.eval_budget_tokens must be in 1000..=10000000, got {}",
+                self.eval_budget_tokens
+            )));
+        }
+        if !(0.0..=100.0).contains(&self.min_improvement) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.min_improvement must be in 0.0..=100.0, got {}",
+                self.min_improvement
+            )));
+        }
+        if !(1..=100).contains(&self.schedule.max_experiments_per_run) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.schedule.max_experiments_per_run must be in 1..=100, got {}",
+                self.schedule.max_experiments_per_run
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -2174,6 +2431,117 @@ mod tests {
         assert_eq!(cfg.tick_interval_secs, 60);
         assert_eq!(cfg.max_tasks, 100);
         assert!(cfg.tasks.is_empty());
+    }
+
+    #[test]
+    fn experiment_config_defaults() {
+        let cfg = ExperimentConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.eval_model.is_none());
+        assert!(cfg.benchmark_file.is_none());
+        assert_eq!(cfg.max_experiments, 20);
+        assert_eq!(cfg.max_wall_time_secs, 3600);
+        assert!((cfg.min_improvement - 0.5).abs() < f64::EPSILON);
+        assert_eq!(cfg.eval_budget_tokens, 100_000);
+        assert!(!cfg.auto_apply);
+    }
+
+    #[test]
+    fn experiment_schedule_defaults() {
+        let cfg = ExperimentSchedule::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.cron, "0 3 * * *");
+        assert_eq!(cfg.max_experiments_per_run, 20);
+    }
+
+    #[test]
+    fn experiment_config_serde_roundtrip() {
+        let toml_str = r#"
+enabled = true
+max_experiments = 10
+min_improvement = 1.0
+eval_budget_tokens = 50000
+"#;
+        let cfg: ExperimentConfig = toml::from_str(toml_str).expect("parse");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_experiments, 10);
+        assert!((cfg.min_improvement - 1.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.eval_budget_tokens, 50_000);
+        // check defaults preserved for fields not in toml
+        assert_eq!(cfg.max_wall_time_secs, 3600);
+        let serialized = toml::to_string_pretty(&cfg).expect("serialize");
+        let cfg2: ExperimentConfig = toml::from_str(&serialized).expect("reparse");
+        assert!(cfg2.enabled);
+        assert_eq!(cfg2.max_experiments, 10);
+    }
+
+    #[test]
+    fn config_has_experiments_field() {
+        let config = Config::default();
+        assert!(!config.experiments.enabled);
+    }
+
+    #[test]
+    fn experiment_config_validate_defaults_pass() {
+        let cfg = ExperimentConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_max_experiments_zero() {
+        let cfg = ExperimentConfig {
+            max_experiments: 0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_max_experiments_over_limit() {
+        let cfg = ExperimentConfig {
+            max_experiments: 1_001,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_wall_time_too_short() {
+        let cfg = ExperimentConfig {
+            max_wall_time_secs: 10,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_negative_min_improvement() {
+        let cfg = ExperimentConfig {
+            min_improvement: -1.0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_excessive_budget() {
+        let cfg = ExperimentConfig {
+            eval_budget_tokens: 100,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_schedule_over_limit() {
+        let cfg = ExperimentConfig {
+            schedule: ExperimentSchedule {
+                max_experiments_per_run: 200,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
