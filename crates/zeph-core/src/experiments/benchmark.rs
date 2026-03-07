@@ -172,7 +172,6 @@ tags = ["rust", "concepts"]
 
     #[test]
     fn benchmark_from_file_too_large() {
-        use std::io::Write;
         // Write a file larger than MAX_BENCHMARK_SIZE by writing in chunks.
         // We override the limit via a helper that accepts a custom limit instead of
         // creating a truly 10 MiB file. Test the error variant directly via a stub.
