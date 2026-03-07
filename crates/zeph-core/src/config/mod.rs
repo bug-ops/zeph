@@ -111,6 +111,7 @@ impl Config {
                 )));
             }
         }
+        self.experiments.validate()?;
         Ok(())
     }
 

@@ -54,6 +54,7 @@ insta = { version = "1.46.3", features = ["toml", "filters"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
+ordered-float = { version = "4", features = ["serde"] }
 ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"] }
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
@@ -150,7 +151,7 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "acp-http", "acp-unstable", "daemon", "discord", "gateway", "graph-memory", "index", "mock", "orchestration", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "acp-unstable", "daemon", "discord", "experiments", "gateway", "graph-memory", "index", "mock", "orchestration", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
@@ -170,6 +171,7 @@ otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", 
 pdf = ["zeph-memory/pdf"]
 mock = ["zeph-llm/mock", "zeph-memory/mock", "zeph-core/mock"]
 orchestration = ["zeph-core/orchestration", "zeph-memory/orchestration"]
+experiments = ["zeph-core/experiments", "zeph-memory/experiments"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
 
 [dependencies]

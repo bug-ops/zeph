@@ -46,6 +46,8 @@ pub use router::{HeuristicRouter, MemoryRoute, MemoryRouter};
 pub use semantic::{ExtractionStats, GraphExtractionConfig, extract_and_store};
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use sqlite::corrections::UserCorrectionRow;
+#[cfg(feature = "experiments")]
+pub use sqlite::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
 pub use types::{ConversationId, MessageId};

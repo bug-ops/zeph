@@ -62,6 +62,8 @@ pub struct Config {
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
     #[serde(default)]
+    pub experiments: ExperimentConfig,
+    #[serde(default)]
     pub debug: DebugConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -1764,6 +1766,7 @@ impl Default for Config {
             acp: AcpConfig::default(),
             agents: SubAgentConfig::default(),
             orchestration: OrchestrationConfig::default(),
+            experiments: ExperimentConfig::default(),
             debug: DebugConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
@@ -1959,6 +1962,128 @@ impl OrchestrationConfig {
     ) -> Result<crate::orchestration::FailureStrategy, crate::orchestration::OrchestrationError>
     {
         self.default_failure_strategy.parse()
+    }
+}
+
+fn default_experiment_max_experiments() -> u32 {
+    20
+}
+
+fn default_experiment_max_wall_time_secs() -> u64 {
+    3600
+}
+
+fn default_experiment_min_improvement() -> f64 {
+    0.5
+}
+
+fn default_experiment_eval_budget_tokens() -> u64 {
+    100_000
+}
+
+fn default_experiment_schedule_cron() -> String {
+    "0 3 * * *".to_string()
+}
+
+fn default_experiment_max_experiments_per_run() -> u32 {
+    20
+}
+
+/// Configuration for the autonomous self-experimentation engine (`[experiments]` TOML section).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExperimentConfig {
+    pub enabled: bool,
+    pub eval_model: Option<String>,
+    pub benchmark_file: Option<std::path::PathBuf>,
+    #[serde(default = "default_experiment_max_experiments")]
+    pub max_experiments: u32,
+    #[serde(default = "default_experiment_max_wall_time_secs")]
+    pub max_wall_time_secs: u64,
+    #[serde(default = "default_experiment_min_improvement")]
+    pub min_improvement: f64,
+    #[serde(default = "default_experiment_eval_budget_tokens")]
+    pub eval_budget_tokens: u64,
+    pub auto_apply: bool,
+    #[serde(default)]
+    pub schedule: ExperimentSchedule,
+}
+
+impl Default for ExperimentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            eval_model: None,
+            benchmark_file: None,
+            max_experiments: default_experiment_max_experiments(),
+            max_wall_time_secs: default_experiment_max_wall_time_secs(),
+            min_improvement: default_experiment_min_improvement(),
+            eval_budget_tokens: default_experiment_eval_budget_tokens(),
+            auto_apply: false,
+            schedule: ExperimentSchedule::default(),
+        }
+    }
+}
+
+/// Cron scheduling configuration for automatic experiment runs.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExperimentSchedule {
+    pub enabled: bool,
+    #[serde(default = "default_experiment_schedule_cron")]
+    pub cron: String,
+    #[serde(default = "default_experiment_max_experiments_per_run")]
+    pub max_experiments_per_run: u32,
+}
+
+impl Default for ExperimentSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cron: default_experiment_schedule_cron(),
+            max_experiments_per_run: default_experiment_max_experiments_per_run(),
+        }
+    }
+}
+
+impl ExperimentConfig {
+    /// Validate that numeric bounds are within sane operating limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Validation` if any field is outside allowed range.
+    pub fn validate(&self) -> Result<(), crate::config::ConfigError> {
+        if !(1..=1_000).contains(&self.max_experiments) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.max_experiments must be in 1..=1000, got {}",
+                self.max_experiments
+            )));
+        }
+        if !(60..=86_400).contains(&self.max_wall_time_secs) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.max_wall_time_secs must be in 60..=86400, got {}",
+                self.max_wall_time_secs
+            )));
+        }
+        if !(1_000..=10_000_000).contains(&self.eval_budget_tokens) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.eval_budget_tokens must be in 1000..=10000000, got {}",
+                self.eval_budget_tokens
+            )));
+        }
+        if !(0.0..=100.0).contains(&self.min_improvement) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.min_improvement must be in 0.0..=100.0, got {}",
+                self.min_improvement
+            )));
+        }
+        if !(1..=100).contains(&self.schedule.max_experiments_per_run) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.schedule.max_experiments_per_run must be in 1..=100, got {}",
+                self.schedule.max_experiments_per_run
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -2174,6 +2299,117 @@ mod tests {
         assert_eq!(cfg.tick_interval_secs, 60);
         assert_eq!(cfg.max_tasks, 100);
         assert!(cfg.tasks.is_empty());
+    }
+
+    #[test]
+    fn experiment_config_defaults() {
+        let cfg = ExperimentConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.eval_model.is_none());
+        assert!(cfg.benchmark_file.is_none());
+        assert_eq!(cfg.max_experiments, 20);
+        assert_eq!(cfg.max_wall_time_secs, 3600);
+        assert!((cfg.min_improvement - 0.5).abs() < f64::EPSILON);
+        assert_eq!(cfg.eval_budget_tokens, 100_000);
+        assert!(!cfg.auto_apply);
+    }
+
+    #[test]
+    fn experiment_schedule_defaults() {
+        let cfg = ExperimentSchedule::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.cron, "0 3 * * *");
+        assert_eq!(cfg.max_experiments_per_run, 20);
+    }
+
+    #[test]
+    fn experiment_config_serde_roundtrip() {
+        let toml_str = r#"
+enabled = true
+max_experiments = 10
+min_improvement = 1.0
+eval_budget_tokens = 50000
+"#;
+        let cfg: ExperimentConfig = toml::from_str(toml_str).expect("parse");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_experiments, 10);
+        assert!((cfg.min_improvement - 1.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.eval_budget_tokens, 50_000);
+        // check defaults preserved for fields not in toml
+        assert_eq!(cfg.max_wall_time_secs, 3600);
+        let serialized = toml::to_string_pretty(&cfg).expect("serialize");
+        let cfg2: ExperimentConfig = toml::from_str(&serialized).expect("reparse");
+        assert!(cfg2.enabled);
+        assert_eq!(cfg2.max_experiments, 10);
+    }
+
+    #[test]
+    fn config_has_experiments_field() {
+        let config = Config::default();
+        assert!(!config.experiments.enabled);
+    }
+
+    #[test]
+    fn experiment_config_validate_defaults_pass() {
+        let cfg = ExperimentConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_max_experiments_zero() {
+        let cfg = ExperimentConfig {
+            max_experiments: 0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_max_experiments_over_limit() {
+        let cfg = ExperimentConfig {
+            max_experiments: 1_001,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_wall_time_too_short() {
+        let cfg = ExperimentConfig {
+            max_wall_time_secs: 10,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_negative_min_improvement() {
+        let cfg = ExperimentConfig {
+            min_improvement: -1.0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_excessive_budget() {
+        let cfg = ExperimentConfig {
+            eval_budget_tokens: 100,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_schedule_over_limit() {
+        let cfg = ExperimentConfig {
+            schedule: ExperimentSchedule {
+                max_experiments_per_run: 200,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
