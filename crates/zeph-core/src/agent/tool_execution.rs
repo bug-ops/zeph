@@ -138,6 +138,7 @@ fn handle_tool_use(out: &mut String, rest: &mut &str, start: usize) {
 }
 
 impl<C: Channel> Agent<C> {
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn process_response(&mut self) -> Result<(), super::error::AgentError> {
         // S3: clear flagged_urls at the start of each turn. Per-turn clearing means
         // cross-turn attack chains evade detection, but this is acceptable for MVP since
@@ -237,17 +238,31 @@ impl<C: Channel> Agent<C> {
 
             // Summarize before pruning: summarizer must see intact tool output content.
             // Pruning runs after so it never destroys content the summarizer needs.
+            // Apply deferred summaries immediately after pruning: once a pair's content is
+            // replaced with "[pruned]", the cache prefix for that pair is gone and the
+            // pre-computed summary should be visible to the LLM on the very next iteration.
             self.maybe_summarize_tool_pair().await;
             let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
             self.prune_stale_tool_outputs(keep_recent);
+            self.maybe_apply_deferred_summaries();
 
             // Doom-loop detection: compare last N outputs by content hash
             if let Some(last_msg) = self.messages.last() {
-                self.tool_orchestrator
-                    .push_doom_hash(doom_loop_hash(&last_msg.content));
+                let hash = doom_loop_hash(&last_msg.content);
+                tracing::debug!(
+                    iteration,
+                    hash,
+                    content_len = last_msg.content.len(),
+                    content_preview = &last_msg.content[..last_msg.content.len().min(120)],
+                    "doom-loop hash recorded"
+                );
+                self.tool_orchestrator.push_doom_hash(hash);
                 if self.tool_orchestrator.is_doom_loop() {
                     tracing::warn!(
                         iteration,
+                        hash,
+                        content_len = last_msg.content.len(),
+                        content_preview = &last_msg.content[..last_msg.content.len().min(200)],
                         "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
                     );
                     self.channel
@@ -1091,9 +1106,13 @@ impl<C: Channel> Agent<C> {
 
             // Summarize before pruning: summarizer must see intact tool output content.
             // Pruning runs after so it never destroys content the summarizer needs.
+            // Apply deferred summaries immediately after pruning: once a pair's content is
+            // replaced with "[pruned]", the cache prefix for that pair is gone and the
+            // pre-computed summary should be visible to the LLM on the very next iteration.
             self.maybe_summarize_tool_pair().await;
             let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
             self.prune_stale_tool_outputs(keep_recent);
+            self.maybe_apply_deferred_summaries();
 
             if self.check_doom_loop(iteration).await? {
                 break;
@@ -1566,11 +1585,21 @@ impl<C: Channel> Agent<C> {
         iteration: usize,
     ) -> Result<bool, super::error::AgentError> {
         if let Some(last_msg) = self.messages.last() {
-            self.tool_orchestrator
-                .push_doom_hash(doom_loop_hash(&last_msg.content));
+            let hash = doom_loop_hash(&last_msg.content);
+            tracing::debug!(
+                iteration,
+                hash,
+                content_len = last_msg.content.len(),
+                content_preview = &last_msg.content[..last_msg.content.len().min(120)],
+                "doom-loop hash recorded"
+            );
+            self.tool_orchestrator.push_doom_hash(hash);
             if self.tool_orchestrator.is_doom_loop() {
                 tracing::warn!(
                     iteration,
+                    hash,
+                    content_len = last_msg.content.len(),
+                    content_preview = &last_msg.content[..last_msg.content.len().min(200)],
                     "doom-loop detected: {DOOM_LOOP_WINDOW} consecutive identical outputs"
                 );
                 self.channel
