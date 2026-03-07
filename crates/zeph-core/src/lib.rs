@@ -21,6 +21,9 @@ pub mod project;
 pub mod redact;
 pub mod vault;
 
+#[cfg(feature = "lsp-context")]
+pub mod lsp_hooks;
+
 #[cfg(feature = "orchestration")]
 pub mod orchestration;
 

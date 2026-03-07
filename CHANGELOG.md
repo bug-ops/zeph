@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Add LSP context injection (`lsp-context` feature, #1287 Phase 2): automatic diagnostics injection after `write_file`, optional hover pre-fetch after `read_file`, and reference listing before `rename_symbol`. Hooks run inside the tool execution pipeline via `LspHookRunner`, which calls mcpls through the existing `McpManager`. Notes are injected as `[lsp ...]` prefixed user messages into the message history, subject to a configurable `token_budget` (default 2000). Gracefully degrades to no-op when mcpls is unavailable.
+- Add `[agent.lsp]` config section with `LspConfig`, `DiagnosticsConfig`, `HoverConfig`, and `ReferencesConfig` types in `zeph-core`. Defaults: diagnostics enabled (errors-only, max 20 per file, max 5 files), hover disabled, references enabled (max 50).
+- Add `--lsp-context` CLI flag to enable LSP context injection for a session, overriding `agent.lsp.enabled` in config.
+- Add `step_lsp_context()` to `zeph --init` wizard: prompts for context injection after the mcpls step; skipped when mcpls is not configured. Generates `[agent.lsp]` config section with defaults.
+- Add `/lsp` interactive command and `lsp:status` TUI command palette entry: shows hook state, MCP server connection status, per-hook injection counts, and token budget usage.
+- Add `LspConfig` to `AgentConfig` behind `#[cfg(feature = "lsp-context")]`.
+
 ## [0.14.1] - 2026-03-07
 
 ### Added

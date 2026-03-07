@@ -63,6 +63,9 @@ pub struct Config {
     pub orchestration: OrchestrationConfig,
     #[serde(default)]
     pub debug: DebugConfig,
+    #[cfg(feature = "lsp-context")]
+    #[serde(default)]
+    pub lsp: LspConfig,
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
@@ -1765,6 +1768,8 @@ impl Default for Config {
             agents: SubAgentConfig::default(),
             orchestration: OrchestrationConfig::default(),
             debug: DebugConfig::default(),
+            #[cfg(feature = "lsp-context")]
+            lsp: LspConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }
@@ -1878,6 +1883,133 @@ impl Default for GraphConfig {
             recall_limit: default_graph_recall_limit(),
             expired_edge_retention_days: default_graph_expired_edge_retention_days(),
             max_entities: 0,
+        }
+    }
+}
+
+// ── LSP context injection ─────────────────────────────────────────────────────
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_mcp_server_id() -> String {
+    "mcpls".into()
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_token_budget() -> usize {
+    2000
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_max_per_file() -> usize {
+    20
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_max_symbols() -> usize {
+    10
+}
+
+#[cfg(feature = "lsp-context")]
+fn default_lsp_call_timeout_secs() -> u64 {
+    5
+}
+
+/// Minimum diagnostic severity to include in LSP context injection.
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticSeverity {
+    #[default]
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+/// Configuration for the diagnostics-on-save hook (`[agent.lsp.diagnostics]`).
+///
+/// Flood control relies on `token_budget` in [`LspConfig`], not a per-file count.
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// Enable automatic diagnostics fetching after the `write` tool.
+    pub enabled: bool,
+    /// Maximum diagnostics entries per file.
+    #[serde(default = "default_lsp_max_per_file")]
+    pub max_per_file: usize,
+    /// Minimum severity to include.
+    #[serde(default)]
+    pub min_severity: DiagnosticSeverity,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_per_file: default_lsp_max_per_file(),
+            min_severity: DiagnosticSeverity::default(),
+        }
+    }
+}
+
+/// Configuration for the hover-on-read hook (`[agent.lsp.hover]`).
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HoverConfig {
+    /// Enable hover info pre-fetch after the `read` tool. Disabled by default.
+    pub enabled: bool,
+    /// Maximum hover entries per file (Rust-only for MVP).
+    #[serde(default = "default_lsp_max_symbols")]
+    pub max_symbols: usize,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for HoverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_symbols: default_lsp_max_symbols(),
+        }
+    }
+}
+
+/// Top-level LSP context injection configuration (`[agent.lsp]` TOML section).
+#[cfg(feature = "lsp-context")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LspConfig {
+    /// Enable LSP context injection hooks.
+    pub enabled: bool,
+    /// MCP server ID to route LSP calls through (default: "mcpls").
+    #[serde(default = "default_lsp_mcp_server_id")]
+    pub mcp_server_id: String,
+    /// Maximum tokens to spend on injected LSP context per turn.
+    #[serde(default = "default_lsp_token_budget")]
+    pub token_budget: usize,
+    /// Timeout in seconds for each MCP LSP call.
+    #[serde(default = "default_lsp_call_timeout_secs")]
+    pub call_timeout_secs: u64,
+    /// Diagnostics-on-save hook configuration.
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
+    /// Hover-on-read hook configuration.
+    #[serde(default)]
+    pub hover: HoverConfig,
+}
+
+#[cfg(feature = "lsp-context")]
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mcp_server_id: default_lsp_mcp_server_id(),
+            token_budget: default_lsp_token_budget(),
+            call_timeout_secs: default_lsp_call_timeout_secs(),
+            diagnostics: DiagnosticsConfig::default(),
+            hover: HoverConfig::default(),
         }
     }
 }

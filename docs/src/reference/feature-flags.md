@@ -28,6 +28,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 | `index` | AST-based code indexing and semantic retrieval via tree-sitter ([guide](../advanced/code-indexing.md)) |
 | `graph-memory` | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal ([guide](../concepts/graph-memory.md)) |
+| `lsp-context` | Automatic LSP context injection: diagnostics after `write_file`, optional hover on `read_file`, references before `rename_symbol`. Hooks into the tool execution pipeline and call mcpls via the existing MCP client. Requires mcpls configured under `[[mcp.servers]]`. Enable with `--lsp-context` or `agent.lsp.enabled = true` ([guide](../guides/lsp.md#lsp-context-injection)) |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
 | `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring. Combined with `a2a`, enables `--daemon` headless mode ([guide](../guides/daemon-mode.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
@@ -85,6 +86,7 @@ cargo build --release --features slack                     # with Slack bot
 cargo build --release --features daemon,a2a                # headless daemon with A2A endpoint
 cargo build --release --features tui,a2a                   # TUI with remote daemon support
 cargo build --release --features gateway,daemon,scheduler  # with infrastructure components
+cargo build --release --features lsp-context               # with LSP context injection
 cargo build --release --features full                      # all optional features
 ```
 

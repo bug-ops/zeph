@@ -20,6 +20,7 @@ daemon = []
 graph-memory = ["zeph-memory/graph-memory"]
 index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
+lsp-context = []
 mock = ["zeph-llm/mock", "zeph-memory/mock"]
 orchestration = ["zeph-memory/orchestration"]
 

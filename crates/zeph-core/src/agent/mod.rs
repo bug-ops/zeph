@@ -12,6 +12,8 @@ mod graph_commands;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
+#[cfg(feature = "lsp-context")]
+mod lsp_commands;
 mod mcp;
 mod message_queue;
 mod persistence;
@@ -68,6 +70,12 @@ pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 #[cfg(feature = "graph-memory")]
 pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
+/// Prefix used for LSP context messages (`Role::System`) injected into message history.
+/// The tool-pair summarizer targets User/Assistant pairs and skips System messages,
+/// so these notes are never accidentally summarized. `remove_lsp_messages` uses this
+/// prefix to clear stale notes before each fresh injection.
+#[cfg(feature = "lsp-context")]
+pub(crate) const LSP_NOTE_PREFIX: &str = "[lsp ";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
 #[cfg(feature = "orchestration")]
@@ -237,6 +245,10 @@ pub struct Agent<C: Channel> {
     pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
     /// Format used when creating a dumper via the `/debug-dump` slash command.
     pub(super) dump_format: crate::debug_dump::DumpFormat,
+    /// LSP context injection hooks. Fires after native tool execution, injects
+    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
+    #[cfg(feature = "lsp-context")]
+    pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -402,6 +414,8 @@ impl<C: Channel> Agent<C> {
             pending_graph: None,
             debug_dumper: None,
             dump_format: crate::debug_dump::DumpFormat::default(),
+            #[cfg(feature = "lsp-context")]
+            lsp_hooks: None,
         }
     }
 
@@ -1270,6 +1284,12 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "graph-memory")]
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             self.handle_graph_command(trimmed).await?;
+            return Ok(());
+        }
+
+        #[cfg(feature = "lsp-context")]
+        if trimmed == "/lsp" {
+            self.handle_lsp_status_command().await?;
             return Ok(());
         }
 

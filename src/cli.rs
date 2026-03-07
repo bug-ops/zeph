@@ -83,6 +83,12 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) graph_memory: bool,
 
+    /// Enable automatic LSP context injection (diagnostics after writes, hover on reads).
+    /// Requires mcpls MCP server configured under [mcp.servers].
+    #[cfg(feature = "lsp-context")]
+    #[arg(long)]
+    pub(crate) lsp_context: bool,
+
     /// Enable debug dump: write LLM requests/responses and raw tool output to files.
     /// Omit PATH to use the default directory from config (default: .local/debug).
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]

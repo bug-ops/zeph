@@ -131,6 +131,7 @@ Available commands:
 | `daemon:status` | Show connection status | |
 | `router:stats` | Show Thompson router alpha/beta per provider | |
 | `security:events` | Show security event history | |
+| `lsp:status` | Show LSP context injection status (hook state, MCP server connection, injection counts, token budget usage). Requires `lsp-context` feature | |
 | `plan:status` | Show current plan progress in chat | |
 | `plan:confirm` | Confirm a pending plan and begin execution | |
 | `plan:cancel` | Cancel the active plan | |

@@ -55,7 +55,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, agents config, skill paths.
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, agents config, skill paths, LSP context injection config (`[agent.lsp]`).
 
 ## Configuration File
 
@@ -71,6 +71,27 @@ extra_files    = []      # Additional instruction files (absolute or relative to
 max_size_bytes = 262144  # Per-file size cap in bytes (default: 256 KiB)
 # zeph.md and .zeph/zeph.md are always loaded regardless of auto_detect.
 # Use --instruction-file <path> at the CLI to supply extra files at startup.
+
+# LSP context injection — requires lsp-context feature and mcpls MCP server.
+# Enable with --lsp-context CLI flag or by setting enabled = true here.
+# [agent.lsp]
+# enabled = false                # Enable LSP context injection hooks (default: false)
+# mcp_server_id = "mcpls"       # MCP server ID providing LSP tools (default: "mcpls")
+# token_budget = 2000            # Max tokens to spend on injected LSP context per turn (default: 2000)
+#
+# [agent.lsp.diagnostics]
+# enabled = true                 # Inject diagnostics after write_file (default: true when agent.lsp is enabled)
+# max_per_file = 20              # Max diagnostics per file (default: 20)
+# max_files = 5                  # Max files per injection batch (default: 5)
+# min_severity = "error"         # Minimum severity: "error", "warning", "info", or "hint" (default: "error")
+#
+# [agent.lsp.hover]
+# enabled = false                # Pre-fetch hover info after read_file (default: false)
+# max_symbols = 10               # Max symbols to fetch hover for per file (default: 10)
+#
+# [agent.lsp.references]
+# enabled = true                 # Inject reference list before rename_symbol (default: true)
+# max_refs = 50                  # Max references to show per symbol (default: 50)
 
 [agent.learning]
 correction_detection = true           # Enable implicit correction detection (default: true)

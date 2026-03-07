@@ -184,6 +184,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    #[cfg(feature = "lsp-context")]
+    if cli.lsp_context {
+        app.config_mut().lsp.enabled = true;
+    }
+
     if let Some(ref thinking_str) = cli.thinking {
         let thinking = parse_thinking_arg(thinking_str)?;
         if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
@@ -292,6 +297,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
+    // Clone the Arc before it is consumed by with_mcp so LSP hooks can share it.
+    #[cfg(feature = "lsp-context")]
+    let lsp_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     #[cfg(feature = "tui")]
     let shell_executor_for_tui = tool_setup.tool_event_rx;
     #[cfg(not(feature = "tui"))]
@@ -488,6 +496,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
+
+    // Wire LSP context injection hooks when the feature is enabled and configured.
+    #[cfg(feature = "lsp-context")]
+    let agent = if config.lsp.enabled {
+        let runner = zeph_core::lsp_hooks::LspHookRunner::new(lsp_mcp_manager, config.lsp.clone());
+        agent.with_lsp_hooks(runner)
+    } else {
+        agent
+    };
     let agent = agent.with_learning(config.skills.learning.clone());
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

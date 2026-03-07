@@ -1049,6 +1049,11 @@ impl App {
                 self.input.push_str("/graph backfill");
                 self.cursor_position = self.input.len();
             }
+            #[cfg(feature = "lsp-context")]
+            TuiCommand::LspStatus => {
+                self.push_system_message("Checking LSP context injection status...".to_owned());
+                let _ = self.user_input_tx.try_send("/lsp".to_owned());
+            }
         }
     }
 
