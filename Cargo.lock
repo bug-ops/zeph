@@ -9454,6 +9454,7 @@ version = "0.14.1"
 dependencies = [
  "blake3",
  "dashmap",
+ "glob",
  "qdrant-client",
  "rmcp",
  "schemars 1.2.1",
