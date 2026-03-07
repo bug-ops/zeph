@@ -21,6 +21,9 @@ pub mod project;
 pub mod redact;
 pub mod vault;
 
+#[cfg(feature = "experiments")]
+pub mod experiments;
+
 #[cfg(feature = "orchestration")]
 pub mod orchestration;
 

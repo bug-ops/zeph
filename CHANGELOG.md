@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Add benchmark dataset and LLM-as-judge evaluator for autonomous experiments engine (`experiments` feature flag): TOML benchmark format with prompt/context/reference/tags fields, `Evaluator` with configurable judge model and parallel scoring via `FuturesUnordered`, `EvalReport` with mean score, p50/p95 latency, partial result indicators, budget enforcement with per-invocation token tracking, XML boundary tags for prompt injection defense, path traversal protection and file size limits on benchmark files (#1314)
+
 ## [0.14.1] - 2026-03-07
 
 ### Added

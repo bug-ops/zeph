@@ -35,6 +35,7 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `orchestration` | Task orchestration with DAG-based execution, failure strategies, and SQLite persistence ([guide](../concepts/task-orchestration.md)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
+| `experiments` | Autonomous self-experimentation engine with benchmark datasets and LLM-as-judge evaluation ([guide](../concepts/experiments.md)) |
 | `mock` | Mock providers and channels for testing |
 
 ## Crate-Level Features
