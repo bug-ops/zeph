@@ -44,6 +44,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction (feature-gated: `graph-memory`) |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession (feature-gated: `graph-memory`) |
 | `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication (feature-gated: `graph-memory`) |
+| `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
@@ -166,6 +167,7 @@ max_entities = 0                  # Max entities cap (0 = unlimited)
 |---------|-------------|
 | `graph-memory` | Knowledge graph with entity-relationship tracking, BFS traversal, community detection via label propagation, and graph eviction |
 | `orchestration` | Task graph persistence via `SqliteGraphStore` (used by `zeph-core` orchestration) |
+| `experiments` | Experiment result and session summary persistence in SQLite |
 | `pdf` | PDF document loading via `pdf-extract` |
 | `mock` | In-memory `VectorStore` implementation for testing |
 

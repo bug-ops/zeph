@@ -296,6 +296,19 @@ dependency_context_budget = 16384
 confirm_before_execute = true
 aggregator_max_tokens = 4096
 
+[experiments]
+enabled = false
+max_experiments = 20
+max_wall_time_secs = 3600
+min_improvement = 0.5
+eval_budget_tokens = 100000
+auto_apply = false
+
+[experiments.schedule]
+enabled = false
+cron = "0 3 * * *"
+max_experiments_per_run = 20
+
 [debug]
 enabled = false
 output_dir = ".local/debug"
