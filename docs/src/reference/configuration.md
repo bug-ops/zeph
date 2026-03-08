@@ -36,6 +36,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `acp.max_sessions` | > 0 |
 | `acp.session_idle_timeout_secs` | > 0 |
 | `acp.permission_file` | valid file path (optional) |
+| `acp.lsp.request_timeout_secs` | > 0 |
 | `gateway.rate_limit` | > 0 |
 | `gateway.max_body_size` | <= 10,485,760 (10 MiB) |
 
@@ -55,7 +56,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config, agents config, skill paths, LSP context injection config (`[agent.lsp]`).
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config (including `[acp.lsp]`), agents config, skill paths, LSP context injection config (`[agent.lsp]`).
 
 ## Configuration File
 
@@ -346,6 +347,15 @@ session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (def
 # permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions (default: ~/.config/zeph/acp-permissions.toml)
 # auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN, CLI: --acp-auth-token); omit for open mode (local use only)
 discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (env: ZEPH_ACP_DISCOVERY_ENABLED, default: true)
+
+[acp.lsp]
+enabled = true                     # Enable LSP extension when IDE advertises meta["lsp"] (default: true)
+auto_diagnostics_on_save = true    # Fetch diagnostics on lsp/didSave notification (default: true)
+max_diagnostics_per_file = 20      # Max diagnostics accepted per file (default: 20)
+max_diagnostic_files = 5           # Max files in DiagnosticsCache, LRU eviction (default: 5)
+max_references = 100               # Max reference locations returned (default: 100)
+max_workspace_symbols = 50         # Max workspace symbol search results (default: 50)
+request_timeout_secs = 10          # Timeout for LSP ext_method calls in seconds (default: 10)
 
 [mcp]
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]

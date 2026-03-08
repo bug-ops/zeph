@@ -1597,10 +1597,76 @@ pub struct AcpConfig {
     /// Only effective when transport is "http" or "both". Default: true.
     #[serde(default = "default_acp_discovery_enabled")]
     pub discovery_enabled: bool,
+    /// LSP extension configuration (`[acp.lsp]`).
+    #[serde(default)]
+    pub lsp: AcpLspConfig,
 }
 
 fn default_acp_discovery_enabled() -> bool {
     true
+}
+
+/// Configuration for the ACP LSP extension.
+///
+/// Controls LSP code intelligence features when connected to an IDE that advertises
+/// `meta["lsp"]` capability during ACP `initialize`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AcpLspConfig {
+    /// Enable LSP extension when the IDE supports it. Default: `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Automatically fetch diagnostics when `lsp/didSave` notification is received.
+    #[serde(default = "default_true")]
+    pub auto_diagnostics_on_save: bool,
+    /// Maximum diagnostics to accept per file. Default: 20.
+    #[serde(default = "default_acp_lsp_max_diagnostics_per_file")]
+    pub max_diagnostics_per_file: usize,
+    /// Maximum files in `DiagnosticsCache` (LRU eviction). Default: 5.
+    #[serde(default = "default_acp_lsp_max_diagnostic_files")]
+    pub max_diagnostic_files: usize,
+    /// Maximum reference locations returned. Default: 100.
+    #[serde(default = "default_acp_lsp_max_references")]
+    pub max_references: usize,
+    /// Maximum workspace symbol search results. Default: 50.
+    #[serde(default = "default_acp_lsp_max_workspace_symbols")]
+    pub max_workspace_symbols: usize,
+    /// Timeout in seconds for LSP `ext_method` calls. Default: 10.
+    #[serde(default = "default_acp_lsp_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_acp_lsp_max_diagnostics_per_file() -> usize {
+    20
+}
+
+fn default_acp_lsp_max_diagnostic_files() -> usize {
+    5
+}
+
+fn default_acp_lsp_max_references() -> usize {
+    100
+}
+
+fn default_acp_lsp_max_workspace_symbols() -> usize {
+    50
+}
+
+fn default_acp_lsp_request_timeout_secs() -> u64 {
+    10
+}
+
+impl Default for AcpLspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_diagnostics_on_save: true,
+            max_diagnostics_per_file: default_acp_lsp_max_diagnostics_per_file(),
+            max_diagnostic_files: default_acp_lsp_max_diagnostic_files(),
+            max_references: default_acp_lsp_max_references(),
+            max_workspace_symbols: default_acp_lsp_max_workspace_symbols(),
+            request_timeout_secs: default_acp_lsp_request_timeout_secs(),
+        }
+    }
 }
 
 impl Default for AcpConfig {
@@ -1617,6 +1683,7 @@ impl Default for AcpConfig {
             http_bind: default_acp_http_bind(),
             auth_token: None,
             discovery_enabled: default_acp_discovery_enabled(),
+            lsp: AcpLspConfig::default(),
         }
     }
 }
@@ -1638,6 +1705,7 @@ impl std::fmt::Debug for AcpConfig {
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("discovery_enabled", &self.discovery_enabled)
+            .field("lsp", &self.lsp)
             .finish()
     }
 }
