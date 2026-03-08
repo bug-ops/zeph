@@ -2,17 +2,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::net::IpAddr;
+use std::path::{Component, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
+use futures::StreamExt as _;
 use tokio::sync::{mpsc, oneshot};
-use zeph_core::LoopbackEvent;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel};
 #[cfg(feature = "unstable-session-info-update")]
 use zeph_core::text::truncate_to_chars;
+use zeph_core::{LoopbackEvent, StopHint};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 use zeph_mcp::McpManager;
@@ -39,6 +41,193 @@ const SUPPORTED_IMAGE_MIMES: &[&str] = &[
     "image/webp",
 ];
 const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
+/// Maximum bytes fetched from an HTTP resource link.
+const MAX_RESOURCE_BYTES: usize = 1_048_576; // 1 MiB
+/// Timeout for HTTP resource link fetch.
+const RESOURCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Pseudo-filesystem path components that expose secrets or kernel internals.
+const BLOCKED_PATH_COMPONENTS: &[&str] = &["proc", "sys", "dev", ".ssh", ".gnupg", ".aws"];
+
+fn is_private_ip(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(ip) => {
+            let n = u32::from(ip);
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                // CGNAT range 100.64.0.0/10 (RFC 6598).
+                || (n & 0xFFC0_0000 == 0x6440_0000)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_private() || v4.is_link_local())
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Resolve a `ResourceLink` URI to its text content.
+///
+/// Supports `file://` and `http(s)://` URIs. Returns an error for unsupported
+/// schemes or security violations (SSRF, path traversal, binary content).
+///
+/// `session_cwd` is used as the allowed root for `file://` URIs. Only paths
+/// that are descendants of `session_cwd` are permitted.
+async fn resolve_resource_link(
+    link: &acp::ResourceLink,
+    session_cwd: &std::path::Path,
+) -> Result<String, crate::error::AcpError> {
+    let uri = &link.uri;
+
+    if let Some(path_str) = uri.strip_prefix("file://") {
+        // Canonicalize to resolve symlinks and `..` — single syscall, no TOCTOU.
+        let path = std::path::Path::new(path_str);
+
+        // Pre-check size to avoid loading large files into memory before rejection.
+        let meta = tokio::time::timeout(RESOURCE_FETCH_TIMEOUT, tokio::fs::metadata(path))
+            .await
+            .map_err(|_| {
+                crate::error::AcpError::ResourceLink(format!("file:// metadata timed out: {uri}"))
+            })?
+            .map_err(|e| {
+                crate::error::AcpError::ResourceLink(format!("file:// stat failed: {e}"))
+            })?;
+
+        if meta.len() > MAX_RESOURCE_BYTES as u64 {
+            return Err(crate::error::AcpError::ResourceLink(format!(
+                "file:// content exceeds size limit ({MAX_RESOURCE_BYTES} bytes): {uri}"
+            )));
+        }
+
+        let canonical = tokio::fs::canonicalize(path).await.map_err(|e| {
+            crate::error::AcpError::ResourceLink(format!("file:// resolution failed: {e}"))
+        })?;
+
+        // Enforce cwd boundary: only files inside the session working directory are allowed.
+        if !canonical.starts_with(session_cwd) {
+            return Err(crate::error::AcpError::ResourceLink(format!(
+                "file:// path outside session working directory: {uri}"
+            )));
+        }
+
+        // Reject pseudo-filesystems and sensitive directories.
+        for component in canonical.components() {
+            if let Component::Normal(name) = component {
+                let name_str = name.to_string_lossy();
+                if BLOCKED_PATH_COMPONENTS
+                    .iter()
+                    .any(|blocked| name_str == *blocked)
+                {
+                    return Err(crate::error::AcpError::ResourceLink(format!(
+                        "file:// path blocked: {uri}"
+                    )));
+                }
+            }
+        }
+
+        let bytes = tokio::time::timeout(RESOURCE_FETCH_TIMEOUT, tokio::fs::read(&canonical))
+            .await
+            .map_err(|_| {
+                crate::error::AcpError::ResourceLink(format!("file:// read timed out: {uri}"))
+            })?
+            .map_err(|e| {
+                crate::error::AcpError::ResourceLink(format!("file:// read failed: {e}"))
+            })?;
+
+        // Reject binary files (null byte check — S-1).
+        if bytes.contains(&0u8) {
+            return Err(crate::error::AcpError::ResourceLink(format!(
+                "binary file not supported as ResourceLink content: {uri}"
+            )));
+        }
+
+        String::from_utf8(bytes).map_err(|_| {
+            crate::error::AcpError::ResourceLink(format!(
+                "file:// content is not valid UTF-8: {uri}"
+            ))
+        })
+    } else if uri.starts_with("http://") || uri.starts_with("https://") {
+        // No-redirect policy prevents redirect-based SSRF bypass.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(RESOURCE_FETCH_TIMEOUT)
+            .build()
+            .map_err(|e| crate::error::AcpError::ResourceLink(format!("HTTP client error: {e}")))?;
+
+        let resp = client
+            .get(uri.as_str())
+            .header(reqwest::header::ACCEPT, "text/*")
+            .send()
+            .await
+            .map_err(|e| crate::error::AcpError::ResourceLink(format!("HTTP fetch failed: {e}")))?;
+
+        // Post-fetch IP check: eliminates DNS rebinding TOCTOU window (RC-1).
+        // Fail-closed: if remote_addr() is unavailable (e.g. rustls), reject the response.
+        match resp.remote_addr() {
+            None => {
+                return Err(crate::error::AcpError::ResourceLink(format!(
+                    "SSRF check failed: remote address unavailable for {uri}"
+                )));
+            }
+            Some(remote_addr) if is_private_ip(remote_addr.ip()) => {
+                return Err(crate::error::AcpError::ResourceLink(format!(
+                    "SSRF blocked: {uri} resolved to private address {remote_addr}"
+                )));
+            }
+            Some(_) => {}
+        }
+
+        if !resp.status().is_success() {
+            return Err(crate::error::AcpError::ResourceLink(format!(
+                "HTTP fetch returned {}: {uri}",
+                resp.status()
+            )));
+        }
+
+        // Reject non-text content types.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.is_empty() && !content_type.starts_with("text/") {
+            return Err(crate::error::AcpError::ResourceLink(format!(
+                "non-text MIME type rejected for ResourceLink: {content_type}"
+            )));
+        }
+
+        // Stream up to MAX_RESOURCE_BYTES to avoid unbounded memory use.
+        let mut body = resp.bytes_stream();
+        let mut buf = Vec::with_capacity(4096);
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|e| {
+                crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
+            })?;
+            if buf.len() + chunk.len() > MAX_RESOURCE_BYTES {
+                buf.extend_from_slice(&chunk[..MAX_RESOURCE_BYTES.saturating_sub(buf.len())]);
+                break;
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        String::from_utf8(buf).map_err(|_| {
+            crate::error::AcpError::ResourceLink(format!(
+                "HTTP response body is not valid UTF-8: {uri}"
+            ))
+        })
+    } else {
+        Err(crate::error::AcpError::ResourceLink(format!(
+            "unsupported URI scheme in ResourceLink: {uri}"
+        )))
+    }
+}
 
 /// IDE-proxied capabilities passed to the agent loop per session.
 ///
@@ -467,7 +656,7 @@ impl acp::Agent for ZephAcpAgent {
             serde_json::json!("authentication required"),
         );
 
-        let caps = acp::AgentCapabilities::new()
+        let mut caps = acp::AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(
                 acp::PromptCapabilities::new()
@@ -489,6 +678,11 @@ impl acp::Agent for ZephAcpAgent {
                 }
                 cap_meta
             });
+        // Advertise MCP transport capabilities when McpManager is present.
+        // Only StreamableHTTP (http=true) is supported; SSE is deprecated in MCP spec 2025-11-25.
+        if self.mcp_manager.is_some() {
+            caps = caps.mcp_capabilities(acp::McpCapabilities::new().http(true).sse(false));
+        }
         #[cfg(any(
             feature = "unstable-session-list",
             feature = "unstable-session-fork",
@@ -661,6 +855,14 @@ impl acp::Agent for ZephAcpAgent {
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
+        // Capture session cwd for file:// boundary enforcement.
+        let session_cwd = self
+            .sessions
+            .borrow()
+            .get(&args.session_id)
+            .and_then(|e| e.working_dir.borrow().clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
         let mut text = String::new();
         let mut attachments = Vec::new();
         for block in &args.prompt {
@@ -739,7 +941,24 @@ impl acp::Agent for ZephAcpAgent {
                     tracing::warn!("unsupported content block: Audio — skipping");
                 }
                 acp::ContentBlock::ResourceLink(link) => {
-                    tracing::warn!(uri = %link.uri, "unsupported content block: ResourceLink — skipping");
+                    match resolve_resource_link(link, &session_cwd).await {
+                        Ok(content) => {
+                            // S-2: XML-escape URI (attribute) and content (body) using full escaping.
+                            let escaped_uri = xml_escape(&link.uri);
+                            let escaped_content = xml_escape(&content);
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str("<resource uri=\"");
+                            text.push_str(&escaped_uri);
+                            text.push_str("\">");
+                            text.push_str(&escaped_content);
+                            text.push_str("</resource>");
+                        }
+                        Err(e) => {
+                            tracing::warn!(uri = %link.uri, error = %e, "ResourceLink resolution failed — skipping");
+                        }
+                    }
                 }
                 &_ => {
                     tracing::warn!("unsupported content block: unknown — skipping");
@@ -804,6 +1023,7 @@ impl acp::Agent for ZephAcpAgent {
         // Block until the agent finishes this turn (signals via Flush or channel close).
         let mut rx = output_rx;
         let mut cancelled = false;
+        let mut stop_hint: Option<StopHint> = None;
         loop {
             let event = if let Some(ref signal) = cancel_signal {
                 tokio::select! {
@@ -815,6 +1035,11 @@ impl acp::Agent for ZephAcpAgent {
                 rx.recv().await
             };
             let Some(event) = event else { break };
+            // Capture stop hint before routing the event to avoid double-borrow.
+            if let LoopbackEvent::Stop(hint) = event {
+                stop_hint = Some(hint);
+                continue;
+            }
             let is_flush = matches!(event, LoopbackEvent::Flush);
             // Extract terminal_id from ToolOutput events before consuming the event.
             // The terminal must remain alive until after the tool_call_update notification
@@ -867,7 +1092,11 @@ impl acp::Agent for ZephAcpAgent {
         let stop_reason = if cancelled {
             acp::StopReason::Cancelled
         } else {
-            acp::StopReason::EndTurn
+            match stop_hint {
+                Some(StopHint::MaxTokens) => acp::StopReason::MaxTokens,
+                Some(StopHint::MaxTurnRequests) => acp::StopReason::MaxTurnRequests,
+                None => acp::StopReason::EndTurn,
+            }
         };
 
         // Generate session title after first successful agent response (fire-and-forget).
@@ -1358,85 +1587,108 @@ impl acp::Agent for ZephAcpAgent {
         &self,
         args: acp::SetSessionConfigOptionRequest,
     ) -> acp::Result<acp::SetSessionConfigOptionResponse> {
-        let config_id: &str = &args.config_id.0;
+        let config_id = args.config_id.0.clone();
         let value: &str = &args.value.0;
 
-        let sessions = self.sessions.borrow();
-        let entry = sessions
-            .get(&args.session_id)
-            .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
+        let (current_model, thinking, auto_approve) = {
+            let sessions = self.sessions.borrow();
+            let entry = sessions
+                .get(&args.session_id)
+                .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
 
-        match config_id {
-            "model" => {
-                let Some(ref factory) = self.provider_factory else {
-                    return Err(acp::Error::internal_error().data("model switching not configured"));
-                };
-
-                if !self.available_models.iter().any(|m| m == value) {
-                    return Err(acp::Error::invalid_request().data("model not in allowed list"));
-                }
-
-                let Some(new_provider) = factory(value) else {
-                    return Err(acp::Error::invalid_request().data("unknown model"));
-                };
-
-                *entry
-                    .provider_override
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
-                value.clone_into(&mut entry.current_model.borrow_mut());
-
-                tracing::debug!(
-                    session_id = %args.session_id,
-                    model = %value,
-                    "ACP model switched"
-                );
-            }
-            "thinking" => {
-                let enabled = match value {
-                    "on" => true,
-                    "off" => false,
-                    _ => {
+            match config_id.as_ref() {
+                "model" => {
+                    let Some(ref factory) = self.provider_factory else {
                         return Err(
-                            acp::Error::invalid_request().data("thinking value must be on or off")
+                            acp::Error::internal_error().data("model switching not configured")
                         );
+                    };
+
+                    if !self.available_models.iter().any(|m| m == value) {
+                        return Err(acp::Error::invalid_request().data("model not in allowed list"));
                     }
-                };
-                entry.thinking_enabled.set(enabled);
-                tracing::debug!(
-                    session_id = %args.session_id,
-                    thinking = %enabled,
-                    "ACP thinking toggled"
-                );
-            }
-            "auto_approve" => {
-                if !["suggest", "auto-edit", "full-auto"].contains(&value) {
-                    return Err(acp::Error::invalid_request()
-                        .data("auto_approve must be suggest, auto-edit, or full-auto"));
+
+                    let Some(new_provider) = factory(value) else {
+                        return Err(acp::Error::invalid_request().data("unknown model"));
+                    };
+
+                    *entry
+                        .provider_override
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+                    value.clone_into(&mut entry.current_model.borrow_mut());
+
+                    tracing::debug!(
+                        session_id = %args.session_id,
+                        model = %value,
+                        "ACP model switched"
+                    );
                 }
-                value.clone_into(&mut entry.auto_approve_level.borrow_mut());
-                tracing::debug!(
-                    session_id = %args.session_id,
-                    auto_approve = %value,
-                    "ACP auto-approve level changed"
-                );
+                "thinking" => {
+                    let enabled = match value {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(acp::Error::invalid_request()
+                                .data("thinking value must be on or off"));
+                        }
+                    };
+                    entry.thinking_enabled.set(enabled);
+                    tracing::debug!(
+                        session_id = %args.session_id,
+                        thinking = %enabled,
+                        "ACP thinking toggled"
+                    );
+                }
+                "auto_approve" => {
+                    if !["suggest", "auto-edit", "full-auto"].contains(&value) {
+                        return Err(acp::Error::invalid_request()
+                            .data("auto_approve must be suggest, auto-edit, or full-auto"));
+                    }
+                    value.clone_into(&mut entry.auto_approve_level.borrow_mut());
+                    tracing::debug!(
+                        session_id = %args.session_id,
+                        auto_approve = %value,
+                        "ACP auto-approve level changed"
+                    );
+                }
+                _ => {
+                    return Err(acp::Error::invalid_request().data("unknown config_id"));
+                }
             }
-            _ => {
-                return Err(acp::Error::invalid_request().data("unknown config_id"));
-            }
-        }
 
-        let current_model = entry.current_model.borrow().clone();
-        let thinking = entry.thinking_enabled.get();
-        let auto_approve = entry.auto_approve_level.borrow().clone();
-        drop(sessions);
+            (
+                entry.current_model.borrow().clone(),
+                entry.thinking_enabled.get(),
+                entry.auto_approve_level.borrow().clone(),
+            )
+            // `sessions` borrow drops here, before any await point.
+        };
 
+        // Build the full option set for the response, but notify only the changed option
+        // to avoid redundant updates for unchanged config entries (IMP-3).
         let config_options = build_config_options(
             &self.available_models,
             &current_model,
             thinking,
             &auto_approve,
         );
+
+        let changed_option = config_options.iter().find(|o| o.id.0 == config_id).cloned();
+
+        if let Some(option) = changed_option {
+            // Notify connected clients that the config has changed (G11).
+            // Fire-and-forget to avoid blocking the RPC response and prevent
+            // deadlocks in callers that do not drain notifications.
+            let update =
+                acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(vec![option]));
+            let notification = acp::SessionNotification::new(args.session_id, update);
+            let (tx, _rx) = oneshot::channel();
+            if self.notify_tx.send((notification, tx)).is_err() {
+                tracing::warn!("failed to send ConfigOptionUpdate notification: channel closed");
+            }
+        }
+
         Ok(acp::SetSessionConfigOptionResponse::new(config_options))
     }
 
@@ -1796,6 +2048,10 @@ fn session_update_to_event(update: &acp::SessionUpdate) -> (&'static str, String
             };
             ("tool_call_update", payload)
         }
+        acp::SessionUpdate::ConfigOptionUpdate(u) => {
+            let payload = serde_json::to_string(u).unwrap_or_default();
+            ("config_option_update", payload)
+        }
         _ => ("unknown", String::new()),
     }
 }
@@ -1955,31 +2211,39 @@ fn build_config_options(
     }
 
     let thinking_value = if thinking_enabled { "on" } else { "off" };
-    opts.push(acp::SessionConfigOption::select(
-        "thinking",
-        "Extended Thinking",
-        thinking_value.to_owned(),
-        vec![
-            acp::SessionConfigSelectOption::new("off".to_owned(), "Off".to_owned()),
-            acp::SessionConfigSelectOption::new("on".to_owned(), "On".to_owned()),
-        ],
-    ));
+    opts.push(
+        acp::SessionConfigOption::select(
+            "thinking",
+            "Extended Thinking",
+            thinking_value.to_owned(),
+            vec![
+                acp::SessionConfigSelectOption::new("off".to_owned(), "Off".to_owned()),
+                acp::SessionConfigSelectOption::new("on".to_owned(), "On".to_owned()),
+            ],
+        )
+        .category(acp::SessionConfigOptionCategory::ThoughtLevel),
+    );
 
     let approve_value = if ["suggest", "auto-edit", "full-auto"].contains(&auto_approve) {
         auto_approve.to_owned()
     } else {
         "suggest".to_owned()
     };
-    opts.push(acp::SessionConfigOption::select(
-        "auto_approve",
-        "Auto-Approve",
-        approve_value,
-        vec![
-            acp::SessionConfigSelectOption::new("suggest".to_owned(), "Suggest".to_owned()),
-            acp::SessionConfigSelectOption::new("auto-edit".to_owned(), "Auto-Edit".to_owned()),
-            acp::SessionConfigSelectOption::new("full-auto".to_owned(), "Full Auto".to_owned()),
-        ],
-    ));
+    opts.push(
+        acp::SessionConfigOption::select(
+            "auto_approve",
+            "Auto-Approve",
+            approve_value,
+            vec![
+                acp::SessionConfigSelectOption::new("suggest".to_owned(), "Suggest".to_owned()),
+                acp::SessionConfigSelectOption::new("auto-edit".to_owned(), "Auto-Edit".to_owned()),
+                acp::SessionConfigSelectOption::new("full-auto".to_owned(), "Full Auto".to_owned()),
+            ],
+        )
+        .category(acp::SessionConfigOptionCategory::Other(
+            "behavior".to_owned(),
+        )),
+    );
 
     opts
 }
@@ -2295,6 +2559,8 @@ fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
         LoopbackEvent::ThinkingChunk(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
             acp::ContentChunk::new(text.into()),
         )],
+        // Stop hints are consumed directly in the prompt() loop and must not reach here.
+        LoopbackEvent::Stop(_) => vec![],
     }
 }
 
@@ -5119,6 +5385,171 @@ mod tests {
             .await;
     }
 
+    // --- is_private_ip() unit tests ---
+
+    #[test]
+    fn is_private_ip_loopback() {
+        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_rfc1918() {
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
+        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_cgnat() {
+        // RFC 6598 CGNAT range: 100.64.0.0/10
+        assert!(is_private_ip("100.64.0.1".parse().unwrap()));
+        assert!(is_private_ip("100.127.255.255".parse().unwrap()));
+        // Just outside the range
+        assert!(!is_private_ip("100.128.0.0".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_public() {
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
+        assert!(!is_private_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    // --- xml_escape() unit tests ---
+
+    #[test]
+    fn xml_escape_ampersand_first() {
+        // Ensure & is escaped before < and > to avoid double-escaping.
+        assert_eq!(xml_escape("a & b"), "a &amp; b");
+        assert_eq!(xml_escape("<script>"), "&lt;script&gt;");
+        assert_eq!(xml_escape("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(xml_escape("&amp;"), "&amp;amp;");
+    }
+
+    #[test]
+    fn xml_escape_injection_vector() {
+        // Closing tag in content body.
+        let s = "foo</resource>bar";
+        assert!(!xml_escape(s).contains("</resource>"));
+    }
+
+    // --- resolve_resource_link() unit tests ---
+
+    #[tokio::test]
+    async fn resolve_resource_link_unsupported_scheme_errors() {
+        let link = acp::ResourceLink::new("ftp", "ftp://example.com/file.txt");
+        let cwd = std::env::current_dir().unwrap();
+        let result = resolve_resource_link(&link, &cwd).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported URI scheme")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_resource_link_file_denylist_blocks_etc_passwd() {
+        // /etc/passwd is outside any typical test cwd — blocked by cwd boundary check.
+        let link = acp::ResourceLink::new("passwd", "file:///etc/passwd");
+        let cwd = std::env::current_dir().unwrap();
+        let result = resolve_resource_link(&link, &cwd).await;
+        // Either cwd boundary or path does not exist: must fail.
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_resource_link_file_cwd_boundary_blocks_parent() {
+        let link = acp::ResourceLink::new("tmp", "file:///tmp");
+        // Use a non-existent subdirectory of /tmp as cwd so /tmp itself is outside.
+        let cwd = std::path::Path::new("/tmp/nonexistent-acp-test-dir");
+        let result = resolve_resource_link(&link, cwd).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_resource_link_file_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to handle macOS /var → /private/var symlink.
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        let file_path = cwd.join("hello.txt");
+        tokio::fs::write(&file_path, b"hello world").await.unwrap();
+        let uri = format!("file://{}", file_path.to_str().unwrap());
+        let link = acp::ResourceLink::new("hello", uri);
+        let result = resolve_resource_link(&link, &cwd).await;
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn resolve_resource_link_file_binary_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        let file_path = cwd.join("bin.dat");
+        tokio::fs::write(&file_path, b"\x00\x01\x02binary")
+            .await
+            .unwrap();
+        let uri = format!("file://{}", file_path.to_str().unwrap());
+        let link = acp::ResourceLink::new("bin", uri);
+        let result = resolve_resource_link(&link, &cwd).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("binary file not supported")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_resource_link_file_size_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        let file_path = cwd.join("big.txt");
+        // Write MAX_RESOURCE_BYTES + 1 bytes (all 'a' so not binary, but too large).
+        let content = vec![b'a'; MAX_RESOURCE_BYTES + 1];
+        tokio::fs::write(&file_path, &content).await.unwrap();
+        let uri = format!("file://{}", file_path.to_str().unwrap());
+        let link = acp::ResourceLink::new("big", uri);
+        let result = resolve_resource_link(&link, &cwd).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds size limit")
+        );
+    }
+
+    // --- McpCapabilities in initialize() ---
+
+    #[tokio::test]
+    async fn initialize_with_mcp_manager_advertises_capabilities() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let manager = Arc::new(zeph_mcp::McpManager::new(
+                    vec![],
+                    vec![],
+                    zeph_mcp::PolicyEnforcer::new(vec![]),
+                ));
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_mcp_manager(manager);
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                let mcp = &resp.agent_capabilities.mcp_capabilities;
+                assert!(mcp.http, "http transport must be advertised");
+                assert!(!mcp.sse, "sse must not be advertised (deprecated)");
+            })
+            .await;
+    }
+
     // ── R-08: lsp/publishDiagnostics notification handler ──────────────────
 
     #[tokio::test]
@@ -5284,6 +5715,25 @@ mod tests {
             .await;
     }
 
+    #[tokio::test]
+    async fn initialize_without_mcp_manager_no_mcp_capabilities() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                let mcp = &resp.agent_capabilities.mcp_capabilities;
+                // Without mcp_manager, both must be false (default).
+                assert!(!mcp.http, "http must not be advertised without mcp_manager");
+                assert!(!mcp.sse, "sse must not be advertised without mcp_manager");
+            })
+            .await;
+    }
+
     // ── R-10: initialize() LSP capability advertising ──────────────────────
 
     #[tokio::test]
@@ -5325,6 +5775,46 @@ mod tests {
             .await;
     }
 
+    // --- StopReason::MaxTokens from LoopbackEvent::Stop ---
+
+    #[tokio::test]
+    async fn prompt_stop_reason_max_tokens_from_loopback_event() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // Spawner emits Stop(MaxTokens) then Flush.
+                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx| {
+                    Box::pin(async move {
+                        use zeph_core::Channel as _;
+                        let _ = channel.recv().await;
+                        let _ = channel.send_stop_hint(zeph_core::StopHint::MaxTokens).await;
+                        let _ = channel.flush_chunks().await;
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let result = agent
+                    .prompt(acp::PromptRequest::new(
+                        resp.session_id,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("hello"))],
+                    ))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(result.stop_reason, acp::StopReason::MaxTokens),
+                    "expected MaxTokens, got {:?}",
+                    result.stop_reason
+                );
+            })
+            .await;
+    }
+
     #[tokio::test]
     async fn initialize_does_not_advertise_lsp_when_disabled() {
         let local = tokio::task::LocalSet::new();
@@ -5351,6 +5841,83 @@ mod tests {
                     !cap_meta.contains_key("lsp"),
                     "lsp key must not appear in agent_capabilities.meta when disabled"
                 );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompt_stop_reason_max_turn_requests_from_loopback_event() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx| {
+                    Box::pin(async move {
+                        use zeph_core::Channel as _;
+                        let _ = channel.recv().await;
+                        let _ = channel
+                            .send_stop_hint(zeph_core::StopHint::MaxTurnRequests)
+                            .await;
+                        let _ = channel.flush_chunks().await;
+                    })
+                });
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let result = agent
+                    .prompt(acp::PromptRequest::new(
+                        resp.session_id,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("hello"))],
+                    ))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(result.stop_reason, acp::StopReason::MaxTurnRequests),
+                    "expected MaxTurnRequests, got {:?}",
+                    result.stop_reason
+                );
+            })
+            .await;
+    }
+
+    // --- ConfigOptionUpdate notification emission ---
+
+    #[tokio::test]
+    async fn set_session_config_option_emits_config_option_update_notification() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None);
+                use acp::Agent as _;
+                let sess = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                // Drain the AvailableCommandsUpdate from new_session.
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+
+                let req =
+                    acp::SetSessionConfigOptionRequest::new(sess.session_id, "thinking", "on");
+                agent.set_session_config_option(req).await.unwrap();
+
+                // Should have emitted exactly one ConfigOptionUpdate notification.
+                let (notif, _ack) = rx.try_recv().expect("ConfigOptionUpdate must be sent");
+                match notif.update {
+                    acp::SessionUpdate::ConfigOptionUpdate(u) => {
+                        // Only the changed option (thinking) should be in the notification.
+                        assert_eq!(u.config_options.len(), 1);
+                        assert_eq!(u.config_options[0].id.0.as_ref(), "thinking");
+                    }
+                    other => panic!("expected ConfigOptionUpdate, got {other:?}"),
+                }
             })
             .await;
     }

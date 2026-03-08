@@ -43,7 +43,7 @@ pub use agent::Agent;
 pub use agent::error::AgentError;
 pub use channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, LoopbackChannel,
-    LoopbackEvent, LoopbackHandle,
+    LoopbackEvent, LoopbackHandle, StopHint,
 };
 pub use config::{Config, ConfigError};
 pub use hash::content_hash;

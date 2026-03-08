@@ -133,7 +133,7 @@ terminal_timeout_secs = 120
 | `agent_version` | package version | Agent version advertised to the IDE |
 | `max_sessions` | `4` | Maximum concurrent sessions |
 | `session_idle_timeout_secs` | `1800` | Idle sessions are reaped after this timeout (seconds) |
-| `terminal_timeout_secs` | `120` | Terminal command execution timeout; `kill_terminal_command` is sent on expiry |
+| `terminal_timeout_secs` | `120` | Terminal command execution timeout; `kill_terminal` is sent on expiry |
 | `permission_file` | none | Path to persisted tool permission decisions |
 | `terminal_timeout_secs` | `120` | Wall-clock timeout for IDE-proxied shell commands; `0` disables the timeout |
 | `available_models` | `[]` | Models advertised to the IDE for runtime switching (format: `provider:model`) |
@@ -170,7 +170,7 @@ terminal_timeout_secs = 120   # default; set to 0 to wait indefinitely
 
 When the timeout expires:
 
-1. `kill_terminal_command` is called to terminate the running process.
+1. `kill_terminal` is called to terminate the running process.
 2. Any partial output collected up to that point is returned as an error result.
 3. The terminal session is released and the agent receives `AcpError::TerminalTimeout`.
 
@@ -216,12 +216,18 @@ Zeph advertises the following capabilities in the `initialize` response:
       "list": {},
       "fork": {},
       "resume": {}
+    },
+    "mcp_capabilities": {
+      "http": true,
+      "sse": false
     }
   }
 }
 ```
 
 `session_capabilities` is always present regardless of whether the `unstable_session_*` features are compiled in. The actual `list_sessions`, `fork_session`, and `resume_session` handlers are available when the corresponding features are enabled (all three are on by default — see [Feature Flags](../reference/feature-flags.md#acp-session-management-unstable)).
+
+`mcp_capabilities` is present when an `McpManager` is available (i.e., MCP servers are configured). It advertises support for the HTTP MCP transport, allowing IDEs to pass MCP server definitions that use HTTP endpoints.
 
 ## Session management
 
@@ -402,7 +408,53 @@ When a bash tool call is routed through the IDE terminal (rather than Zeph's int
 
 The ACP specification requires the terminal to remain alive until the IDE processes the `ToolCallContent::Terminal` notification. Zeph defers `terminal/release` until after `ToolCallUpdate` is dispatched — the `SessionEntry` retains a handle to the shell executor for exactly this purpose.
 
-The terminal command timeout applies to these calls: if execution exceeds `terminal_timeout_secs` (default: 120 s), Zeph sends `kill_terminal_command` to the IDE and the tool call resolves with a timeout error.
+The terminal command timeout applies to these calls: if execution exceeds `terminal_timeout_secs` (default: 120 s), Zeph sends `kill_terminal` to the IDE and the tool call resolves with a timeout error.
+
+## Stop reasons
+
+The `PromptResponse` includes a `stop_reason` field that tells the IDE why the agent turn ended. Zeph maps internal agent loop conditions to the appropriate ACP stop reason:
+
+| Stop reason | Condition |
+|-------------|-----------|
+| `EndTurn` | Normal completion — the LLM finished its response |
+| `MaxTokens` | The LLM response was truncated because it hit the token output limit |
+| `MaxTurnRequests` | The agent exhausted `max_tool_iterations` without reaching a final answer |
+| `Cancelled` | The IDE cancelled the in-flight prompt via `cancel` |
+
+`EndTurn` is the default when no special condition is detected. `Cancelled` takes priority over all other stop reasons.
+
+## Config option change notifications
+
+When a config option is changed via `set_session_config_option`, Zeph emits a `ConfigOptionUpdate` session notification so the IDE can update its UI immediately:
+
+```jsonc
+{
+  "method": "notifications/session",
+  "params": {
+    "session_id": "...",
+    "update": {
+      "type": "config_option_update",
+      "options": [
+        { "id": "model", "value": "claude:claude-opus-4-5", "category": "model" }
+      ]
+    }
+  }
+}
+```
+
+Only the changed option is included in the notification, not the full option set.
+
+### Config option categories
+
+Each config option is assigned a category for IDE grouping:
+
+| Option | Category |
+|--------|----------|
+| `model` | `Model` |
+| `thinking` | `ThoughtLevel` |
+| `auto_approve` | `Other` |
+
+IDEs that support category-based grouping can organize the model picker and settings panel accordingly.
 
 ## Extension notifications
 
@@ -507,9 +559,31 @@ Zeph handles the following ACP content block types in user messages:
 | `Text` | Processed normally |
 | `Image` | Supported for JPEG, PNG, GIF, WebP up to 20 MiB (base64-encoded) |
 | `Audio` | Not supported — logged as a structured `WARN` and skipped |
-| `ResourceLink` | Not supported — logged as a structured `WARN` with the URI and skipped |
+| `ResourceLink` | Resolved inline — `file://` reads local files, `http(s)://` fetches remote content (see below) |
 
-Unsupported blocks do not terminate the session. The remaining content in the message is processed normally.
+Unsupported blocks (e.g., `Audio`) do not terminate the session. The remaining content in the message is processed normally.
+
+### ResourceLink resolution
+
+When a user prompt contains a `ResourceLink` content block, Zeph resolves the URI and injects the content into the prompt text wrapped in `<resource uri="...">...</resource>` tags. Two URI schemes are supported:
+
+**`file://`** — reads a local file from the session working directory.
+
+- The canonical path must reside within the session's `cwd` (symlink escapes are rejected).
+- File size is capped at 1 MiB. Files exceeding this limit are rejected before reading.
+- Binary files (detected by null bytes in the first 8 KiB) are rejected.
+- Both metadata check and file read are subject to a 10-second timeout.
+
+**`http://` / `https://`** — fetches remote content.
+
+- SSRF defense is enforced: DNS resolution is performed first and private/loopback IP addresses are rejected (RFC 1918, RFC 6598 CGNAT, link-local, loopback).
+- Redirects are disabled (`redirect::Policy::none()`).
+- Response size is capped at 1 MiB; only `text/*` MIME types are accepted.
+- Fetch timeout: 10 seconds.
+
+Other URI schemes (e.g., `ftp://`) produce a warning log and are skipped.
+
+Resource resolution failures are non-fatal: the block is skipped and the rest of the prompt is processed normally.
 
 User message text is limited to 1 MiB per prompt. Prompts exceeding this limit are rejected with an `invalid_request` error.
 
@@ -584,7 +658,7 @@ Example response (with bearer auth configured):
   "name": "zeph",
   "version": "0.12.5",
   "protocol": "acp",
-  "protocol_version": "0.9",
+  "protocol_version": "0.10",
   "transports": {
     "http_sse": { "url": "/acp" },
     "websocket": { "url": "/acp/ws" }
@@ -600,7 +674,7 @@ When `auth_bearer_token` is not set, the `authentication` field is `null`:
   "name": "zeph",
   "version": "0.12.5",
   "protocol": "acp",
-  "protocol_version": "0.9",
+  "protocol_version": "0.10",
   "transports": {
     "http_sse": { "url": "/acp" },
     "websocket": { "url": "/acp/ws" }
@@ -932,7 +1006,7 @@ When the process exits (or the timeout fires), a final `ToolCallUpdate` carries 
 }
 ```
 
-Terminal streaming is automatic when the IDE advertises the `terminal` capability. No configuration is required. The existing `terminal_timeout_secs` setting still applies — if a command exceeds the timeout, `kill_terminal_command` is sent and the exit notification carries exit code `124`.
+Terminal streaming is automatic when the IDE advertises the `terminal` capability. No configuration is required. The existing `terminal_timeout_secs` setting still applies — if a command exceeds the timeout, `kill_terminal` is sent and the exit notification carries exit code `124`.
 
 > **Note:** Streaming is only active when a `stream_tx` channel is provided to `execute_in_terminal`. Commands that do not use the ACP terminal path (for example, those executed by Zeph's internal shell executor) do not produce streaming notifications.
 
@@ -1090,6 +1164,8 @@ rm = "deny"
 - **Tool permissions** — optionally persisted to `permission_file` so users don't re-approve tools on every session
 - **Bearer auth** — see [Bearer authentication](#bearer-authentication) above
 - **Atomic slot reservation** — `max_sessions` enforced without TOCTOU race; see [WebSocket transport](#websocket-transport) above
+- **ResourceLink SSRF defense** — `http(s)://` resource links are subject to DNS-based private IP rejection (RFC 1918, RFC 6598 CGNAT, loopback, link-local); redirects are disabled; DNS resolution failure is fail-closed
+- **ResourceLink cwd boundary** — `file://` resource links are canonicalized and must reside within the session working directory; symlink escapes are rejected
 
 ## Troubleshooting
 
@@ -1122,7 +1198,7 @@ Idle sessions are automatically reaped after `session_idle_timeout_secs` (defaul
 
 **Terminal commands hang**
 
-If a terminal command does not complete, Zeph sends `kill_terminal_command` after `terminal_timeout_secs` (default: 120 s). Reduce this value in `config.toml` if you need faster timeout behavior:
+If a terminal command does not complete, Zeph sends `kill_terminal` after `terminal_timeout_secs` (default: 120 s). Reduce this value in `config.toml` if you need faster timeout behavior:
 
 ```toml
 [acp]

@@ -82,6 +82,10 @@ pub enum ThinkingBlock {
     Redacted { data: String },
 }
 
+/// Marker injected into `ChatResponse::Text` when the LLM response was cut off by the
+/// token limit. Consumers can detect this substring to signal `MaxTokens` stop reason.
+pub const MAX_TOKENS_TRUNCATION_MARKER: &str = "max_tokens limit reached";
+
 /// Response from `chat_with_tools()`.
 #[derive(Debug, Clone)]
 pub enum ChatResponse {

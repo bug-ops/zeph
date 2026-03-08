@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "science"]
 
 [workspace.dependencies]
 age = { version = "0.11.2", default-features = false }
-agent-client-protocol = { version = "0.9", features = [
+agent-client-protocol = { version = "0.10", features = [
     "unstable_session_list",
     "unstable_session_fork",
     "unstable_session_resume",

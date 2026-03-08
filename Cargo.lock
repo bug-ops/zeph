@@ -83,9 +83,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.9.5"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "499b7ff5c6c842e43fb188f6da7c99a258ae89a9df8c896d6e9784da9b4b23e7"
+checksum = "a17e8937ef8c3fa38978b79354462bd10152014a1101d00ed6d26b120e9f4655"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -100,16 +100,16 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "0.10.8"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44bc1fef9c32f03bce2ab44af35b6f483bfd169bf55cc59beeb2e3b1a00ae4d1"
+checksum = "4f833f2ec0d0ac6d68cbd0c1e2e02642876291048f45fb9772ff617ac5c34ef3"
 dependencies = [
  "anyhow",
  "derive_more 2.1.1",
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "strum",
+ "strum 0.28.0",
 ]
 
 [[package]]
@@ -5283,7 +5283,7 @@ dependencies = [
  "itertools 0.14.0",
  "kasuari",
  "lru",
- "strum",
+ "strum 0.27.2",
  "thiserror 2.0.18",
  "unicode-segmentation",
  "unicode-truncate",
@@ -5335,7 +5335,7 @@ dependencies = [
  "itertools 0.14.0",
  "line-clipping",
  "ratatui-core",
- "strum",
+ "strum 0.27.2",
  "time",
  "unicode-segmentation",
  "unicode-width",
@@ -6752,7 +6752,16 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros 0.28.0",
 ]
 
 [[package]]
@@ -6760,6 +6769,18 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -9287,6 +9308,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
+ "reqwest 0.13.2",
  "rmcp",
  "schemars 1.2.1",
  "serde",

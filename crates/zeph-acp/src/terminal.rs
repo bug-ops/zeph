@@ -570,8 +570,8 @@ where
     C: acp::Client,
 {
     tracing::warn!(%terminal_id, "terminal command timed out — sending kill");
-    let kill_req = acp::KillTerminalCommandRequest::new(session_id.clone(), terminal_id.clone());
-    conn.kill_terminal_command(kill_req)
+    let kill_req = acp::KillTerminalRequest::new(session_id.clone(), terminal_id.clone());
+    conn.kill_terminal(kill_req)
         .await
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
     let wait_again = acp::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
@@ -772,11 +772,11 @@ mod tests {
             Ok(acp::ReleaseTerminalResponse::new())
         }
 
-        async fn kill_terminal_command(
+        async fn kill_terminal(
             &self,
-            _args: acp::KillTerminalCommandRequest,
-        ) -> acp::Result<acp::KillTerminalCommandResponse> {
-            Ok(acp::KillTerminalCommandResponse::new())
+            _args: acp::KillTerminalRequest,
+        ) -> acp::Result<acp::KillTerminalResponse> {
+            Ok(acp::KillTerminalResponse::new())
         }
 
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
@@ -884,11 +884,11 @@ mod tests {
             Ok(acp::ReleaseTerminalResponse::new())
         }
 
-        async fn kill_terminal_command(
+        async fn kill_terminal(
             &self,
-            _args: acp::KillTerminalCommandRequest,
-        ) -> acp::Result<acp::KillTerminalCommandResponse> {
-            Ok(acp::KillTerminalCommandResponse::new())
+            _args: acp::KillTerminalRequest,
+        ) -> acp::Result<acp::KillTerminalResponse> {
+            Ok(acp::KillTerminalResponse::new())
         }
 
         async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
@@ -967,10 +967,10 @@ mod tests {
             panic!("should not be called when permission denied")
         }
 
-        async fn kill_terminal_command(
+        async fn kill_terminal(
             &self,
-            _args: acp::KillTerminalCommandRequest,
-        ) -> acp::Result<acp::KillTerminalCommandResponse> {
+            _args: acp::KillTerminalRequest,
+        ) -> acp::Result<acp::KillTerminalResponse> {
             panic!("should not be called when permission denied")
         }
 

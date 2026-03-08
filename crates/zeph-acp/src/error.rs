@@ -23,4 +23,7 @@ pub enum AcpError {
 
     #[error("broken pipe: terminal stdin closed")]
     BrokenPipe,
+
+    #[error("resource link error: {0}")]
+    ResourceLink(String),
 }
