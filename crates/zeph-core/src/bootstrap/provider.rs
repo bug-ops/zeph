@@ -75,11 +75,22 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
 
             let mut providers = Vec::new();
             for name in &router_cfg.chain {
-                let p = create_named_provider(name, config)?;
-                providers.push(p);
+                match create_named_provider(name, config) {
+                    Ok(p) => providers.push(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = name.as_str(),
+                            error = %e,
+                            "skipping router chain provider (will initialize on demand if needed)"
+                        );
+                    }
+                }
             }
             if providers.is_empty() {
-                bail!("router chain is empty");
+                bail!(
+                    "router chain is empty: none of [{}] could be initialized",
+                    router_cfg.chain.join(", ")
+                );
             }
             let router = if router_cfg.strategy == crate::config::RouterStrategyConfig::Thompson {
                 let state_path = router_cfg
@@ -108,6 +119,7 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyProvider> {
     match name {
         "ollama" => {
@@ -175,19 +187,26 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                     entries.iter().find(|e| e.name == other)
                 };
                 if let Some(entry) = entry {
-                    let api_key = config
-                        .secrets
-                        .compatible_api_keys
-                        .get(&entry.name)
-                        .with_context(|| {
-                            format!(
-                                "ZEPH_COMPATIBLE_{}_API_KEY required for {}",
-                                entry.name.to_uppercase(),
-                                entry.name
-                            )
-                        })?
-                        .expose()
-                        .to_owned();
+                    let has_key = entry.api_key.is_some()
+                        || config.secrets.compatible_api_keys.contains_key(&entry.name)
+                        || is_local_endpoint(&entry.base_url);
+                    if !has_key {
+                        bail!(
+                            "ZEPH_COMPATIBLE_{}_API_KEY required for '{}' \
+                             (set api_key in config, vault secret, or use a local endpoint)",
+                            entry.name.to_uppercase(),
+                            entry.name
+                        );
+                    }
+                    // Resolve key: config field > vault secret > empty for local.
+                    let api_key = entry.api_key.clone().unwrap_or_else(|| {
+                        config
+                            .secrets
+                            .compatible_api_keys
+                            .get(&entry.name)
+                            .map(|s| s.expose().to_owned()) // lgtm[rust/cleartext-logging]
+                            .unwrap_or_default()
+                    });
                     return Ok(AnyProvider::Compatible(CompatibleProvider::new(
                         entry.name.clone(),
                         api_key,
@@ -620,4 +639,63 @@ pub fn build_orchestrator(
         orch_cfg.default.clone(),
         orch_cfg.embed.clone(),
     )?)
+}
+
+/// Returns `true` if `base_url` points to a local or private-network endpoint
+/// where an API key is typically unnecessary.
+fn is_local_endpoint(base_url: &str) -> bool {
+    // Strip scheme (http:// or https://) then extract host before port/path.
+    let after_scheme = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .unwrap_or(base_url);
+    let host = after_scheme
+        .split('/')
+        .next()
+        .and_then(|h| h.split(':').next())
+        .unwrap_or(after_scheme);
+
+    if host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+    {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+    }
+    // Hostname suffixes, not file extensions — suppress clippy false positive.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    {
+        host.ends_with(".local") || host.ends_with(".internal")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_endpoints_detected() {
+        assert!(is_local_endpoint("http://localhost:11434/v1"));
+        assert!(is_local_endpoint("http://127.0.0.1:8080"));
+        assert!(is_local_endpoint("https://localhost/api"));
+        assert!(is_local_endpoint("http://192.168.1.100:11434/v1"));
+        assert!(is_local_endpoint("http://10.0.0.5:8000"));
+        assert!(is_local_endpoint("http://172.16.0.1:9090"));
+        assert!(is_local_endpoint("http://myhost.local:11434"));
+        assert!(is_local_endpoint("http://service.internal:8080"));
+    }
+
+    #[test]
+    fn remote_endpoints_not_local() {
+        assert!(!is_local_endpoint("https://api.openai.com/v1"));
+        assert!(!is_local_endpoint("https://api.anthropic.com"));
+        assert!(!is_local_endpoint("http://8.8.8.8:11434"));
+        assert!(!is_local_endpoint("https://my-server.example.com/v1"));
+    }
 }

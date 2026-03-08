@@ -364,6 +364,11 @@ pub struct CompatibleConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub embedding_model: Option<String>,
+    /// Optional API key set directly in config. When absent, falls back to
+    /// `ZEPH_COMPATIBLE_<NAME>_API_KEY` vault secret. For local endpoints
+    /// (localhost / private networks) neither is required.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 /// Routing strategy selection for `[llm.router]` config.
