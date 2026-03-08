@@ -30,6 +30,7 @@ pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{
     DiffData, DynExecutor, ErasedToolExecutor, FilterStats, MAX_TOOL_OUTPUT_CHARS, ToolCall,
     ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output,
+    truncate_tool_output_at,
 };
 pub use file::FileExecutor;
 pub use filter::{
