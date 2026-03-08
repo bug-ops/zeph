@@ -577,7 +577,24 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        Ok(ChatResponse::Text(choice.message.content))
+        // Inject truncation marker when finish_reason is "length" so the agent loop
+        // can detect MaxTokens stop reason without touching ChatResponse structure.
+        let content = if choice.finish_reason.as_deref() == Some("length") {
+            let truncation_marker = crate::provider::MAX_TOKENS_TRUNCATION_MARKER;
+            if choice.message.content.is_empty() {
+                format!(
+                    "[Response truncated: {truncation_marker}. Please reduce the request scope.]"
+                )
+            } else {
+                format!(
+                    "{}\n[Response truncated: {truncation_marker}.]",
+                    choice.message.content
+                )
+            }
+        } else {
+            choice.message.content
+        };
+        Ok(ChatResponse::Text(content))
     }
 }
 
@@ -803,6 +820,8 @@ struct ToolChatResponse {
 #[derive(Deserialize)]
 struct ToolChatChoice {
     message: ToolChatMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]

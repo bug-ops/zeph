@@ -9,10 +9,11 @@ use zeph_llm::provider::{
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 
 use super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
-use crate::channel::Channel;
+use crate::channel::{Channel, StopHint};
 use crate::redact::redact_secrets;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
+use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
 use zeph_skills::evolution::FailureKind;
 use zeph_skills::loader::Skill;
 
@@ -1019,6 +1020,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_response_native_tools(&mut self) -> Result<(), super::error::AgentError> {
         self.tool_orchestrator.clear_doom_history();
 
@@ -1107,6 +1109,10 @@ impl<C: Channel> Agent<C> {
                     .await;
                 self.messages
                     .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+                // Emit MaxTokens stop hint before flush when the provider truncated the response.
+                if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
+                    let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
+                }
                 self.channel.flush_chunks().await?;
                 return Ok(());
             }
@@ -1139,6 +1145,9 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Signal that the turn ended because the iteration limit was reached,
+        // not because the model produced a natural end-of-turn response.
+        let _ = self.channel.send_stop_hint(StopHint::MaxTurnRequests).await;
         self.channel.flush_chunks().await?;
         Ok(())
     }

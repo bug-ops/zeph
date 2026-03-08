@@ -42,6 +42,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+reqwest = { workspace = true, features = ["rustls", "stream"] }
 tokio = { workspace = true, features = ["io-std", "sync", "macros", "rt", "test-util"] }
 tokio-util = { workspace = true, features = ["compat", "rt"] }
 tracing.workspace = true

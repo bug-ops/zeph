@@ -9,16 +9,16 @@ ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environment
 
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v0.10.
 
 ## Installation
 
 ```toml
 [dependencies]
-zeph-acp = "0.12.5"
+zeph-acp = "0.14.1"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.12.5", features = ["acp-http"] }
+zeph-acp = { version = "0.14.1", features = ["acp-http"] }
 ```
 
 > [!IMPORTANT]
@@ -40,12 +40,12 @@ zeph-acp = { version = "0.12.5", features = ["acp-http"] }
 | `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
 | `transport` | `serve_stdio` / `serve_connection` (stdio), HTTP+SSE handlers (`post_handler`, `get_handler`), WebSocket handler (`ws_upgrade_handler`), duplex bridge, axum router; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
-| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal_command` on expiry; deferred `terminal/release` ensures terminal remains alive until IDE receives `ToolCallContent::Terminal` |
+| `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal` on expiry; deferred `terminal/release` ensures terminal remains alive until IDE receives `ToolCallContent::Terminal` |
 | `permission` | `AcpPermissionGate` — forwards tool permission requests to the IDE for user approval; persists "always allow/deny" decisions to TOML file |
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers (Stdio, Http, Sse) into `McpServerEntry` configs |
-| `error` | `AcpError` typed error enum |
+| `error` | `AcpError` typed error enum (includes `ResourceLink` variant for resolution failures) |
 
-**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_extras`
+**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
 
 **Re-exports (feature `acp-http`):** `SendAgentSpawner`, `AcpHttpState`, `acp_router`
 
@@ -64,6 +64,31 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## ResourceLink resolution
+
+`ZephAcpAgent` resolves `ResourceLink` content blocks in prompts, as required by the ACP spec. Two URI schemes are supported:
+
+| Scheme | Behavior | Security |
+|--------|----------|----------|
+| `file://` | Read local file via `tokio::fs` | Canonicalized path must be inside session `cwd`; blocked path components (`/proc`, `.ssh`, `.gnupg`, etc.); size cap (1 MiB); binary rejection; 10 s timeout |
+| `http://` / `https://` | Fetch via `reqwest` with `Accept: text/*` | No-redirect policy; post-fetch SSRF check (private IP + CGNAT rejection, fail-closed on missing `remote_addr`); response size cap (1 MiB); 10 s timeout |
+
+Unsupported schemes produce a warning and the block is skipped. Resolution failures are non-fatal.
+
+## StopReason mapping
+
+The agent loop emits `StopHint` values that `ZephAcpAgent` maps to protocol-level `StopReason` variants:
+
+| Agent condition | StopHint | ACP StopReason |
+|----------------|----------|----------------|
+| Normal completion | _(none)_ | `EndTurn` |
+| LLM response truncated by token limit | `MaxTokens` | `MaxTokens` |
+| Turn count >= `max_turns` | `MaxTurnRequests` | `MaxTurnRequests` |
+| IDE cancel request | _(cancel signal)_ | `Cancelled` |
+
+> [!NOTE]
+> `StopHint` is defined in `zeph-core::channel` and carried via `LoopbackEvent::Stop`. The ACP layer consumes it in `prompt()` to produce the final `StopReason`.
 
 ## Tool call lifecycle
 
@@ -106,7 +131,7 @@ Every `session_update` emitted by a sub-agent carries `_meta.claudeCode.parentTo
 
 `AcpShellExecutor` enforces a configurable wall-clock timeout on every IDE-proxied shell command (default: 120 seconds, controlled via `acp.terminal_timeout_secs`). When the timeout expires:
 
-1. `kill_terminal_command` is called to terminate the running process.
+1. `kill_terminal` is called to terminate the running process.
 2. Partial output collected so far is returned as an error result.
 3. The terminal is released and `AcpError::TerminalTimeout` is propagated to the agent loop.
 
@@ -124,6 +149,7 @@ The `initialize` response advertises enriched capabilities:
 ```rust
 acp::AgentCapabilities::new()
     .load_session(true)
+    .mcp_capabilities(acp::McpCapabilities::new().http(true).sse(true)) // when McpManager is available
     .meta({
         cap_meta.insert("config_options", json!(true));
         cap_meta.insert("ext_methods", json!(true));
@@ -131,7 +157,7 @@ acp::AgentCapabilities::new()
     })
 ```
 
-This signals to the IDE that the agent supports session config options (`session/configure`) and custom `ext_method` extensions.
+This signals to the IDE that the agent supports session config options (`session/configure`), custom `ext_method` extensions, and MCP server management. `McpCapabilities` is only advertised when a `McpManager` is configured.
 
 ### set_session_mode (G2)
 
@@ -206,6 +232,20 @@ ACP prompts can carry multi-modal content blocks beyond plain text:
 ## Model switching
 
 The IDE can switch the active LLM model at runtime via `session/configure` with `config_id = "model"`. `ZephAcpAgent` uses a `ProviderFactory` closure that resolves a `"provider:model"` key to an `AnyProvider`, and an `available_models` allowlist that populates the IDE dropdown. The resolved provider is stored in a shared `Arc<RwLock<Option<AnyProvider>>>` (`provider_override`) that the agent loop checks on each turn.
+
+## ConfigOptionUpdate notifications
+
+When a config option changes via `set_session_config_option`, `ZephAcpAgent` emits a `SessionUpdate::ConfigOptionUpdate` notification containing only the changed option. This keeps the IDE config UI in sync without requiring a full config poll.
+
+## Config option categories
+
+Config options include `SessionConfigOptionCategory` for IDE grouping:
+
+| Config option | Category |
+|---------------|----------|
+| `model` | `Model` |
+| `thinking` | `Model` |
+| `auto_approve` | `Other` |
 
 ## MCP server management
 
@@ -389,10 +429,6 @@ During orchestrator runs `ZephAcpAgent` emits `SessionUpdate::Plan` events as th
 | `/compact` | Trigger a manual context compaction |
 
 User input that begins with `/` is matched against this list and dispatched to the corresponding handler before the message reaches the agent loop.
-
-## LSP diagnostics injection
-
-When a prompt contains an `@diagnostics` mention (inserted by Zed's mention system), `ZephAcpAgent` resolves the current LSP diagnostics for the active file or workspace and injects them as structured context into the prompt before inference. This gives the model accurate, up-to-date error and warning information without requiring the user to copy-paste diagnostic output manually.
 
 ## License
 

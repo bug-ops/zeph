@@ -212,6 +212,34 @@ pub trait Channel: Send {
     ) -> impl Future<Output = Result<bool, ChannelError>> + Send {
         async { Ok(true) }
     }
+
+    /// Signal the non-default stop reason to the consumer before flushing.
+    ///
+    /// Called by the agent loop immediately before `flush_chunks()` when a
+    /// truncation or turn-limit condition is detected. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_stop_hint(
+        &mut self,
+        _hint: StopHint,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+}
+
+/// Reason why the agent turn ended — carried by [`LoopbackEvent::Stop`].
+///
+/// Emitted by the agent loop immediately before `Flush` when a non-default
+/// terminal condition is detected. Consumers (e.g. the ACP layer) map this to
+/// the protocol-level `StopReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopHint {
+    /// The LLM response was cut off by the token limit.
+    MaxTokens,
+    /// The turn loop exhausted `max_turns` without a final text response.
+    MaxTurnRequests,
 }
 
 /// Events emitted by the agent side toward the A2A caller.
@@ -262,6 +290,10 @@ pub enum LoopbackEvent {
     Plan(Vec<(String, PlanItemStatus)>),
     /// Thinking/reasoning token chunk from the LLM.
     ThinkingChunk(String),
+    /// Non-default stop condition detected by the agent loop.
+    ///
+    /// Emitted immediately before `Flush`. When absent, the stop reason is `EndTurn`.
+    Stop(StopHint),
 }
 
 /// Status of a plan item, mirroring `acp::PlanEntryStatus`.
@@ -402,6 +434,13 @@ impl Channel for LoopbackChannel {
 
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         Ok(true)
+    }
+
+    async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Stop(hint))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
     }
 
     async fn send_usage(

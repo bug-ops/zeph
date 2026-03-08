@@ -1381,7 +1381,18 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
 
     if tool_calls.is_empty() {
         let combined = text_parts.join("");
-        ChatResponse::Text(combined)
+        // Inject the truncation marker so the agent loop can emit StopReason::MaxTokens.
+        let text = if truncated {
+            let marker = crate::provider::MAX_TOKENS_TRUNCATION_MARKER;
+            if combined.is_empty() {
+                format!("[Response truncated: {marker}. Please reduce the request scope.]")
+            } else {
+                format!("{combined}\n[Response truncated: {marker}.]")
+            }
+        } else {
+            combined
+        };
+        ChatResponse::Text(text)
     } else {
         let text = if text_parts.is_empty() {
             None
