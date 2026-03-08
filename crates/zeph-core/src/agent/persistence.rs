@@ -2,10 +2,85 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::channel::Channel;
-use zeph_llm::provider::{MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::sqlite::role_str;
 
 use super::Agent;
+
+/// Remove orphaned `ToolUse`/`ToolResult` messages at the boundaries of restored history.
+///
+/// Two failure modes are handled:
+/// 1. Trailing orphan: the last message is an assistant with `ToolUse` parts but no subsequent
+///    user message with `ToolResult` — caused by LIMIT boundary splits or interrupted sessions.
+/// 2. Leading orphan: the first message is a user with `ToolResult` parts but no preceding
+///    assistant message with `ToolUse` — caused by LIMIT boundary cuts.
+///
+/// Both cases are removed in a loop until the boundaries are clean.
+fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
+    let mut removed = 0;
+
+    loop {
+        // Remove trailing orphaned tool_use (assistant message with ToolUse, no following tool_result).
+        if let Some(last) = messages.last()
+            && last.role == Role::Assistant
+            && last
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        {
+            let ids: Vec<String> = last
+                .parts
+                .iter()
+                .filter_map(|p| {
+                    if let MessagePart::ToolUse { id, .. } = p {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            tracing::warn!(
+                tool_ids = ?ids,
+                "removing orphaned trailing tool_use message from restored history"
+            );
+            messages.pop();
+            removed += 1;
+            continue;
+        }
+
+        // Remove leading orphaned tool_result (user message with ToolResult, no preceding tool_use).
+        if let Some(first) = messages.first()
+            && first.role == Role::User
+            && first
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        {
+            let ids: Vec<String> = first
+                .parts
+                .iter()
+                .filter_map(|p| {
+                    if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                        Some(tool_use_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            tracing::warn!(
+                tool_use_ids = ?ids,
+                "removing orphaned leading tool_result message from restored history"
+            );
+            messages.remove(0);
+            removed += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    removed
+}
 
 impl<C: Channel> Agent<C> {
     /// Load conversation history from memory and inject into messages.
@@ -38,9 +113,17 @@ impl<C: Channel> Agent<C> {
                 loaded += 1;
             }
 
+            // Determine the start index of just-loaded messages (system prompt is at index 0).
+            let history_start = self.messages.len() - loaded;
+            let mut restored_slice = self.messages.split_off(history_start);
+            let orphans = sanitize_tool_pairs(&mut restored_slice);
+            skipped += orphans;
+            loaded = loaded.saturating_sub(orphans);
+            self.messages.append(&mut restored_slice);
+
             tracing::info!("restored {loaded} message(s) from conversation {cid}");
             if skipped > 0 {
-                tracing::warn!("skipped {skipped} empty message(s) from history");
+                tracing::warn!("skipped {skipped} empty/orphaned message(s) from history");
             }
         }
 
@@ -1035,5 +1118,353 @@ mod tests {
             }
             other => panic!("expected ToolOutput part, got {other:?}"),
         }
+    }
+
+    // --- sanitize_tool_pairs unit tests ---
+
+    #[tokio::test]
+    async fn load_history_removes_trailing_orphan_tool_use() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // user message (normal)
+        sqlite
+            .save_message(cid, "user", "do something with a tool")
+            .await
+            .unwrap();
+
+        // assistant message with ToolUse parts — no following tool_result (orphan)
+        let parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_orphan".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell(call_orphan)]", &parts)
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // Only the user message should be loaded; orphaned assistant tool_use removed.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 1,
+            "orphaned trailing tool_use must be removed"
+        );
+        assert_eq!(agent.messages.last().unwrap().role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn load_history_removes_leading_orphan_tool_result() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Leading orphan: user message with ToolResult but no preceding tool_use
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_missing".to_string(),
+            content: "result data".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "user",
+                "[tool_result: call_missing]\nresult data",
+                &result_parts,
+            )
+            .await
+            .unwrap();
+
+        // A valid assistant reply after the orphan
+        sqlite
+            .save_message(cid, "assistant", "here is my response")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // Orphaned leading tool_result removed; only assistant message kept.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 1,
+            "orphaned leading tool_result must be removed"
+        );
+        assert_eq!(agent.messages.last().unwrap().role, Role::Assistant);
+    }
+
+    #[tokio::test]
+    async fn load_history_preserves_complete_tool_pairs() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Complete tool_use / tool_result pair
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_ok".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "pwd"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell(call_ok)]", &use_parts)
+            .await
+            .unwrap();
+
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_ok".to_string(),
+            content: "/home/user".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "user",
+                "[tool_result: call_ok]\n/home/user",
+                &result_parts,
+            )
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // Both messages must be preserved.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 2,
+            "complete tool_use/tool_result pair must be preserved"
+        );
+        assert_eq!(agent.messages[messages_before].role, Role::Assistant);
+        assert_eq!(agent.messages[messages_before + 1].role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn load_history_handles_multiple_trailing_orphans() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Normal user message
+        sqlite.save_message(cid, "user", "start").await.unwrap();
+
+        // First orphaned tool_use
+        let parts1 = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_1".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell(call_1)]", &parts1)
+            .await
+            .unwrap();
+
+        // Second orphaned tool_use (consecutive, no tool_result between them)
+        let parts2 = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_2".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: read_file(call_2)]", &parts2)
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // Both orphaned tool_use messages removed; only the user message kept.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 1,
+            "all trailing orphaned tool_use messages must be removed"
+        );
+        assert_eq!(agent.messages.last().unwrap().role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn load_history_no_tool_messages_unchanged() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        sqlite.save_message(cid, "user", "hello").await.unwrap();
+        sqlite
+            .save_message(cid, "assistant", "hi there")
+            .await
+            .unwrap();
+        sqlite
+            .save_message(cid, "user", "how are you?")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // All three plain messages must be preserved.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 3,
+            "plain messages without tool parts must pass through unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_history_removes_both_leading_and_trailing_orphans() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Leading orphan: user message with ToolResult, no preceding tool_use
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_leading".to_string(),
+            content: "orphaned result".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "user",
+                "[tool_result: call_leading]\norphaned result",
+                &result_parts,
+            )
+            .await
+            .unwrap();
+
+        // Valid middle messages
+        sqlite
+            .save_message(cid, "user", "what is 2+2?")
+            .await
+            .unwrap();
+        sqlite.save_message(cid, "assistant", "4").await.unwrap();
+
+        // Trailing orphan: assistant message with ToolUse, no following tool_result
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_trailing".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "date"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "assistant",
+                "[tool_use: shell(call_trailing)]",
+                &use_parts,
+            )
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // Both orphans removed; only the 2 valid middle messages kept.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 2,
+            "both leading and trailing orphans must be removed"
+        );
+        assert_eq!(agent.messages[messages_before].role, Role::User);
+        assert_eq!(agent.messages[messages_before].content, "what is 2+2?");
+        assert_eq!(agent.messages[messages_before + 1].role, Role::Assistant);
+        assert_eq!(agent.messages[messages_before + 1].content, "4");
     }
 }
