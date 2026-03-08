@@ -46,4 +46,7 @@ pub enum EvalError {
 
     #[error("invalid neighborhood radius {radius}: must be finite and positive")]
     InvalidRadius { radius: f64 },
+
+    #[error("experiment storage error: {0}")]
+    Storage(String),
 }

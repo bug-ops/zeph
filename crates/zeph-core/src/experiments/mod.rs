@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub mod benchmark;
+pub mod engine;
 pub mod error;
 pub mod evaluator;
 pub mod generator;
@@ -13,6 +14,7 @@ pub mod snapshot;
 pub mod types;
 
 pub use benchmark::{BenchmarkCase, BenchmarkSet};
+pub use engine::{ExperimentEngine, ExperimentSessionReport};
 pub use error::EvalError;
 pub use evaluator::{CaseScore, EvalReport, Evaluator, JudgeOutput};
 pub use generator::VariationGenerator;
