@@ -3206,11 +3206,12 @@ pub(super) mod agent_tests {
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
         assert!(result.contains("full output saved to"));
-        // Notice must contain only filename (UUID.txt), not a full path
+        // Notice must contain the absolute path and byte count
         let notice_start = result.find("full output saved to").unwrap();
         let notice_part = &result[notice_start..];
         assert!(notice_part.contains(".txt"));
-        assert!(!notice_part.contains('/'));
+        assert!(notice_part.contains(std::path::MAIN_SEPARATOR));
+        assert!(notice_part.contains("bytes"));
     }
 
     #[tokio::test]
@@ -3228,8 +3229,8 @@ pub(super) mod agent_tests {
                 dir: None,
             });
 
-        // Must exceed both overflow threshold (1000) and MAX_TOOL_OUTPUT_CHARS (30_000)
-        // so that truncate_tool_output produces the "truncated" marker.
+        // Must exceed overflow threshold (1000) so that truncate_tool_output_at produces
+        // the "truncated" marker. MAX_TOOL_OUTPUT_CHARS is no longer used in this path.
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
         assert!(result.contains("truncated"));

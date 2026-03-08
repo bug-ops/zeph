@@ -459,8 +459,8 @@ impl<C: Channel> Agent<C> {
             .map_or("", |m| m.content.as_str())
     }
 
-    pub(super) async fn summarize_tool_output(&self, output: &str) -> String {
-        let truncated = zeph_tools::truncate_tool_output(output);
+    pub(super) async fn summarize_tool_output(&self, output: &str, threshold: usize) -> String {
+        let truncated = zeph_tools::truncate_tool_output_at(output, threshold);
         let query = self.last_user_query();
         let prompt = format!(
             "The user asked: {query}\n\n\
@@ -503,20 +503,28 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
-        if output.len() <= self.tool_orchestrator.overflow_config.threshold {
+        let threshold = self.tool_orchestrator.overflow_config.threshold;
+        if output.len() <= threshold {
             return output.to_string();
         }
-        let overflow_notice = if let Some(filename) =
-            zeph_tools::save_overflow(output, &self.tool_orchestrator.overflow_config)
-        {
-            format!("\n[full output saved to {filename}, use read tool to access]")
-        } else {
-            String::new()
+        let overflow_notice = match zeph_tools::save_overflow(
+            output,
+            &self.tool_orchestrator.overflow_config,
+        ) {
+            Some(path) => format!(
+                "\n[full output saved to {} — {} bytes, use read tool to access]",
+                path.display(),
+                output.len()
+            ),
+            None => format!(
+                "\n[warning: full output ({} bytes) could not be saved to disk — truncated output shown]",
+                output.len()
+            ),
         };
         let truncated = if self.tool_orchestrator.summarize_tool_output_enabled {
-            self.summarize_tool_output(output).await
+            self.summarize_tool_output(output, threshold).await
         } else {
-            zeph_tools::truncate_tool_output(output)
+            zeph_tools::truncate_tool_output_at(output, threshold)
         };
         format!("{truncated}{overflow_notice}")
     }

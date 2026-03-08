@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Tool output overflow: `save_overflow()` now returns the full absolute path instead of just the UUID filename, so the LLM can use the read tool to access saved overflow files. Overflow notice includes byte count. Fallback warning added when disk write fails. Truncation threshold aligned with overflow threshold to close the 30K-50K data loss gap (#1352)
 - Router provider no longer eagerly initializes all providers in chain at startup. Providers that fail to initialize (e.g. missing API keys) are skipped with a warning instead of aborting the entire chain (#1345)
 - Compatible provider API key is now optional for local endpoints (localhost, private networks). Add `api_key` field to `[[llm.compatible]]` config as an alternative to vault secrets (#1345)
 
