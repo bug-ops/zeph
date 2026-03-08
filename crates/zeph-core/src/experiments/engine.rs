@@ -938,7 +938,6 @@ mod tests {
         let _ = assert_send::<ExperimentEngine>;
     }
 
-    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn engine_with_source_scheduled_propagates_to_results() {
         let config = ExperimentConfig {
