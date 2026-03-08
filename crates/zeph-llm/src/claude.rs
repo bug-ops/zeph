@@ -580,23 +580,24 @@ impl ClaudeProvider {
         Ok(models)
     }
 
-    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<u32>) {
+    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<u32>, Option<ThinkingEffort>) {
         match &self.thinking {
-            None => (None, None),
+            None => (None, None, None),
             Some(ThinkingConfig::Extended { budget_tokens }) => (
                 Some(ThinkingParam {
                     thinking_type: "enabled",
                     budget_tokens: Some(*budget_tokens),
                 }),
                 None,
+                None,
             ),
-            Some(ThinkingConfig::Adaptive { .. }) => (
+            Some(ThinkingConfig::Adaptive { effort }) => (
                 Some(ThinkingParam {
-                    thinking_type: "enabled",
+                    thinking_type: "adaptive",
                     budget_tokens: None,
                 }),
-                // Adaptive mode requires temperature=1
-                Some(1),
+                None,
+                *effort,
             ),
         }
     }
@@ -664,7 +665,8 @@ impl ClaudeProvider {
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
-        let (thinking_param, temperature) = self.build_thinking_param();
+        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let output_config = effort.map(|e| OutputConfig { effort: e });
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
                 message_count = messages.len(),
@@ -689,6 +691,7 @@ impl ClaudeProvider {
                 messages: &chat_messages,
                 stream,
                 thinking: thinking_param,
+                output_config,
                 temperature,
                 cache_control: auto_cache,
             };
@@ -714,6 +717,7 @@ impl ClaudeProvider {
             messages: &chat_messages,
             stream,
             thinking: thinking_param,
+            output_config,
             temperature,
             cache_control: auto_cache,
         };
@@ -870,7 +874,8 @@ impl LlmProvider for ClaudeProvider {
             input_schema: &tool.parameters,
         };
 
-        let (thinking_param, temperature) = self.build_thinking_param();
+        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
@@ -895,6 +900,7 @@ impl LlmProvider for ClaudeProvider {
                 name: &tool_name,
             },
             thinking: thinking_param,
+            output_config,
             temperature,
             cache_control: auto_cache,
         };
@@ -960,7 +966,8 @@ impl LlmProvider for ClaudeProvider {
         let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
-        let (thinking_param, temperature) = self.build_thinking_param();
+        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
@@ -981,6 +988,7 @@ impl LlmProvider for ClaudeProvider {
             messages: &chat_messages,
             tools: &api_tools,
             thinking: thinking_param,
+            output_config,
             temperature,
             cache_control: auto_cache,
         };
@@ -1225,6 +1233,8 @@ struct TypedToolRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingParam>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
@@ -1254,6 +1264,8 @@ struct ToolRequestBody<'a> {
     tools: &'a [serde_json::Value],
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1313,6 +1325,13 @@ struct ThinkingParam {
     thinking_type: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_tokens: Option<u32>,
+}
+
+/// Serialization-only parameter for Claude's `output_config` request field.
+/// Used to convey the effort level for adaptive thinking.
+#[derive(Serialize)]
+struct OutputConfig {
+    effort: ThinkingEffort,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1594,6 +1613,8 @@ struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingParam>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
@@ -1610,6 +1631,8 @@ struct VisionRequestBody<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1824,6 +1847,7 @@ mod tests {
             }],
             stream: false,
             thinking: None,
+            output_config: None,
             temperature: None,
             cache_control: None,
         };
@@ -1849,6 +1873,7 @@ mod tests {
             messages: &[],
             stream: false,
             thinking: None,
+            output_config: None,
             temperature: None,
             cache_control: None,
         };
@@ -1867,6 +1892,7 @@ mod tests {
             messages: &[],
             stream: true,
             thinking: None,
+            output_config: None,
             temperature: None,
             cache_control: None,
         };
@@ -2036,6 +2062,7 @@ mod tests {
             messages: &[],
             stream: false,
             thinking: None,
+            output_config: None,
             temperature: None,
             cache_control: None,
         };
@@ -3031,31 +3058,60 @@ mod tests {
                 budget_tokens: 5000,
             })
             .unwrap();
-        let (param, temp) = provider.build_thinking_param();
+        let (param, temp, effort) = provider.build_thinking_param();
         let param = param.unwrap();
         assert_eq!(param.thinking_type, "enabled");
         assert_eq!(param.budget_tokens, Some(5000));
         assert!(temp.is_none());
+        assert!(effort.is_none());
     }
 
     #[test]
-    fn build_thinking_param_adaptive_returns_enabled_with_temperature() {
+    fn build_thinking_param_adaptive_returns_adaptive_type() {
         let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
             .with_thinking(ThinkingConfig::Adaptive { effort: None })
             .unwrap();
-        let (param, temp) = provider.build_thinking_param();
+        let (param, temp, effort) = provider.build_thinking_param();
         let param = param.unwrap();
-        assert_eq!(param.thinking_type, "enabled");
+        assert_eq!(param.thinking_type, "adaptive");
         assert!(param.budget_tokens.is_none());
-        assert_eq!(temp, Some(1));
+        assert!(temp.is_none());
+        assert!(effort.is_none());
+    }
+
+    #[test]
+    fn build_thinking_param_adaptive_with_effort_returns_effort() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+            .with_thinking(ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::High),
+            })
+            .unwrap();
+        let (param, temp, effort) = provider.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "adaptive");
+        assert!(param.budget_tokens.is_none());
+        assert!(temp.is_none());
+        assert_eq!(effort, Some(ThinkingEffort::High));
+    }
+
+    #[test]
+    fn build_thinking_param_adaptive_serializes_correctly() {
+        let param = ThinkingParam {
+            thinking_type: "adaptive",
+            budget_tokens: None,
+        };
+        let json = serde_json::to_value(&param).unwrap();
+        assert_eq!(json, serde_json::json!({"type": "adaptive"}));
+        assert!(json.get("budget_tokens").is_none());
     }
 
     #[test]
     fn build_thinking_param_no_thinking_returns_none() {
         let provider = ClaudeProvider::new("k".into(), "m".into(), 1024);
-        let (param, temp) = provider.build_thinking_param();
+        let (param, temp, effort) = provider.build_thinking_param();
         assert!(param.is_none());
         assert!(temp.is_none());
+        assert!(effort.is_none());
     }
 
     #[test]
