@@ -20,7 +20,6 @@ use super::types::GraphFact;
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[cfg(feature = "graph-memory")]
 pub async fn graph_recall(
     store: &GraphStore,
     _embeddings: Option<&crate::embedding_store::EmbeddingStore>,
@@ -132,32 +131,23 @@ pub async fn graph_recall(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "graph-memory")]
     use super::*;
-    #[cfg(feature = "graph-memory")]
     use crate::graph::store::GraphStore;
-    #[cfg(feature = "graph-memory")]
     use crate::graph::types::EntityType;
-    #[cfg(feature = "graph-memory")]
     use crate::sqlite::SqliteStore;
-    #[cfg(feature = "graph-memory")]
     use zeph_llm::any::AnyProvider;
-    #[cfg(feature = "graph-memory")]
     use zeph_llm::mock::MockProvider;
 
-    #[cfg(feature = "graph-memory")]
     async fn setup_store() -> GraphStore {
         let store = SqliteStore::new(":memory:").await.unwrap();
         GraphStore::new(store.pool().clone())
     }
 
-    #[cfg(feature = "graph-memory")]
     fn mock_provider() -> AnyProvider {
         AnyProvider::Mock(MockProvider::default())
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_empty_graph_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
@@ -168,7 +158,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_zero_limit_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
@@ -179,7 +168,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_fuzzy_match_returns_facts() {
         let store = setup_store().await;
         let user_id = store
@@ -205,7 +193,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_respects_max_hops() {
         let store = setup_store().await;
         let a = store
@@ -239,7 +226,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_deduplicates_facts() {
         let store = setup_store().await;
         let alice = store
@@ -270,7 +256,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_sorts_by_composite_score() {
         let store = setup_store().await;
         let a = store
@@ -309,7 +294,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "graph-memory")]
     async fn graph_recall_limit_truncates() {
         let store = setup_store().await;
         let root = store

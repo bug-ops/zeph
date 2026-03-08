@@ -346,7 +346,7 @@ fn build_config_semantic_disabled() {
     assert!(!config.memory.semantic.enabled);
 }
 
-#[cfg(all(feature = "daemon", feature = "a2a"))]
+#[cfg(feature = "a2a")]
 #[test]
 fn agent_task_processor_construction() {
     use crate::daemon::AgentTaskProcessor;

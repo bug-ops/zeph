@@ -149,7 +149,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    #[cfg(feature = "graph-memory")]
     #[must_use]
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
@@ -490,7 +489,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    #[cfg(feature = "orchestration")]
     #[must_use]
     pub fn with_orchestration_config(mut self, config: crate::config::OrchestrationConfig) -> Self {
         self.orchestration_config = config;

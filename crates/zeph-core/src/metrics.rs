@@ -91,9 +91,6 @@ pub struct TaskSnapshotRow {
 }
 
 /// Lightweight snapshot of a `TaskGraph` for TUI display.
-///
-/// Always compiled (no feature gate) so the TUI can reference it unconditionally.
-/// When the `orchestration` feature is inactive the field is always `None`.
 #[derive(Debug, Clone, Default)]
 pub struct TaskGraphSnapshot {
     pub graph_id: String,
@@ -220,7 +217,6 @@ pub struct MetricsSnapshot {
 /// Allows tab, LF, and CR; removes everything else in the `0x00–0x1F` range including full
 /// ANSI CSI sequences (`ESC[...`). This prevents escape-sequence injection from LLM planner
 /// output into the TUI.
-#[cfg_attr(not(feature = "orchestration"), allow(dead_code))]
 fn strip_ctrl(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -246,10 +242,6 @@ fn strip_ctrl(s: &str) -> String {
 }
 
 /// Convert a live `TaskGraph` into a lightweight snapshot for TUI display.
-///
-/// Gated behind `orchestration` so it doesn't pull orchestration types into
-/// the always-compiled metrics module unconditionally.
-#[cfg(feature = "orchestration")]
 impl From<&crate::orchestration::TaskGraph> for TaskGraphSnapshot {
     fn from(graph: &crate::orchestration::TaskGraph) -> Self {
         let tasks = graph
@@ -560,7 +552,6 @@ mod tests {
     }
 
     // T1: From<&TaskGraph> correctly maps fields including duration_ms and error truncation.
-    #[cfg(feature = "orchestration")]
     #[test]
     fn task_graph_snapshot_from_task_graph_maps_fields() {
         use crate::orchestration::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
@@ -592,7 +583,6 @@ mod tests {
     }
 
     // T2: From impl compiles with orchestration feature active.
-    #[cfg(feature = "orchestration")]
     #[test]
     fn task_graph_snapshot_from_compiles_with_feature() {
         use crate::orchestration::TaskGraph;
@@ -604,7 +594,6 @@ mod tests {
     }
 
     // T1-extra: long error is truncated with ellipsis.
-    #[cfg(feature = "orchestration")]
     #[test]
     fn task_graph_snapshot_error_truncated_at_80_chars() {
         use crate::orchestration::{TaskGraph, TaskNode, TaskResult, TaskStatus};
@@ -631,7 +620,6 @@ mod tests {
     }
 
     // SEC-P6-01: control chars in task title are stripped.
-    #[cfg(feature = "orchestration")]
     #[test]
     fn task_graph_snapshot_strips_control_chars_from_title() {
         use crate::orchestration::{TaskGraph, TaskNode};

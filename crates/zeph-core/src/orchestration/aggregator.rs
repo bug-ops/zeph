@@ -269,7 +269,6 @@ mod tests {
 
     // --- LlmAggregator integration tests (mock feature) ---
 
-    #[cfg(feature = "mock")]
     mod mock_tests {
         use super::*;
         use zeph_llm::mock::MockProvider;

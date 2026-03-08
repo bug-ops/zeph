@@ -44,7 +44,7 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `project.rs` — ZEPH.md config discovery (walk up directory tree)
 - `VaultProvider` trait — pluggable secret resolution
 - `MetricsSnapshot` / `MetricsCollector` — real-time metrics via `tokio::sync::watch` for TUI dashboard
-- `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking (feature-gated: `daemon`)
+- `DaemonSupervisor` — component lifecycle monitor with health polling, PID file management, restart tracking
 - `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` — headless channel for daemon mode using paired tokio mpsc channels; auto-approves confirmations
 - `LoopbackHandle::cancel_signal` — `Arc<Notify>` shared between the ACP session and the agent loop; calling `notify_one()` interrupts the running agent turn
 - `hash::content_hash()` — BLAKE3-based utility returning a hex-encoded content hash for any byte slice; used for delta-sync checks and integrity verification across crates; available as `zeph_core::content_hash`

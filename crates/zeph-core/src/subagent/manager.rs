@@ -1406,7 +1406,6 @@ impl SubAgentManager {
     ///
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
-    #[cfg(feature = "orchestration")]
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_for_task(
         &mut self,

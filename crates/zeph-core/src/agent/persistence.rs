@@ -154,12 +154,10 @@ impl<C: Channel> Agent<C> {
 
         self.check_summarization().await;
 
-        #[cfg(feature = "graph-memory")]
         self.maybe_spawn_graph_extraction(content, has_injection_flags)
             .await;
     }
 
-    #[cfg(feature = "graph-memory")]
     async fn maybe_spawn_graph_extraction(&mut self, content: &str, has_injection_flags: bool) {
         use zeph_memory::semantic::GraphExtractionConfig;
 
@@ -205,9 +203,7 @@ impl<C: Channel> Agent<C> {
             memory.spawn_graph_extraction(content.to_owned(), context_messages, extraction_cfg);
         }
         self.sync_community_detection_failures();
-        #[cfg(feature = "graph-memory")]
         self.sync_graph_extraction_metrics();
-        #[cfg(feature = "graph-memory")]
         self.sync_graph_counts().await;
     }
 
@@ -594,7 +590,6 @@ mod tests {
     }
 
     // R-CRIT-01: unit tests for maybe_spawn_graph_extraction guard conditions.
-    #[cfg(feature = "graph-memory")]
     mod graph_extraction_guards {
         use super::*;
         use crate::config::GraphConfig;

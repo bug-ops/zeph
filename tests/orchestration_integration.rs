@@ -6,10 +6,9 @@
 //! These tests exercise the full orchestration pipeline:
 //!   plan → DagScheduler tick loop → LlmAggregator
 //!
-//! Gated on `orchestration` + `mock` features; run with:
-//!   cargo nextest run --features orchestration,mock --test orchestration_integration
+//! Run with:
+//!   cargo nextest run --test orchestration_integration
 
-#[cfg(all(feature = "orchestration", feature = "mock"))]
 mod orchestration_integration {
     use zeph_core::config::OrchestrationConfig;
     use zeph_core::orchestration::{

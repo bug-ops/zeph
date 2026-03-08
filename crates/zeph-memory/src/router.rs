@@ -36,7 +36,6 @@ const QUESTION_WORDS: &[&str] = &[
 
 /// Simple substrings that signal a relationship query (checked via `str::contains`).
 /// Only used when the `graph-memory` feature is enabled.
-#[cfg(feature = "graph-memory")]
 const RELATIONSHIP_PATTERNS: &[&str] = &[
     "related to",
     "relates to",
@@ -76,7 +75,6 @@ impl MemoryRouter for HeuristicRouter {
         let word_count = words.len();
 
         // Relationship queries go to graph retrieval (feature-gated at call site)
-        #[cfg(feature = "graph-memory")]
         {
             let lower = query.to_ascii_lowercase();
             let has_relationship = RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p));
@@ -210,7 +208,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graph-memory")]
     #[test]
     fn relationship_query_routes_graph() {
         assert_eq!(
@@ -223,7 +220,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graph-memory")]
     #[test]
     fn relationship_query_related_to_routes_graph() {
         assert_eq!(
@@ -236,13 +232,11 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graph-memory")]
     #[test]
     fn relationship_know_about_routes_graph() {
         assert_eq!(route("what do I know about neovim"), MemoryRoute::Graph);
     }
 
-    #[cfg(feature = "graph-memory")]
     #[test]
     fn translate_does_not_route_graph() {
         // "translate" contains "relate" substring but is not in RELATIONSHIP_PATTERNS

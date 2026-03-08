@@ -549,7 +549,6 @@ mod tests {
 
     // --- plan() integration tests ---
 
-    #[cfg(feature = "mock")]
     mod integration {
         use super::*;
         use zeph_llm::mock::MockProvider;

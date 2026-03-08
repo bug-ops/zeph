@@ -1,6 +1,6 @@
 # Feature Flags
 
-Zeph uses Cargo feature flags to control optional functionality. As of M26, eight previously optional features are now always-on and compiled into every build. The remaining optional features are explicitly opt-in.
+Zeph uses Cargo feature flags to control optional functionality. Twelve previously optional features are now always-on and compiled into every build. The remaining optional features are explicitly opt-in.
 
 ## Always-On (compiled unconditionally)
 
@@ -14,6 +14,10 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `qdrant` | Qdrant-backed vector storage for skill matching and MCP tool registry |
 | `vault-age` | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
 | `mcp` | MCP client for external tool servers via stdio/HTTP transport |
+| `mock` | Mock providers and channels for integration testing |
+| `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring |
+| `orchestration` | Task orchestration with DAG-based execution, failure strategies, and SQLite persistence |
+| `graph-memory` | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal |
 
 ## Optional Features
 
@@ -27,17 +31,13 @@ Zeph uses Cargo feature flags to control optional functionality. As of M26, eigh
 | `slack` | Slack channel adapter with Events API webhook and HMAC-SHA256 verification ([guide](../advanced/channels.md#slack-channel)) |
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 | `index` | AST-based code indexing and semantic retrieval via tree-sitter ([guide](../advanced/code-indexing.md)) |
-| `graph-memory` | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal ([guide](../concepts/graph-memory.md)) |
 | `lsp-context` | Automatic LSP context injection: diagnostics after `write_file`, optional hover on `read_file`, references before `rename_symbol`. Hooks into the tool execution pipeline and call mcpls via the existing MCP client. Requires mcpls configured under `[[mcp.servers]]`. Enable with `--lsp-context` or `agent.lsp.enabled = true` ([guide](../guides/lsp.md#lsp-context-injection)). Note: the ACP LSP extension (IDE-proxied LSP via `ext_method`) is part of the `acp` feature, not `lsp-context` |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
-| `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring. Combined with `a2a`, enables `--daemon` headless mode ([guide](../guides/daemon-mode.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
 | `stt` | Speech-to-text transcription via OpenAI Whisper API ([guide](../advanced/multimodal.md#audio-input)) |
-| `orchestration` | Task orchestration with DAG-based execution, failure strategies, and SQLite persistence ([guide](../concepts/task-orchestration.md)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `experiments` | Autonomous self-experimentation engine with benchmark datasets and LLM-as-judge evaluation ([guide](../concepts/experiments.md)) |
-| `mock` | Mock providers and channels for testing |
 
 ## Crate-Level Features
 
@@ -84,9 +84,9 @@ cargo build --release --features cuda                      # Linux with NVIDIA G
 cargo build --release --features tui                       # with TUI dashboard
 cargo build --release --features discord                   # with Discord bot
 cargo build --release --features slack                     # with Slack bot
-cargo build --release --features daemon,a2a                # headless daemon with A2A endpoint
+cargo build --release --features a2a                       # headless daemon with A2A endpoint
 cargo build --release --features tui,a2a                   # TUI with remote daemon support
-cargo build --release --features gateway,daemon,scheduler  # with infrastructure components
+cargo build --release --features gateway,scheduler         # with infrastructure components
 cargo build --release --features lsp-context               # with LSP context injection
 cargo build --release --features full                      # all optional features
 ```

@@ -394,7 +394,7 @@ Events are emitted by the sanitizer, quarantine, and exfiltration guard subsyste
 
 ## Plan View
 
-When the `orchestration` feature is enabled, the TUI shows live plan progress in the side panel.
+The TUI shows live plan progress in the side panel.
 
 ### Activating Plan View
 
@@ -452,13 +452,11 @@ After a plan reaches a terminal state (completed, failed, or cancelled), the Pla
 
 ### Requirements
 
-Plan View requires both the `tui` and `orchestration` feature flags:
+Plan View requires the `tui` feature flag:
 
 ```bash
-cargo build --release --features tui,orchestration
+cargo build --release --features tui
 ```
-
-Without the `orchestration` feature, the `p` keybinding and `plan:*` palette entries are present but show "No active plan" — they do not cause a build error.
 
 ## Deferred Model Warmup
 

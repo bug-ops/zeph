@@ -16,14 +16,10 @@ readme = "README.md"
 default = []
 candle = ["zeph-llm/candle"]
 cuda = ["zeph-llm/cuda"]
-daemon = []
 experiments = ["dep:ordered-float", "dep:rand", "zeph-memory/experiments"]
-graph-memory = ["zeph-memory/graph-memory"]
 index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
 lsp-context = []
-mock = ["zeph-llm/mock", "zeph-memory/mock"]
-orchestration = ["zeph-memory/orchestration"]
 
 [dependencies]
 age.workspace = true
@@ -70,8 +66,8 @@ proptest.workspace = true
 schemars.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
-zeph-llm = { workspace = true, features = ["mock"] }
-zeph-memory = { workspace = true, features = ["mock"] }
+zeph-llm.workspace = true
+zeph-memory.workspace = true
 
 [lints]
 workspace = true

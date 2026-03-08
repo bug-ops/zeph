@@ -446,7 +446,7 @@ rate_limit = 120
 max_body_size = 1048576
 
 [daemon]
-# Enable daemon supervisor (feature-gated: --features daemon)
+# Enable daemon supervisor
 enabled = false
 # PID file location
 pid_file = "~/.zeph/zeph.pid"
@@ -526,7 +526,7 @@ format = "json"
 # Show role prefix labels ([user], [zeph], etc.) in chat messages
 show_source_labels = false
 
-# Knowledge graph memory (feature-gated: --features graph-memory)
+# Knowledge graph memory
 # Extracts entities and relations from conversations into a persistent graph.
 # WARNING: entity names and facts are stored verbatim without PII redaction.
 # Do not enable when processing conversations with sensitive personal data.

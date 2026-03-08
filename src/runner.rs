@@ -40,7 +40,7 @@ use crate::commands::router::handle_router_command;
 use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
 use crate::commands::vault::handle_vault_command;
-#[cfg(all(feature = "daemon", feature = "a2a"))]
+#[cfg(feature = "a2a")]
 use crate::daemon::run_daemon;
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use crate::tui_remote::run_tui_remote;
@@ -101,7 +101,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         None => {}
     }
 
-    #[cfg(all(feature = "daemon", feature = "a2a"))]
+    #[cfg(feature = "a2a")]
     if cli.daemon {
         tracing_subscriber::fmt::init();
         return Box::pin(run_daemon(
@@ -545,10 +545,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         ) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
-        #[cfg(feature = "orchestration")]
         let agent = agent.with_orchestration_config(config.orchestration.clone());
-        #[cfg(not(feature = "orchestration"))]
-        let agent = agent;
         agent
             .with_subagent_manager(mgr)
             .with_subagent_config(config.agents.clone())
@@ -695,7 +692,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     agent
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
-    #[cfg(feature = "graph-memory")]
     agent.sync_graph_counts().await;
 
     agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);

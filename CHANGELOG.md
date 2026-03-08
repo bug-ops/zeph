@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Remove `daemon`, `mock`, `orchestration`, and `graph-memory` Cargo feature flags. All four are now compiled unconditionally into every build. Remove these flags from any `--features` lists or CI matrix entries. The `full` feature set no longer includes them.
+
 ### Added
 
 - Add ACP LSP extension (Phase 3, #1292, #1293): when Zeph runs inside an IDE via ACP, the agent can query the IDE's native LSP sessions for code intelligence — hover, definition, references, diagnostics, document symbols, workspace symbol search, and code actions. New `crates/zeph-acp/src/lsp/` module with `LspProvider` trait, `AcpLspProvider` (IDE via ext\_method), `McpLspProvider` (mcpls fallback), and bounded `DiagnosticsCache` with LRU eviction. Capability negotiation via `meta["lsp"]` in ACP initialize. `[acp.lsp]` config section with configurable limits (max 20 diagnostics/file, 5 files, 100 references, 50 symbols, 10s timeout). Handles `lsp/publishDiagnostics` and `lsp/didSave` notifications from IDE.
