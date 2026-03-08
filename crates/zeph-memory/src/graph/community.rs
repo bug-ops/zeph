@@ -16,11 +16,22 @@ use super::store::GraphStore;
 
 const MAX_LABEL_PROPAGATION_ITERATIONS: usize = 50;
 
-/// Strip newlines and ASCII control characters from `s` to prevent prompt injection
-/// via entity names or edge facts sourced from untrusted text.
+/// Strip control characters, Unicode bidi overrides, and zero-width characters from `s`
+/// to prevent prompt injection via entity names or edge facts sourced from untrusted text.
+///
+/// Filtered categories:
+/// - All Unicode control characters (`Cc` category, covers ASCII controls and more)
+/// - Bidi control characters: U+202A–U+202E, U+2066–U+2069
+/// - Zero-width and invisible characters: U+200B–U+200F (includes U+200C, U+200D)
+/// - Byte-order mark: U+FEFF
 fn scrub_content(s: &str) -> String {
     s.chars()
-        .filter(|&c| c != '\n' && c != '\r' && c != '\x00' && !c.is_ascii_control())
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c as u32,
+                    0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF
+                )
+        })
         .collect()
 }
 
@@ -577,6 +588,42 @@ mod tests {
             GraphStore::new(s.pool().clone())
         };
         assert_eq!(store2.extraction_count().await.unwrap(), 5);
+    }
+
+    #[test]
+    fn test_scrub_content_ascii_control() {
+        // Newline, carriage return, null byte, tab (all ASCII control chars) must be stripped.
+        let input = "hello\nworld\r\x00\x01\x09end";
+        assert_eq!(scrub_content(input), "helloworldend");
+    }
+
+    #[test]
+    fn test_scrub_content_bidi_overrides() {
+        // U+202A LEFT-TO-RIGHT EMBEDDING, U+202E RIGHT-TO-LEFT OVERRIDE,
+        // U+2066 LEFT-TO-RIGHT ISOLATE, U+2069 POP DIRECTIONAL ISOLATE.
+        let input = format!("safe\u{202A}inject\u{202E}end\u{2066}iso\u{2069}done");
+        assert_eq!(scrub_content(&input), "safeinjectendisodone");
+    }
+
+    #[test]
+    fn test_scrub_content_zero_width() {
+        // U+200B ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER,
+        // U+200F RIGHT-TO-LEFT MARK.
+        let input = format!("a\u{200B}b\u{200C}c\u{200D}d\u{200F}e");
+        assert_eq!(scrub_content(&input), "abcde");
+    }
+
+    #[test]
+    fn test_scrub_content_bom() {
+        // U+FEFF BYTE ORDER MARK must be stripped.
+        let input = format!("\u{FEFF}hello");
+        assert_eq!(scrub_content(&input), "hello");
+    }
+
+    #[test]
+    fn test_scrub_content_clean_string_unchanged() {
+        let input = "Hello, World! 123 — normal text.";
+        assert_eq!(scrub_content(input), input);
     }
 
     #[tokio::test]
