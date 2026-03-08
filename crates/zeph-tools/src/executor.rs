@@ -97,11 +97,17 @@ pub const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 /// Truncate tool output that exceeds `MAX_TOOL_OUTPUT_CHARS` using head+tail split.
 #[must_use]
 pub fn truncate_tool_output(output: &str) -> String {
-    if output.len() <= MAX_TOOL_OUTPUT_CHARS {
+    truncate_tool_output_at(output, MAX_TOOL_OUTPUT_CHARS)
+}
+
+/// Truncate tool output that exceeds `max_chars` using head+tail split.
+#[must_use]
+pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
         return output.to_string();
     }
 
-    let half = MAX_TOOL_OUTPUT_CHARS / 2;
+    let half = max_chars / 2;
     let head_end = output.floor_char_boundary(half);
     let tail_start = output.ceil_char_boundary(output.len() - half);
     let head = &output[..head_end];

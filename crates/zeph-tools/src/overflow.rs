@@ -16,8 +16,8 @@ fn overflow_dir(custom: Option<&Path>) -> PathBuf {
 }
 
 /// Save full output to overflow file if it exceeds `config.threshold`.
-/// Returns the filename (UUID.txt) of the saved file, or `None` if output fits.
-pub fn save_overflow(output: &str, config: &OverflowConfig) -> Option<String> {
+/// Returns the full absolute path of the saved file, or `None` if output fits or write fails.
+pub fn save_overflow(output: &str, config: &OverflowConfig) -> Option<PathBuf> {
     if output.len() <= config.threshold {
         return None;
     }
@@ -63,7 +63,7 @@ pub fn save_overflow(output: &str, config: &OverflowConfig) -> Option<String> {
         }
     }
 
-    Some(filename)
+    Some(path)
 }
 
 /// Remove overflow files older than `config.retention_days`. Creates directory if missing.
@@ -133,10 +133,9 @@ mod tests {
             dir: Some(dir.path().to_path_buf()),
         };
         let long = "x".repeat(50_001);
-        let filename = save_overflow(&long, &config);
-        assert!(filename.is_some());
-        let name = filename.unwrap();
-        let p = dir.path().join(&name);
+        let path = save_overflow(&long, &config);
+        assert!(path.is_some());
+        let p = path.unwrap();
         assert!(p.exists());
         let contents = std::fs::read_to_string(&p).unwrap();
         assert_eq!(contents.len(), long.len());
@@ -158,17 +157,17 @@ mod tests {
     }
 
     #[test]
-    fn save_returns_filename_only() {
+    fn save_returns_absolute_path() {
         let dir = tempfile::tempdir().unwrap();
         let config = OverflowConfig {
             threshold: 0,
             retention_days: 7,
             dir: Some(dir.path().to_path_buf()),
         };
-        let filename = save_overflow("any", &config).unwrap();
-        // Must be just "UUID.txt", not a full path
-        assert!(!filename.contains('/'));
-        assert!(filename.ends_with(".txt"));
+        let path = save_overflow("any", &config).unwrap();
+        // Must be an absolute path ending in UUID.txt
+        assert!(path.is_absolute());
+        assert!(path.to_string_lossy().ends_with(".txt"));
     }
 
     #[test]
@@ -179,10 +178,9 @@ mod tests {
             retention_days: 7,
             dir: Some(dir.path().to_path_buf()),
         };
-        let filename = save_overflow("any", &config);
-        assert!(filename.is_some());
-        let p = dir.path().join(filename.unwrap());
-        assert!(p.exists());
+        let path = save_overflow("any", &config);
+        assert!(path.is_some());
+        assert!(path.unwrap().exists());
     }
 
     #[test]
