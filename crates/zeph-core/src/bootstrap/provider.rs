@@ -187,31 +187,26 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                     entries.iter().find(|e| e.name == other)
                 };
                 if let Some(entry) = entry {
-                    let api_key = entry
-                        .api_key
-                        .clone()
-                        .or_else(|| {
-                            config
-                                .secrets
-                                .compatible_api_keys
-                                .get(&entry.name)
-                                .map(|s| s.expose().to_owned())
-                        })
-                        .or_else(|| {
-                            if is_local_endpoint(&entry.base_url) {
-                                Some(String::new())
-                            } else {
-                                None
-                            }
-                        })
-                        .with_context(|| {
-                            format!(
-                                "ZEPH_COMPATIBLE_{}_API_KEY required for '{}' \
-                                 (set api_key in config, vault secret, or use a local endpoint)",
-                                entry.name.to_uppercase(),
-                                entry.name
-                            )
-                        })?;
+                    let has_key = entry.api_key.is_some()
+                        || config.secrets.compatible_api_keys.contains_key(&entry.name)
+                        || is_local_endpoint(&entry.base_url);
+                    if !has_key {
+                        bail!(
+                            "ZEPH_COMPATIBLE_{}_API_KEY required for '{}' \
+                             (set api_key in config, vault secret, or use a local endpoint)",
+                            entry.name.to_uppercase(),
+                            entry.name
+                        );
+                    }
+                    // Resolve key: config field > vault secret > empty for local.
+                    let api_key = entry.api_key.clone().unwrap_or_else(|| {
+                        config
+                            .secrets
+                            .compatible_api_keys
+                            .get(&entry.name)
+                            .map(|s| s.expose().to_owned()) // lgtm[rust/cleartext-logging]
+                            .unwrap_or_default()
+                    });
                     return Ok(AnyProvider::Compatible(CompatibleProvider::new(
                         entry.name.clone(),
                         api_key,
