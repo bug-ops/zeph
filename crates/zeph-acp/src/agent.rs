@@ -19,6 +19,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 use zeph_mcp::McpManager;
 use zeph_mcp::manager::ServerEntry;
+use zeph_memory::ConversationId;
 use zeph_memory::sqlite::SqliteStore;
 
 use crate::fs::AcpFileExecutor;
@@ -29,6 +30,16 @@ use crate::transport::ConnSlot;
 
 /// Factory that creates a provider by `{provider}:{model}` key.
 pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync>;
+
+/// Per-session context passed to the agent spawner.
+///
+/// Carries the session identity and the pre-created [`ConversationId`] so that
+/// each ACP session maps to exactly one Zeph conversation in `SQLite`.
+pub struct SessionContext {
+    pub session_id: acp::SessionId,
+    pub conversation_id: ConversationId,
+    pub working_dir: PathBuf,
+}
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
 const MAX_IMAGE_BASE64_BYTES: usize = 20 * 1_048_576; // 20 MiB base64-encoded
@@ -256,11 +267,16 @@ pub struct AcpContext {
     pub diagnostics_cache: Rc<RefCell<DiagnosticsCache>>,
 }
 
-/// Factory: receives a [`LoopbackChannel`] and optional [`AcpContext`], runs the agent loop.
+/// Factory: receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
+/// then runs the agent loop.
+///
+/// Each call creates an independent agent with its own conversation history,
+/// enabling true multi-session isolation.
 pub type AgentSpawner = Arc<
     dyn Fn(
             LoopbackChannel,
             Option<AcpContext>,
+            SessionContext,
         ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
         + 'static,
 >;
@@ -273,6 +289,7 @@ pub type SendAgentSpawner = Arc<
     dyn Fn(
             LoopbackChannel,
             Option<AcpContext>,
+            SessionContext,
         ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
         + Send
         + Sync
@@ -786,7 +803,7 @@ impl acp::Agent for ZephAcpAgent {
             &session_id,
             cancel_signal,
             provider_override_for_ctx,
-            session_cwd,
+            session_cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
@@ -807,18 +824,54 @@ impl acp::Agent for ZephAcpAgent {
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
-        if let Some(ref store) = self.store {
+        // Create a fresh conversation for this session. Awaited synchronously so that
+        // conversation_id is guaranteed to be persisted before the agent loop starts.
+        let conversation_id = if let Some(ref store) = self.store {
             let sid = session_id.to_string();
-            let store = store.clone();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = store.create_acp_session(&sid).await {
-                    tracing::warn!(error = %e, "failed to persist ACP session");
+            match store.create_conversation().await {
+                Ok(cid) => {
+                    let store = store.clone();
+                    let cid_clone = cid;
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store
+                            .create_acp_session_with_conversation(&sid, cid_clone)
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to persist ACP session");
+                        }
+                    });
+                    cid
                 }
-            });
-        }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create conversation for ACP session; agent will not persist history");
+                    let store = store.clone();
+                    let sid_clone = sid.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e2) = store.create_acp_session(&sid_clone).await {
+                            tracing::warn!(error = %e2, "failed to persist ACP session");
+                        }
+                    });
+                    // Fallback: create an ephemeral conversation ID placeholder; agent will
+                    // call create_conversation itself if memory is available via SemanticMemory.
+                    // This path is only hit when the SQLite store is unreachable.
+                    zeph_memory::ConversationId(0)
+                }
+            }
+        } else {
+            // No persistent store: use ConversationId(0) as a sentinel.
+            // The agent's SemanticMemory will create its own conversation if needed.
+            zeph_memory::ConversationId(0)
+        };
+
+        let session_ctx = SessionContext {
+            session_id: session_id.clone(),
+            conversation_id,
+            working_dir: session_cwd.clone(),
+        };
+
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            (spawner)(channel, acp_ctx).await;
+            (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
         let config_options = build_config_options(&self.available_models, "", false, "suggest");
@@ -1218,18 +1271,51 @@ impl acp::Agent for ZephAcpAgent {
                 acp::Error::internal_error().data("internal error")
             })?;
 
+        // Look up existing conversation_id for this session, or create one for legacy sessions.
+        let session_cwd = std::env::current_dir().unwrap_or_default();
+        let conversation_id = match store
+            .get_acp_session_conversation_id(&args.session_id.to_string())
+            .await
+        {
+            Ok(Some(cid)) => cid,
+            Ok(None) => {
+                // Legacy session: create a new conversation and persist the mapping.
+                match store.create_conversation().await {
+                    Ok(cid) => {
+                        let store_clone = store.clone();
+                        let sid = args.session_id.to_string();
+                        tokio::task::spawn_local(async move {
+                            if let Err(e) =
+                                store_clone.set_acp_session_conversation_id(&sid, cid).await
+                            {
+                                tracing::warn!(error = %e, "failed to set conversation_id for legacy session");
+                            }
+                        });
+                        cid
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to create conversation for legacy load_session");
+                        zeph_memory::ConversationId(0)
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to look up conversation_id for load_session");
+                zeph_memory::ConversationId(0)
+            }
+        };
+
         // Rebuild agent loop for the restored session.
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
-        let session_cwd = std::env::current_dir().unwrap_or_default();
         let acp_ctx = self.build_acp_context(
             &args.session_id,
             cancel_signal,
             provider_override_for_ctx,
-            session_cwd,
+            session_cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
         let entry = SessionEntry {
@@ -1252,9 +1338,15 @@ impl acp::Agent for ZephAcpAgent {
             .borrow_mut()
             .insert(args.session_id.clone(), entry);
 
+        let session_ctx = SessionContext {
+            session_id: args.session_id.clone(),
+            conversation_id,
+            working_dir: session_cwd,
+        };
+
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            (spawner)(channel, acp_ctx).await;
+            (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
         // Replay stored events as session/update notifications per ACP spec.
@@ -1420,7 +1512,9 @@ impl acp::Agent for ZephAcpAgent {
             "forking ACP session"
         );
 
-        if let Some(s) = store {
+        // Create a new conversation for the forked session and copy messages from source.
+        // The source conversation_id is looked up from the store (or a new one is created).
+        let new_conversation_id = if let Some(s) = store {
             let source_events = s
                 .load_acp_events(&args.session_id.to_string())
                 .await
@@ -1429,26 +1523,72 @@ impl acp::Agent for ZephAcpAgent {
                     acp::Error::internal_error().data("internal error")
                 })?;
 
-            let new_id_str = new_id.to_string();
-            let store_clone = s.clone();
-            let pairs: Vec<(String, String)> = source_events
-                .into_iter()
-                .map(|ev| (ev.event_type, ev.payload))
-                .collect();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = store_clone.create_acp_session(&new_id_str).await {
-                    tracing::warn!(error = %e, "failed to create forked ACP session");
-                    return;
+            // Determine source conversation_id, then create new conversation and copy messages.
+            match s.create_conversation().await {
+                Ok(forked_cid) => {
+                    let source_cid = s
+                        .get_acp_session_conversation_id(&args.session_id.to_string())
+                        .await
+                        .unwrap_or(None);
+
+                    let new_id_str = new_id.to_string();
+                    let store_clone = s.clone();
+                    let pairs: Vec<(String, String)> = source_events
+                        .into_iter()
+                        .map(|ev| (ev.event_type, ev.payload))
+                        .collect();
+
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store_clone
+                            .create_acp_session_with_conversation(&new_id_str, forked_cid)
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to create forked ACP session");
+                            return;
+                        }
+                        let refs: Vec<(&str, &str)> = pairs
+                            .iter()
+                            .map(|(t, p)| (t.as_str(), p.as_str()))
+                            .collect();
+                        if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
+                            tracing::warn!(error = %e, "failed to import events for forked session");
+                        }
+                        // Copy conversation history from source if available.
+                        if let Some(src_cid) = source_cid
+                            && let Err(e) = store_clone.copy_conversation(src_cid, forked_cid).await
+                        {
+                            tracing::warn!(error = %e, "failed to copy conversation for forked session");
+                        }
+                    });
+                    forked_cid
                 }
-                let refs: Vec<(&str, &str)> = pairs
-                    .iter()
-                    .map(|(t, p)| (t.as_str(), p.as_str()))
-                    .collect();
-                if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
-                    tracing::warn!(error = %e, "failed to import events for forked session");
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create conversation for forked session");
+                    let new_id_str = new_id.to_string();
+                    let store_clone = s.clone();
+                    let pairs: Vec<(String, String)> = source_events
+                        .into_iter()
+                        .map(|ev| (ev.event_type, ev.payload))
+                        .collect();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store_clone.create_acp_session(&new_id_str).await {
+                            tracing::warn!(error = %e, "failed to create forked ACP session");
+                            return;
+                        }
+                        let refs: Vec<(&str, &str)> = pairs
+                            .iter()
+                            .map(|(t, p)| (t.as_str(), p.as_str()))
+                            .collect();
+                        if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
+                            tracing::warn!(error = %e, "failed to import events for forked session");
+                        }
+                    });
+                    zeph_memory::ConversationId(0)
                 }
-            });
-        }
+            }
+        } else {
+            zeph_memory::ConversationId(0)
+        };
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
@@ -1479,9 +1619,16 @@ impl acp::Agent for ZephAcpAgent {
             shell_executor,
         };
         self.sessions.borrow_mut().insert(new_id.clone(), entry);
+
+        let session_ctx = SessionContext {
+            session_id: new_id.clone(),
+            conversation_id: new_conversation_id,
+            working_dir: args.cwd.clone(),
+        };
+
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            (spawner)(channel, acp_ctx).await;
+            (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
         let config_options = build_config_options(&self.available_models, "", false, "suggest");
@@ -1544,6 +1691,35 @@ impl acp::Agent for ZephAcpAgent {
             }
         }
 
+        // Look up existing conversation_id for this session (same as load_session).
+        let conversation_id = match store
+            .get_acp_session_conversation_id(&args.session_id.to_string())
+            .await
+        {
+            Ok(Some(cid)) => cid,
+            Ok(None) => match store.create_conversation().await {
+                Ok(cid) => {
+                    let store_clone = store.clone();
+                    let sid = args.session_id.to_string();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = store_clone.set_acp_session_conversation_id(&sid, cid).await
+                        {
+                            tracing::warn!(error = %e, "failed to set conversation_id for legacy resume_session");
+                        }
+                    });
+                    cid
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create conversation for legacy resume_session");
+                    zeph_memory::ConversationId(0)
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to look up conversation_id for resume_session");
+                zeph_memory::ConversationId(0)
+            }
+        };
+
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
@@ -1562,7 +1738,7 @@ impl acp::Agent for ZephAcpAgent {
             cancel_signal: handle.cancel_signal,
             last_active: std::cell::Cell::new(std::time::Instant::now()),
             created_at: chrono::Utc::now(),
-            working_dir: RefCell::new(Some(args.cwd)),
+            working_dir: RefCell::new(Some(args.cwd.clone())),
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
@@ -1575,9 +1751,16 @@ impl acp::Agent for ZephAcpAgent {
         self.sessions
             .borrow_mut()
             .insert(args.session_id.clone(), entry);
+
+        let session_ctx = SessionContext {
+            session_id: args.session_id.clone(),
+            conversation_id,
+            working_dir: args.cwd,
+        };
+
         let spawner = Arc::clone(&self.spawner);
         tokio::task::spawn_local(async move {
-            (spawner)(channel, acp_ctx).await;
+            (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
         Ok(acp::ResumeSessionResponse::new())
@@ -2569,7 +2752,7 @@ mod tests {
     use super::*;
 
     fn make_spawner() -> AgentSpawner {
-        Arc::new(|_channel, _ctx| Box::pin(async {}))
+        Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
     }
 
     fn make_agent() -> (
@@ -2749,7 +2932,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         if let Ok(Some(msg)) = channel.recv().await {
@@ -2794,7 +2977,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         if let Ok(Some(msg)) = channel.recv().await {
@@ -3516,7 +3699,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         if let Ok(Some(msg)) = channel.recv().await {
@@ -3559,7 +3742,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         if let Ok(Some(msg)) = channel.recv().await {
@@ -3600,7 +3783,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         if let Ok(Some(msg)) = channel.recv().await {
@@ -5253,7 +5436,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         use zeph_core::Channel as _;
@@ -5305,7 +5488,7 @@ mod tests {
                 let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
                 let received_clone = std::rc::Rc::clone(&received);
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     let received_clone = std::rc::Rc::clone(&received_clone);
                     Box::pin(async move {
                         use zeph_core::Channel as _;
@@ -5349,7 +5532,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                     Box::pin(async move {
                         use zeph_core::Channel as _;
                         let _ = channel.recv().await;
@@ -5783,7 +5966,7 @@ mod tests {
         local
             .run_until(async {
                 // Spawner emits Stop(MaxTokens) then Flush.
-                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx, _session_ctx| {
                     Box::pin(async move {
                         use zeph_core::Channel as _;
                         let _ = channel.recv().await;
@@ -5850,7 +6033,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx| {
+                let spawner: AgentSpawner = Arc::new(|mut channel, _ctx, _session_ctx| {
                     Box::pin(async move {
                         use zeph_core::Channel as _;
                         let _ = channel.recv().await;

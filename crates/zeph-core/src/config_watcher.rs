@@ -7,6 +7,7 @@ use std::time::Duration;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 
+#[derive(Clone)]
 pub enum ConfigEvent {
     Changed,
 }

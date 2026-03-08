@@ -471,7 +471,7 @@ mod tests {
     use crate::transport::ConnSlot;
 
     fn make_spawner() -> crate::agent::AgentSpawner {
-        Arc::new(|_channel, _ctx| Box::pin(async {}))
+        Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
     }
 
     fn make_agent() -> (

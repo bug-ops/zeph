@@ -27,7 +27,7 @@ pub struct IntentClassification {
     pub params: HashMap<String, String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SkillMatcher {
     embeddings: Vec<(usize, Vec<f32>)>,
 }
@@ -117,7 +117,7 @@ impl SkillMatcher {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SkillMatcherBackend {
     InMemory(SkillMatcher),
     Qdrant(crate::qdrant_matcher::QdrantSkillMatcher),

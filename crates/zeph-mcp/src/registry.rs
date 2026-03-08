@@ -69,6 +69,7 @@ fn compute_hash(tool: &McpTool) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+#[derive(Clone)]
 pub struct McpToolRegistry {
     registry: EmbeddingRegistry,
 }

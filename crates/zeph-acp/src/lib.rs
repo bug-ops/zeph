@@ -11,7 +11,7 @@ pub mod permission;
 pub mod terminal;
 pub mod transport;
 
-pub use agent::{AcpContext, AgentSpawner, ProviderFactory};
+pub use agent::{AcpContext, AgentSpawner, ProviderFactory, SessionContext};
 pub use error::AcpError;
 pub use fs::AcpFileExecutor;
 pub use lsp::{AcpLspProvider, DiagnosticsCache, LspProvider};
