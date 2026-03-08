@@ -90,7 +90,7 @@ pub(crate) struct Cli {
     pub(crate) lsp_context: bool,
 
     /// Enable debug dump: write LLM requests/responses and raw tool output to files.
-    /// Omit PATH to use the default directory from config (default: .local/debug).
+    /// Omit PATH to use the default directory from config (default: .zeph/debug).
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     pub(crate) debug_dump: Option<PathBuf>,
 

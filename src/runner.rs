@@ -47,6 +47,38 @@ use crate::tui_remote::run_tui_remote;
 #[cfg(feature = "index")]
 use zeph_llm::provider::LlmProvider;
 
+use zeph_core::config::Config;
+
+/// Warn at startup if legacy artifact paths exist but new `.zeph/`-based paths do not.
+///
+/// This fires only when the config is using the new defaults, so users with explicit
+/// old paths in their config are not affected.
+fn check_legacy_artifact_paths(config: &Config) {
+    let checks: &[(&str, &str, &str)] = &[
+        ("./data/zeph.db", ".zeph/data/zeph.db", "SQLite database"),
+        ("./skills", ".zeph/skills", "skills directory"),
+        (".local/debug", ".zeph/debug", "debug dump directory"),
+    ];
+    for (old_path, new_path, description) in checks {
+        let config_matches_new = match *description {
+            "SQLite database" => config.memory.sqlite_path == *new_path,
+            "skills directory" => config.skills.paths.iter().any(|p| p.as_str() == *new_path),
+            "debug dump directory" => config.debug.output_dir.to_str() == Some(new_path),
+            other => unreachable!("unknown legacy path description: {other}"),
+        };
+        if config_matches_new
+            && std::path::Path::new(old_path).exists()
+            && !std::path::Path::new(new_path).exists()
+        {
+            tracing::warn!(
+                "Legacy {description} found at '{old_path}'. \
+                 Default location changed to '{new_path}'. \
+                 Move your data: mv {old_path} {new_path}"
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -169,6 +201,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         cli.vault_path.as_deref(),
     )
     .await?;
+
+    check_legacy_artifact_paths(app.config());
 
     #[cfg(feature = "scheduler")]
     {

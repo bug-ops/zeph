@@ -17,6 +17,11 @@ use crate::subagent::hooks::HookDef;
 
 use crate::vault::Secret;
 
+/// Default path constants for project-level runtime artifacts.
+pub const DEFAULT_SQLITE_PATH: &str = ".zeph/data/zeph.db";
+pub const DEFAULT_SKILLS_DIR: &str = ".zeph/skills";
+pub const DEFAULT_DEBUG_DIR: &str = ".zeph/debug";
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub agent: AgentConfig,
@@ -1408,7 +1413,7 @@ impl Default for DebugConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            output_dir: PathBuf::from(".local/debug"),
+            output_dir: PathBuf::from(DEFAULT_DEBUG_DIR),
             format: crate::debug_dump::DumpFormat::default(),
         }
     }
@@ -1788,7 +1793,7 @@ impl Default for Config {
                 summary_provider: None,
             },
             skills: SkillsConfig {
-                paths: vec!["./skills".into()],
+                paths: vec![DEFAULT_SKILLS_DIR.into()],
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
                 cosine_weight: default_cosine_weight(),
@@ -1798,7 +1803,7 @@ impl Default for Config {
                 prompt_mode: SkillPromptMode::Auto,
             },
             memory: MemoryConfig {
-                sqlite_path: "./data/zeph.db".into(),
+                sqlite_path: DEFAULT_SQLITE_PATH.into(),
                 history_limit: 50,
                 qdrant_url: default_qdrant_url(),
                 semantic: SemanticConfig::default(),

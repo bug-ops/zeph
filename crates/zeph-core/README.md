@@ -152,7 +152,7 @@ Key `DebugConfig` fields (TOML section `[debug]`):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable debug dump at startup — writes all LLM requests, responses, and raw tool output to files |
-| `output_dir` | `PathBuf` | `".local/debug"` | Base directory; each session creates a `{unix_timestamp}/` subdirectory |
+| `output_dir` | `PathBuf` | `".zeph/debug"` | Base directory; each session creates a `{unix_timestamp}/` subdirectory |
 
 > [!TIP]
 > Use `--debug-dump` without a path to use `output_dir` from config. Use `--debug-dump /tmp/mydir` to override for one session. The `/debug-dump [path]` slash command enables it mid-session without restarting.

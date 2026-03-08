@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
+assertion_line: 2369
 expression: toml_str
 ---
 [agent]
@@ -21,7 +22,7 @@ router_ema_alpha = 0.1
 router_reorder_interval = 10
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 max_active_skills = 5
 disambiguation_threshold = 0.05
 cosine_weight = 0.7
@@ -56,7 +57,7 @@ local_level = "trusted"
 hash_mismatch_level = "quarantined"
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 qdrant_url = "http://localhost:6334"
 summarization_threshold = 50
@@ -321,7 +322,7 @@ max_wall_time_secs = 1800
 
 [debug]
 enabled = false
-output_dir = ".local/debug"
+output_dir = ".zeph/debug"
 format = "json"
 
 [lsp]

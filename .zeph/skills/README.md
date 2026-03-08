@@ -138,11 +138,11 @@ The `zeph init` wizard includes a dedicated step for adding custom secrets durin
 
 ### Skill Paths
 
-By default, Zeph scans `./skills` for skill directories. Add more paths in `config/default.toml`:
+By default, Zeph scans `.zeph/skills` for skill directories. Add more paths in `config/default.toml`:
 
 ```toml
 [skills]
-paths = ["./skills", "/home/user/my-skills"]
+paths = [".zeph/skills", "/home/user/my-skills"]
 ```
 
 If a skill with the same name appears in multiple paths, the first one found takes priority.

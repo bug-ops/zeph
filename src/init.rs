@@ -406,7 +406,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     state.sqlite_path = Some(
         Input::new()
             .with_prompt("SQLite database path")
-            .default("./data/zeph.db".into())
+            .default(".zeph/data/zeph.db".into())
             .interact_text()?,
     );
 
@@ -633,7 +633,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         sqlite_path: state
             .sqlite_path
             .clone()
-            .unwrap_or_else(|| "./data/zeph.db".into()),
+            .unwrap_or_else(|| ".zeph/data/zeph.db".into()),
         qdrant_url: state
             .qdrant_url
             .clone()

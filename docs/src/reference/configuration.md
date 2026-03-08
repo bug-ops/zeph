@@ -160,7 +160,7 @@ model = "whisper-1"
 # When omitted, uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 max_active_skills = 5              # Top-K skills per query via embedding similarity
 disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
 prompt_mode = "auto"               # Skill prompt format: "full", "compact", or "auto" (default: "auto")
@@ -182,7 +182,7 @@ judge_adaptive_low = 0.5           # Regex confidence below this bypasses judge 
 judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8)
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
@@ -406,7 +406,7 @@ max_body_size = 1048576     # 1 MiB
 
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
-output_dir = ".local/debug" # Base directory for dump files (default: ".local/debug")
+output_dir = ".zeph/debug"  # Base directory for dump files (default: ".zeph/debug")
 
 # Requires `experiments` feature.
 # [experiments]

@@ -26,7 +26,7 @@ services:
       ZEPH_LLM_EMBEDDING_MODEL: ${ZEPH_LLM_EMBEDDING_MODEL:-qwen3-embedding}
       ZEPH_CLAUDE_API_KEY: ${ZEPH_CLAUDE_API_KEY:-}
       ZEPH_TELEGRAM_TOKEN: ${ZEPH_TELEGRAM_TOKEN:-}
-      ZEPH_SQLITE_PATH: /app/data/zeph.db
+      ZEPH_SQLITE_PATH: /app/.zeph/data/zeph.db
       ZEPH_QDRANT_URL: http://qdrant:6334
       ZEPH_MEMORY_SEMANTIC_ENABLED: ${ZEPH_MEMORY_SEMANTIC_ENABLED:-true}
       ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT: ${ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT:-5}
@@ -44,7 +44,7 @@ services:
     ports:
       - "${ZEPH_A2A_PORT:-8080}:${ZEPH_A2A_PORT:-8080}"
     volumes:
-      - zeph_data:/app/data
+      - zeph_data:/app/.zeph/data
     stdin_open: true
     tty: true
 

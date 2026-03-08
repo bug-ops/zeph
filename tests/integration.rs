@@ -3813,7 +3813,7 @@ base_url = "http://localhost:11434"
 paths = []
 
 [memory]
-sqlite_path = "./data/test.db"
+sqlite_path = ".zeph/data/test.db"
 history_limit = 10
 "#
         )

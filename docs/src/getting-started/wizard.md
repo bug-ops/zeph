@@ -145,7 +145,7 @@ Configure the self-learning feedback detector:
 
 Enable debug dump at startup:
 
-- **Enable debug dump** — write LLM requests/responses and raw tool output to numbered files in `.local/debug` (default: disabled)
+- **Enable debug dump** — write LLM requests/responses and raw tool output to numbered files in `.zeph/debug` (default: disabled)
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 

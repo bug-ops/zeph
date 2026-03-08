@@ -169,7 +169,7 @@ Structured JSON audit log for all tool executions:
 ```toml
 [tools.audit]
 enabled = true
-destination = "./data/audit.jsonl"  # or "stdout"
+destination = ".zeph/data/audit.jsonl"  # or "stdout"
 ```
 
 Each entry includes timestamp, tool name, command, result (success/blocked/error/timeout), and duration in milliseconds.

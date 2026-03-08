@@ -60,7 +60,7 @@ ollama pull qwen3-embedding
 
 SQLite storage:
 ```bash
-export ZEPH_SQLITE_PATH=./data/zeph.db
+export ZEPH_SQLITE_PATH=.zeph/data/zeph.db
 ```
 
 Config: `memory.history_limit` (default: 50) — recent messages loaded into context.
@@ -137,7 +137,7 @@ Config: `tools.shell.confirm_patterns` — destructive commands requiring user c
 Audit logging:
 ```bash
 export ZEPH_TOOLS_AUDIT_ENABLED=true
-export ZEPH_TOOLS_AUDIT_DESTINATION=./data/audit.jsonl
+export ZEPH_TOOLS_AUDIT_DESTINATION=.zeph/data/audit.jsonl
 ```
 
 Scrape:
@@ -225,7 +225,7 @@ Task types: `coding`, `creative`, `analysis`, `translation`, `summarization`, `g
 export ZEPH_SKILLS_MAX_ACTIVE=5
 ```
 
-Config: `skills.paths` (default: `["./skills"]`). Top-K skills selected per query via embedding similarity. File changes detected automatically (hot-reload).
+Config: `skills.paths` (default: `[".zeph/skills"]`). Top-K skills selected per query via embedding similarity. File changes detected automatically (hot-reload).
 
 ## Security
 

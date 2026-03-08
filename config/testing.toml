@@ -18,7 +18,7 @@ model = "claude-sonnet-4-6-20251101"
 max_tokens = 4096
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 max_active_skills = 5
 
 [skills.learning]
@@ -32,7 +32,7 @@ max_versions = 10
 cooldown_minutes = 60
 
 [memory]
-sqlite_path = "./data/zeph-test.db"
+sqlite_path = ".zeph/data/zeph-test.db"
 history_limit = 50
 qdrant_url = "http://localhost:6334"
 summarization_threshold = 50
@@ -92,7 +92,7 @@ retention_days = 7
 
 [tools.audit]
 enabled = true
-destination = "./data/audit-test.jsonl"
+destination = ".zeph/data/audit-test.jsonl"
 
 [tools.anomaly]
 enabled = true
@@ -123,7 +123,7 @@ max_parallel_tools = 8
 
 [debug]
 enabled = true
-output_dir = ".local/debug"
+output_dir = ".zeph/debug"
 format = "raw"
 
 [tui]

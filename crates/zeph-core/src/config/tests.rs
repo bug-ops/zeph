@@ -155,10 +155,10 @@ model = "claude-sonnet-4-5-20250929"
 max_tokens = 4096
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -205,10 +205,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [telegram]
@@ -254,10 +254,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [tools]
@@ -296,10 +296,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -380,10 +380,10 @@ model = "qwen3:8b"
 embedding_model = "nomic-embed-text"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -426,10 +426,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -465,10 +465,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 qdrant_url = "http://qdrant:6334"
 "#
@@ -518,10 +518,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 summarization_threshold = 200
 "#
@@ -570,10 +570,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 context_budget_tokens = 4096
 "#
@@ -630,7 +630,7 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [skills.learning]
 enabled = true
@@ -643,7 +643,7 @@ max_versions = 20
 cooldown_minutes = 120
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -681,10 +681,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -840,7 +840,7 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "m"
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 [memory]
 sqlite_path = ":memory:"
 history_limit = 50
@@ -873,10 +873,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [mcp]
@@ -921,10 +921,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [[mcp.servers]]
@@ -979,10 +979,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [a2a]
@@ -1037,10 +1037,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [security]
@@ -1081,10 +1081,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [timeouts]
@@ -1121,10 +1121,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [vault]
@@ -1447,10 +1447,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [[mcp.servers]]
@@ -1536,7 +1536,7 @@ model = "claude-sonnet-4-5-20250929"
 max_tokens = 8192
 
 [skills]
-paths = ["./skills", "./extra-skills"]
+paths = [".zeph/skills", "./extra-skills"]
 max_active_skills = 3
 
 [skills.learning]
@@ -1646,10 +1646,10 @@ max_tokens = 4096
 embedding_model = "text-embedding-3-small"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -1692,10 +1692,10 @@ model = "gpt-4o"
 max_tokens = 4096
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -1744,10 +1744,10 @@ max_tokens = 4096
 reasoning_effort = "high"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -1783,10 +1783,10 @@ model = "gpt-5.2"
 max_tokens = 4096
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -1824,10 +1824,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 compaction_threshold = 0.90
 compaction_preserve_tail = 6
@@ -1930,10 +1930,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [index]
@@ -1974,10 +1974,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 "#
     )
@@ -2079,10 +2079,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [security]
@@ -2115,10 +2115,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [discord]
@@ -2175,10 +2175,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [security]
@@ -2211,10 +2211,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [discord]
@@ -2256,10 +2256,10 @@ base_url = "http://localhost:11434"
 model = "qwen3:8b"
 
 [skills]
-paths = ["./skills"]
+paths = [".zeph/skills"]
 
 [memory]
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
 
 [slack]

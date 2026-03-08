@@ -1,6 +1,8 @@
 target/
 data/
 .local/
+.zeph/data/
+.zeph/debug/
 .git/
 .env
 *.swp

@@ -9,7 +9,7 @@ Three ways to activate debug dump:
 **CLI flag (one session):**
 
 ```bash
-zeph --debug-dump                     # use output_dir from config (default: .local/debug)
+zeph --debug-dump                     # use output_dir from config (default: .zeph/debug)
 zeph --debug-dump /tmp/my-debug       # write to a custom path
 ```
 
@@ -18,7 +18,7 @@ zeph --debug-dump /tmp/my-debug       # write to a custom path
 ```toml
 [debug]
 enabled = true
-output_dir = ".local/debug"           # relative to cwd, or absolute path
+output_dir = ".zeph/debug"           # relative to cwd, or absolute path
 ```
 
 **Slash command (mid-session):**
@@ -35,7 +35,7 @@ The slash command is useful when you notice unexpected output and want to captur
 Each session creates a timestamped subdirectory under the output directory:
 
 ```
-.local/debug/
+.zeph/debug/
 └── 1748992800/          ← Unix timestamp at session start
     ├── 0000-request.json
     ├── 0000-response.txt
@@ -66,7 +66,7 @@ Both the streaming and non-streaming LLM code paths are instrumented. Tool outpu
 ```toml
 [debug]
 enabled = false             # Enable at startup (default: false)
-output_dir = ".local/debug" # Base directory for dump files (default: ".local/debug")
+output_dir = ".zeph/debug" # Base directory for dump files (default: ".zeph/debug")
 ```
 
 The `--debug-dump` CLI flag overrides both fields: if `PATH` is provided it overrides `output_dir`; if omitted, `output_dir` is used. If neither the flag nor `enabled = true` is set, no files are written.
@@ -77,7 +77,7 @@ The `--debug-dump` CLI flag overrides both fields: if `PATH` is provided it over
 
 Dump files contain the full conversation context including any secrets, tokens, or sensitive data present in messages and tool output. Do not store dump directories in version-controlled or publicly accessible locations.
 
-Add `.local/` to `.gitignore` (this is the default) to keep dumps out of your repository.
+Add `.zeph/debug/` to `.gitignore` (covered by the `.zeph/*` rule in the default `.gitignore`) to keep dumps out of your repository.
 
 ## See Also
 

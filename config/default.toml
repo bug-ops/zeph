@@ -152,7 +152,7 @@ max_tokens = 4096
 
 [skills]
 # Directories to scan for SKILL.md files
-paths = ["./skills"]
+paths = [".zeph/skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
 # Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
@@ -188,7 +188,7 @@ hash_mismatch_level = "quarantined"
 
 [memory]
 # SQLite database path for conversation history
-sqlite_path = "./data/zeph.db"
+sqlite_path = ".zeph/data/zeph.db"
 # Maximum number of recent messages to load into context
 history_limit = 50
 # Qdrant vector database URL for semantic memory
@@ -516,7 +516,7 @@ max_parallel_tools = 8
 # Use /debug-dump in TUI/CLI to toggle at runtime.
 enabled = false
 # Directory where per-session subdirectories are created
-output_dir = ".local/debug"
+output_dir = ".zeph/debug"
 # Output format for LLM request files:
 #   "json" — internal zeph-llm representation (default)
 #   "raw"  — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)

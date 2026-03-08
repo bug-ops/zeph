@@ -21,7 +21,7 @@ If you encounter sensitive data in a skill, replace it with `[REDACTED]` in your
 ## Step 1: List all skills
 
 ```bash
-for dir in ./skills/*/; do if [ -f "$dir/SKILL.md" ]; then echo "$dir"; fi; done
+for dir in .zeph/skills/*/; do if [ -f "$dir/SKILL.md" ]; then echo "$dir"; fi; done
 ```
 
 Read the output. Each line is a skill directory.
@@ -31,7 +31,7 @@ Read the output. Each line is a skill directory.
 For each skill directory, read the SKILL.md file:
 
 ```bash
-cat ./skills/SKILLNAME/SKILL.md
+cat .zeph/skills/SKILLNAME/SKILL.md
 ```
 
 Check these rules for each skill:

@@ -45,7 +45,7 @@ description: Helps with PDFs.
 ## Step 4: Create the directory structure
 
 ```
-skills/<skill-name>/
+.zeph/skills/<skill-name>/
 ├── SKILL.md              # Required
 ├── scripts/              # Optional: executable scripts
 ├── references/           # Optional: detailed docs loaded on demand

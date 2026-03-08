@@ -13,9 +13,9 @@ WORKDIR /app
 
 COPY binaries/zeph-${TARGETARCH} /app/zeph
 COPY config/ /app/config/
-COPY skills/ /app/skills/
+COPY .zeph/skills/ /app/.zeph/skills/
 
-RUN mkdir -p /app/data && \
+RUN mkdir -p /app/.zeph/data && \
     chown -R zeph:zeph /app && \
     chmod +x /app/zeph
 
