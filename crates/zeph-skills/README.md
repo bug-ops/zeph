@@ -9,7 +9,7 @@ SKILL.md parser, registry, embedding matcher, and hot-reload for Zeph.
 
 ## Overview
 
-Parses SKILL.md files (YAML frontmatter + markdown body) from the `skills/` directory, maintains an in-memory registry with hot-reload support, and formats selected skills into LLM system prompts. Supports semantic matching via Qdrant embeddings and self-learning skill evolution with trust scoring.
+Parses SKILL.md files (YAML frontmatter + markdown body) from the `.zeph/skills/` directory, maintains an in-memory registry with hot-reload support, and formats selected skills into LLM system prompts. Supports semantic matching via Qdrant embeddings and self-learning skill evolution with trust scoring.
 
 ## Key modules
 

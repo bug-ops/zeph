@@ -5,7 +5,7 @@ Create your own skills to teach Zeph new capabilities. A skill is a single `SKIL
 ## Skill Structure
 
 ```text
-skills/
+.zeph/skills/
 └── my-skill/
     └── SKILL.md
 ```
@@ -76,7 +76,7 @@ Lowercase letters, numbers, and hyphens only. No leading, trailing, or consecuti
 Add reference files alongside `SKILL.md`:
 
 ```text
-skills/
+.zeph/skills/
 └── system-info/
     ├── SKILL.md
     └── references/
