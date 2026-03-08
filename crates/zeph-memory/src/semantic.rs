@@ -1326,6 +1326,10 @@ impl SemanticMemory {
             .embed(correction_text)
             .await
             .map_err(|e| MemoryError::Other(e.to_string()))?;
+        let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
+        store
+            .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
+            .await?;
         let payload = serde_json::json!({ "correction_id": correction_id });
         store
             .store_to_collection(CORRECTIONS_COLLECTION, payload, embedding)
@@ -1358,6 +1362,10 @@ impl SemanticMemory {
             .embed(query)
             .await
             .map_err(|e| MemoryError::Other(e.to_string()))?;
+        let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
+        store
+            .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
+            .await?;
         let scored = store
             .search_collection(CORRECTIONS_COLLECTION, &embedding, limit, None)
             .await
@@ -2361,6 +2369,85 @@ mod tests {
         let memory = test_semantic_memory(false).await;
         let results = memory
             .search_session_summaries("query", 5, Some(ConversationId(1)))
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_correction_embedding_no_qdrant_noop() {
+        let memory = test_semantic_memory(true).await;
+        let result = memory.store_correction_embedding(1, "bad response").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn store_correction_embedding_no_embeddings_noop() {
+        let memory = test_semantic_memory(false).await;
+        let result = memory.store_correction_embedding(1, "bad response").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn retrieve_similar_corrections_no_qdrant_empty() {
+        let memory = test_semantic_memory(true).await;
+        let results = memory
+            .retrieve_similar_corrections("query", 5, 0.0)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_similar_corrections_no_embeddings_empty() {
+        let memory = test_semantic_memory(false).await;
+        let results = memory
+            .retrieve_similar_corrections("query", 5, 0.0)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        let provider = AnyProvider::Mock(mock);
+
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let qdrant = Some(Arc::new(
+            crate::embedding_store::EmbeddingStore::new_sqlite(pool),
+        ));
+
+        let memory = SemanticMemory {
+            sqlite,
+            qdrant,
+            provider,
+            embedding_model: "test-model".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
+            temporal_decay_enabled: false,
+            temporal_decay_half_life_days: 30,
+            mmr_enabled: false,
+            mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
+            graph_store: None,
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        };
+
+        // Regression test: on a clean DB, store_correction_embedding() must NOT fail with
+        // SQLite FK constraint error (error 787). ensure_named_collection() must be called first.
+        memory
+            .store_correction_embedding(1, "bad response")
+            .await
+            .unwrap();
+
+        // retrieve must succeed too (no UserCorrectionRow in SQLite yet → empty results)
+        let results = memory
+            .retrieve_similar_corrections("bad", 5, 0.0)
             .await
             .unwrap();
         assert!(results.is_empty());
