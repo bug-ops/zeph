@@ -1720,6 +1720,7 @@ pub enum ScheduledTaskKind {
     SkillRefresh,
     HealthCheck,
     UpdateCheck,
+    Experiment,
     Custom(String),
 }
 
@@ -2188,6 +2189,10 @@ fn default_experiment_max_experiments_per_run() -> u32 {
     20
 }
 
+fn default_experiment_schedule_max_wall_time_secs() -> u64 {
+    1800
+}
+
 /// Configuration for the autonomous self-experimentation engine (`[experiments]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -2233,6 +2238,12 @@ pub struct ExperimentSchedule {
     pub cron: String,
     #[serde(default = "default_experiment_max_experiments_per_run")]
     pub max_experiments_per_run: u32,
+    /// Wall-time cap for a single scheduled experiment session (seconds).
+    ///
+    /// Overrides `experiments.max_wall_time_secs` for scheduled runs. Defaults to 1800s so
+    /// a background session cannot overlap the next cron trigger on typical schedules.
+    #[serde(default = "default_experiment_schedule_max_wall_time_secs")]
+    pub max_wall_time_secs: u64,
 }
 
 impl Default for ExperimentSchedule {
@@ -2241,6 +2252,7 @@ impl Default for ExperimentSchedule {
             enabled: false,
             cron: default_experiment_schedule_cron(),
             max_experiments_per_run: default_experiment_max_experiments_per_run(),
+            max_wall_time_secs: default_experiment_schedule_max_wall_time_secs(),
         }
     }
 }
@@ -2280,6 +2292,12 @@ impl ExperimentConfig {
             return Err(crate::config::ConfigError::Validation(format!(
                 "experiments.schedule.max_experiments_per_run must be in 1..=100, got {}",
                 self.schedule.max_experiments_per_run
+            )));
+        }
+        if !(60..=86_400).contains(&self.schedule.max_wall_time_secs) {
+            return Err(crate::config::ConfigError::Validation(format!(
+                "experiments.schedule.max_wall_time_secs must be in 60..=86400, got {}",
+                self.schedule.max_wall_time_secs
             )));
         }
         Ok(())
@@ -2421,6 +2439,15 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_task_kind_serde_experiment() {
+        let kind = ScheduledTaskKind::Experiment;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#""experiment""#);
+        let back: ScheduledTaskKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    #[test]
     fn scheduled_task_kind_serde_custom_roundtrip() {
         let kind = ScheduledTaskKind::Custom("my_task".to_owned());
         let json = serde_json::to_string(&kind).unwrap();
@@ -2517,6 +2544,7 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.cron, "0 3 * * *");
         assert_eq!(cfg.max_experiments_per_run, 20);
+        assert_eq!(cfg.max_wall_time_secs, 1800);
     }
 
     #[test]
@@ -2602,6 +2630,18 @@ eval_budget_tokens = 50000
         let cfg = ExperimentConfig {
             schedule: ExperimentSchedule {
                 max_experiments_per_run: 200,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn experiment_config_validate_rejects_schedule_wall_time_too_short() {
+        let cfg = ExperimentConfig {
+            schedule: ExperimentSchedule {
+                max_wall_time_secs: 10,
                 ..Default::default()
             },
             ..Default::default()

@@ -4,6 +4,7 @@
 //! Uniform random sampling strategy for parameter variation.
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use ordered_float::OrderedFloat;
 use rand::Rng as _;
@@ -24,9 +25,14 @@ const MAX_RETRIES: usize = 1000;
 /// sampled uniformly from its `[min, max]` range and quantized to the nearest
 /// step (if configured). The sample is rejected if it was already visited.
 /// Returns `None` after `MAX_RETRIES` consecutive rejections.
+///
+/// `rng` is wrapped in a [`Mutex`] so that `Random` implements [`Sync`], which is
+/// required by [`VariationGenerator`] to allow [`ExperimentEngine`] to be used
+/// with `tokio::spawn`. The mutex is only ever locked from a single thread
+/// (the experiment loop is sequential), so there is no contention.
 pub struct Random {
     search_space: SearchSpace,
-    rng: SmallRng,
+    rng: Mutex<SmallRng>,
 }
 
 impl Random {
@@ -35,7 +41,7 @@ impl Random {
     pub fn new(search_space: SearchSpace, seed: u64) -> Self {
         Self {
             search_space,
-            rng: SmallRng::seed_from_u64(seed),
+            rng: Mutex::new(SmallRng::seed_from_u64(seed)),
         }
     }
 }
@@ -49,10 +55,11 @@ impl VariationGenerator for Random {
         if self.search_space.parameters.is_empty() {
             return None;
         }
+        let mut rng = self.rng.lock().expect("rng mutex poisoned");
         for _ in 0..MAX_RETRIES {
-            let idx = self.rng.random_range(0..self.search_space.parameters.len());
+            let idx = rng.random_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
-            let raw: f64 = self.rng.random_range(range.min..=range.max);
+            let raw: f64 = rng.random_range(range.min..=range.max);
             let value = range.quantize(raw);
             let variation = Variation {
                 parameter: range.kind,
@@ -178,5 +185,11 @@ mod tests {
     fn random_name() {
         let generator = Random::new(SearchSpace::default(), 0);
         assert_eq!(generator.name(), "random");
+    }
+
+    #[test]
+    fn random_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<Random>();
     }
 }

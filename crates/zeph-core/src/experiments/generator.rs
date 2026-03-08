@@ -14,10 +14,11 @@ use super::types::Variation;
 /// changes exactly one parameter from the baseline. The caller is responsible
 /// for tracking visited variations and passing them to `next`.
 ///
-/// Implementations hold mutable state (position cursor, RNG seed) and are
-/// therefore `Send` but not required to be `Sync`. The experiment engine loop
-/// is sequential and accesses the generator exclusively.
-pub trait VariationGenerator: Send {
+/// Implementations hold mutable state (position cursor, RNG seed) and must be
+/// both `Send` and `Sync` so that [`ExperimentEngine`] can be used with
+/// `tokio::spawn`. The engine loop accesses the generator exclusively via
+/// `&mut self`, so no concurrent access occurs in practice.
+pub trait VariationGenerator: Send + Sync {
     /// Produce the next untested variation, or `None` if the space is exhausted.
     ///
     /// `baseline` is the current best-known configuration snapshot.

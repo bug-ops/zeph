@@ -74,6 +74,7 @@ pub struct ExperimentEngine {
     memory: Option<Arc<SemanticMemory>>,
     session_id: String,
     cancel: CancellationToken,
+    source: ExperimentSource,
 }
 
 /// Maximum number of consecutive NaN-scored evaluations before the loop breaks.
@@ -110,7 +111,18 @@ impl ExperimentEngine {
             memory,
             session_id: uuid::Uuid::new_v4().to_string(),
             cancel: CancellationToken::new(),
+            source: ExperimentSource::Manual,
         }
+    }
+
+    /// Set the [`ExperimentSource`] for this session.
+    ///
+    /// Defaults to [`ExperimentSource::Manual`]. Use [`ExperimentSource::Scheduled`]
+    /// for runs triggered by the scheduler.
+    #[must_use]
+    pub fn with_source(mut self, source: ExperimentSource) -> Self {
+        self.source = source;
+        self
     }
 
     /// Return a clone of the internal [`CancellationToken`].
@@ -302,7 +314,7 @@ impl ExperimentEngine {
                 latency_ms: candidate_report.p50_latency_ms,
                 tokens_used: candidate_report.total_tokens,
                 accepted,
-                source: ExperimentSource::Manual,
+                source: self.source.clone(),
                 created_at: chrono_now_utc(),
             });
         }
@@ -364,7 +376,7 @@ impl ExperimentEngine {
             latency_ms: p50_latency_ms as i64,
             tokens_used: total_tokens as i64,
             accepted,
-            source: ExperimentSource::Manual.as_str(),
+            source: self.source.as_str(),
         };
         mem.sqlite()
             .insert_experiment_result(&new_result)
@@ -924,5 +936,37 @@ mod tests {
         // This is a compile-time check — if ExperimentEngine is not Send, this fails to compile.
         // We cannot instantiate the engine here without providers, so we use a fn pointer trick.
         let _ = assert_send::<ExperimentEngine>;
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn engine_with_source_scheduled_propagates_to_results() {
+        let config = ExperimentConfig {
+            max_experiments: 1,
+            max_wall_time_secs: 3600,
+            min_improvement: 0.0,
+            ..Default::default()
+        };
+        let subject = make_subject_mock(2);
+        let judge = make_judge_mock(2);
+        let evaluator = Evaluator::new(Arc::new(judge), make_benchmark(), 1_000_000).unwrap();
+
+        let mut engine = ExperimentEngine::new(
+            evaluator,
+            Box::new(NVariationGenerator::new(1)),
+            Arc::new(subject),
+            ConfigSnapshot::default(),
+            config,
+            None,
+        )
+        .with_source(ExperimentSource::Scheduled);
+
+        let report = engine.run().await.unwrap();
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(
+            report.results[0].source,
+            ExperimentSource::Scheduled,
+            "with_source(Scheduled) must propagate to ExperimentResult"
+        );
     }
 }

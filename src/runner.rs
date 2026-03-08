@@ -321,6 +321,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let config_path = app.config_path().to_owned();
     let cache_pool = memory.sqlite().pool().clone();
 
+    // Clone provider for the experiment scheduler only when the feature will actually be used.
+    // The check must happen before `provider` moves into Agent::new_with_registry_arc.
+    #[cfg(all(feature = "scheduler", feature = "experiments"))]
+    let provider_for_experiments =
+        if config.experiments.enabled && config.experiments.schedule.enabled {
+            Some(std::sync::Arc::new(provider.clone()))
+        } else {
+            None
+        };
+
     let agent = Agent::new_with_registry_arc(
         provider,
         channel,
@@ -558,7 +568,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "scheduler")]
     let agent = {
-        let (agent, sched_executor) = bootstrap_scheduler(agent, config, shutdown_rx.clone()).await;
+        #[cfg(all(feature = "scheduler", feature = "experiments"))]
+        let exp_deps = provider_for_experiments.map(|p| (p, Some(std::sync::Arc::clone(&memory))));
+        #[cfg(not(all(feature = "scheduler", feature = "experiments")))]
+        let exp_deps: Option<(
+            std::sync::Arc<zeph_llm::any::AnyProvider>,
+            Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+        )> = None;
+        let (agent, sched_executor) =
+            bootstrap_scheduler(agent, config, shutdown_rx.clone(), exp_deps).await;
         if let Some(sched_exec) = sched_executor {
             #[cfg(feature = "tui")]
             {

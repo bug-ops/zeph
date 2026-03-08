@@ -16,6 +16,7 @@ pub enum TaskKind {
     SkillRefresh,
     HealthCheck,
     UpdateCheck,
+    Experiment,
     Custom(String),
 }
 
@@ -27,6 +28,7 @@ impl TaskKind {
             "skill_refresh" => Self::SkillRefresh,
             "health_check" => Self::HealthCheck,
             "update_check" => Self::UpdateCheck,
+            "experiment" => Self::Experiment,
             other => Self::Custom(other.to_owned()),
         }
     }
@@ -38,6 +40,7 @@ impl TaskKind {
             Self::SkillRefresh => "skill_refresh",
             Self::HealthCheck => "health_check",
             Self::UpdateCheck => "update_check",
+            Self::Experiment => "experiment",
             Self::Custom(s) => s,
         }
     }
@@ -184,6 +187,16 @@ mod tests {
             TaskKind::Custom("custom_job".into())
         );
         assert_eq!(TaskKind::Custom("x".into()).as_str(), "x");
+    }
+
+    #[test]
+    fn task_kind_experiment_roundtrip() {
+        assert_eq!(
+            TaskKind::from_str_kind("experiment"),
+            TaskKind::Experiment,
+            "from_str_kind must map 'experiment' to Experiment variant, not Custom"
+        );
+        assert_eq!(TaskKind::Experiment.as_str(), "experiment");
     }
 
     #[test]

@@ -317,6 +317,7 @@ auto_apply = false
 enabled = false
 cron = "0 3 * * *"
 max_experiments_per_run = 20
+max_wall_time_secs = 1800
 
 [debug]
 enabled = false
