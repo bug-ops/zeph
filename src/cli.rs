@@ -89,6 +89,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) lsp_context: bool,
 
+    /// Override log file path (set to empty string to disable file logging).
+    /// When omitted, uses the value from [logging] config section (default: .zeph/logs/zeph.log).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) log_file: Option<PathBuf>,
+
     /// Enable debug dump: write LLM requests/responses and raw tool output to files.
     /// Omit PATH to use the default directory from config (default: .zeph/debug).
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
@@ -362,5 +367,20 @@ mod tests {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();
         assert!(!cli.experiment_run);
         assert!(!cli.experiment_report);
+    }
+
+    #[test]
+    fn cli_parses_log_file_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--log-file", "/tmp/test.log"]).unwrap();
+        assert_eq!(
+            cli.log_file.as_deref(),
+            Some(std::path::Path::new("/tmp/test.log"))
+        );
+    }
+
+    #[test]
+    fn cli_log_file_defaults_to_none() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(cli.log_file.is_none());
     }
 }

@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 2369
 expression: toml_str
 ---
 [agent]
@@ -324,6 +323,12 @@ max_wall_time_secs = 1800
 enabled = false
 output_dir = ".zeph/debug"
 format = "json"
+
+[logging]
+file = ".zeph/logs/zeph.log"
+level = "info"
+rotation = "daily"
+max_files = 7
 
 [lsp]
 enabled = false

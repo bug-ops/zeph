@@ -3,6 +3,7 @@ data/
 .local/
 .zeph/data/
 .zeph/debug/
+.zeph/logs/
 .git/
 .env
 *.swp

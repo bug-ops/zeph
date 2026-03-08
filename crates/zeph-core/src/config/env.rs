@@ -298,6 +298,12 @@ impl Config {
         {
             self.acp.discovery_enabled = enabled;
         }
+        if let Ok(v) = std::env::var("ZEPH_LOG_FILE") {
+            self.logging.file = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LOG_LEVEL") {
+            self.logging.level = v;
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

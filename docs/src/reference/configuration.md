@@ -404,6 +404,12 @@ port = 8090
 rate_limit = 120
 max_body_size = 1048576     # 1 MiB
 
+[logging]
+file = ".zeph/logs/zeph.log"  # Log file path; empty string disables file logging (default: ".zeph/logs/zeph.log")
+level = "info"                # File log level (default: "info"); does not affect stderr/RUST_LOG
+rotation = "daily"            # Rotation strategy: daily, hourly, or never (default: "daily")
+max_files = 7                 # Rotated log files to retain (default: 7)
+
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
 output_dir = ".zeph/debug"  # Base directory for dump files (default: ".zeph/debug")
@@ -525,6 +531,8 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_STT_MODEL` | STT model name (default: `whisper-1`) |
 | `ZEPH_STT_BASE_URL` | STT server base URL (e.g. `http://127.0.0.1:8080/v1` for local whisper.cpp) |
 | `ZEPH_STT_LANGUAGE` | STT language: ISO-639-1 code or `auto` (default: `auto`) |
+| `ZEPH_LOG_FILE` | Override `logging.file` (log file path; empty string disables file logging) |
+| `ZEPH_LOG_LEVEL` | Override `logging.level` (file log level, e.g. `debug`, `warn`) |
 | `ZEPH_CONFIG` | Path to config file (default: `config/default.toml`) |
 | `ZEPH_TUI` | Enable TUI dashboard: `true` or `1` (requires `tui` feature) |
 | `ZEPH_AUTO_UPDATE_CHECK` | Enable automatic update checks: `true` or `false` (default: `true`) |

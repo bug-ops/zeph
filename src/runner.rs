@@ -10,17 +10,13 @@ use crate::channel::{AppChannel, create_channel_with_tui};
 use crate::cli::Cli;
 #[cfg(feature = "scheduler")]
 use crate::scheduler::bootstrap_scheduler;
-#[cfg(any(feature = "acp", feature = "acp-http", feature = "tui"))]
-use crate::tracing_init::init_file_logger;
-#[cfg(not(feature = "tui"))]
-use crate::tracing_init::init_subscriber;
+use crate::tracing_init::init_tracing;
 use crate::tui_bridge::forward_status_to_stderr;
 #[cfg(feature = "tui")]
 use crate::tui_bridge::{TuiRunParams, run_tui_agent};
 
 use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
-#[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::warmup_provider;
@@ -79,8 +75,30 @@ fn check_legacy_artifact_paths(config: &Config) {
     }
 }
 
+/// Merge on-disk logging config with the optional CLI `--log-file` override.
+///
+/// Priority: CLI flag > config file > built-in defaults.
+fn resolve_logging_config(
+    config_logging: zeph_core::config::LoggingConfig,
+    cli_log_file: Option<&std::path::Path>,
+) -> zeph_core::config::LoggingConfig {
+    let mut logging = config_logging;
+    if let Some(p) = cli_log_file {
+        logging.file = p.to_string_lossy().into_owned();
+    }
+    logging
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
+    // Load logging config early (sync, cheap) so every code path gets file logging.
+    let config_path = resolve_config_path(cli.config.as_deref());
+    let base_logging = zeph_core::config::Config::load(&config_path)
+        .map(|c| c.logging)
+        .unwrap_or_default();
+    let logging_config = resolve_logging_config(base_logging, cli.log_file.as_deref());
+    let _tracing_guard = init_tracing(&logging_config);
+
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),
         Some(Command::Vault { command: vault_cmd }) => {
@@ -91,11 +109,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Some(Command::Skill { command: skill_cmd }) => {
-            tracing_subscriber::fmt::init();
             return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Memory { command: mem_cmd }) => {
-            tracing_subscriber::fmt::init();
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Router {
@@ -109,7 +125,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             chunk_overlap,
             collection,
         }) => {
-            tracing_subscriber::fmt::init();
             return crate::commands::ingest::handle_ingest(
                 path,
                 chunk_size,
@@ -121,13 +136,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {
-            tracing_subscriber::fmt::init();
             return handle_sessions_command(sess_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Agents {
             command: agents_cmd,
         }) => {
-            tracing_subscriber::fmt::init();
             return handle_agents_command(agents_cmd, cli.config.as_deref()).await;
         }
         None => {}
@@ -135,7 +148,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "a2a")]
     if cli.daemon {
-        tracing_subscriber::fmt::init();
         return Box::pin(run_daemon(
             cli.config.as_deref(),
             cli.vault.as_deref(),
@@ -153,7 +165,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "acp")]
     if cli.acp {
-        init_file_logger();
         return Box::pin(run_acp_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
@@ -165,7 +176,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "acp-http")]
     if cli.acp_http {
-        init_file_logger();
         return Box::pin(run_acp_http_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
@@ -179,20 +189,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(all(feature = "tui", feature = "a2a"))]
     if let Some(url) = cli.connect {
-        init_file_logger();
         return run_tui_remote(url, cli.config.as_deref()).await;
     }
 
     #[cfg(feature = "tui")]
     let tui_active = cli.tui;
-    #[cfg(feature = "tui")]
-    if tui_active {
-        init_file_logger();
-    } else {
-        tracing_subscriber::fmt::init();
-    }
-    #[cfg(not(feature = "tui"))]
-    init_subscriber(&resolve_config_path(cli.config.as_deref()));
 
     let mut app = AppBuilder::new(
         cli.config.as_deref(),
@@ -414,6 +415,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_overflow_config(config.tools.overflow.clone())
     .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path, config_reload_rx)
+    .with_logging_config(logging_config.clone())
     .with_available_secrets(
         config
             .secrets
@@ -965,6 +967,41 @@ fn parse_thinking_arg(s: &str) -> anyhow::Result<ThinkingConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- resolve_logging_config ---
+
+    #[test]
+    fn resolve_logging_config_no_cli_no_config_file_uses_default() {
+        let base = zeph_core::config::LoggingConfig::default();
+        let result = resolve_logging_config(base.clone(), None);
+        assert_eq!(result.file, base.file);
+    }
+
+    #[test]
+    fn resolve_logging_config_no_cli_with_config_file_uses_config() {
+        let mut base = zeph_core::config::LoggingConfig::default();
+        base.file = "/var/log/zeph.log".into();
+        let result = resolve_logging_config(base, None);
+        assert_eq!(result.file, "/var/log/zeph.log");
+    }
+
+    #[test]
+    fn resolve_logging_config_cli_empty_str_disables_logging() {
+        let mut base = zeph_core::config::LoggingConfig::default();
+        base.file = "/var/log/zeph.log".into();
+        let result = resolve_logging_config(base, Some(std::path::Path::new("")));
+        assert_eq!(result.file, "");
+    }
+
+    #[test]
+    fn resolve_logging_config_cli_path_overrides_config() {
+        let mut base = zeph_core::config::LoggingConfig::default();
+        base.file = "/var/log/zeph.log".into();
+        let result = resolve_logging_config(base, Some(std::path::Path::new("/tmp/custom.log")));
+        assert_eq!(result.file, "/tmp/custom.log");
+    }
+
+    // --- parse_thinking ---
 
     #[test]
     fn parse_thinking_extended() {
