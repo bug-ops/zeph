@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::io::{self, Write, stdout};
+use std::io::{self, BufRead, Read, Write, stdout};
 
 use crossterm::{
     cursor,
@@ -28,6 +28,33 @@ impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
     }
+}
+
+/// Maximum number of bytes read per line in piped mode to prevent OOM on unterminated input.
+const MAX_LINE_LEN: u64 = 1 << 20; // 1 MiB
+
+/// Read a single line from `reader` without raw mode (for piped/non-TTY stdin).
+///
+/// Reads at most [`MAX_LINE_LEN`] bytes. Input that exceeds this limit is silently truncated.
+/// Returns `ReadLineResult::Eof` when the reader is exhausted (0 bytes read).
+///
+/// # Errors
+///
+/// Returns `io::Error` on underlying I/O failure.
+pub fn read_line_piped<R: BufRead>(reader: &mut R) -> io::Result<ReadLineResult> {
+    let mut buf = String::new();
+    let n = reader.take(MAX_LINE_LEN).read_line(&mut buf)?;
+    if n == 0 {
+        return Ok(ReadLineResult::Eof);
+    }
+    // Strip trailing newline characters
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(ReadLineResult::Line(buf))
 }
 
 pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult> {
@@ -234,7 +261,48 @@ fn unicode_display_width(s: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
+
+    #[test]
+    fn read_line_piped_returns_line() {
+        let mut reader = Cursor::new(b"hello world\n");
+        let result = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(result, ReadLineResult::Line(l) if l == "hello world"));
+    }
+
+    #[test]
+    fn read_line_piped_strips_crlf() {
+        let mut reader = Cursor::new(b"hello\r\n");
+        let result = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(result, ReadLineResult::Line(l) if l == "hello"));
+    }
+
+    #[test]
+    fn read_line_piped_returns_eof_on_empty() {
+        let mut reader = Cursor::new(b"");
+        let result = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(result, ReadLineResult::Eof));
+    }
+
+    #[test]
+    fn read_line_piped_no_newline_at_eof() {
+        let mut reader = Cursor::new(b"no newline");
+        let result = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(result, ReadLineResult::Line(l) if l == "no newline"));
+    }
+
+    #[test]
+    fn read_line_piped_multi_line_sequence() {
+        let mut reader = Cursor::new(b"line1\nline2\n");
+        let r1 = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(r1, ReadLineResult::Line(l) if l == "line1"));
+        let r2 = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(r2, ReadLineResult::Line(l) if l == "line2"));
+        let r3 = read_line_piped(&mut reader).unwrap();
+        assert!(matches!(r3, ReadLineResult::Eof));
+    }
 
     #[test]
     fn char_count_ascii() {

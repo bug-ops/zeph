@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::VecDeque;
+use std::io::IsTerminal;
 
 use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
@@ -94,20 +95,48 @@ impl Channel for CliChannel {
             .map(|h| h.entries().iter().cloned().collect())
             .unwrap_or_default();
 
-        let result = tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries))
-            .await
-            .map_err(|e| ChannelError::Other(e.to_string()))?
-            .map_err(ChannelError::Io)?;
+        let is_tty = std::io::stdin().is_terminal();
 
-        let line = match result {
-            ReadLineResult::Interrupted | ReadLineResult::Eof => return Ok(None),
-            ReadLineResult::Line(l) => l,
+        let line = loop {
+            let result = if is_tty {
+                let entries = entries.clone();
+                tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries))
+                    .await
+                    .map_err(|e| ChannelError::Other(e.to_string()))?
+                    .map_err(ChannelError::Io)?
+            } else {
+                tracing::debug!("stdin is not a terminal, using piped input mode");
+                tokio::task::spawn_blocking(|| {
+                    let stdin = std::io::stdin();
+                    let mut locked = stdin.lock();
+                    line_editor::read_line_piped(&mut locked)
+                })
+                .await
+                .map_err(|e| ChannelError::Other(e.to_string()))?
+                .map_err(ChannelError::Io)?
+            };
+
+            match result {
+                ReadLineResult::Interrupted | ReadLineResult::Eof => return Ok(None),
+                ReadLineResult::Line(l) => {
+                    let trimmed = l.trim();
+                    if trimmed == "exit" || trimmed == "quit" {
+                        return Ok(None);
+                    }
+                    // In pipe mode, skip empty lines (formatting) and read the next one.
+                    // In TTY mode, an empty Enter press means the user is done.
+                    if trimmed.is_empty() {
+                        if is_tty {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
+                    break l;
+                }
+            }
         };
 
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed == "exit" || trimmed == "quit" {
-            return Ok(None);
-        }
 
         if let Some(h) = &mut self.history {
             h.add(trimmed);
@@ -166,6 +195,10 @@ impl Channel for CliChannel {
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
+        if !std::io::stdin().is_terminal() {
+            tracing::debug!("non-interactive stdin, auto-declining confirmation");
+            return Ok(false);
+        }
         let prompt = format!("{prompt} [y/N]: ");
         let result = tokio::task::spawn_blocking(move || line_editor::read_line(&prompt, &[]))
             .await
