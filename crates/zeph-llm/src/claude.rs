@@ -666,6 +666,7 @@ impl ClaudeProvider {
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (thinking_param, temperature, effort) = self.build_thinking_param();
+        // lgtm[rust/cleartext-logging]
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
