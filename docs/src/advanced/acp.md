@@ -420,6 +420,15 @@ The terminal command timeout applies to these calls: if execution exceeds `termi
 
 Use `ext_notification` for event telemetry from the IDE (file saves, cursor moves, selection changes) that the agent should be aware of but need not respond to.
 
+Two LSP-specific notifications are handled when `[acp.lsp]` is enabled:
+
+| Method | Description |
+|--------|-------------|
+| `lsp/publishDiagnostics` | Push diagnostics for a file into the agent's bounded cache |
+| `lsp/didSave` | Trigger automatic diagnostics fetch for the saved file |
+
+See [ACP LSP Extension](#acp-lsp-extension) below for details.
+
 ## User message echo
 
 After the IDE sends a user prompt, Zeph immediately echoes the text back as a `UserMessageChunk` session notification. This allows the IDE to attribute streaming output correctly and render the full conversation in order even when the agent response begins before the IDE has rendered the original prompt.
@@ -1018,6 +1027,14 @@ src/auth.rs:67:1  error    mismatched types: expected `bool`, found `()`  [E0308
 If the IDE returns no diagnostics, the `@diagnostics` mention is silently removed and the prompt proceeds without a diagnostics block.
 
 > **Note:** `@diagnostics` requires the IDE to support the `get_diagnostics` extension method. Zed supports it natively. Other editors may need a plugin or updated ACP client. If the IDE does not implement `get_diagnostics`, Zeph logs a `WARN` and continues without injecting the block.
+
+### ACP LSP Extension
+
+Beyond `@diagnostics`, Zeph supports a full LSP extension via ACP `ext_method` and `ext_notification`. When the IDE advertises `meta["lsp"]` during `initialize`, Zeph gains access to hover, definition, references, diagnostics, document symbols, workspace symbol search, and code actions -- all proxied through the IDE's active language server.
+
+The extension also supports push notifications: the IDE can send `lsp/publishDiagnostics` to update a bounded diagnostics cache, and `lsp/didSave` to trigger automatic diagnostics refresh.
+
+Configuration is under `[acp.lsp]`. See the [LSP Code Intelligence guide](../guides/lsp.md#acp-lsp-extension) for full details on supported methods, capability negotiation, and configuration options.
 
 ## Native file tools
 

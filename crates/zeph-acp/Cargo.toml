@@ -46,6 +46,7 @@ tokio = { workspace = true, features = ["io-std", "sync", "macros", "rt", "test-
 tokio-util = { workspace = true, features = ["compat", "rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+rmcp.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

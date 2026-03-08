@@ -20,6 +20,7 @@ use zeph_mcp::manager::ServerEntry;
 use zeph_memory::sqlite::SqliteStore;
 
 use crate::fs::AcpFileExecutor;
+use crate::lsp::DiagnosticsCache;
 use crate::permission::AcpPermissionGate;
 use crate::terminal::AcpShellExecutor;
 use crate::transport::ConnSlot;
@@ -54,6 +55,16 @@ pub struct AcpContext {
     /// Tool call ID of the parent agent's tool call that spawned this subagent session.
     /// `None` for top-level (non-subagent) sessions.
     pub parent_tool_use_id: Option<String>,
+    /// LSP provider when the IDE advertised `meta["lsp"]` capability.
+    ///
+    /// **`!Send` constraint**: `AcpLspProvider` holds `Rc<RefCell<...>>` and must
+    /// only be used within a `LocalSet` context.
+    pub lsp_provider: Option<crate::lsp::AcpLspProvider>,
+    /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
+    /// and read by the agent loop context builder to inject diagnostics into the system prompt.
+    ///
+    /// `Rc` is used because `ZephAcpAgent` is `!Send` and runs in a `LocalSet`.
+    pub diagnostics_cache: Rc<RefCell<DiagnosticsCache>>,
 }
 
 /// Factory: receives a [`LoopbackChannel`] and optional [`AcpContext`], runs the agent loop.
@@ -139,6 +150,10 @@ pub struct ZephAcpAgent {
     title_max_chars: usize,
     /// Maximum number of sessions returned by `list_sessions` (0 = unlimited).
     max_history: usize,
+    /// LSP extension configuration (from `[acp.lsp]`).
+    lsp_config: zeph_core::config::AcpLspConfig,
+    /// Per-agent diagnostics cache, shared between the agent (writer) and `AcpContext` (reader).
+    diagnostics_cache: Rc<RefCell<DiagnosticsCache>>,
 }
 
 impl ZephAcpAgent {
@@ -150,6 +165,8 @@ impl ZephAcpAgent {
         session_idle_timeout_secs: u64,
         permission_file: Option<std::path::PathBuf>,
     ) -> Self {
+        let lsp_config = zeph_core::config::AcpLspConfig::default();
+        let max_diag_files = lsp_config.max_diagnostic_files;
         Self {
             notify_tx,
             spawner,
@@ -168,7 +185,18 @@ impl ZephAcpAgent {
             project_rules: Vec::new(),
             title_max_chars: 60,
             max_history: 100,
+            lsp_config,
+            diagnostics_cache: Rc::new(RefCell::new(DiagnosticsCache::new(max_diag_files))),
         }
+    }
+
+    /// Configure LSP extension settings.
+    #[must_use]
+    pub fn with_lsp_config(mut self, config: zeph_core::config::AcpLspConfig) -> Self {
+        let max_files = config.max_diagnostic_files;
+        self.lsp_config = config;
+        self.diagnostics_cache = Rc::new(RefCell::new(DiagnosticsCache::new(max_files)));
+        self
     }
 
     #[must_use]
@@ -269,6 +297,8 @@ impl ZephAcpAgent {
         let caps = self.client_caps.borrow();
         let can_read = caps.fs.read_text_file;
         let can_write = caps.fs.write_text_file;
+        let ide_supports_lsp =
+            self.lsp_config.enabled && caps.meta.as_ref().is_some_and(|m| m.contains_key("lsp"));
         drop(caps);
 
         let (fs_exec, fs_handler) = AcpFileExecutor::new(
@@ -289,6 +319,18 @@ impl ZephAcpAgent {
         );
         tokio::task::spawn_local(shell_handler);
 
+        let lsp_provider = if ide_supports_lsp {
+            Some(crate::lsp::AcpLspProvider::new(
+                Rc::clone(&self.conn_slot),
+                true,
+                self.lsp_config.request_timeout_secs,
+                self.lsp_config.max_references,
+                self.lsp_config.max_workspace_symbols,
+            ))
+        } else {
+            None
+        };
+
         Some(AcpContext {
             file_executor: Some(fs_exec),
             shell_executor: Some(shell_exec),
@@ -296,6 +338,8 @@ impl ZephAcpAgent {
             cancel_signal,
             provider_override,
             parent_tool_use_id: None,
+            lsp_provider,
+            diagnostics_cache: Rc::clone(&self.diagnostics_cache),
         })
     }
 
@@ -306,6 +350,96 @@ impl ZephAcpAgent {
             .map_err(|_| acp::Error::internal_error().data("notification channel closed"))?;
         rx.await
             .map_err(|_| acp::Error::internal_error().data("notification ack lost"))
+    }
+
+    fn handle_lsp_publish_diagnostics(&self, params: &str) {
+        #[derive(serde::Deserialize)]
+        struct PublishDiagnosticsParams {
+            uri: String,
+            #[serde(default)]
+            diagnostics: Vec<crate::lsp::LspDiagnostic>,
+        }
+
+        match serde_json::from_str::<PublishDiagnosticsParams>(params) {
+            Ok(p) => {
+                let max = self.lsp_config.max_diagnostics_per_file;
+                let mut diags = p.diagnostics;
+                diags.truncate(max);
+                tracing::debug!(
+                    uri = %p.uri,
+                    count = diags.len(),
+                    "lsp/publishDiagnostics: cached"
+                );
+                self.diagnostics_cache.borrow_mut().update(p.uri, diags);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "lsp/publishDiagnostics: failed to parse params");
+            }
+        }
+    }
+
+    async fn handle_lsp_did_save(&self, params: &str) {
+        #[derive(serde::Deserialize)]
+        struct DidSaveParams {
+            uri: String,
+        }
+
+        use acp::Client as _;
+
+        if !self.lsp_config.auto_diagnostics_on_save {
+            return;
+        }
+
+        let uri = match serde_json::from_str::<DidSaveParams>(params) {
+            Ok(p) => p.uri,
+            Err(e) => {
+                tracing::warn!(error = %e, "lsp/didSave: failed to parse params");
+                return;
+            }
+        };
+
+        let conn = {
+            let guard = self.conn_slot.borrow();
+            guard.as_ref().cloned()
+        };
+        let Some(conn) = conn else {
+            return;
+        };
+        let params_json = serde_json::json!({ "uri": &uri });
+        let raw = match serde_json::value::to_raw_value(&params_json) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "lsp/didSave: failed to serialize params");
+                return;
+            }
+        };
+        let req = acp::ExtRequest::new("lsp/diagnostics", std::sync::Arc::from(raw));
+        let timeout = std::time::Duration::from_secs(self.lsp_config.request_timeout_secs);
+        match tokio::time::timeout(timeout, conn.ext_method(req)).await {
+            Ok(Ok(resp)) => {
+                match serde_json::from_str::<Vec<crate::lsp::LspDiagnostic>>(resp.0.get()) {
+                    Ok(mut diags) => {
+                        let max = self.lsp_config.max_diagnostics_per_file;
+                        diags.truncate(max);
+                        tracing::debug!(
+                            uri = %uri,
+                            count = diags.len(),
+                            "lsp/didSave: fetched diagnostics"
+                        );
+                        self.diagnostics_cache.borrow_mut().update(uri, diags);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "lsp/didSave: failed to parse diagnostics response");
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "lsp/didSave: diagnostics request failed");
+            }
+            Err(_) => {
+                tracing::warn!(uri = %uri, "lsp/didSave: diagnostics request timed out");
+            }
+        }
     }
 }
 
@@ -344,6 +478,15 @@ impl acp::Agent for ZephAcpAgent {
                 let mut cap_meta = serde_json::Map::new();
                 cap_meta.insert("config_options".to_owned(), serde_json::json!(true));
                 cap_meta.insert("ext_methods".to_owned(), serde_json::json!(true));
+                if self.lsp_config.enabled {
+                    cap_meta.insert(
+                        "lsp".to_owned(),
+                        serde_json::json!({
+                            "methods": crate::lsp::LSP_METHODS,
+                            "notifications": crate::lsp::LSP_NOTIFICATIONS,
+                        }),
+                    );
+                }
                 cap_meta
             });
         #[cfg(any(
@@ -387,6 +530,15 @@ impl acp::Agent for ZephAcpAgent {
 
     async fn ext_notification(&self, args: acp::ExtNotification) -> acp::Result<()> {
         tracing::debug!(method = %args.method, "received ext_notification");
+        match args.method.as_ref() {
+            "lsp/publishDiagnostics" => {
+                self.handle_lsp_publish_diagnostics(args.params.get());
+            }
+            "lsp/didSave" => {
+                self.handle_lsp_did_save(args.params.get()).await;
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -4962,6 +5114,242 @@ mod tests {
                 assert!(
                     result.is_err(),
                     "prompt injection via /review arg must be rejected"
+                );
+            })
+            .await;
+    }
+
+    // ── R-08: lsp/publishDiagnostics notification handler ──────────────────
+
+    #[tokio::test]
+    async fn ext_notification_lsp_publish_diagnostics_caches_diagnostics() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let params = serde_json::json!({
+                    "uri": "file:///src/main.rs",
+                    "diagnostics": [
+                        {
+                            "range": {
+                                "start": { "line": 1, "character": 0 },
+                                "end": { "line": 1, "character": 5 }
+                            },
+                            "severity": 1,
+                            "message": "unused variable"
+                        }
+                    ]
+                });
+                let notif = acp::ExtNotification::new(
+                    "lsp/publishDiagnostics",
+                    serde_json::value::RawValue::from_string(params.to_string())
+                        .unwrap()
+                        .into(),
+                );
+                agent.ext_notification(notif).await.unwrap();
+                let cache = agent.diagnostics_cache.borrow();
+                let diags = cache
+                    .peek("file:///src/main.rs")
+                    .expect("diagnostics should be cached");
+                assert_eq!(diags.len(), 1);
+                assert_eq!(diags[0].message, "unused variable");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ext_notification_lsp_publish_diagnostics_malformed_json_is_ok() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+                let notif = acp::ExtNotification::new(
+                    "lsp/publishDiagnostics",
+                    serde_json::value::RawValue::from_string("\"not an object\"".to_owned())
+                        .unwrap()
+                        .into(),
+                );
+                // Malformed params must not propagate an error.
+                let result = agent.ext_notification(notif).await;
+                assert!(result.is_ok());
+                // Cache should remain empty.
+                assert!(agent.diagnostics_cache.borrow().is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ext_notification_lsp_publish_diagnostics_truncates_at_max() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let mut lsp_config = zeph_core::config::AcpLspConfig::default();
+                lsp_config.max_diagnostics_per_file = 2;
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_lsp_config(lsp_config);
+
+                use acp::Agent as _;
+                let diags_json: Vec<serde_json::Value> = (0..5)
+                    .map(|i| {
+                        serde_json::json!({
+                            "range": {
+                                "start": { "line": i, "character": 0 },
+                                "end": { "line": i, "character": 1 }
+                            },
+                            "severity": 1,
+                            "message": format!("diag {i}")
+                        })
+                    })
+                    .collect();
+                let params =
+                    serde_json::json!({ "uri": "file:///a.rs", "diagnostics": diags_json });
+                let notif = acp::ExtNotification::new(
+                    "lsp/publishDiagnostics",
+                    serde_json::value::RawValue::from_string(params.to_string())
+                        .unwrap()
+                        .into(),
+                );
+                agent.ext_notification(notif).await.unwrap();
+                let cache = agent.diagnostics_cache.borrow();
+                let diags = cache
+                    .peek("file:///a.rs")
+                    .expect("diagnostics should be cached");
+                assert_eq!(
+                    diags.len(),
+                    2,
+                    "should be truncated to max_diagnostics_per_file=2"
+                );
+            })
+            .await;
+    }
+
+    // ── R-09: lsp/didSave notification handler ─────────────────────────────
+
+    #[tokio::test]
+    async fn ext_notification_lsp_did_save_disabled_is_noop() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let mut lsp_config = zeph_core::config::AcpLspConfig::default();
+                lsp_config.auto_diagnostics_on_save = false;
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_lsp_config(lsp_config);
+
+                use acp::Agent as _;
+                let params = serde_json::json!({ "uri": "file:///src/main.rs" });
+                let notif = acp::ExtNotification::new(
+                    "lsp/didSave",
+                    serde_json::value::RawValue::from_string(params.to_string())
+                        .unwrap()
+                        .into(),
+                );
+                // Should be a no-op (auto_diagnostics_on_save=false).
+                let result = agent.ext_notification(notif).await;
+                assert!(result.is_ok());
+                // Cache untouched.
+                assert!(agent.diagnostics_cache.borrow().is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ext_notification_lsp_did_save_malformed_params_is_ok() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let mut lsp_config = zeph_core::config::AcpLspConfig::default();
+                lsp_config.auto_diagnostics_on_save = true;
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_lsp_config(lsp_config);
+
+                use acp::Agent as _;
+                let notif = acp::ExtNotification::new(
+                    "lsp/didSave",
+                    serde_json::value::RawValue::from_string("\"bad params\"".to_owned())
+                        .unwrap()
+                        .into(),
+                );
+                // Malformed params must not propagate an error.
+                let result = agent.ext_notification(notif).await;
+                assert!(result.is_ok());
+            })
+            .await;
+    }
+
+    // ── R-10: initialize() LSP capability advertising ──────────────────────
+
+    #[tokio::test]
+    async fn initialize_advertises_lsp_capability_when_enabled() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let mut lsp_config = zeph_core::config::AcpLspConfig::default();
+                lsp_config.enabled = true;
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_lsp_config(lsp_config);
+
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                let cap_meta = resp
+                    .agent_capabilities
+                    .meta
+                    .as_ref()
+                    .expect("meta should be present");
+                assert!(
+                    cap_meta.contains_key("lsp"),
+                    "lsp key should be present in agent_capabilities.meta when enabled"
+                );
+                let lsp_val = &cap_meta["lsp"];
+                assert!(
+                    lsp_val.get("methods").is_some(),
+                    "lsp.methods should be present"
+                );
+                assert!(
+                    lsp_val.get("notifications").is_some(),
+                    "lsp.notifications should be present"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn initialize_does_not_advertise_lsp_when_disabled() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let mut lsp_config = zeph_core::config::AcpLspConfig::default();
+                lsp_config.enabled = false;
+                let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                    .with_lsp_config(lsp_config);
+
+                use acp::Agent as _;
+                let resp = agent
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .unwrap();
+                let cap_meta = resp
+                    .agent_capabilities
+                    .meta
+                    .as_ref()
+                    .expect("meta should be present");
+                assert!(
+                    !cap_meta.contains_key("lsp"),
+                    "lsp key must not appear in agent_capabilities.meta when disabled"
                 );
             })
             .await;

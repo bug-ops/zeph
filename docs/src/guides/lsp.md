@@ -340,6 +340,85 @@ In TUI mode, type `/lsp` to show LSP context injection status:
 The `lsp-context` feature requires the `mcp` feature (always-on since v0.13) and a configured
 mcpls MCP server. See the [Configuration](#configuration) section above for mcpls setup.
 
+## ACP LSP Extension
+
+> Requires the `acp` feature flag (included in `--features full`).
+
+When Zeph runs as an ACP server (connected to an IDE like Zed, Helix, or VS Code), the IDE can
+expose its own LSP capabilities directly to the agent. This is the third and most integrated path
+to LSP intelligence: instead of running a separate mcpls process, the agent sends LSP requests
+back to the IDE through the ACP connection.
+
+### How It Works
+
+During the ACP `initialize` handshake, the IDE can advertise LSP support by including
+`"lsp": true` in its `meta` capabilities. When Zeph sees this flag, it creates an `AcpLspProvider`
+that sends `ext_method` requests back to the IDE for LSP operations.
+
+The agent can also fall back to an `McpLspProvider` (mcpls) when the IDE does not advertise LSP
+support but mcpls is configured as an MCP server. Priority order:
+
+1. **ACP provider** (IDE-proxied) — used when the IDE advertises `meta["lsp"]`
+2. **MCP provider** (mcpls) — used when mcpls is configured under `[[mcp.servers]]`
+
+### Supported Methods
+
+The ACP LSP extension exposes seven methods via `ext_method`:
+
+| Method | Description |
+|--------|-------------|
+| `lsp/hover` | Type signature and documentation at a position |
+| `lsp/definition` | Jump-to-definition locations |
+| `lsp/references` | All usages of a symbol across the workspace |
+| `lsp/diagnostics` | Compiler errors and warnings for a file |
+| `lsp/documentSymbols` | All symbols defined in a file |
+| `lsp/workspaceSymbol` | Search symbols by name across the workspace |
+| `lsp/codeActions` | Quick fixes and refactorings at a position or range |
+
+### Push Notifications
+
+The IDE can also push data to the agent via `ext_notification`:
+
+| Notification | Description |
+|--------------|-------------|
+| `lsp/publishDiagnostics` | Push diagnostics for a file (cached in a bounded LRU cache) |
+| `lsp/didSave` | Notify the agent that a file was saved; triggers automatic diagnostics fetch when `auto_diagnostics_on_save` is enabled |
+
+Pushed diagnostics are stored in a bounded `DiagnosticsCache` with LRU eviction. The cache size
+is controlled by `max_diagnostic_files` (default: 5).
+
+### Configuration
+
+```toml
+[acp.lsp]
+enabled = true                     # Enable LSP extension when IDE supports it (default: true)
+auto_diagnostics_on_save = true    # Fetch diagnostics on lsp/didSave notification (default: true)
+max_diagnostics_per_file = 20      # Max diagnostics accepted per file (default: 20)
+max_diagnostic_files = 5           # Max files in DiagnosticsCache, LRU eviction (default: 5)
+max_references = 100               # Max reference locations returned (default: 100)
+max_workspace_symbols = 50         # Max workspace symbol search results (default: 50)
+request_timeout_secs = 10          # Timeout for LSP ext_method calls in seconds (default: 10)
+```
+
+See [Configuration Reference](../reference/configuration.md) for the full `[acp.lsp]` section.
+
+### Capability Negotiation
+
+The LSP extension is negotiated per-session. The flow is:
+
+1. IDE sends `initialize` with `meta: { "lsp": true }` in client capabilities.
+2. Zeph responds with the list of supported LSP methods in its server capabilities.
+3. The IDE can now receive `ext_method` calls for the advertised LSP methods.
+4. The IDE can send `ext_notification` for `lsp/publishDiagnostics` and `lsp/didSave`.
+
+If the IDE does not include `"lsp": true`, the ACP LSP provider is marked as unavailable and
+Zeph falls back to the MCP provider (mcpls) if configured.
+
+### Coordinates
+
+All positions use **1-based** line and character coordinates (ACP/MCP convention). The IDE is
+responsible for converting between 1-based (ACP) and 0-based (LSP) coordinates.
+
 ## Limitations
 
 - **No live file sync**: mcpls does not support `textDocument/didChange`. Edits are invisible to
@@ -349,6 +428,8 @@ mcpls MCP server. See the [Configuration](#configuration) section above for mcpl
 - **Pull-based diagnostics**: diagnostics are fetched on demand, not pushed proactively. Use
   `get_cached_diagnostics` for fast repeated checks. When `lsp-context` injection is enabled,
   diagnostics are fetched automatically after `write_file` with a short delay for LSP re-analysis.
+  When using the ACP LSP extension with `auto_diagnostics_on_save`, diagnostics are fetched
+  automatically on `lsp/didSave` notifications from the IDE.
 - **Stale diagnostics on first fetch**: After a file write, there is a 200ms delay before
   fetching to allow the language server to begin re-analysis. Diagnostics may still reflect the
   previous file state if the server is slow.
@@ -356,3 +437,5 @@ mcpls MCP server. See the [Configuration](#configuration) section above for mcpl
   content from the source files being analyzed. If analyzing untrusted code (e.g., cloned
   repositories), adversarial content in comments or string literals could appear in the LLM
   context. Zeph's content sanitizer automatically wraps this output for isolation.
+- **ACP LSP is `!Send`**: The `AcpLspProvider` holds `Rc<RefCell<...>>` state and must run inside
+  a `tokio::task::LocalSet`. HTTP transport sessions requiring `Send` are not yet supported.
