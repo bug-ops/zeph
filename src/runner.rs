@@ -785,6 +785,7 @@ async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow
     );
     for r in &rows {
         let sid_len = r.session_id.len().min(11);
+        // lgtm[rust/cleartext-logging]
         println!(
             "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
             r.id,
@@ -871,7 +872,7 @@ async fn run_experiment_session(
     let report = engine.run().await?;
 
     let accepted = report.results.iter().filter(|r| r.accepted).count();
-    println!("\nSession:     {}", report.session_id);
+    println!("\nSession:     {}", report.session_id); // lgtm[rust/cleartext-logging]
     println!(
         "Experiments: {} ({} accepted)",
         report.results.len(),
