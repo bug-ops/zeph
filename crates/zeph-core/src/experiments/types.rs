@@ -11,7 +11,7 @@ pub struct Variation {
 }
 
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterKind {
     Temperature,
@@ -27,6 +27,7 @@ pub enum ParameterKind {
 impl ParameterKind {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
+        #[allow(unreachable_patterns)]
         match self {
             Self::Temperature => "temperature",
             Self::TopP => "top_p",
@@ -36,7 +37,14 @@ impl ParameterKind {
             Self::RetrievalTopK => "retrieval_top_k",
             Self::SimilarityThreshold => "similarity_threshold",
             Self::TemporalDecay => "temporal_decay",
+            _ => "unknown",
         }
+    }
+
+    /// Returns `true` if this parameter has integer semantics (e.g. `TopK`, `RetrievalTopK`).
+    #[must_use]
+    pub fn is_integer(&self) -> bool {
+        matches!(self, Self::TopK | Self::RetrievalTopK)
     }
 }
 
@@ -51,6 +59,30 @@ impl std::fmt::Display for ParameterKind {
 pub enum VariationValue {
     Float(OrderedFloat<f64>),
     Int(i64),
+}
+
+impl VariationValue {
+    /// Return the value as `f64`. `Int` variants are cast to `f64`.
+    #[must_use]
+    pub fn as_f64(&self) -> f64 {
+        match self {
+            Self::Float(f) => f.into_inner(),
+            #[allow(clippy::cast_precision_loss)]
+            Self::Int(i) => *i as f64,
+        }
+    }
+}
+
+impl From<f64> for VariationValue {
+    fn from(v: f64) -> Self {
+        Self::Float(OrderedFloat(v))
+    }
+}
+
+impl From<i64> for VariationValue {
+    fn from(v: i64) -> Self {
+        Self::Int(v)
+    }
 }
 
 impl std::fmt::Display for VariationValue {
@@ -120,6 +152,44 @@ mod tests {
             assert_eq!(kind.as_str(), expected);
             assert_eq!(kind.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn parameter_kind_is_integer() {
+        assert!(ParameterKind::TopK.is_integer());
+        assert!(ParameterKind::RetrievalTopK.is_integer());
+        assert!(!ParameterKind::Temperature.is_integer());
+        assert!(!ParameterKind::TopP.is_integer());
+        assert!(!ParameterKind::FrequencyPenalty.is_integer());
+        assert!(!ParameterKind::PresencePenalty.is_integer());
+        assert!(!ParameterKind::SimilarityThreshold.is_integer());
+        assert!(!ParameterKind::TemporalDecay.is_integer());
+    }
+
+    #[test]
+    fn variation_value_as_f64_float() {
+        let v = VariationValue::Float(OrderedFloat(3.14));
+        assert!((v.as_f64() - 3.14).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn variation_value_as_f64_int() {
+        let v = VariationValue::Int(42);
+        assert!((v.as_f64() - 42.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn variation_value_from_f64() {
+        let v = VariationValue::from(0.7_f64);
+        assert!(matches!(v, VariationValue::Float(_)));
+        assert!((v.as_f64() - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn variation_value_from_i64() {
+        let v = VariationValue::from(40_i64);
+        assert!(matches!(v, VariationValue::Int(40)));
+        assert!((v.as_f64() - 40.0).abs() < f64::EPSILON);
     }
 
     #[test]

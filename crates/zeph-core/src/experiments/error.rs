@@ -32,4 +32,18 @@ pub enum EvalError {
 
     #[error("benchmark file path escapes allowed directory: {0}")]
     PathTraversal(String),
+
+    #[error("parameter out of range: {kind} value {value} not in [{min}, {max}]")]
+    OutOfRange {
+        kind: String,
+        value: f64,
+        min: f64,
+        max: f64,
+    },
+
+    #[error("search space exhausted: all variations in {strategy} have been visited")]
+    SearchSpaceExhausted { strategy: &'static str },
+
+    #[error("invalid neighborhood radius {radius}: must be finite and positive")]
+    InvalidRadius { radius: f64 },
 }

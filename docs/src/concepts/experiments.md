@@ -44,6 +44,78 @@ The engine can vary the following parameters:
 | `similarity_threshold` | float | Minimum similarity for memory recall |
 | `temporal_decay` | float | Weight decay for older memories |
 
+## Search Space
+
+The search space defines the bounds and resolution for each tunable parameter. It is represented by a `SearchSpace` containing a list of `ParameterRange` entries.
+
+Each `ParameterRange` specifies:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `ParameterKind` | Which parameter this range controls |
+| `min` | `f64` | Lower bound of the range |
+| `max` | `f64` | Upper bound of the range |
+| `step` | `Option<f64>` | Discrete step size for grid and quantization. `None` means continuous |
+| `default` | `f64` | Default value used as the baseline starting point |
+
+The default search space covers five LLM generation parameters:
+
+| Parameter | Min | Max | Step | Default |
+|-----------|-----|-----|------|---------|
+| `temperature` | 0.0 | 2.0 | 0.1 | 0.7 |
+| `top_p` | 0.1 | 1.0 | 0.05 | 0.9 |
+| `top_k` | 1 | 100 | 5 | 40 |
+| `frequency_penalty` | -2.0 | 2.0 | 0.2 | 0.0 |
+| `presence_penalty` | -2.0 | 2.0 | 0.2 | 0.0 |
+
+You can customize the search space by adding or removing parameters. The remaining tunable parameters (`retrieval_top_k`, `similarity_threshold`, `temporal_decay`) are not included in the default space but can be added manually.
+
+## Config Snapshot
+
+A `ConfigSnapshot` captures the values of all tunable parameters for a single experiment arm. It serves as the bridge between the runtime configuration and the variation engine.
+
+- The baseline snapshot is created from the current `Config` via `ConfigSnapshot::from_config`.
+- Each variation produces a new snapshot with exactly one parameter changed (`snapshot.apply(&variation)`).
+- The `diff` method compares two snapshots and returns the single `Variation` that differs, or `None` if zero or more than one parameter changed.
+
+Snapshots also provide `to_generation_overrides()` to extract LLM-relevant parameters for use during evaluation.
+
+## Variation Strategies
+
+The variation engine uses a `VariationGenerator` trait to produce candidate parameter values. Each call to `next()` returns a `Variation` that changes exactly **one parameter** from the baseline. This one-at-a-time constraint isolates the effect of each change, making it possible to attribute score differences to a specific parameter.
+
+All strategies track visited variations via a `HashSet<Variation>` to avoid re-testing the same configuration. Floating-point values use `OrderedFloat` for reliable hashing and equality.
+
+### Grid
+
+`GridStep` performs a systematic sweep of every parameter through its discrete steps from `min` to `max`. Parameters are swept one at a time: all grid points for the first parameter are enumerated before moving to the next. Already-visited variations are skipped. Returns `None` when the full grid has been covered.
+
+Grid is the default starting strategy. It provides complete coverage of the discrete search space and is deterministic (no randomness involved). Values are quantized to the nearest step to avoid floating-point accumulation errors.
+
+### Random
+
+`Random` samples uniformly within each parameter's bounds. At each call, it picks a random parameter, samples a random value from its `[min, max]` range, and quantizes to the nearest step. The sample is rejected if already visited. After 1000 consecutive rejections, the space is considered exhausted.
+
+Random sampling is seeded (`SmallRng::seed_from_u64`) for reproducibility. It is useful when the grid is too large to sweep exhaustively or when you want to explore the space without systematic bias.
+
+### Neighborhood
+
+`Neighborhood` perturbs the current best configuration by a small amount. At each call, it picks a random parameter and computes a new value as `baseline ± U(-radius, radius) * step`, then clamps and quantizes the result. This focuses exploration around a known-good region.
+
+Neighborhood is most useful as a refinement step after a grid or random sweep has identified a promising baseline. The `radius` parameter (must be positive) controls the perturbation range in units of `step`. For example, `radius = 1.0` with `step = 0.1` means perturbations of at most ±0.1 from the baseline value.
+
+### Strategy Selection
+
+Choose a strategy based on your goals:
+
+| Strategy | Best for | Deterministic | Coverage |
+|----------|----------|---------------|----------|
+| Grid | Small search spaces, complete coverage | Yes | Exhaustive |
+| Random | Large spaces, quick exploration | Seeded | Stochastic |
+| Neighborhood | Refinement around a known-good config | Seeded | Local |
+
+A typical workflow combines strategies across sessions: start with Grid or Random to identify promising regions, then switch to Neighborhood for fine-tuning.
+
 ## Benchmark Dataset
 
 A benchmark dataset is a TOML file containing a list of test cases. Each case defines a prompt to send to the subject model, with optional context, reference answer, and tags.
