@@ -308,11 +308,11 @@ fn build_judge_messages(case: &BenchmarkCase, response: &str) -> Vec<Message> {
     let system = format!("{JUDGE_SYSTEM_PROMPT_BASE}{reference_block}");
 
     // Escape XML metacharacters in user-controlled content before wrapping.
+    let escaped_prompt = xml_escape(&case.prompt);
     let escaped_response = xml_escape(response);
 
     let user_content = format!(
-        "Prompt: {prompt}\n\nAssistant's response:\n<subject_response>{escaped_response}</subject_response>",
-        prompt = case.prompt,
+        "Prompt: {escaped_prompt}\n\nAssistant's response:\n<subject_response>{escaped_response}</subject_response>",
     );
 
     vec![

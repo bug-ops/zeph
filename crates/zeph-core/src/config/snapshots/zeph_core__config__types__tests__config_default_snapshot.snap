@@ -271,6 +271,15 @@ transport = "stdio"
 http_bind = "127.0.0.1:9800"
 discovery_enabled = true
 
+[acp.lsp]
+enabled = true
+auto_diagnostics_on_save = true
+max_diagnostics_per_file = 20
+max_diagnostic_files = 5
+max_references = 100
+max_workspace_symbols = 50
+request_timeout_secs = 10
+
 [agents]
 enabled = false
 max_concurrent = 1

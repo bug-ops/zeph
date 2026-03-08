@@ -1,0 +1,188 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! `AcpLspProvider`: sends LSP requests to the IDE via ACP `ext_method`.
+//!
+//! LSP extension methods (`lsp/hover`, `lsp/definition`, etc.) are **agent→client**
+//! requests — the agent sends them to the IDE, which proxies to its active LSP server.
+//! This is the opposite direction from `_session/*` and `_agent/*` methods, which are
+//! client→agent. `AcpLspProvider` uses `conn.ext_method()` (the `acp::Client` trait)
+//! to send these outbound requests.
+//!
+//! # !Send constraint
+//!
+//! Holds a `ConnSlot` (`Rc<RefCell<...>>`). Must only be used inside a `LocalSet`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use acp::Client as _;
+use agent_client_protocol as acp;
+
+use crate::error::AcpError;
+use crate::transport::ConnSlot;
+
+use super::provider::LspProvider;
+use super::types::{
+    LspCodeAction, LspDiagnostic, LspDocumentSymbol, LspHoverResult, LspLocation, LspRange,
+    LspSymbolInformation,
+};
+
+/// ACP-backed LSP provider that relays requests to the connected IDE.
+///
+/// Created in `build_acp_context()` when the client advertises `meta["lsp"]`
+/// capability during `initialize()`. Falls back to `None` when the IDE does not
+/// support LSP extension methods.
+///
+/// **`!Send` constraint**: holds a `ConnSlot` (`Rc<RefCell<...>>`).
+pub struct AcpLspProvider {
+    conn_slot: ConnSlot,
+    /// Whether the IDE advertised LSP support during `initialize()`.
+    ide_supports_lsp: bool,
+    /// Timeout for each LSP `ext_method` call.
+    request_timeout: Duration,
+    /// Maximum number of reference locations to return.
+    max_references: usize,
+    /// Maximum number of workspace symbol search results to return.
+    max_workspace_symbols: usize,
+}
+
+impl AcpLspProvider {
+    /// Create a new provider.
+    ///
+    /// `ide_supports_lsp` should be set from `client_caps.meta["lsp"]`.
+    #[must_use]
+    pub fn new(
+        conn_slot: ConnSlot,
+        ide_supports_lsp: bool,
+        request_timeout_secs: u64,
+        max_references: usize,
+        max_workspace_symbols: usize,
+    ) -> Self {
+        Self {
+            conn_slot,
+            ide_supports_lsp,
+            request_timeout: Duration::from_secs(request_timeout_secs),
+            max_references,
+            max_workspace_symbols,
+        }
+    }
+
+    fn call_ext_method(
+        &self,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, AcpError>> + '_ {
+        let timeout = self.request_timeout;
+        // Borrow conn_slot inside the returned future (non-Send, LocalSet only).
+        async move {
+            let conn = {
+                let guard = self.conn_slot.borrow();
+                guard.as_ref().cloned()
+            };
+            let conn = conn.ok_or(AcpError::ChannelClosed)?;
+
+            let raw = serde_json::value::to_raw_value(&params)
+                .map_err(|e| AcpError::ClientError(e.to_string()))?;
+            let req = acp::ExtRequest::new(method, Arc::from(raw));
+
+            let result = tokio::time::timeout(timeout, conn.ext_method(req))
+                .await
+                .map_err(|_| AcpError::ClientError("LSP request timed out".to_owned()))?
+                .map_err(|e| AcpError::ClientError(e.to_string()))?;
+
+            serde_json::from_str(result.0.get()).map_err(|e| AcpError::ClientError(e.to_string()))
+        }
+    }
+}
+
+impl LspProvider for AcpLspProvider {
+    fn name(&self) -> &'static str {
+        "acp"
+    }
+
+    fn is_available(&self) -> bool {
+        self.ide_supports_lsp && self.conn_slot.borrow().is_some()
+    }
+
+    async fn hover(
+        &self,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<LspHoverResult, AcpError> {
+        let params = serde_json::json!({ "uri": uri, "line": line, "character": character });
+        let value = self.call_ext_method("lsp/hover", params).await?;
+        serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))
+    }
+
+    async fn definition(
+        &self,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<LspLocation>, AcpError> {
+        let params = serde_json::json!({ "uri": uri, "line": line, "character": character });
+        let value = self.call_ext_method("lsp/definition", params).await?;
+        serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))
+    }
+
+    async fn references(
+        &self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        include_declaration: bool,
+    ) -> Result<Vec<LspLocation>, AcpError> {
+        let params = serde_json::json!({
+            "uri": uri,
+            "line": line,
+            "character": character,
+            "include_declaration": include_declaration,
+        });
+        let value = self.call_ext_method("lsp/references", params).await?;
+        let mut result: Vec<LspLocation> =
+            serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))?;
+        result.truncate(self.max_references);
+        Ok(result)
+    }
+
+    async fn diagnostics(&self, uri: &str) -> Result<Vec<LspDiagnostic>, AcpError> {
+        let params = serde_json::json!({ "uri": uri });
+        let value = self.call_ext_method("lsp/diagnostics", params).await?;
+        serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))
+    }
+
+    async fn document_symbols(&self, uri: &str) -> Result<Vec<LspDocumentSymbol>, AcpError> {
+        let params = serde_json::json!({ "uri": uri });
+        let value = self.call_ext_method("lsp/documentSymbols", params).await?;
+        serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))
+    }
+
+    async fn workspace_symbol(&self, query: &str) -> Result<Vec<LspSymbolInformation>, AcpError> {
+        let params = serde_json::json!({ "query": query });
+        let value = self.call_ext_method("lsp/workspaceSymbol", params).await?;
+        let mut result: Vec<LspSymbolInformation> =
+            serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))?;
+        result.truncate(self.max_workspace_symbols);
+        Ok(result)
+    }
+
+    async fn code_actions(
+        &self,
+        uri: &str,
+        range: &LspRange,
+        diagnostics: &[LspDiagnostic],
+    ) -> Result<Vec<LspCodeAction>, AcpError> {
+        let params = serde_json::json!({
+            "uri": uri,
+            "range": range,
+            "diagnostics": diagnostics,
+        });
+        let value = self.call_ext_method("lsp/codeActions", params).await?;
+        let actions: Vec<LspCodeAction> =
+            serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))?;
+        // Filter out actions without workspace edits (M5).
+        Ok(actions.into_iter().filter(|a| a.edit.is_some()).collect())
+    }
+}
