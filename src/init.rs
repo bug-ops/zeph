@@ -598,6 +598,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 model: state.model.clone().unwrap_or_default(),
                 max_tokens: 4096,
                 embedding_model: None,
+                api_key: None,
             }])
         } else {
             None
