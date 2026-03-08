@@ -33,6 +33,7 @@ The `kind` field identifies what handler executes when the task fires:
 | `skill_refresh` | `TaskKind::SkillRefresh` | Reload skills from disk |
 | `health_check` | `TaskKind::HealthCheck` | Internal liveness probe |
 | `update_check` | `TaskKind::UpdateCheck` | Check GitHub Releases for a new version |
+| `experiment` | `TaskKind::Experiment` | Run an automatic experiment session (requires `experiments` feature) |
 | any other string | `TaskKind::Custom(s)` | `CustomTaskHandler` or agent-loop injection |
 
 Unknown kinds are accepted at runtime and stored as `Custom`. If no handler is registered for a kind when the task fires, the task is skipped with a `debug`-level log entry.
@@ -275,6 +276,7 @@ The task list is refreshed from SQLite every 30 seconds in the background. Backg
 
 ## Related
 
+- [Experiments](experiments.md) — autonomous self-tuning engine with scheduled runs via `[experiments.schedule]`
 - [Daemon Mode](../advanced/daemon.md) — running the scheduler alongside the gateway and A2A server
 - [Feature Flags](../reference/feature-flags.md) — enabling the `scheduler` feature
 - [Tools](tools.md) — how `SchedulerExecutor` integrates with the tool system

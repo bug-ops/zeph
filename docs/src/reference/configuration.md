@@ -407,6 +407,23 @@ max_body_size = 1048576     # 1 MiB
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
 output_dir = ".local/debug" # Base directory for dump files (default: ".local/debug")
+
+# Requires `experiments` feature.
+# [experiments]
+# enabled = false
+# eval_model = "claude-sonnet-4-20250514"  # Model for LLM-as-judge (default: agent's model)
+# benchmark_file = "benchmarks/eval.toml"  # Prompt set for A/B comparison
+# max_experiments = 20                     # Max variations per session (default: 20)
+# max_wall_time_secs = 3600               # Wall-clock budget per session (default: 3600)
+# min_improvement = 0.5                   # Min score delta to accept (default: 0.5)
+# eval_budget_tokens = 100000             # Token budget for judge calls (default: 100000)
+# auto_apply = false                      # Write accepted variations to live config (default: false)
+#
+# [experiments.schedule]
+# enabled = false                          # Cron-based automatic runs (default: false)
+# cron = "0 3 * * *"                       # 5-field cron expression (default: daily 03:00)
+# max_experiments_per_run = 20             # Cap per scheduled run (default: 20)
+# max_wall_time_secs = 1800               # Wall-time cap per run (default: 1800)
 ```
 
 ### Orchestrator Sub-Providers

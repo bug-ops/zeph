@@ -77,6 +77,7 @@ The `kind` field in `[[scheduler.tasks]]` accepts a fixed set of values. Invalid
 | `skill_refresh` | Re-scan skill directories for changes |
 | `health_check` | Internal health verification |
 | `update_check` | Query GitHub Releases API for newer versions |
+| `experiment` | Run an automatic experiment session (requires `experiments` feature; see [Experiments](../concepts/experiments.md#scheduler-integration)) |
 | `custom:<name>` | User-defined task registered via the `TaskHandler` trait |
 
 For `custom` tasks, specify the kind as `custom:my_task_name` and register the handler in code before starting the scheduler.

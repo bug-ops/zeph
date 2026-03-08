@@ -37,7 +37,7 @@ Zeph uses Cargo feature flags to control optional functionality. Twelve previous
 | `stt` | Speech-to-text transcription via OpenAI Whisper API ([guide](../advanced/multimodal.md#audio-input)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
-| `experiments` | Autonomous self-experimentation engine with benchmark datasets and LLM-as-judge evaluation ([guide](../concepts/experiments.md)) |
+| `experiments` | Autonomous self-experimentation engine with benchmark datasets, LLM-as-judge evaluation, and cron-based scheduled runs when combined with the `scheduler` feature ([guide](../concepts/experiments.md)) |
 
 ## Crate-Level Features
 

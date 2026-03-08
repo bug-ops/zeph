@@ -277,6 +277,7 @@ auto_apply = false                         # Write accepted variations to live c
 enabled = false                            # Enable cron-based automatic runs (default: false)
 cron = "0 3 * * *"                         # Cron expression for scheduled runs (default: daily at 03:00)
 max_experiments_per_run = 20               # Max variations per scheduled run (default: 20, range: 1-100)
+max_wall_time_secs = 1800                  # Wall-time cap per scheduled run in seconds (default: 1800, range: 60-86400)
 ```
 
 ### Field Reference
@@ -294,6 +295,7 @@ max_experiments_per_run = 20               # Max variations per scheduled run (d
 | `schedule.enabled` | bool | `false` | Enable automatic scheduled experiment runs |
 | `schedule.cron` | string | `"0 3 * * *"` | Cron expression (5-field) for scheduled runs |
 | `schedule.max_experiments_per_run` | u32 | `20` | Cap per scheduled run |
+| `schedule.max_wall_time_secs` | u64 | `1800` | Wall-time cap per scheduled run (overrides `max_wall_time_secs`) |
 
 ## Persistence
 
@@ -322,6 +324,28 @@ Experiment results are stored in the `experiment_results` SQLite table (same dat
 | `JudgeParse` | Judge returns invalid or non-finite score | Case excluded, logged as warning |
 | `BudgetExceeded` | Token budget exhausted | Remaining cases skipped, partial report returned |
 
+## Scheduler Integration
+
+When both `experiments` and `scheduler` features are enabled, the experiment engine can run automatically on a cron schedule. This is configured via the `[experiments.schedule]` section.
+
+### How It Works
+
+1. At startup, if `experiments.enabled` and `experiments.schedule.enabled` are both `true`, the scheduler registers an `auto-experiment` periodic task with the configured cron expression.
+2. When the cron fires, an `ExperimentTaskHandler` spawns a non-blocking `tokio::spawn` task that runs a full experiment session.
+3. An `AtomicBool` running guard prevents overlapping sessions. If a previous session is still in progress when the next cron trigger fires, the new run is skipped with a warning log.
+4. Scheduled runs use `ExperimentSource::Scheduled` tagging so results can be distinguished from manual runs in the persistence layer (the `source` column in `experiment_results`).
+5. The `schedule.max_wall_time_secs` field (default: 1800s) overrides the top-level `max_wall_time_secs` for scheduled runs, ensuring background sessions finish before the next cron trigger on typical schedules.
+
+### Requirements
+
+- Both `experiments` and `scheduler` feature flags must be compiled in.
+- A valid `benchmark_file` must be configured (the handler loads the benchmark set on each run).
+- The agent's LLM provider must be available for both subject and judge calls.
+
+### Task Kind
+
+The scheduler uses a dedicated `TaskKind::Experiment` variant (kind string: `"experiment"`). This can also be used in `[[scheduler.tasks]]` config entries, though the `[experiments.schedule]` section is the recommended way to configure automatic runs.
+
 ## CLI Flags
 
 > [!NOTE]
@@ -347,6 +371,8 @@ Experiment results are stored in the `experiment_results` SQLite table (same dat
 
 ## Related
 
+- [Scheduler](scheduler.md) — cron-based task scheduler that drives automatic experiment runs
+- [Daemon & Scheduler](../advanced/daemon.md) — running the scheduler alongside the gateway and A2A server
 - [Self-Learning Skills](../advanced/self-learning.md) — passive feedback detection and Wilson score ranking
 - [Model Orchestrator](../advanced/orchestrator.md) — multi-model routing and fallback chains
 - [Feature Flags](../reference/feature-flags.md) — enabling the `experiments` feature
