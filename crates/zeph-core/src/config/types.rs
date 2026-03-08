@@ -614,9 +614,10 @@ pub enum DetectorMode {
     /// LLM-based judge for borderline / missed cases. Invoked only when
     /// regex confidence falls below `judge_adaptive_high` or regex returns None.
     ///
-    /// Note: with current regex values (0.85/0.70/0.75) and `adaptive_high=0.80`,
-    /// this is effectively two-tier: `ExplicitRejection` (0.85) bypasses the judge,
-    /// while `AlternativeRequest` (0.70), `Repetition` (0.75), and regex misses go through it.
+    /// Note: with current regex values (ExplicitRejection=0.85, SelfCorrection=0.80,
+    /// Repetition=0.75, AlternativeRequest=0.70) and `adaptive_high=0.80`,
+    /// `ExplicitRejection` and `SelfCorrection` bypass the judge (confidence >= `adaptive_high`),
+    /// while `AlternativeRequest`, `Repetition`, and regex misses go through it.
     Judge,
 }
 

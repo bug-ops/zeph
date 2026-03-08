@@ -1425,11 +1425,18 @@ impl<C: Channel> Agent<C> {
                     {
                         Ok(verdict) => {
                             if let Some(signal) = verdict.into_signal(&user_msg_owned) {
+                                // Self-corrections (user corrects their own statement) must not
+                                // penalize skills. The judge path has no record_skill_outcomes()
+                                // call today, but this guard mirrors the regex path to make the
+                                // intent explicit and prevent future regressions if parity is added.
+                                let is_self_correction = signal.kind
+                                    == feedback_detector::CorrectionKind::SelfCorrection;
                                 tracing::info!(
                                     kind = signal.kind.as_str(),
                                     confidence = signal.confidence,
                                     source = "judge",
-                                    "implicit correction detected"
+                                    is_self_correction,
+                                    "correction signal detected"
                                 );
                                 if let Some(memory) = memory_arc {
                                     let correction_text =
@@ -1492,12 +1499,16 @@ impl<C: Channel> Agent<C> {
                 );
                 // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
                 let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
-                self.record_skill_outcomes(
-                    "user_rejection",
-                    Some(&feedback_text),
-                    Some(signal.kind.as_str()),
-                )
-                .await;
+                // Self-corrections (user corrects their own statement) must not penalize skills —
+                // the agent did nothing wrong. Store for analytics but skip skill outcome recording.
+                if signal.kind != feedback_detector::CorrectionKind::SelfCorrection {
+                    self.record_skill_outcomes(
+                        "user_rejection",
+                        Some(&feedback_text),
+                        Some(signal.kind.as_str()),
+                    )
+                    .await;
+                }
                 if let Some(memory) = &self.memory_state.memory {
                     // Use `trimmed` (raw user input, untainted by secrets) instead of
                     // `feedback_text` (derived from previous_user_messages → self.messages)

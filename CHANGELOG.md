@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Correction detector false positive: user self-corrections (e.g., "I was wrong, the capital is Canberra") no longer penalize all active skills. Add `SelfCorrection` detection kind with dedicated regex patterns, checked before rejection patterns. Self-corrections are stored for analytics but skip `record_skill_outcomes()`. Tighten overly broad `AlternativeRequest` start-of-line regex (#1361)
 - Tool output overflow: `save_overflow()` now returns the full absolute path instead of just the UUID filename, so the LLM can use the read tool to access saved overflow files. Overflow notice includes byte count. Fallback warning added when disk write fails. Truncation threshold aligned with overflow threshold to close the 30K-50K data loss gap (#1352)
 - Correction embedding storage fails with FOREIGN KEY constraint error (SQLite code 787) on a clean database. Add missing `ensure_named_collection()` call before vector store operations in `store_correction_embedding()` and `retrieve_similar_corrections()` (#1348)
 - Router provider no longer eagerly initializes all providers in chain at startup. Providers that fail to initialize (e.g. missing API keys) are skipped with a warning instead of aborting the entire chain (#1345)
