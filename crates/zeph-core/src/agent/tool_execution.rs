@@ -343,7 +343,9 @@ impl<C: Channel> Agent<C> {
                 let redacted = self.maybe_redact(&raw).into_owned();
                 // S2: scan accumulated streaming response. Per-chunk scanning not feasible
                 // (markdown may split across chunk boundaries); persistence is guarded here.
-                Ok(Some(self.scan_output_and_warn(&redacted)))
+                let cleaned = self.scan_output_and_warn(&redacted);
+                self.store_response_in_cache(&cleaned).await;
+                Ok(Some(cleaned))
             } else {
                 self.channel
                     .send("LLM request timed out. Please try again.")
@@ -1001,9 +1003,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn check_response_cache(&mut self) -> Result<Option<String>, super::error::AgentError> {
-        if let Some(ref cache) = self.response_cache
-            && !self.provider.supports_streaming()
-        {
+        if let Some(ref cache) = self.response_cache {
             let key =
                 zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
             if let Ok(Some(cached)) = cache.get(&key).await {
@@ -2570,27 +2570,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn check_response_cache_bypassed_when_streaming() {
-        // Verifies that the streaming provider flag correctly identifies the bypass condition.
-        // The cache check guard is `!self.provider.supports_streaming()`, so a streaming
-        // provider must return true from supports_streaming() and a non-streaming one must not.
-        use super::super::agent_tests::*;
-        use zeph_llm::LlmProvider;
-
-        let streaming_provider = mock_provider_streaming(vec!["hello".into()]);
-        let non_streaming_provider = mock_provider(vec!["hello".into()]);
-
-        assert!(
-            streaming_provider.supports_streaming(),
-            "streaming mock must report supports_streaming=true"
-        );
-        assert!(
-            !non_streaming_provider.supports_streaming(),
-            "non-streaming mock must report supports_streaming=false"
-        );
-    }
-
     #[tokio::test]
     async fn call_llm_returns_cached_response_without_provider_call() {
         use super::super::agent_tests::*;
@@ -2601,8 +2580,8 @@ mod tests {
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
-        // Non-streaming provider — cache path is active for non-streaming.
-        let provider = mock_provider(vec!["uncached response".into()]);
+        // Streaming provider — cache must be consulted regardless of streaming support.
+        let provider = mock_provider_streaming(vec!["uncached response".into()]);
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
 
         // Set up a response cache with a pre-populated entry.
@@ -2651,8 +2630,8 @@ mod tests {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
         use zeph_memory::{ResponseCache, sqlite::SqliteStore};
 
-        // Provider has one response; the second call must come from cache.
-        let provider = mock_provider(vec!["provider response".into()]);
+        // Streaming provider has one response; the second call must come from cache.
+        let provider = mock_provider_streaming(vec!["provider response".into()]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -2681,16 +2660,19 @@ mod tests {
             "second call must return cached response"
         );
 
-        // Channel must have received both responses.
-        let sent = agent.channel.sent_messages();
-        let matching: Vec<_> = sent
-            .iter()
-            .filter(|s| s.as_str() == "provider response")
-            .collect();
+        // First call: streaming provider sends chunks; second call: cache sends via send().
+        // Chunks for the first call contain individual characters of "provider response".
+        let chunks = agent.channel.sent_chunks();
+        let reconstructed: String = chunks.concat();
         assert_eq!(
-            matching.len(),
-            2,
-            "both calls must have sent the response to the channel"
+            reconstructed, "provider response",
+            "first call must have streamed the response as chunks"
+        );
+        // Second call (cache hit) sends via channel.send() — one full message.
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s == "provider response"),
+            "second call (cache hit) must have sent the response via send()"
         );
     }
 
