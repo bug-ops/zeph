@@ -348,26 +348,51 @@ The scheduler uses a dedicated `TaskKind::Experiment` variant (kind string: `"ex
 
 ## CLI Flags
 
-> [!NOTE]
-> CLI flags are planned for Phase 6 of the experiments epic and are not yet available.
+Two flags provide headless experiment access (requires `experiments` feature):
 
 | Flag | Description |
 |------|-------------|
-| `--experiment-run` | Start an experiment session from the command line |
-| `--experiment-report` | Print a summary of past experiment results |
+| `--experiment-run` | Run a single experiment session and exit. Loads the benchmark file, creates a provider for both subject and judge roles, runs the full experiment loop, and prints a summary before exiting. |
+| `--experiment-report` | Print a summary of past experiment results and exit. Reads directly from the SQLite store without starting an LLM provider. |
+
+Both flags cause the process to exit after completion — they do not start the interactive agent loop.
+
+```bash
+# Run a one-shot experiment session
+zeph --experiment-run --config config.toml
+
+# View past results
+zeph --experiment-report
+```
+
+See [CLI Reference](../reference/cli.md) for the full flag list.
 
 ## TUI Commands
 
-> [!NOTE]
-> TUI commands are planned for Phase 6 of the experiments epic and are not yet available.
+The following `/experiment` commands are available in the TUI dashboard:
 
 | Command | Description |
 |---------|-------------|
-| `/experiment start` | Start a new experiment session |
-| `/experiment stop` | Stop the running session |
-| `/experiment status` | Show progress of the current session |
-| `/experiment report` | Display results from past sessions |
-| `/experiment best` | Show the best accepted variation per parameter |
+| `/experiment start [N]` | Start a new experiment session. Optional `N` overrides `max_experiments` for this run. |
+| `/experiment stop` | Cancel the running session gracefully via `CancellationToken`. Partial results are preserved. |
+| `/experiment status` | Show progress of the current session (experiment count, accepted count, elapsed time). |
+| `/experiment report` | Display results from past sessions stored in SQLite. |
+| `/experiment best` | Show the best accepted variation per parameter across all sessions. |
+
+Only one experiment session can run at a time. Starting a new session while one is already running returns an error message. The TUI displays a spinner with status updates during experiment execution.
+
+## Init Wizard
+
+The `zeph init` wizard includes an experiments step (after the scheduler section). It prompts:
+
+1. **Enable autonomous experiments** — master switch (`enabled` field, default: no).
+2. **Judge model** — model used for LLM-as-judge evaluation (`eval_model`, default: `claude-sonnet-4-20250514`).
+3. **Schedule automatic runs** — enable cron-based experiment sessions (`schedule.enabled`, default: no).
+4. **Cron schedule** — 5-field cron expression (`schedule.cron`, default: `0 3 * * *`).
+
+The wizard generates the corresponding `[experiments]` and `[experiments.schedule]` sections in the output config file. The `ExperimentConfig` struct is always compiled (not feature-gated), so the wizard step is available regardless of the `experiments` feature flag.
+
+See [Configuration Wizard](../getting-started/wizard.md) for the full wizard walkthrough.
 
 ## Related
 

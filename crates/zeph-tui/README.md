@@ -55,6 +55,21 @@ When the `graph-memory` feature is enabled, the TUI provides `/graph` slash comm
 > [!NOTE]
 > These commands require `--features graph-memory` (or `--features full`). The graph must be enabled in config (`[memory.graph] enabled = true`) or via the `--graph-memory` CLI flag.
 
+## Experiment commands
+
+When the `experiments` feature is enabled, the TUI provides `/experiment` slash commands for autonomous self-experimentation:
+
+| Command | Description |
+|---------|-------------|
+| `/experiment start [N]` | Start an experiment session (optional N = max experiments) |
+| `/experiment stop` | Stop the running experiment session |
+| `/experiment status` | Show current experiment session status |
+| `/experiment report` | Print experiment results summary |
+| `/experiment best` | Show the best experiment result |
+
+> [!NOTE]
+> These commands require `--features experiments` (or `--features full`). Experiments must be enabled in config (`[experiments] enabled = true`).
+
 ## Debug dump
 
 Enable debug dump mid-session without restarting the agent:
@@ -93,6 +108,11 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `plan:cancel` | Cancel the active plan |
 | `plan:list` | List recent plans |
 | `plan:toggle` | Toggle Plan View in the side panel (`p` shortcut) — requires `orchestration` feature |
+| `experiment:start` | Start experiment session — requires `experiments` feature |
+| `experiment:stop` | Stop running experiment — requires `experiments` feature |
+| `experiment:status` | Show experiment status — requires `experiments` feature |
+| `experiment:report` | Show experiment results — requires `experiments` feature |
+| `experiment:best` | Show best experiment result — requires `experiments` feature |
 | `debug:dump` | Enable debug dump to the configured output directory (equivalent to `/debug-dump`) |
 | `ingest` | Usage hint for `zeph ingest <path>` |
 | `session:new` | Start a new conversation session |

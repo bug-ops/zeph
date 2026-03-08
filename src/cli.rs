@@ -104,6 +104,16 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) scheduler_disable: bool,
 
+    /// Run a single experiment session and exit (requires experiments feature)
+    #[cfg(feature = "experiments")]
+    #[arg(long)]
+    pub(crate) experiment_run: bool,
+
+    /// Print experiment results summary and exit (requires experiments feature)
+    #[cfg(feature = "experiments")]
+    #[arg(long)]
+    pub(crate) experiment_report: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -330,5 +340,27 @@ mod tests {
     fn cli_graph_memory_flag_defaults_to_false() {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();
         assert!(!cli.graph_memory);
+    }
+
+    #[cfg(feature = "experiments")]
+    #[test]
+    fn cli_parses_experiment_run_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--experiment-run"]).unwrap();
+        assert!(cli.experiment_run);
+    }
+
+    #[cfg(feature = "experiments")]
+    #[test]
+    fn cli_parses_experiment_report_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--experiment-report"]).unwrap();
+        assert!(cli.experiment_report);
+    }
+
+    #[cfg(feature = "experiments")]
+    #[test]
+    fn cli_experiment_flags_default_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.experiment_run);
+        assert!(!cli.experiment_report);
     }
 }

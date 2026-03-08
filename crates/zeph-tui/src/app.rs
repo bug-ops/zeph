@@ -1044,6 +1044,23 @@ impl App {
                 self.input.push_str("/graph backfill");
                 self.cursor_position = self.input.len();
             }
+            TuiCommand::ExperimentStart => {
+                self.input.clear();
+                self.input.push_str("/experiment start ");
+                self.cursor_position = self.input.len();
+            }
+            TuiCommand::ExperimentStop => {
+                let _ = self.user_input_tx.try_send("/experiment stop".to_owned());
+            }
+            TuiCommand::ExperimentStatus => {
+                let _ = self.user_input_tx.try_send("/experiment status".to_owned());
+            }
+            TuiCommand::ExperimentReport => {
+                let _ = self.user_input_tx.try_send("/experiment report".to_owned());
+            }
+            TuiCommand::ExperimentBest => {
+                let _ = self.user_input_tx.try_send("/experiment best".to_owned());
+            }
             #[cfg(feature = "lsp-context")]
             TuiCommand::LspStatus => {
                 self.push_system_message("Checking LSP context injection status...".to_owned());

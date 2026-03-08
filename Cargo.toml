@@ -167,7 +167,7 @@ gateway = ["dep:zeph-gateway"]
 scheduler = ["dep:zeph-scheduler", "dep:cron", "dep:schemars", "dep:chrono", "dep:serde"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
-experiments = ["zeph-core/experiments", "zeph-memory/experiments"]
+experiments = ["zeph-core/experiments", "zeph-memory/experiments", "zeph-tui?/experiments"]
 lsp-context = ["zeph-core/lsp-context", "zeph-tui?/lsp-context"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
 

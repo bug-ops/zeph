@@ -121,7 +121,18 @@ Configure the Thompson Sampling model router (requires `router` feature):
 - **Enable router** — toggle router on/off
 - **State file path** — where to persist alpha/beta statistics (default: `~/.zeph/router_thompson_state.json`)
 
-## Step 13: Self-Learning
+## Step 13: Experiments
+
+Configure autonomous self-experimentation:
+
+- **Enable autonomous experiments** — toggle the experiment engine on/off (default: disabled)
+- **Judge model** — model used for LLM-as-judge evaluation (default: `claude-sonnet-4-20250514`)
+- **Schedule automatic runs** — enable cron-based experiment sessions (default: disabled)
+- **Cron schedule** — 5-field cron expression for scheduled runs (default: `0 3 * * *`, daily at 03:00)
+
+When enabled, the agent can autonomously tune its own inference parameters by running A/B trials against a benchmark dataset. See [Experiments](../concepts/experiments.md) for details.
+
+## Step 14: Self-Learning
 
 Configure the self-learning feedback detector:
 
@@ -130,7 +141,7 @@ Configure the self-learning feedback detector:
   - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
 - **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
 
-## Step 14: Debug Dump
+## Step 15: Debug Dump
 
 Enable debug dump at startup:
 
@@ -138,7 +149,7 @@ Enable debug dump at startup:
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 
-## Step 15: Review and Save
+## Step 16: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

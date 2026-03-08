@@ -1,0 +1,147 @@
+# Testing configuration for Zeph — used with `cargo run --features full -- --config config/testing.toml`
+# Enables: debug dumps (raw format), tool audit logging, anomaly detection, self-learning,
+#          embedded vector search (sqlite), autosave, temporal decay, MMR, cost tracking,
+#          source labels in TUI, experiments.
+
+[agent]
+name = "Zeph"
+max_tool_iterations = 10
+
+[llm]
+provider = "claude"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+
+[llm.cloud]
+model = "claude-sonnet-4-6-20251101"
+max_tokens = 4096
+
+[skills]
+paths = ["./skills"]
+max_active_skills = 5
+
+[skills.learning]
+enabled = true
+auto_activate = false
+min_failures = 3
+improve_threshold = 0.7
+rollback_threshold = 0.5
+min_evaluations = 5
+max_versions = 10
+cooldown_minutes = 60
+
+[memory]
+sqlite_path = "./data/zeph-test.db"
+history_limit = 50
+qdrant_url = "http://localhost:6334"
+summarization_threshold = 50
+context_budget_tokens = 0
+auto_budget = true
+compaction_threshold = 0.80
+compaction_preserve_tail = 6
+prune_protect_tokens = 40000
+cross_session_score_threshold = 0.35
+vector_backend = "sqlite"
+autosave_assistant = true
+autosave_min_length = 20
+
+[memory.sessions]
+max_history = 100
+title_max_chars = 60
+
+[memory.semantic]
+enabled = true
+recall_limit = 5
+vector_weight = 0.7
+keyword_weight = 0.3
+temporal_decay_enabled = true
+temporal_decay_half_life_days = 30
+mmr_enabled = true
+mmr_lambda = 0.7
+
+[cost]
+enabled = true
+max_daily_cents = 0
+
+[vault]
+backend = "env"
+
+[tools]
+enabled = true
+summarize_output = true
+
+[tools.shell]
+timeout = 30
+blocked_commands = []
+allowed_commands = []
+allowed_paths = []
+allow_network = true
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
+
+[tools.scrape]
+timeout = 15
+max_body_bytes = 1048576
+
+[tools.filters]
+enabled = true
+
+[tools.overflow]
+threshold = 50000
+retention_days = 7
+
+[tools.audit]
+enabled = true
+destination = "./data/audit-test.jsonl"
+
+[tools.anomaly]
+enabled = true
+window_size = 10
+error_threshold = 0.5
+critical_threshold = 0.8
+
+[security]
+redact_secrets = true
+autonomy_level = "supervised"
+
+[security.content_isolation]
+enabled = true
+max_content_size = 65536
+flag_injection_patterns = true
+spotlight_untrusted = true
+
+[security.content_isolation.quarantine]
+enabled = false
+sources = ["web_scrape", "a2a_message"]
+model = "claude"
+
+[timeouts]
+llm_seconds = 120
+embedding_seconds = 30
+a2a_seconds = 30
+max_parallel_tools = 8
+
+[debug]
+enabled = true
+output_dir = ".local/debug"
+format = "raw"
+
+[tui]
+show_source_labels = true
+
+[scheduler]
+enabled = true
+
+[experiments]
+enabled = true
+benchmark_file = "benchmarks/default.toml"
+max_experiments = 20
+max_wall_time_secs = 3600
+min_improvement = 0.5
+eval_budget_tokens = 100000
+auto_apply = false
+
+[experiments.schedule]
+enabled = false
+cron = "0 3 * * *"
+max_experiments_per_run = 20

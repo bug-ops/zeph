@@ -92,6 +92,11 @@ pub(crate) struct WizardState {
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
     pub(crate) deferred_apply_threshold: f32,
+    // Experiments
+    pub(crate) experiments_enabled: bool,
+    pub(crate) experiments_eval_model: Option<String>,
+    pub(crate) experiments_schedule_enabled: bool,
+    pub(crate) experiments_schedule_cron: String,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -139,6 +144,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_router(&mut state)?;
     step_learning(&mut state)?;
     step_debug(&mut state)?;
+    step_experiments(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -757,6 +763,24 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         });
     }
 
+    if state.experiments_enabled {
+        config.experiments.enabled = true;
+        config
+            .experiments
+            .eval_model
+            .clone_from(&state.experiments_eval_model);
+        if state.experiments_schedule_enabled {
+            config.experiments.schedule.enabled = true;
+            if !state.experiments_schedule_cron.is_empty() {
+                config
+                    .experiments
+                    .schedule
+                    .cron
+                    .clone_from(&state.experiments_schedule_cron);
+            }
+        }
+    }
+
     config
 }
 
@@ -1214,6 +1238,40 @@ fn step_debug(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Experiments ==\n");
+    println!("Autonomous self-experimentation: the agent varies its own parameters,");
+    println!("evaluates via LLM-as-judge, and keeps improvements.\n");
+
+    state.experiments_enabled = Confirm::new()
+        .with_prompt("Enable autonomous experiments?")
+        .default(false)
+        .interact()?;
+
+    if state.experiments_enabled {
+        let model: String = Input::new()
+            .with_prompt("Judge model for evaluation")
+            .default("claude-sonnet-4-6-20251101".into())
+            .interact_text()?;
+        state.experiments_eval_model = if model.is_empty() { None } else { Some(model) };
+
+        state.experiments_schedule_enabled = Confirm::new()
+            .with_prompt("Schedule automatic experiment runs?")
+            .default(false)
+            .interact()?;
+
+        if state.experiments_schedule_enabled {
+            state.experiments_schedule_cron = Input::new()
+                .with_prompt("Cron schedule")
+                .default("0 3 * * *".into())
+                .interact_text()?;
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
     println!("== Step 10/10: Review & Write ==\n");
 
@@ -1631,5 +1689,35 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(config.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn build_config_experiments_enabled() {
+        let state = WizardState {
+            experiments_enabled: true,
+            experiments_eval_model: Some("claude-sonnet-4-20250514".into()),
+            experiments_schedule_enabled: true,
+            experiments_schedule_cron: "0 4 * * *".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.experiments.enabled);
+        assert_eq!(
+            config.experiments.eval_model.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+        assert!(config.experiments.schedule.enabled);
+        assert_eq!(config.experiments.schedule.cron, "0 4 * * *");
+    }
+
+    #[test]
+    fn build_config_experiments_disabled_by_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.experiments.enabled);
     }
 }

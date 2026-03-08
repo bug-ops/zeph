@@ -57,6 +57,12 @@ pub enum TuiCommand {
     GraphFactsPrompt,
     GraphCommunities,
     GraphBackfillPrompt,
+    // Experiments
+    ExperimentStart,
+    ExperimentStop,
+    ExperimentStatus,
+    ExperimentReport,
+    ExperimentBest,
     // LSP context injection
     #[cfg(feature = "lsp-context")]
     LspStatus,
@@ -365,6 +371,41 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphBackfillPrompt,
         },
+        CommandEntry {
+            id: "experiment:start",
+            label: "Start experiment session (/experiment start [N])",
+            category: "experiment",
+            shortcut: None,
+            command: TuiCommand::ExperimentStart,
+        },
+        CommandEntry {
+            id: "experiment:stop",
+            label: "Stop running experiment (/experiment stop)",
+            category: "experiment",
+            shortcut: None,
+            command: TuiCommand::ExperimentStop,
+        },
+        CommandEntry {
+            id: "experiment:status",
+            label: "Show experiment status (/experiment status)",
+            category: "experiment",
+            shortcut: None,
+            command: TuiCommand::ExperimentStatus,
+        },
+        CommandEntry {
+            id: "experiment:report",
+            label: "Show experiment results (/experiment report)",
+            category: "experiment",
+            shortcut: None,
+            command: TuiCommand::ExperimentReport,
+        },
+        CommandEntry {
+            id: "experiment:best",
+            label: "Show best experiment result (/experiment best)",
+            category: "experiment",
+            shortcut: None,
+            command: TuiCommand::ExperimentBest,
+        },
         #[cfg(feature = "lsp-context")]
         CommandEntry {
             id: "lsp:status",
@@ -449,12 +490,12 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 24 base (14 + 5 plan + 5 graph)
+        // 24 base (14 + 5 plan + 5 graph) + 5 experiment = 29
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 25);
+        assert_eq!(extra_command_registry().len(), 30);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 24);
+        assert_eq!(extra_command_registry().len(), 29);
     }
 
     #[test]
@@ -568,5 +609,15 @@ mod tests {
         assert!(results.iter().any(|e| e.id == "graph:facts"));
         assert!(results.iter().any(|e| e.id == "graph:communities"));
         assert!(results.iter().any(|e| e.id == "graph:backfill"));
+    }
+
+    #[test]
+    fn filter_experiment_returns_experiment_entries() {
+        let results = filter_commands("experiment");
+        assert!(results.iter().any(|e| e.id == "experiment:start"));
+        assert!(results.iter().any(|e| e.id == "experiment:stop"));
+        assert!(results.iter().any(|e| e.id == "experiment:status"));
+        assert!(results.iter().any(|e| e.id == "experiment:report"));
+        assert!(results.iter().any(|e| e.id == "experiment:best"));
     }
 }

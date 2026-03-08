@@ -495,6 +495,29 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the experiment configuration for the `/experiment` slash command.
+    #[cfg(feature = "experiments")]
+    #[must_use]
+    pub fn with_experiment_config(mut self, config: crate::config::ExperimentConfig) -> Self {
+        self.experiment_config = config;
+        self
+    }
+
+    /// Set the baseline config snapshot used when the agent runs an experiment.
+    ///
+    /// Call this alongside `with_experiment_config()` so the experiment engine uses
+    /// actual runtime config values (temperature, memory params, etc.) rather than
+    /// hardcoded defaults. Typically built via `ConfigSnapshot::from_config(&config)`.
+    #[cfg(feature = "experiments")]
+    #[must_use]
+    pub fn with_experiment_baseline(
+        mut self,
+        baseline: crate::experiments::ConfigSnapshot,
+    ) -> Self {
+        self.experiment_baseline = baseline;
+        self
+    }
+
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]

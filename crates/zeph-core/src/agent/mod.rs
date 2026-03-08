@@ -5,6 +5,8 @@ mod builder;
 mod context;
 pub(crate) mod context_manager;
 pub mod error;
+#[cfg(feature = "experiments")]
+mod experiment_cmd;
 pub(super) mod feedback_detector;
 mod graph_commands;
 #[cfg(feature = "index")]
@@ -212,6 +214,8 @@ pub struct Agent<C: Channel> {
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
+    #[cfg(feature = "experiments")]
+    pub(super) experiment_config: crate::config::ExperimentConfig,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
@@ -243,6 +247,22 @@ pub struct Agent<C: Channel> {
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
     #[cfg(feature = "lsp-context")]
     pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    /// Cancellation token for a running experiment session. `Some` means an experiment is active.
+    #[cfg(feature = "experiments")]
+    pub(super) experiment_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Pre-built config snapshot used as the experiment baseline (agent path).
+    /// Set via `with_experiment_baseline()`; defaults to `ConfigSnapshot::default()`.
+    #[cfg(feature = "experiments")]
+    pub(super) experiment_baseline: crate::experiments::ConfigSnapshot,
+    /// Receives completion/error messages from the background experiment engine task.
+    /// When a message arrives in the agent loop, it is forwarded to the channel and
+    /// `experiment_cancel` is cleared. Always present so the select! branch compiles
+    /// unconditionally; only ever receives messages when the `experiments` feature is enabled.
+    pub(super) experiment_notify_rx: Option<tokio::sync::mpsc::Receiver<String>>,
+    /// Sender end paired with `experiment_notify_rx`. Cloned into the background task.
+    /// Feature-gated because it is only used in `experiment_cmd.rs`.
+    #[cfg(feature = "experiments")]
+    pub(super) experiment_notify_tx: tokio::sync::mpsc::Sender<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -300,6 +320,13 @@ impl<C: Channel> Agent<C> {
         let initial_prompt_tokens = u64::try_from(system_prompt.len()).unwrap_or(0) / 4;
         let (_tx, rx) = watch::channel(false);
         let token_counter = Arc::new(TokenCounter::new());
+        // Always create the receiver side of the experiment notification channel so the
+        // select! branch in the agent loop compiles unconditionally. The sender is only
+        // stored when the experiments feature is enabled (it is only used in experiment_cmd.rs).
+        #[cfg(feature = "experiments")]
+        let (exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
+        #[cfg(not(feature = "experiments"))]
+        let (_exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
         Self {
             provider,
             channel,
@@ -390,6 +417,13 @@ impl<C: Channel> Agent<C> {
             subagent_manager: None,
             subagent_config: crate::config::SubAgentConfig::default(),
             orchestration_config: crate::config::OrchestrationConfig::default(),
+            #[cfg(feature = "experiments")]
+            experiment_config: crate::config::ExperimentConfig::default(),
+            #[cfg(feature = "experiments")]
+            experiment_baseline: crate::experiments::ConfigSnapshot::default(),
+            experiment_notify_rx: Some(exp_notify_rx),
+            #[cfg(feature = "experiments")]
+            experiment_notify_tx: exp_notify_tx,
             response_cache: None,
             parent_tool_use_id: None,
             anomaly_detector: None,
@@ -407,6 +441,8 @@ impl<C: Channel> Agent<C> {
             dump_format: crate::debug_dump::DumpFormat::default(),
             #[cfg(feature = "lsp-context")]
             lsp_hooks: None,
+            #[cfg(feature = "experiments")]
+            experiment_cancel: None,
         }
     }
 
@@ -902,6 +938,16 @@ impl<C: Channel> Agent<C> {
                         }
                         continue;
                     }
+                    Some(msg) = recv_optional(&mut self.experiment_notify_rx) => {
+                        // Experiment engine completed (ok or err). Clear the cancel token so
+                        // status reports idle and new experiments can be started.
+                        #[cfg(feature = "experiments")]
+                        { self.experiment_cancel = None; }
+                        if let Err(e) = self.channel.send(&msg).await {
+                            tracing::warn!("failed to send experiment completion: {e}");
+                        }
+                        continue;
+                    }
                     Some(prompt) = recv_optional(&mut self.custom_task_rx) => {
                         tracing::info!("scheduler: injecting custom task as agent turn");
                         let text = format!("[Scheduled task] {prompt}");
@@ -1264,6 +1310,12 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             self.handle_graph_command(trimmed).await?;
+            return Ok(());
+        }
+
+        #[cfg(feature = "experiments")]
+        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
+            self.handle_experiment_command(trimmed).await?;
             return Ok(());
         }
 

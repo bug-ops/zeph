@@ -196,6 +196,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
 
+    // Early-exit: print experiment results from SQLite without building a provider.
+    #[cfg(feature = "experiments")]
+    if cli.experiment_report {
+        return run_experiment_report(&app).await;
+    }
+
+    // Early-exit: run a single experiment session and exit.
+    #[cfg(feature = "experiments")]
+    if cli.experiment_run {
+        let (provider, _status_rx) = app.build_provider().await?;
+        return run_experiment_session(app, provider).await;
+    }
+
     let (provider, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
@@ -561,6 +574,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .with_subagent_config(config.agents.clone())
     };
 
+    #[cfg(feature = "experiments")]
+    let agent = {
+        let baseline = zeph_core::experiments::ConfigSnapshot::from_config(config);
+        agent
+            .with_experiment_config(config.experiments.clone())
+            .with_experiment_baseline(baseline)
+    };
+
     #[cfg(all(feature = "scheduler", feature = "tui"))]
     let mut sched_store_for_tui: Option<std::sync::Arc<zeph_scheduler::JobStore>> = None;
     #[cfg(all(feature = "scheduler", feature = "tui"))]
@@ -740,9 +761,132 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     result
 }
 
-/// Parse `--thinking` CLI argument into a `ThinkingConfig`.
+/// Print experiment results from `SQLite` and exit. Does not require an LLM provider.
 ///
-/// Accepted formats:
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or the query fails.
+#[cfg(feature = "experiments")]
+async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow::Result<()> {
+    use zeph_memory::sqlite::SqliteStore;
+
+    let sqlite_path = app.config().memory.sqlite_path.clone();
+    let store = SqliteStore::new(&sqlite_path).await?;
+    let rows = store.list_experiment_results(None, 50).await?;
+
+    if rows.is_empty() {
+        println!("No experiment results found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<8} {:<12} {:<20} {:<8} {:<8} {:<8} {:<8}",
+        "ID", "Session", "Parameter", "Delta", "Baseline", "Candidate", "Accepted"
+    );
+    for r in &rows {
+        let sid_len = r.session_id.len().min(11);
+        println!(
+            "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
+            r.id,
+            &r.session_id[..sid_len],
+            &r.parameter,
+            r.delta,
+            r.baseline_score,
+            r.candidate_score,
+            if r.accepted { "yes" } else { "no" },
+        );
+    }
+    Ok(())
+}
+
+/// Run a single experiment session and exit.
+///
+/// # Errors
+///
+/// Returns an error if config is invalid, benchmark fails to load, or engine fails.
+#[cfg(feature = "experiments")]
+async fn run_experiment_session(
+    app: zeph_core::bootstrap::AppBuilder,
+    provider: zeph_llm::any::AnyProvider,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use zeph_core::experiments::{
+        BenchmarkSet, ConfigSnapshot, Evaluator, ExperimentEngine, ExperimentSource, GridStep,
+        SearchSpace,
+    };
+
+    let config = app.config();
+
+    if !config.experiments.enabled {
+        anyhow::bail!("--experiment-run requires [experiments] enabled = true in config");
+    }
+
+    config
+        .experiments
+        .validate()
+        .map_err(|e| anyhow::anyhow!("experiment config validation failed: {e}"))?;
+
+    let benchmark_path =
+        config.experiments.benchmark_file.clone().ok_or_else(|| {
+            anyhow::anyhow!("--experiment-run requires experiments.benchmark_file")
+        })?;
+
+    let benchmark = BenchmarkSet::from_file(&benchmark_path)
+        .map_err(|e| anyhow::anyhow!("failed to load benchmark: {e}"))?;
+
+    let provider_arc = Arc::new(provider);
+    let evaluator = Evaluator::new(
+        Arc::clone(&provider_arc),
+        benchmark,
+        config.experiments.eval_budget_tokens,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to create evaluator: {e}"))?;
+
+    let generator = Box::new(GridStep::new(SearchSpace::default()));
+    let baseline = ConfigSnapshot::from_config(config);
+    let exp_config = config.experiments.clone();
+
+    // Build memory for persisting results (best effort — if unavailable, results are logged only).
+    let memory = app.build_memory(&provider_arc).await.ok().map(Arc::new);
+
+    let mut engine = ExperimentEngine::new(
+        evaluator,
+        generator,
+        provider_arc,
+        baseline,
+        exp_config,
+        memory,
+    )
+    .with_source(ExperimentSource::Manual);
+
+    // Wire Ctrl+C to cancel the engine gracefully.
+    let token = engine.cancel_token();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        token.cancel();
+    });
+
+    println!("Starting experiment session...");
+    let report = engine.run().await?;
+
+    let accepted = report.results.iter().filter(|r| r.accepted).count();
+    println!("\nSession:     {}", report.session_id);
+    println!(
+        "Experiments: {} ({} accepted)",
+        report.results.len(),
+        accepted
+    );
+    println!("Baseline score: {:.3}", report.baseline_score);
+    println!("Final score:    {:.3}", report.final_score);
+    println!("Improvement:    {:.3}", report.total_improvement);
+    println!("Wall time:      {} ms", report.wall_time_ms);
+    if report.cancelled {
+        println!("(cancelled by user)");
+    }
+    Ok(())
+}
+
 /// - `extended:<budget_tokens>` — e.g. `extended:10000`
 /// - `adaptive` — adaptive mode with default effort
 /// - `adaptive:<effort>` — effort is `low`, `medium`, or `high`
