@@ -306,7 +306,6 @@ impl SemanticMemory {
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
-    #[cfg(test)]
     #[must_use]
     pub fn from_parts(
         sqlite: SqliteStore,

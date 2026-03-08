@@ -17,7 +17,6 @@ pub mod semantic;
 pub mod snapshot;
 pub mod sqlite;
 pub mod sqlite_vector_store;
-#[cfg(test)]
 pub mod testing;
 pub mod token_counter;
 pub mod types;
