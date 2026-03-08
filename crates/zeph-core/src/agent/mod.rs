@@ -6,7 +6,6 @@ mod context;
 pub(crate) mod context_manager;
 pub mod error;
 pub(super) mod feedback_detector;
-#[cfg(feature = "graph-memory")]
 mod graph_commands;
 #[cfg(feature = "index")]
 mod index;
@@ -68,7 +67,6 @@ pub(crate) const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
-#[cfg(feature = "graph-memory")]
 pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 /// Prefix used for LSP context messages (`Role::System`) injected into message history.
 /// The tool-pair summarizer targets User/Assistant pairs and skips System messages,
@@ -78,7 +76,6 @@ pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 pub(crate) const LSP_NOTE_PREFIX: &str = "[lsp ";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
-#[cfg(feature = "orchestration")]
 fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -125,7 +122,6 @@ pub(super) struct MemoryState {
     pub(super) tool_call_cutoff: usize,
     pub(super) unsummarized_count: usize,
     pub(super) document_config: crate::config::DocumentConfig,
-    #[cfg(feature = "graph-memory")]
     pub(super) graph_config: crate::config::GraphConfig,
 }
 
@@ -215,7 +211,6 @@ pub struct Agent<C: Channel> {
     /// forward-compatible multi-agent orchestration.
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
-    #[cfg(feature = "orchestration")]
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
@@ -237,7 +232,6 @@ pub struct Agent<C: Channel> {
     /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
     pub(super) flagged_urls: std::collections::HashSet<String>,
     /// Graph waiting for `/plan confirm` before execution starts.
-    #[cfg(feature = "orchestration")]
     pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
     /// Active debug dumper. When `Some`, every LLM request/response and raw tool output
     /// is written to files in the dump directory. Enabled via `--debug-dump` CLI flag or
@@ -328,7 +322,6 @@ impl<C: Channel> Agent<C> {
                 tool_call_cutoff: 6,
                 unsummarized_count: 0,
                 document_config: crate::config::DocumentConfig::default(),
-                #[cfg(feature = "graph-memory")]
                 graph_config: crate::config::GraphConfig::default(),
             },
             skill_state: SkillState {
@@ -396,7 +389,6 @@ impl<C: Channel> Agent<C> {
             custom_task_rx: None,
             subagent_manager: None,
             subagent_config: crate::config::SubAgentConfig::default(),
-            #[cfg(feature = "orchestration")]
             orchestration_config: crate::config::OrchestrationConfig::default(),
             response_cache: None,
             parent_tool_use_id: None,
@@ -410,7 +402,6 @@ impl<C: Channel> Agent<C> {
                 crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
             ),
             flagged_urls: std::collections::HashSet::new(),
-            #[cfg(feature = "orchestration")]
             pending_graph: None,
             debug_dumper: None,
             dump_format: crate::debug_dump::DumpFormat::default(),
@@ -457,7 +448,6 @@ impl<C: Channel> Agent<C> {
         results
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_command(
         &mut self,
         cmd: crate::orchestration::PlanCommand,
@@ -484,12 +474,10 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[cfg(feature = "orchestration")]
     fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
         &self.orchestration_config
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
         use crate::orchestration::{LlmPlanner, Planner};
 
@@ -553,7 +541,6 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
         use crate::orchestration::{Aggregator, LlmAggregator};
 
@@ -597,7 +584,6 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_status(
         &mut self,
         _graph_id: Option<&str>,
@@ -612,13 +598,11 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
         self.channel.send("No recent plans.").await?;
         Ok(())
     }
 
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_cancel(
         &mut self,
         _graph_id: Option<&str>,
@@ -642,7 +626,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Looks for a pending graph in `Paused` status. If `graph_id` is provided
     /// it must match the active graph's id (SEC-P5-03).
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_resume(
         &mut self,
         graph_id: Option<&str>,
@@ -705,7 +688,6 @@ impl<C: Channel> Agent<C> {
     /// Resets all `Failed` tasks to `Ready` and all `Skipped` dependents back
     /// to `Pending`, then re-stores the graph as pending for re-execution.
     /// If `graph_id` is provided it must match the active graph's id (SEC-P5-04).
-    #[cfg(feature = "orchestration")]
     async fn handle_plan_retry(&mut self, graph_id: Option<&str>) -> Result<(), error::AgentError> {
         use crate::orchestration::{GraphStatus, dag};
 
@@ -1267,7 +1249,6 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
-        #[cfg(feature = "orchestration")]
         if trimmed == "/plan" || trimmed.starts_with("/plan ") {
             match crate::orchestration::PlanCommand::parse(trimmed) {
                 Ok(cmd) => {
@@ -1281,7 +1262,6 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        #[cfg(feature = "graph-memory")]
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             self.handle_graph_command(trimmed).await?;
             return Ok(());
@@ -2224,7 +2204,6 @@ impl<C: Channel> Agent<C> {
             self.context_manager.budget = None;
         }
 
-        #[cfg(feature = "graph-memory")]
         {
             self.memory_state.graph_config = config.memory.graph.clone();
         }

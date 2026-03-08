@@ -518,7 +518,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     fn make_subject_mock(n_responses: usize) -> zeph_llm::any::AnyProvider {
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
@@ -530,7 +530,7 @@ mod tests {
         AnyProvider::Mock(MockProvider::with_responses(responses))
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     fn make_judge_mock(n_responses: usize) -> zeph_llm::any::AnyProvider {
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
@@ -541,7 +541,7 @@ mod tests {
         AnyProvider::Mock(MockProvider::with_responses(responses))
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_completes_with_no_accepted_variations() {
         // min_improvement very high so nothing is accepted.
@@ -572,7 +572,7 @@ mod tests {
         assert!(!report.cancelled);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_respects_max_experiments() {
         let config = ExperimentConfig {
@@ -601,7 +601,7 @@ mod tests {
         assert!(!report.cancelled);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_cancellation_before_baseline() {
         // Pre-cancel: cancel token fires during baseline evaluation select!.
@@ -629,7 +629,7 @@ mod tests {
         assert!(report.results.is_empty());
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_cancellation_stops_loop() {
         // Verify the loop-level select! path: cancel token pre-fired, baseline completes
@@ -672,7 +672,7 @@ mod tests {
         assert!(report.cancelled);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_progressive_baseline_updates() {
         // One variation applied via NVariationGenerator generates temperature=0.5.
@@ -715,7 +715,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_handles_search_space_exhaustion() {
         let config = default_config();
@@ -739,7 +739,7 @@ mod tests {
         assert!(!report.cancelled);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_skips_nan_scores() {
         use zeph_llm::any::AnyProvider;
@@ -789,7 +789,7 @@ mod tests {
         assert!(!report.cancelled);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_nan_baseline_returns_error() {
         use zeph_llm::any::AnyProvider;
@@ -826,7 +826,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(test)]
     #[tokio::test]
     async fn engine_persists_results_to_sqlite() {
         use zeph_memory::testing::mock_semantic_memory;

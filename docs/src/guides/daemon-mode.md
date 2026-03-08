@@ -4,10 +4,10 @@ Run Zeph as a headless background agent with an A2A endpoint, then connect a TUI
 
 ## Prerequisites
 
-Daemon mode requires both `daemon` and `a2a` feature flags:
+Daemon mode requires the `a2a` feature flag:
 
 ```bash
-cargo build --release --features daemon,a2a
+cargo build --release --features a2a
 ```
 
 To connect a TUI client, build with `tui` and `a2a`:

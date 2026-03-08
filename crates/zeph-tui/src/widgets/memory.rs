@@ -37,7 +37,6 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         "  Embeddings: {}",
         metrics.embeddings_generated
     )));
-    #[cfg(feature = "graph-memory")]
     {
         mem_lines.push(Line::from(format!(
             "  Graph: {} entities, {} edges, {} communities",

@@ -40,10 +40,10 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
-| `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization (feature-gated: `orchestration`) |
-| `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction (feature-gated: `graph-memory`) |
-| `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession (feature-gated: `graph-memory`) |
-| `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication (feature-gated: `graph-memory`) |
+| `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
+| `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction |
+| `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession |
+| `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication |
 | `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
 | `error` | `MemoryError` — unified error type |
 
@@ -128,7 +128,7 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 
 ## Graph memory
 
-When the `graph-memory` feature is enabled, the `graph` module provides SQLite-backed entity-relationship tracking:
+The `graph` module provides SQLite-backed entity-relationship tracking:
 
 - **Entities** — named nodes with 8 types (person, tool, concept, project, language, file, config, organization)
 - **Entity canonicalization** — `canonical_name` + alias table prevents duplicates from name variations ("Rust", "rust-lang", "Rust language" resolve to one entity). Alias-first resolution with deterministic first-registered-wins semantics
@@ -140,11 +140,11 @@ When the `graph-memory` feature is enabled, the `graph` module provides SQLite-b
 - **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking (including aliases), runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates by canonical name, and returns the top-K facts for context injection
 - **Embedding-based entity resolution** — when `use_embedding_resolution = true`, entities are deduplicated via cosine similarity in Qdrant with a two-threshold approach (auto-merge at >= 0.85, LLM disambiguation at >= 0.70, new entity below); integrated after alias and canonical-name lookup steps; falls back to create-new on failure
 
-`GraphStore` provides CRUD methods over five SQLite tables (`graph_entities`, `graph_entity_aliases`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migrations 021, 023, and 024, and is always present regardless of feature flag.
+`GraphStore` provides CRUD methods over five SQLite tables (`graph_entities`, `graph_entity_aliases`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migrations 021, 023, and 024.
 
 `SemanticMemory::spawn_graph_extraction()` runs LLM-powered extraction as a fire-and-forget background task with configurable timeout. `recall_graph()` performs fuzzy entity matching plus BFS edge traversal, returning composite-scored `GraphFact` values for context injection.
 
-The `HeuristicRouter` in `zeph-memory` includes a `Graph` route variant: relationship queries (e.g., "related to", "connection between", "opinion on") are automatically routed to `graph_recall` when the `graph-memory` feature is enabled.
+The `HeuristicRouter` in `zeph-memory` includes a `Graph` route variant: relationship queries (e.g., "related to", "connection between", "opinion on") are automatically routed to `graph_recall`.
 
 Configure via `[memory.graph]` in `config.toml`:
 
@@ -165,11 +165,8 @@ max_entities = 0                  # Max entities cap (0 = unlimited)
 
 | Feature | Description |
 |---------|-------------|
-| `graph-memory` | Knowledge graph with entity-relationship tracking, BFS traversal, community detection via label propagation, and graph eviction |
-| `orchestration` | Task graph persistence via `SqliteGraphStore` (used by `zeph-core` orchestration) |
 | `experiments` | Experiment result and session summary persistence in SQLite |
 | `pdf` | PDF document loading via `pdf-extract` |
-| `mock` | In-memory `VectorStore` implementation for testing |
 
 ## Installation
 

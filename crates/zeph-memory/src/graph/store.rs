@@ -878,7 +878,6 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[cfg(feature = "graph-memory")]
     pub async fn find_entity_by_name(&self, name: &str) -> Result<Vec<Entity>, MemoryError> {
         self.find_entities_fuzzy(name, 5).await
     }
@@ -890,7 +889,6 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[cfg(feature = "graph-memory")]
     pub async fn unprocessed_messages_for_backfill(
         &self,
         limit: usize,
@@ -916,7 +914,6 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[cfg(feature = "graph-memory")]
     pub async fn unprocessed_message_count(&self) -> Result<i64, MemoryError> {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE graph_processed = 0")
@@ -930,7 +927,6 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[cfg(feature = "graph-memory")]
     pub async fn mark_messages_graph_processed(
         &self,
         ids: &[crate::types::MessageId],
@@ -2231,7 +2227,6 @@ mod tests {
         assert!(results.is_empty(), "only quotes should return no results");
     }
 
-    #[cfg(feature = "graph-memory")]
     async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {
         // Insert a conversation first (FK constraint).
         let conv_id: i64 =
@@ -2250,7 +2245,6 @@ mod tests {
         crate::types::MessageId(id)
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn unprocessed_messages_for_backfill_returns_unprocessed() {
         let gs = setup().await;
@@ -2263,7 +2257,6 @@ mod tests {
         assert!(rows.iter().any(|(id, _)| *id == id2));
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn unprocessed_messages_for_backfill_respects_limit() {
         let gs = setup().await;
@@ -2275,7 +2268,6 @@ mod tests {
         assert_eq!(rows.len(), 2);
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn mark_messages_graph_processed_updates_flag() {
         let gs = setup().await;
@@ -2296,7 +2288,6 @@ mod tests {
         assert!(!rows.iter().any(|(id, _)| *id == id1));
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn mark_messages_graph_processed_empty_ids_is_noop() {
         let gs = setup().await;

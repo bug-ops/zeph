@@ -104,7 +104,6 @@ enum ContextSlot {
     Corrections(Option<Message>),
     #[cfg(feature = "index")]
     CodeContext(Option<String>),
-    #[cfg(feature = "graph-memory")]
     GraphFacts(Option<Message>),
 }
 
@@ -1198,7 +1197,6 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(CORRECTIONS_PREFIX));
     }
 
-    #[cfg(feature = "graph-memory")]
     pub(super) fn remove_graph_facts_messages(&mut self) {
         self.messages.retain(|m| {
             m.role != Role::System || !m.content.starts_with(super::GRAPH_FACTS_PREFIX)
@@ -1217,7 +1215,6 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(super::LSP_NOTE_PREFIX));
     }
 
-    #[cfg(feature = "graph-memory")]
     async fn fetch_graph_facts(
         memory_state: &super::MemoryState,
         query: &str,
@@ -1658,10 +1655,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("recalling context...").await;
 
         let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
-        #[cfg(feature = "graph-memory")]
         let graph_enabled = self.memory_state.graph_config.enabled;
-        #[cfg(not(feature = "graph-memory"))]
-        let graph_enabled = false;
         let alloc = budget.allocate(
             system_prompt,
             &self.skill_state.last_skills_prompt,
@@ -1677,7 +1671,6 @@ impl<C: Channel> Agent<C> {
         self.remove_correction_messages();
         #[cfg(feature = "index")]
         self.remove_code_context_messages();
-        #[cfg(feature = "graph-memory")]
         self.remove_graph_facts_messages();
 
         // Own the query to satisfy Send bounds when agent.run() is spawned
@@ -1705,7 +1698,6 @@ impl<C: Channel> Agent<C> {
         let mut corrections_msg: Option<Message> = None;
         #[cfg(feature = "index")]
         let mut code_rag_text: Option<String> = None;
-        #[cfg(feature = "graph-memory")]
         let mut graph_facts_msg: Option<Message> = None;
 
         {
@@ -1760,7 +1752,6 @@ impl<C: Channel> Agent<C> {
                     .await
                     .map(ContextSlot::CodeContext)
             }));
-            #[cfg(feature = "graph-memory")]
             fetchers.push(Box::pin(async {
                 Self::fetch_graph_facts(memory_state, &query, alloc.graph_facts, &tc)
                     .await
@@ -1777,7 +1768,6 @@ impl<C: Channel> Agent<C> {
                         ContextSlot::Corrections(msg) => corrections_msg = msg,
                         #[cfg(feature = "index")]
                         ContextSlot::CodeContext(text) => code_rag_text = text,
-                        #[cfg(feature = "graph-memory")]
                         ContextSlot::GraphFacts(msg) => graph_facts_msg = msg,
                     },
                     Err(e) => {
@@ -1792,7 +1782,6 @@ impl<C: Channel> Agent<C> {
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
-        #[cfg(feature = "graph-memory")]
         if let Some(msg) = graph_facts_msg.filter(|_| self.messages.len() > 1) {
             self.messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
@@ -2323,7 +2312,6 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "graph-memory")]
     use super::super::MemoryState;
     #[allow(clippy::wildcard_imports)]
     use super::*;
@@ -5093,7 +5081,6 @@ mod tests {
         assert_eq!(freed, 0, "keep_recent=4 should protect all 4 tool messages");
     }
 
-    #[cfg(feature = "graph-memory")]
     async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
         let mem = zeph_memory::semantic::SemanticMemory::new(
             ":memory:",
@@ -5109,7 +5096,6 @@ mod tests {
         mem.with_graph_store(store)
     }
 
-    #[cfg(feature = "graph-memory")]
     fn make_mem_state(
         memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
         cid: zeph_memory::ConversationId,
@@ -5134,7 +5120,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
         let memory = build_graph_memory().await;
@@ -5147,7 +5132,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn fetch_graph_facts_returns_none_when_budget_zero() {
         let memory = build_graph_memory().await;
@@ -5160,7 +5144,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn fetch_graph_facts_returns_none_when_graph_is_empty() {
         let memory = build_graph_memory().await;
@@ -5492,7 +5475,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graph-memory")]
     #[tokio::test]
     async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
         use zeph_memory::graph::{EntityType, GraphStore};

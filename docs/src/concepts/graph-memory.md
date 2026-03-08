@@ -2,7 +2,7 @@
 
 Graph memory augments Zeph's existing vector + keyword search with entity-relationship tracking. It stores entities, relationships, and communities extracted from conversations in SQLite, enabling multi-hop reasoning, temporal fact tracking, and cross-session entity linking.
 
-> **Status:** Experimental. Requires the `graph-memory` feature flag.
+> **Status:** Experimental.
 
 ## Why Graph Memory?
 
@@ -64,7 +64,7 @@ Groups of related entities with an LLM-generated summary. Community detection ru
 
 ## Background Extraction
 
-After each user message is persisted, Zeph spawns a background extraction task (when the `graph-memory` feature and `[memory.graph] enabled = true` are both active). The extraction pipeline:
+After each user message is persisted, Zeph spawns a background extraction task (when `[memory.graph] enabled = true`). The extraction pipeline:
 
 1. Collects the last 4 user messages as conversational context
 2. Sends the current message plus context to the configured LLM (`extract_model`, or the agent's primary model when empty)
@@ -206,20 +206,6 @@ use_embedding_resolution = false  # Enable embedding-based entity dedup
 community_refresh_interval = 100  # Messages between community recalculation
 expired_edge_retention_days = 90  # Days to retain expired (superseded) edges
 max_entities = 0                  # Entity cap (0 = unlimited)
-```
-
-The `graph-memory` feature flag must be enabled at compile time. When using pre-built binaries compiled with `--features full`, it is already included.
-
-> **Note:** The `[memory.graph]` config section is always parsed regardless of the feature flag. If `enabled = true` but the feature is not compiled in, graph memory is silently skipped.
-
-## Feature Flag
-
-```bash
-# Build with graph memory
-cargo build --features graph-memory
-
-# Build with all features (includes graph-memory)
-cargo build --features full
 ```
 
 ## Schema

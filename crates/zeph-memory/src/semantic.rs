@@ -5,7 +5,6 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
 use std::sync::Arc;
-#[cfg(feature = "graph-memory")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::embedding_store::{EmbeddingStore, MessageKind, SearchFilter};
@@ -168,13 +167,9 @@ pub struct SemanticMemory {
     mmr_enabled: bool,
     mmr_lambda: f32,
     pub token_counter: Arc<TokenCounter>,
-    #[cfg(feature = "graph-memory")]
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
-    #[cfg(feature = "graph-memory")]
     community_detection_failures: Arc<AtomicU64>,
-    #[cfg(feature = "graph-memory")]
     graph_extraction_count: Arc<AtomicU64>,
-    #[cfg(feature = "graph-memory")]
     graph_extraction_failures: Arc<AtomicU64>,
 }
 
@@ -257,13 +252,9 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -272,7 +263,6 @@ impl SemanticMemory {
     ///
     /// When set, `recall_graph` traverses the graph starting from entities
     /// matched by the query.
-    #[cfg(feature = "graph-memory")]
     #[must_use]
     pub fn with_graph_store(mut self, store: Arc<crate::graph::GraphStore>) -> Self {
         self.graph_store = Some(store);
@@ -280,21 +270,18 @@ impl SemanticMemory {
     }
 
     /// Returns the cumulative count of community detection failures since startup.
-    #[cfg(feature = "graph-memory")]
     #[must_use]
     pub fn community_detection_failures(&self) -> u64 {
         self.community_detection_failures.load(Ordering::Relaxed)
     }
 
     /// Returns the cumulative count of successful graph extractions since startup.
-    #[cfg(feature = "graph-memory")]
     #[must_use]
     pub fn graph_extraction_count(&self) -> u64 {
         self.graph_extraction_count.load(Ordering::Relaxed)
     }
 
     /// Returns the cumulative count of failed graph extractions since startup.
-    #[cfg(feature = "graph-memory")]
     #[must_use]
     pub fn graph_extraction_failures(&self) -> u64 {
         self.graph_extraction_failures.load(Ordering::Relaxed)
@@ -319,7 +306,6 @@ impl SemanticMemory {
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
-    #[cfg(any(test, feature = "mock"))]
     #[must_use]
     pub fn from_parts(
         sqlite: SqliteStore,
@@ -342,13 +328,9 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter,
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -405,13 +387,9 @@ impl SemanticMemory {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -808,7 +786,6 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the underlying graph query fails.
-    #[cfg(feature = "graph-memory")]
     pub async fn recall_graph(
         &self,
         query: &str,
@@ -1405,7 +1382,6 @@ impl SemanticMemory {
     ///
     /// Extraction runs in a separate tokio task with a timeout. Any error or timeout is
     /// logged and the task exits silently; the agent response is never blocked.
-    #[cfg(feature = "graph-memory")]
     pub fn spawn_graph_extraction(
         &self,
         content: String,
@@ -1508,7 +1484,6 @@ impl SemanticMemory {
 ///
 /// Owned clone of the relevant fields from `GraphConfig` — no references, safe to send to
 /// spawned tasks.
-#[cfg(feature = "graph-memory")]
 #[derive(Debug, Clone, Default)]
 pub struct GraphExtractionConfig {
     pub max_entities: usize,
@@ -1520,7 +1495,6 @@ pub struct GraphExtractionConfig {
 }
 
 /// Stats returned from a completed extraction.
-#[cfg(feature = "graph-memory")]
 #[derive(Debug, Default)]
 pub struct ExtractionStats {
     pub entities_upserted: usize,
@@ -1534,7 +1508,6 @@ pub struct ExtractionStats {
 /// # Errors
 ///
 /// Returns an error if the database query fails or LLM extraction fails.
-#[cfg(feature = "graph-memory")]
 pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
@@ -1647,13 +1620,9 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -2108,13 +2077,9 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
 
@@ -2249,13 +2214,9 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -2527,13 +2488,9 @@ mod tests {
             mmr_enabled: false,
             mmr_lambda: 0.7,
             token_counter: Arc::new(TokenCounter::new()),
-            #[cfg(feature = "graph-memory")]
             graph_store: None,
-            #[cfg(feature = "graph-memory")]
             community_detection_failures: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "graph-memory")]
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         };
 
@@ -2867,7 +2824,6 @@ mod tests {
 
     // graph-memory tests
 
-    #[cfg(feature = "graph-memory")]
     mod graph_extraction_tests {
         use super::*;
         use crate::graph::{EntityType, GraphStore};

@@ -3,8 +3,7 @@
 
 //! Reusable test helpers: `MockChannel`, `MockToolExecutor`, and `AgentTestHarness`.
 //!
-//! Gated behind `#[cfg(any(test, feature = "mock"))]` — never compiled in release builds
-//! unless the `mock` feature is explicitly enabled.
+//! Gated behind `#[cfg(test)]` — only compiled in test builds.
 
 use std::sync::{Arc, Mutex};
 

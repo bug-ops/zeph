@@ -8,10 +8,10 @@ The HTTP gateway exposes a webhook endpoint for external services to send messag
 
 ```bash
 # Daemon mode — starts agent + gateway server
-cargo run --features gateway -- --daemon
+cargo run --features gateway,a2a -- --daemon
 
 # Custom config
-cargo run --features gateway -- --daemon --config path/to/config.toml
+cargo run --features gateway,a2a -- --daemon --config path/to/config.toml
 ```
 
 The server is wired via `src/gateway_spawn.rs` into both `daemon.rs` and `runner.rs`. Incoming webhook payloads are logged; full agent loopback forwarding is planned as a follow-up.

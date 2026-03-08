@@ -597,7 +597,6 @@ mod tests {
         assert_eq!(p95, 200);
     }
 
-    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn evaluator_with_mock_provider() {
         use std::sync::Arc;
@@ -643,7 +642,6 @@ mod tests {
     }
 
     /// R8-GAP-1: Budget exhaustion mid-evaluation produces is_partial=true.
-    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn partial_results_on_budget_exceeded() {
         use std::sync::Arc;
@@ -696,7 +694,6 @@ mod tests {
     }
 
     /// R8-GAP-3: LLM errors are excluded from mean; error_count incremented.
-    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn llm_error_excluded_from_mean() {
         use std::sync::Arc;
@@ -750,7 +747,6 @@ mod tests {
     }
 
     /// R8-GAP-2: Semaphore limits concurrent judge calls.
-    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn parallel_eval_respects_concurrency_limit() {
         use std::sync::atomic::Ordering as AOrdering;

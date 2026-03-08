@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![cfg(all(feature = "daemon", feature = "a2a"))]
+#![cfg(feature = "a2a")]
 
 use std::path::PathBuf;
 

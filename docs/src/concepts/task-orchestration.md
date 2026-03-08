@@ -2,23 +2,7 @@
 
 Use task orchestration to break a complex goal into a directed acyclic graph (DAG) of dependent tasks, execute them in parallel where possible, and recover from failures without restarting the entire plan. This page explains the core types, DAG algorithms, scheduling model, result aggregation, and the `/plan` CLI commands.
 
-Task orchestration is an optional, feature-gated component that persists graph state in SQLite so execution survives restarts.
-
-## Prerequisites
-
-Enable the `orchestration` feature flag before building:
-
-```bash
-cargo build --release --features orchestration
-```
-
-The `orchestration` feature is also included in the `full` feature set:
-
-```bash
-cargo build --release --features full
-```
-
-See [Feature Flags](../reference/feature-flags.md) for the full flag list.
+Task orchestration persists graph state in SQLite so execution survives restarts.
 
 ## Core Types
 
@@ -202,7 +186,7 @@ When all tasks in a graph reach a terminal state (completed, skipped, or failed)
 
 ## TUI Integration
 
-When running with the TUI dashboard (`--features tui,orchestration`), the right side panel provides live plan progress without leaving the interface.
+When running with the TUI dashboard (`--features tui`), the right side panel provides live plan progress without leaving the interface.
 
 Press `p` in Normal mode to toggle between the Sub-agents view and the Plan View. The panel shows each task with its current status, assigned agent, elapsed time, and any error message:
 
@@ -269,7 +253,7 @@ This is equivalent to a targeted re-run of the failed subtree without discarding
 
 ## Metrics
 
-`OrchestrationMetrics` tracks plan and task counters. The struct is always present in `MetricsSnapshot` (not feature-gated) and defaults to zero when orchestration is inactive.
+`OrchestrationMetrics` tracks plan and task counters. The struct is always present in `MetricsSnapshot` and defaults to zero when orchestration is inactive.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -312,5 +296,5 @@ aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call 
 ## Related
 
 - [Sub-Agent Orchestration](../advanced/sub-agents.md) — sub-agents that execute individual tasks
-- [Feature Flags](../reference/feature-flags.md) — enabling the `orchestration` feature
+- [Feature Flags](../reference/feature-flags.md)
 - [Configuration](../reference/configuration.md) — full config reference

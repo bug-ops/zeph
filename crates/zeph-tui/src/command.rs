@@ -52,15 +52,10 @@ pub enum TuiCommand {
     PlanList,
     PlanToggleView,
     // Graph memory
-    #[cfg(feature = "graph-memory")]
     GraphStats,
-    #[cfg(feature = "graph-memory")]
     GraphEntities,
-    #[cfg(feature = "graph-memory")]
     GraphFactsPrompt,
-    #[cfg(feature = "graph-memory")]
     GraphCommunities,
-    #[cfg(feature = "graph-memory")]
     GraphBackfillPrompt,
     // LSP context injection
     #[cfg(feature = "lsp-context")]
@@ -335,7 +330,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: Some("p"),
             command: TuiCommand::PlanToggleView,
         },
-        #[cfg(feature = "graph-memory")]
         CommandEntry {
             id: "graph:stats",
             label: "Show graph memory statistics (/graph)",
@@ -343,7 +337,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphStats,
         },
-        #[cfg(feature = "graph-memory")]
         CommandEntry {
             id: "graph:entities",
             label: "List graph entities (/graph entities)",
@@ -351,7 +344,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphEntities,
         },
-        #[cfg(feature = "graph-memory")]
         CommandEntry {
             id: "graph:facts",
             label: "Show entity facts (/graph facts <name>)",
@@ -359,7 +351,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphFactsPrompt,
         },
-        #[cfg(feature = "graph-memory")]
         CommandEntry {
             id: "graph:communities",
             label: "List graph communities (/graph communities)",
@@ -367,7 +358,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::GraphCommunities,
         },
-        #[cfg(feature = "graph-memory")]
         CommandEntry {
             id: "graph:backfill",
             label: "Backfill graph from existing messages (/graph backfill)",
@@ -459,17 +449,12 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 19 base (14 + 5 plan)
-        // + 5 graph-memory commands (when feature enabled)
+        // 24 base (14 + 5 plan + 5 graph)
         // + 1 lsp:status command (when lsp-context feature enabled)
-        #[cfg(all(feature = "graph-memory", feature = "lsp-context"))]
+        #[cfg(feature = "lsp-context")]
         assert_eq!(extra_command_registry().len(), 25);
-        #[cfg(all(feature = "graph-memory", not(feature = "lsp-context")))]
+        #[cfg(not(feature = "lsp-context"))]
         assert_eq!(extra_command_registry().len(), 24);
-        #[cfg(all(not(feature = "graph-memory"), feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 20);
-        #[cfg(all(not(feature = "graph-memory"), not(feature = "lsp-context")))]
-        assert_eq!(extra_command_registry().len(), 19);
     }
 
     #[test]
@@ -575,7 +560,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graph-memory")]
     #[test]
     fn filter_graph_returns_graph_entries() {
         let results = filter_commands("graph");

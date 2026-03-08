@@ -2147,7 +2147,6 @@ impl Default for OrchestrationConfig {
     }
 }
 
-#[cfg(feature = "orchestration")]
 impl OrchestrationConfig {
     /// Parse and validate `default_failure_strategy` as a typed `FailureStrategy`.
     ///
@@ -2361,7 +2360,6 @@ mod tests {
         assert_eq!(cfg.default_failure_strategy, "skip");
     }
 
-    #[cfg(feature = "orchestration")]
     #[test]
     fn orchestration_config_failure_strategy_valid() {
         let cfg = OrchestrationConfig::default(); // "abort"
@@ -2369,7 +2367,6 @@ mod tests {
         assert_eq!(fs, crate::orchestration::FailureStrategy::Abort);
     }
 
-    #[cfg(feature = "orchestration")]
     #[test]
     fn orchestration_config_failure_strategy_invalid() {
         let cfg = OrchestrationConfig {

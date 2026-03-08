@@ -11,7 +11,6 @@ pub mod config;
 pub mod config_watcher;
 pub mod context;
 pub mod cost;
-#[cfg(feature = "daemon")]
 pub mod daemon;
 pub mod debug_dump;
 pub mod instructions;
@@ -27,7 +26,6 @@ pub mod experiments;
 #[cfg(feature = "lsp-context")]
 pub mod lsp_hooks;
 
-#[cfg(feature = "orchestration")]
 pub mod orchestration;
 
 pub mod hash;
@@ -38,7 +36,7 @@ pub mod skill_loader;
 pub mod subagent;
 pub mod text;
 
-#[cfg(any(test, feature = "mock"))]
+#[cfg(test)]
 pub mod testing;
 
 pub use agent::Agent;

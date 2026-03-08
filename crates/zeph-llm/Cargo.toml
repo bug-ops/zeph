@@ -15,7 +15,6 @@ readme = "README.md"
 [features]
 default = ["schema"]
 schema = ["dep:schemars"]
-mock = []
 stt = ["reqwest/multipart"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers", "dep:symphonia", "dep:rubato"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

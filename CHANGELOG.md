@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Remove `daemon`, `mock`, `orchestration`, and `graph-memory` Cargo feature flags. All four are now compiled unconditionally into every build. Remove these flags from any `--features` lists or CI matrix entries. The `full` feature set no longer includes them.
+
 ### Added
 
 - ACP gap closure (SDK v0.10): upgrade `agent-client-protocol` to 0.10; rename `kill_terminal_command` → `kill_terminal` throughout zeph-acp; advertise MCP capabilities with `http=true, sse=false` (SSE deprecated in MCP spec 2025-11-25); implement `ResourceLink` resolution with SSRF defense (post-fetch `remote_addr()` private-IP check eliminating DNS rebinding TOCTOU window, fail-closed on missing remote_addr, CGNAT 100.64.0.0/10 blocked, cwd boundary enforcement, pseudo-filesystem blocklist, binary-file null-byte detection, pre-flight size check, 10s timeout, 1 MiB cap, full XML-injection escaping via `xml_escape()` on both URI attribute and content body); add `StopReason::MaxTokens` / `MaxTurnRequests` mapping via `StopHint` channel event and `MAX_TOKENS_TRUNCATION_MARKER` constant detected in Claude text-only responses and OpenAI (`finish_reason="length"`) responses; add `SessionConfigOptionCategory` annotations to config options; emit fire-and-forget `ConfigOptionUpdate` notification for only the changed option on model/thinking/auto-approve changes.

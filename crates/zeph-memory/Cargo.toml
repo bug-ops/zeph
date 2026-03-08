@@ -18,7 +18,7 @@ futures.workspace = true
 dashmap = { workspace = true }
 tiktoken-rs = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
-petgraph = { workspace = true, optional = true }
+petgraph.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -35,9 +35,6 @@ zeph-llm.workspace = true
 [features]
 default = []
 experiments = []
-graph-memory = ["dep:petgraph", "zeph-llm/schema"]
-mock = []
-orchestration = []
 pdf = ["dep:pdf-extract"]
 
 [[bench]]
@@ -50,7 +47,7 @@ proptest.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-zeph-llm = { workspace = true, features = ["mock"] }
+zeph-llm.workspace = true
 
 [lints]
 workspace = true

@@ -247,7 +247,6 @@ mod tests {
         assert!(prompt.contains("Extract entities and relationships as JSON."));
     }
 
-    #[cfg(feature = "mock")]
     mod mock_tests {
         use super::*;
         use zeph_llm::mock::MockProvider;

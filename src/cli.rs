@@ -17,8 +17,8 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) tui: bool,
 
-    /// Run in headless daemon mode (requires daemon + a2a features)
-    #[cfg(all(feature = "daemon", feature = "a2a"))]
+    /// Run in headless daemon mode (requires a2a feature)
+    #[cfg(feature = "a2a")]
     #[arg(long)]
     pub(crate) daemon: bool,
 

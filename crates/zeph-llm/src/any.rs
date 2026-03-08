@@ -5,7 +5,6 @@
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::compatible::CompatibleProvider;
-#[cfg(feature = "mock")]
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
@@ -31,7 +30,6 @@ macro_rules! delegate_provider {
             AnyProvider::Compatible($p) => $expr,
             AnyProvider::Orchestrator($p) => $expr,
             AnyProvider::Router($p) => $expr,
-            #[cfg(feature = "mock")]
             AnyProvider::Mock($p) => $expr,
         }
     };
@@ -47,7 +45,6 @@ pub enum AnyProvider {
     Compatible(CompatibleProvider),
     Orchestrator(Box<ModelOrchestrator>),
     Router(Box<RouterProvider>),
-    #[cfg(feature = "mock")]
     Mock(MockProvider),
 }
 
@@ -108,7 +105,6 @@ impl AnyProvider {
             AnyProvider::Orchestrator(p) => p.list_models_remote().await,
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
-            #[cfg(feature = "mock")]
             AnyProvider::Mock(_) => Ok(vec![]),
         }
     }
@@ -155,7 +151,6 @@ impl AnyProvider {
             Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
-            #[cfg(feature = "mock")]
             Self::Mock(_) => {}
         }
     }
@@ -514,7 +509,7 @@ mod tests {
         assert!(debug.contains("OpenAi"));
     }
 
-    #[cfg(all(feature = "mock", feature = "schema"))]
+    #[cfg(feature = "schema")]
     #[tokio::test]
     async fn chat_typed_erased_dispatches_to_mock() {
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]

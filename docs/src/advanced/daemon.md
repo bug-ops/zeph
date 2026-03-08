@@ -4,10 +4,10 @@ Run Zeph as a long-running process with component supervision and cron-based per
 
 ## Headless Daemon Mode
 
-The `--daemon` flag starts Zeph as a headless background agent with full capabilities (LLM, tools, memory, MCP) exposed via an A2A JSON-RPC endpoint. Requires both `daemon` and `a2a` features.
+The `--daemon` flag starts Zeph as a headless background agent with full capabilities (LLM, tools, memory, MCP) exposed via an A2A JSON-RPC endpoint. Requires the `a2a` feature.
 
 ```bash
-cargo build --release --features daemon,a2a
+cargo build --release --features a2a
 zeph --daemon
 ```
 
@@ -18,12 +18,6 @@ See the [Daemon Mode guide](../guides/daemon-mode.md) for configuration, usage, 
 ## Daemon Supervisor
 
 The daemon manages component lifecycles (gateway, scheduler, A2A server), monitors for unexpected exits, and tracks restart counts.
-
-### Feature Flag
-
-```bash
-cargo build --release --features daemon
-```
 
 ### Configuration
 

@@ -9,7 +9,6 @@ use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent, Securit
 
 impl<C: Channel> Agent<C> {
     /// Read the community-detection failure counter from `SemanticMemory` and update metrics.
-    #[cfg(feature = "graph-memory")]
     pub fn sync_community_detection_failures(&self) {
         if let Some(memory) = self.memory_state.memory.as_ref() {
             let failures = memory.community_detection_failures();
@@ -20,7 +19,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Sync all graph counters (extraction count/failures) from `SemanticMemory` to metrics.
-    #[cfg(feature = "graph-memory")]
     pub fn sync_graph_extraction_metrics(&self) {
         if let Some(memory) = self.memory_state.memory.as_ref() {
             let count = memory.graph_extraction_count();
@@ -33,7 +31,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Fetch entity/edge/community counts from the graph store and write to metrics.
-    #[cfg(feature = "graph-memory")]
     pub async fn sync_graph_counts(&self) {
         let Some(memory) = self.memory_state.memory.as_ref() else {
             return;

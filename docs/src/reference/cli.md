@@ -226,7 +226,7 @@ See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read 
 | Flag | Description |
 |------|-------------|
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |
-| `--daemon` | Run as headless background agent with A2A endpoint (requires `daemon` + `a2a` features). See [Daemon Mode](../guides/daemon-mode.md) |
+| `--daemon` | Run as headless background agent with A2A endpoint (requires `a2a` feature). See [Daemon Mode](../guides/daemon-mode.md) |
 | `--connect <URL>` | Connect TUI to a remote daemon via A2A SSE streaming (requires `tui` + `a2a` features). See [Daemon Mode](../guides/daemon-mode.md) |
 | `--config <PATH>` | Path to a TOML config file (overrides `ZEPH_CONFIG` env var) |
 | `--vault <BACKEND>` | Secrets backend: `env` or `age` (overrides `ZEPH_VAULT_BACKEND` env var) |

@@ -5,7 +5,6 @@ mod acp_sessions;
 pub mod corrections;
 #[cfg(feature = "experiments")]
 pub mod experiments;
-#[cfg(feature = "orchestration")]
 pub mod graph_store;
 mod history;
 pub(crate) mod messages;
