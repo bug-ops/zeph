@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Sub-agent transcript sweep no longer logs a spurious `transcript sweep failed` warning on first run when the transcript directory does not exist yet; the directory is now created automatically (#1397)
+
 ### Performance
 
 - Parallelize LLM summarization calls across communities in `detect_communities` using `tokio::task::JoinSet` bounded by `Arc<Semaphore>`. New `GraphConfig.community_summary_concurrency` field (default: 4) controls the concurrency limit; `concurrency=1` provides sequential fallback (#1260)
@@ -27,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Skill trust system was entirely non-functional: trust DB was never populated on skill load, `TrustGateExecutor` was defined but never wired into the executor chain, and trust commands always returned "not found". Fixed by populating `skill_trust` table after load/reload with source-based level (local→`local_level`, hub→`default_level`) and hash-mismatch detection, wrapping `CompositeExecutor` with `TrustGateExecutor` as the outermost layer, adding `set_effective_trust` to `ErasedToolExecutor` trait with forwarding through `DynExecutor`, overriding `set_effective_trust` in `impl ToolExecutor for TrustGateExecutor` (inherent method was shadowed by trait default no-op), and extending `Quarantined` trust blocking to `execute()`/`execute_confirmed()` paths (#1405)
+- Sub-agent LLM call no longer fails with `no route configured` when `model` is omitted in the agent definition. `ModelOrchestrator::chat_with_fallback` and `stream_with_fallback` now fall through to `default_provider` when no matching route chain exists, instead of returning `LlmError::NoRoute` early. Sub-agents with an explicit `model` field now route to the named provider via the new `chat_for_named` method, with fallback to default routing if the named provider fails (#1396)
 - `/image` command crash when file does not exist: CLI channel now prints a user-facing error and continues instead of propagating `ChannelError::Io` and exiting (#1391)
 - `/image` command silently ignoring valid files: image is now held in `pending_attachments` and attached to the next outgoing message, so the follow-up prompt sees the image (#1391)
 - `agent/mod.rs` `/image` handler stored loaded image parts in a local Vec that was immediately dropped; parts are now held in `Agent::pending_image_parts` and merged into the next `process_user_message` call (#1391)

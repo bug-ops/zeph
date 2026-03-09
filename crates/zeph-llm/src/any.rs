@@ -130,6 +130,28 @@ impl AnyProvider {
         }
     }
 
+    /// Route to a specific named provider (for orchestrators), or fall through to default routing.
+    ///
+    /// For non-orchestrator providers, the `name` is ignored and regular `chat` is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LlmError`] if the underlying provider call fails.
+    pub async fn chat_with_named_provider(
+        &self,
+        name: &str,
+        messages: &[Message],
+    ) -> Result<String, crate::LlmError> {
+        if let Self::Orchestrator(orch) = self {
+            return orch.chat_for_named(name, messages).await;
+        }
+        tracing::debug!(
+            name,
+            "chat_with_named_provider: not an orchestrator, ignoring model name"
+        );
+        self.chat(messages).await
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

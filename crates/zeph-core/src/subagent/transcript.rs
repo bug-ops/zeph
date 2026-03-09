@@ -241,6 +241,12 @@ pub fn sweep_old_transcripts(dir: &Path, max_files: usize) -> io::Result<usize> 
         return Ok(0);
     }
 
+    // Create the directory if it does not exist yet (first run).
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+        return Ok(0);
+    }
+
     let mut jsonl_files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
