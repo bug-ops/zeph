@@ -8,6 +8,7 @@ pub struct AgentCardBuilder {
     description: String,
     url: String,
     version: String,
+    protocol_version: String,
     capabilities: AgentCapabilities,
     skills: Vec<AgentSkill>,
     provider: Option<AgentProvider>,
@@ -27,6 +28,7 @@ impl AgentCardBuilder {
             description: String::new(),
             url: url.into(),
             version: version.into(),
+            protocol_version: crate::A2A_PROTOCOL_VERSION.to_owned(),
             capabilities: AgentCapabilities::default(),
             skills: Vec::new(),
             provider: None,
@@ -87,6 +89,7 @@ impl AgentCardBuilder {
             description: self.description,
             url: self.url,
             version: self.version,
+            protocol_version: self.protocol_version,
             provider: self.provider,
             capabilities: self.capabilities,
             default_input_modes: self.input_modes,
@@ -152,6 +155,15 @@ mod tests {
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"name\":\"test\""));
         assert!(json.contains("\"defaultInputModes\"").not());
+    }
+
+    #[test]
+    fn builder_includes_protocol_version() {
+        let card = AgentCardBuilder::new("agent", "http://localhost", "0.1.0").build();
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"protocolVersion\""));
+        assert!(json.contains(crate::A2A_PROTOCOL_VERSION));
+        assert_eq!(card.protocol_version, crate::A2A_PROTOCOL_VERSION);
     }
 
     trait Not {

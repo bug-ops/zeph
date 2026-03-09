@@ -122,6 +122,7 @@ pub struct AgentCard {
     pub description: String,
     pub url: String,
     pub version: String,
+    pub protocol_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<AgentProvider>,
     pub capabilities: AgentCapabilities,
@@ -408,6 +409,7 @@ mod tests {
             description: "A test agent".into(),
             url: "http://localhost:8080".into(),
             version: "0.1.0".into(),
+            protocol_version: "0.2.1".into(),
             provider: Some(AgentProvider {
                 organization: "TestOrg".into(),
                 url: Some("https://test.org".into()),

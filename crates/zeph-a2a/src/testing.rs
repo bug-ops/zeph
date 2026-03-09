@@ -11,6 +11,7 @@ pub fn agent_card_response(name: &str, base_url: &str) -> ResponseTemplate {
         "description": "test agent",
         "url": base_url,
         "version": "0.1.0",
+        "protocolVersion": crate::A2A_PROTOCOL_VERSION,
         "capabilities": {"streaming": true, "pushNotifications": false, "stateTransitionHistory": false},
         "defaultInputModes": [],
         "defaultOutputModes": [],
