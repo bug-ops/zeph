@@ -185,6 +185,7 @@ jobs:
 
   coverage:
     name: Coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint-fmt, lint-clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
