@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Validate `deferred_apply_threshold < compaction_threshold` ordering at config load and in `--init` wizard. Both thresholds also enforce finite (0.0, 1.0) exclusive range. Wizard re-prompts on violation instead of silently accepting. `tui_remote` now calls `Config::validate()` after load (#1302)
+
 ### Changed
 
 - Consolidate all project-level runtime artifacts under `.zeph/` directory. Default paths changed: `data/zeph.db` → `.zeph/data/zeph.db`, `skills/` → `.zeph/skills/`, `.local/debug` → `.zeph/debug`. Startup migration warning logs exact `mv` commands when old paths are detected. Explicit config paths are unaffected (#1353)
@@ -13,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Response cache bypassed in native `tool_use` path: `process_response_native_tools()` never called `check_response_cache()` or `store_response_in_cache()`, so cache lookups and stores only worked in the legacy non-tool path. Add cache check before the tool loop and cache store after `ChatResponse::Text` responses (#1377)
+- `[memory.compression]` and `[memory.routing]` config sections silently ignored on startup; only applied after config hot-reload. Add `with_compression()` and `with_routing()` builder methods and wire them in agent construction (#1374)
 - Response cache is never consulted at runtime: `check_response_cache()` was guarded by `!self.provider.supports_streaming()` but all real providers return `true`. Remove the streaming guard so cache lookups work for all providers. Also store responses in cache from the streaming code path, which was previously missing (#1366)
 - Correction detector false positive: user self-corrections (e.g., "I was wrong, the capital is Canberra") no longer penalize all active skills. Add `SelfCorrection` detection kind with dedicated regex patterns, checked before rejection patterns. Self-corrections are stored for analytics but skip `record_skill_outcomes()`. Tighten overly broad `AlternativeRequest` start-of-line regex (#1361)
 - Cross-session history restore could produce orphaned `tool_use`/`tool_result` messages at history boundaries, causing Claude API 400 errors. Add `sanitize_tool_pairs()` post-load sanitization in `load_history()` that removes trailing assistant messages with unmatched `ToolUse` parts and leading user messages with unmatched `ToolResult` parts. Fixes both LIMIT-boundary splits and session-interruption orphans (#1360)

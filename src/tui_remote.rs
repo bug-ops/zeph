@@ -15,6 +15,7 @@ pub(crate) async fn run_tui_remote(
     let config_file = zeph_core::bootstrap::resolve_config_path(config_path);
     let config = zeph_core::config::Config::load(&config_file)
         .unwrap_or_else(|_| zeph_core::config::Config::default());
+    config.validate()?;
     let auth_token = config.a2a.auth_token.clone();
 
     let client = zeph_a2a::A2aClient::new(zeph_core::http::default_client());
