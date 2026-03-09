@@ -270,6 +270,7 @@ impl<C: Channel> Agent<C> {
                     max_entities_cap: graph_cfg.max_entities,
                     community_summary_max_prompt_bytes: graph_cfg
                         .community_summary_max_prompt_bytes,
+                    community_summary_concurrency: graph_cfg.community_summary_concurrency,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

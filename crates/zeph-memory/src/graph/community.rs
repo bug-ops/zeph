@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use futures::TryStreamExt as _;
 use petgraph::Graph;
 use petgraph::graph::NodeIndex;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use zeph_llm::LlmProvider as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -59,10 +62,51 @@ fn truncate_prompt(prompt: String, max_bytes: usize) -> String {
     format!("{}...", &prompt[..boundary])
 }
 
+/// Compute a BLAKE3 fingerprint for a community partition.
+///
+/// The fingerprint is derived from sorted entity IDs and sorted intra-community edge IDs,
+/// ensuring both membership and edge mutations trigger re-summarization.
+/// BLAKE3 is used (not `DefaultHasher`) to guarantee determinism across process restarts.
+fn compute_partition_fingerprint(entity_ids: &[i64], intra_edge_ids: &[i64]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    let mut sorted_entities = entity_ids.to_vec();
+    sorted_entities.sort_unstable();
+    hasher.update(b"entities");
+    for id in &sorted_entities {
+        hasher.update(&id.to_le_bytes());
+    }
+    let mut sorted_edges = intra_edge_ids.to_vec();
+    sorted_edges.sort_unstable();
+    hasher.update(b"edges");
+    for id in &sorted_edges {
+        hasher.update(&id.to_le_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Per-community data collected before spawning LLM summarization tasks.
+struct CommunityData {
+    entity_ids: Vec<i64>,
+    entity_names: Vec<String>,
+    intra_facts: Vec<String>,
+    fingerprint: String,
+    name: String,
+}
+
 /// Run label propagation on the full entity graph, generate community summaries via LLM,
 /// and upsert results to `SQLite`.
 ///
 /// Returns the number of communities detected (with `>= 2` entities).
+///
+/// Unchanged communities (same entity membership and intra-community edges) are skipped —
+/// their existing summaries are preserved without LLM calls (incremental detection, #1262).
+/// LLM calls for changed communities are parallelized via a `JoinSet` bounded by a
+/// semaphore with `concurrency` permits (#1260).
+///
+/// # Panics
+///
+/// Does not panic in normal operation. The `semaphore.acquire().await.expect(...)` call is
+/// infallible because the semaphore is never closed during the lifetime of this function.
 ///
 /// # Errors
 ///
@@ -72,6 +116,7 @@ pub async fn detect_communities(
     store: &GraphStore,
     provider: &AnyProvider,
     community_summary_max_prompt_bytes: usize,
+    concurrency: usize,
 ) -> Result<usize, MemoryError> {
     let entities = store.all_entities().await?;
     if entities.len() < 2 {
@@ -149,38 +194,62 @@ pub async fn detect_communities(
     // Keep only communities with >= 2 entities.
     communities.retain(|_, members| members.len() >= 2);
 
-    // Full rebuild: delete all existing communities before upserting new ones (M2 fix).
-    store.delete_all_communities().await?;
-
     // Build entity name lookup for summary generation.
     let entity_name_map: HashMap<i64, &str> =
         entities.iter().map(|e| (e.id, e.name.as_str())).collect();
 
-    // Build edge fact lookup indexed by entity pair.
+    // Build edge fact lookup and edge ID lookup indexed by entity pair.
     let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
+    let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
     for edge in &edges {
         let key = (edge.source_entity_id, edge.target_entity_id);
         edge_facts_map
             .entry(key)
             .or_default()
             .push(edge.fact.clone());
+        edge_id_map.entry(key).or_default().push(edge.id);
     }
 
-    let mut count = 0usize;
-    for (label_index, (_, entity_ids)) in communities.iter().enumerate() {
+    // Load stored fingerprints: fingerprint -> community_id (for unchanged partition detection).
+    let stored_fingerprints = store.community_fingerprints().await?;
+
+    // Sort community labels for stable label_index assignment (HIGH-02 fix).
+    let mut sorted_labels: Vec<usize> = communities.keys().copied().collect();
+    sorted_labels.sort_unstable();
+
+    // Prepare per-community data: compute fingerprints, classify into changed/unchanged.
+    let mut to_summarize: Vec<CommunityData> = Vec::new();
+    let mut unchanged_count = 0usize;
+    let mut new_fingerprints: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (label_index, &label) in sorted_labels.iter().enumerate() {
+        let entity_ids = communities[&label].as_slice();
+        let member_set: std::collections::HashSet<i64> = entity_ids.iter().copied().collect();
+
+        let mut intra_facts: Vec<String> = Vec::new();
+        let mut intra_edge_ids: Vec<i64> = Vec::new();
+        for (&(src, tgt), facts) in &edge_facts_map {
+            if member_set.contains(&src) && member_set.contains(&tgt) {
+                intra_facts.extend(facts.iter().map(|f| scrub_content(f)));
+                if let Some(ids) = edge_id_map.get(&(src, tgt)) {
+                    intra_edge_ids.extend_from_slice(ids);
+                }
+            }
+        }
+
+        let fingerprint = compute_partition_fingerprint(entity_ids, &intra_edge_ids);
+        new_fingerprints.insert(fingerprint.clone());
+
+        if stored_fingerprints.contains_key(&fingerprint) {
+            // Partition unchanged — no LLM call needed.
+            unchanged_count += 1;
+            continue;
+        }
+
         let entity_names: Vec<String> = entity_ids
             .iter()
             .filter_map(|id| entity_name_map.get(id).map(|&s| scrub_content(s)))
             .collect();
-
-        // Collect intra-community edge facts.
-        let member_set: std::collections::HashSet<i64> = entity_ids.iter().copied().collect();
-        let mut intra_facts: Vec<String> = Vec::new();
-        for (&(src, tgt), facts) in &edge_facts_map {
-            if member_set.contains(&src) && member_set.contains(&tgt) {
-                intra_facts.extend(facts.iter().map(|f| scrub_content(f)));
-            }
-        }
 
         // Append label_index to prevent ON CONFLICT(name) collisions when two communities
         // share the same top-3 entity names across detect_communities runs (IC-SIG-02).
@@ -192,24 +261,85 @@ pub async fn detect_communities(
             .join(", ");
         let name = format!("{base_name} [{label_index}]");
 
-        // Generate LLM summary sequentially to avoid rate-limit issues.
-        // TODO: consider FuturesUnordered with concurrency=3 if latency becomes a concern.
-        let summary = match generate_community_summary(
-            provider,
-            &entity_names,
-            &intra_facts,
-            community_summary_max_prompt_bytes,
-        )
-        .await
-        {
-            Ok(text) => text,
-            Err(e) => {
-                tracing::warn!("community summary generation failed: {e:#}");
-                String::new()
-            }
-        };
+        to_summarize.push(CommunityData {
+            entity_ids: entity_ids.to_vec(),
+            entity_names,
+            intra_facts,
+            fingerprint,
+            name,
+        });
+    }
 
-        store.upsert_community(&name, &summary, entity_ids).await?;
+    tracing::debug!(
+        total = sorted_labels.len(),
+        unchanged = unchanged_count,
+        to_summarize = to_summarize.len(),
+        "community detection: partition classification complete"
+    );
+
+    // Delete dissolved communities — those whose fingerprints no longer appear in the new
+    // partition set. Only applicable when stored fingerprints exist (not the first run).
+    for (stored_fp, community_id) in &stored_fingerprints {
+        if !new_fingerprints.contains(stored_fp.as_str()) {
+            store.delete_community_by_id(*community_id).await?;
+        }
+    }
+
+    // Spawn LLM summarization tasks concurrently, bounded by semaphore.
+    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
+    let mut join_set: JoinSet<(String, String, Vec<i64>, String)> = JoinSet::new();
+
+    for data in to_summarize {
+        let provider = provider.clone();
+        let sem = Arc::clone(&semaphore);
+        let max_bytes = community_summary_max_prompt_bytes;
+        join_set.spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore is never closed");
+            let summary = match generate_community_summary(
+                &provider,
+                &data.entity_names,
+                &data.intra_facts,
+                max_bytes,
+            )
+            .await
+            {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(
+                        community = %data.name,
+                        "community summary generation failed: {e:#}"
+                    );
+                    String::new()
+                }
+            };
+            (data.name, summary, data.entity_ids, data.fingerprint)
+        });
+    }
+
+    // Collect results — handle task panics explicitly (HIGH-01 fix).
+    let mut results: Vec<(String, String, Vec<i64>, String)> = Vec::new();
+    while let Some(outcome) = join_set.join_next().await {
+        match outcome {
+            Ok(tuple) => results.push(tuple),
+            Err(e) => {
+                tracing::error!(
+                    panicked = e.is_panic(),
+                    cancelled = e.is_cancelled(),
+                    "community summary task failed"
+                );
+            }
+        }
+    }
+
+    // Sort results for deterministic upsert order.
+    results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    // Upsert sequentially (SQLite is single-writer).
+    let mut count = unchanged_count;
+    for (name, summary, entity_ids, fingerprint) in results {
+        store
+            .upsert_community(&name, &summary, &entity_ids, Some(&fingerprint))
+            .await?;
         count += 1;
     }
 
@@ -219,6 +349,9 @@ pub async fn detect_communities(
 /// Assign a single entity to an existing community via neighbor majority vote.
 ///
 /// Returns `Some(community_id)` if assigned, `None` if no neighbors have communities.
+///
+/// When an entity is added, the stored fingerprint is cleared (`NULL`) so the next
+/// `detect_communities` run will re-summarize the affected community (CRIT-02 fix).
 ///
 /// # Errors
 ///
@@ -270,8 +403,10 @@ pub async fn assign_to_community(
         if !target.entity_ids.contains(&entity_id) {
             target.entity_ids.push(entity_id);
             store
-                .upsert_community(&target.name, &target.summary, &target.entity_ids)
+                .upsert_community(&target.name, &target.summary, &target.entity_ids, None)
                 .await?;
+            // Clear fingerprint to invalidate cache — next detect_communities will re-summarize.
+            store.clear_community_fingerprint(best_community_id).await?;
         }
         return Ok(Some(best_community_id));
     }
@@ -370,6 +505,8 @@ async fn generate_community_summary(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::graph::types::EntityType;
     use crate::sqlite::SqliteStore;
@@ -383,11 +520,19 @@ mod tests {
         AnyProvider::Mock(zeph_llm::mock::MockProvider::default())
     }
 
+    fn recording_provider() -> (
+        AnyProvider,
+        Arc<Mutex<Vec<Vec<zeph_llm::provider::Message>>>>,
+    ) {
+        let (mock, buf) = zeph_llm::mock::MockProvider::default().with_recording();
+        (AnyProvider::Mock(mock), buf)
+    }
+
     #[tokio::test]
     async fn test_detect_communities_empty_graph() {
         let store = setup().await;
         let provider = mock_provider();
-        let count = detect_communities(&store, &provider, usize::MAX)
+        let count = detect_communities(&store, &provider, usize::MAX, 4)
             .await
             .unwrap();
         assert_eq!(count, 0);
@@ -401,7 +546,7 @@ mod tests {
             .upsert_entity("Solo", "Solo", EntityType::Concept, None)
             .await
             .unwrap();
-        let count = detect_communities(&store, &provider, usize::MAX)
+        let count = detect_communities(&store, &provider, usize::MAX, 4)
             .await
             .unwrap();
         assert_eq!(count, 0, "single isolated entity must not form a community");
@@ -439,7 +584,7 @@ mod tests {
             .await
             .unwrap();
 
-        let count = detect_communities(&store, &provider, usize::MAX)
+        let count = detect_communities(&store, &provider, usize::MAX, 4)
             .await
             .unwrap();
         // Isolated entity has no edges — must NOT be persisted as a community.
@@ -482,7 +627,7 @@ mod tests {
             cluster_ids.push(ids);
         }
 
-        let count = detect_communities(&store, &provider, usize::MAX)
+        let count = detect_communities(&store, &provider, usize::MAX, 4)
             .await
             .unwrap();
         assert_eq!(count, 4, "expected 4 communities, one per cluster");
@@ -521,7 +666,7 @@ mod tests {
                 .unwrap();
         }
 
-        let count = detect_communities(&store, &provider, usize::MAX)
+        let count = detect_communities(&store, &provider, usize::MAX, 4)
             .await
             .unwrap();
         assert_eq!(count, 0, "zero-edge graph must produce no communities");
@@ -735,8 +880,8 @@ mod tests {
             .await
             .unwrap();
 
-        let community_id = store
-            .upsert_community("test_community", "summary", &[a, b])
+        store
+            .upsert_community("test_community", "summary", &[a, b], None)
             .await
             .unwrap();
 
@@ -744,16 +889,194 @@ mod tests {
         store.insert_edge(d, b, "r", "f", 1.0, None).await.unwrap();
 
         let result = assign_to_community(&store, d).await.unwrap();
-        assert_eq!(result, Some(community_id));
+        assert!(result.is_some());
 
+        // The returned ID must be valid for subsequent lookups (HIGH-IC-01 regression test).
+        let returned_id = result.unwrap();
         let community = store
-            .find_community_by_id(community_id)
+            .find_community_by_id(returned_id)
             .await
             .unwrap()
-            .unwrap();
+            .expect("returned community_id must reference an existing row");
         assert!(
             community.entity_ids.contains(&d),
             "D should be added to the community"
+        );
+        // Fingerprint must be NULL after assign (cache invalidated for next detect run).
+        assert!(
+            community.fingerprint.is_none(),
+            "fingerprint must be cleared after assign_to_community"
+        );
+    }
+
+    /// #1262: Second detect_communities call with no graph changes must produce 0 LLM calls.
+    #[tokio::test]
+    async fn test_incremental_detection_no_changes_skips_llm() {
+        let store = setup().await;
+        let (provider, call_buf) = recording_provider();
+
+        let a = store
+            .upsert_entity("X", "X", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("Y", "Y", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, b, "r", "X relates Y", 1.0, None)
+            .await
+            .unwrap();
+
+        // First run: LLM called once to summarize the community.
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        let first_calls = call_buf.lock().unwrap().len();
+        assert_eq!(first_calls, 1, "first run must produce exactly 1 LLM call");
+
+        // Second run: graph unchanged — 0 LLM calls.
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        let second_calls = call_buf.lock().unwrap().len();
+        assert_eq!(
+            second_calls, first_calls,
+            "second run with no graph changes must produce 0 additional LLM calls"
+        );
+    }
+
+    /// #1262: Adding an edge changes the fingerprint — LLM must be called again.
+    #[tokio::test]
+    async fn test_incremental_detection_edge_change_triggers_resummary() {
+        let store = setup().await;
+        let (provider, call_buf) = recording_provider();
+
+        let a = store
+            .upsert_entity("P", "P", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("Q", "Q", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, b, "r", "P relates Q", 1.0, None)
+            .await
+            .unwrap();
+
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        let after_first = call_buf.lock().unwrap().len();
+        assert_eq!(after_first, 1);
+
+        // Add a new edge within the community to change its fingerprint.
+        store
+            .insert_edge(b, a, "r2", "Q also relates P", 1.0, None)
+            .await
+            .unwrap();
+
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        let after_second = call_buf.lock().unwrap().len();
+        assert_eq!(
+            after_second, 2,
+            "edge change must trigger one additional LLM call"
+        );
+    }
+
+    /// #1262: Communities whose fingerprints vanish are deleted on refresh.
+    #[tokio::test]
+    async fn test_incremental_detection_dissolved_community_deleted() {
+        let store = setup().await;
+        let provider = mock_provider();
+
+        let a = store
+            .upsert_entity("M1", "M1", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("M2", "M2", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let edge_id = store
+            .insert_edge(a, b, "r", "M1 relates M2", 1.0, None)
+            .await
+            .unwrap();
+
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        assert_eq!(store.community_count().await.unwrap(), 1);
+
+        // Invalidate the edge — community dissolves.
+        store.invalidate_edge(edge_id).await.unwrap();
+
+        detect_communities(&store, &provider, usize::MAX, 4)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.community_count().await.unwrap(),
+            0,
+            "dissolved community must be deleted on next refresh"
+        );
+    }
+
+    /// #1260: Sequential fallback (concurrency=1) produces correct results.
+    #[tokio::test]
+    async fn test_detect_communities_concurrency_one() {
+        let store = setup().await;
+        let provider = mock_provider();
+
+        let a = store
+            .upsert_entity("C1A", "C1A", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("C1B", "C1B", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
+
+        let count = detect_communities(&store, &provider, usize::MAX, 1)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "concurrency=1 must still detect the community");
+        assert_eq!(store.community_count().await.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_compute_fingerprint_deterministic() {
+        let fp1 = compute_partition_fingerprint(&[1, 2, 3], &[10, 20]);
+        let fp2 = compute_partition_fingerprint(&[3, 1, 2], &[20, 10]);
+        assert_eq!(fp1, fp2, "fingerprint must be order-independent");
+
+        let fp3 = compute_partition_fingerprint(&[1, 2, 3], &[10, 30]);
+        assert_ne!(
+            fp1, fp3,
+            "different edge IDs must produce different fingerprint"
+        );
+
+        let fp4 = compute_partition_fingerprint(&[1, 2, 4], &[10, 20]);
+        assert_ne!(
+            fp1, fp4,
+            "different entity IDs must produce different fingerprint"
+        );
+    }
+
+    /// Domain separator test: entity/edge sequences with same raw bytes must not collide.
+    ///
+    /// Without domain separators, entities=[1,2] edges=[3] would hash identically to
+    /// entities=[1] edges=[2,3] (same concatenated le_bytes). With separators they differ.
+    #[test]
+    fn test_compute_fingerprint_domain_separation() {
+        let fp_a = compute_partition_fingerprint(&[1, 2], &[3]);
+        let fp_b = compute_partition_fingerprint(&[1], &[2, 3]);
+        assert_ne!(
+            fp_a, fp_b,
+            "entity/edge sequences with same raw bytes must produce different fingerprints"
         );
     }
 }

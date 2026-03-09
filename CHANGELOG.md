@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- Parallelize LLM summarization calls across communities in `detect_communities` using `tokio::task::JoinSet` bounded by `Arc<Semaphore>`. New `GraphConfig.community_summary_concurrency` field (default: 4) controls the concurrency limit; `concurrency=1` provides sequential fallback (#1260)
+- Incremental community detection: store BLAKE3 fingerprint (sorted entity IDs + intra-community edge IDs) per community in `graph_communities`. On refresh, only re-summarize communities whose membership changed; unchanged partitions skip LLM calls entirely. Adds migration 028 (`fingerprint TEXT` column). Second refresh with no graph changes triggers 0 LLM calls (#1262)
+
 ### Added
 
 - Validate `deferred_apply_threshold < compaction_threshold` ordering at config load and in `--init` wizard. Both thresholds also enforce finite (0.0, 1.0) exclusive range. Wizard re-prompts on violation instead of silently accepting. `tui_remote` now calls `Config::validate()` after load (#1302)

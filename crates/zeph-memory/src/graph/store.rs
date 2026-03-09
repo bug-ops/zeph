@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
+
 use futures::Stream;
 use sqlx::SqlitePool;
 
@@ -441,6 +443,10 @@ impl GraphStore {
 
     /// Insert or update a community by name.
     ///
+    /// `fingerprint` is a BLAKE3 hex string computed from sorted entity IDs and
+    /// intra-community edge IDs. Pass `None` to leave the fingerprint unchanged (e.g. when
+    /// `assign_to_community` adds an entity without a full re-detection pass).
+    ///
     /// # Errors
     ///
     /// Returns an error if the database query fails or JSON serialization fails.
@@ -449,23 +455,70 @@ impl GraphStore {
         name: &str,
         summary: &str,
         entity_ids: &[i64],
+        fingerprint: Option<&str>,
     ) -> Result<i64, MemoryError> {
         let entity_ids_json = serde_json::to_string(entity_ids)?;
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO graph_communities (name, summary, entity_ids)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO graph_communities (name, summary, entity_ids, fingerprint)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET
                summary = excluded.summary,
                entity_ids = excluded.entity_ids,
+               fingerprint = COALESCE(excluded.fingerprint, fingerprint),
                updated_at = datetime('now')
              RETURNING id",
         )
         .bind(name)
         .bind(summary)
         .bind(entity_ids_json)
+        .bind(fingerprint)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Return a map of `fingerprint -> community_id` for all communities with a non-NULL
+    /// fingerprint. Used by `detect_communities` to skip unchanged partitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn community_fingerprints(&self) -> Result<HashMap<String, i64>, MemoryError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT fingerprint, id FROM graph_communities WHERE fingerprint IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Delete a single community by its primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn delete_community_by_id(&self, id: i64) -> Result<(), MemoryError> {
+        sqlx::query("DELETE FROM graph_communities WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Set the fingerprint of a community to `NULL`, invalidating the incremental cache.
+    ///
+    /// Used by `assign_to_community` when an entity is added without a full re-detection pass,
+    /// ensuring the next `detect_communities` run re-summarizes the affected community.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn clear_community_fingerprint(&self, id: i64) -> Result<(), MemoryError> {
+        sqlx::query("UPDATE graph_communities SET fingerprint = NULL WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Find the first community that contains the given `entity_id`.
@@ -481,7 +534,7 @@ impl GraphStore {
         entity_id: i64,
     ) -> Result<Option<Community>, MemoryError> {
         let row: Option<CommunityRow> = sqlx::query_as(
-            "SELECT c.id, c.name, c.summary, c.entity_ids, c.created_at, c.updated_at
+            "SELECT c.id, c.name, c.summary, c.entity_ids, c.fingerprint, c.created_at, c.updated_at
              FROM graph_communities c, json_each(c.entity_ids) j
              WHERE CAST(j.value AS INTEGER) = ?1
              LIMIT 1",
@@ -497,6 +550,7 @@ impl GraphStore {
                     name: row.name,
                     summary: row.summary,
                     entity_ids,
+                    fingerprint: row.fingerprint,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                 }))
@@ -512,7 +566,7 @@ impl GraphStore {
     /// Returns an error if the database query fails or JSON parsing fails.
     pub async fn all_communities(&self) -> Result<Vec<Community>, MemoryError> {
         let rows: Vec<CommunityRow> = sqlx::query_as(
-            "SELECT id, name, summary, entity_ids, created_at, updated_at
+            "SELECT id, name, summary, entity_ids, fingerprint, created_at, updated_at
              FROM graph_communities
              ORDER BY id ASC",
         )
@@ -527,6 +581,7 @@ impl GraphStore {
                     name: row.name,
                     summary: row.summary,
                     entity_ids,
+                    fingerprint: row.fingerprint,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                 })
@@ -612,7 +667,7 @@ impl GraphStore {
     /// Returns an error if the database query fails or JSON parsing fails.
     pub async fn find_community_by_id(&self, id: i64) -> Result<Option<Community>, MemoryError> {
         let row: Option<CommunityRow> = sqlx::query_as(
-            "SELECT id, name, summary, entity_ids, created_at, updated_at
+            "SELECT id, name, summary, entity_ids, fingerprint, created_at, updated_at
              FROM graph_communities
              WHERE id = ?1",
         )
@@ -627,6 +682,7 @@ impl GraphStore {
                     name: row.name,
                     summary: row.summary,
                     entity_ids,
+                    fingerprint: row.fingerprint,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                 }))
@@ -1038,6 +1094,7 @@ struct CommunityRow {
     name: String,
     summary: String,
     entity_ids: String,
+    fingerprint: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -1301,12 +1358,12 @@ mod tests {
     async fn upsert_community_insert_and_update() {
         let gs = setup().await;
         let id1 = gs
-            .upsert_community("clusterA", "summary A", &[1, 2, 3])
+            .upsert_community("clusterA", "summary A", &[1, 2, 3], None)
             .await
             .unwrap();
         assert!(id1 > 0);
         let id2 = gs
-            .upsert_community("clusterA", "summary A updated", &[1, 2, 3, 4])
+            .upsert_community("clusterA", "summary A updated", &[1, 2, 3, 4], None)
             .await
             .unwrap();
         assert_eq!(id1, id2);
@@ -1327,7 +1384,9 @@ mod tests {
             .upsert_entity("CB", "CB", EntityType::Concept, None)
             .await
             .unwrap();
-        gs.upsert_community("cA", "summary", &[a, b]).await.unwrap();
+        gs.upsert_community("cA", "summary", &[a, b], None)
+            .await
+            .unwrap();
         let result = gs.community_for_entity(a).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().name, "cA");
@@ -1344,8 +1403,8 @@ mod tests {
     async fn community_count() {
         let gs = setup().await;
         assert_eq!(gs.community_count().await.unwrap(), 0);
-        gs.upsert_community("c1", "s1", &[]).await.unwrap();
-        gs.upsert_community("c2", "s2", &[]).await.unwrap();
+        gs.upsert_community("c1", "s1", &[], None).await.unwrap();
+        gs.upsert_community("c2", "s2", &[], None).await.unwrap();
         assert_eq!(gs.community_count().await.unwrap(), 2);
     }
 
@@ -1542,7 +1601,7 @@ mod tests {
     async fn find_community_by_id_found_and_not_found() {
         let gs = setup().await;
         let cid = gs
-            .upsert_community("grp", "summary", &[1, 2])
+            .upsert_community("grp", "summary", &[1, 2], None)
             .await
             .unwrap();
         let found = gs.find_community_by_id(cid).await.unwrap();
@@ -1556,8 +1615,8 @@ mod tests {
     #[tokio::test]
     async fn delete_all_communities_clears_table() {
         let gs = setup().await;
-        gs.upsert_community("c1", "s1", &[1]).await.unwrap();
-        gs.upsert_community("c2", "s2", &[2]).await.unwrap();
+        gs.upsert_community("c1", "s1", &[1], None).await.unwrap();
+        gs.upsert_community("c2", "s2", &[2], None).await.unwrap();
         assert_eq!(gs.community_count().await.unwrap(), 2);
         gs.delete_all_communities().await.unwrap();
         assert_eq!(gs.community_count().await.unwrap(), 0);

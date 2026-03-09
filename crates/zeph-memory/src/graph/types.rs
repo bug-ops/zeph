@@ -101,6 +101,7 @@ pub struct Community {
     pub name: String,
     pub summary: String,
     pub entity_ids: Vec<i64>,
+    pub fingerprint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
