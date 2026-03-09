@@ -864,7 +864,7 @@ pub(crate) async fn run_acp_server(
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = Arc::clone(&shared);
         Box::pin(async move {
-            spawn_acp_agent(shared, channel, acp_ctx, session_ctx).await;
+            Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx)).await;
         })
     });
 
@@ -924,7 +924,7 @@ pub(crate) async fn run_acp_http_server(
     let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = Arc::clone(&shared);
         Box::pin(async move {
-            spawn_acp_agent(shared, channel, acp_ctx, session_ctx).await;
+            Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx)).await;
         })
     });
 

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Deduplicate secret prompts in orchestration tick loop: after a timeout or user denial, the `(handle_id, secret_key)` pair is recorded in a plan-scoped `HashSet`; subsequent re-requests from the same sub-agent for the same key are auto-denied without re-prompting the user (#1455)
+- Completion token count in metrics now uses API-reported `output_tokens` from OpenAI, Ollama, and Compatible providers instead of the `response.len() / 4` byte-length heuristic. Streaming paths retain the heuristic as a fallback when the provider returns no usage data. `chat_typed()` now stores usage so `eval_budget_tokens` enforcement reflects real token counts in structured-output calls ([#1449](https://github.com/bug-ops/zeph/issues/1449))
 - Secret requests from sub-agents are now always processed before the plan scheduler terminates, even when the sole task completes on the first tick (instant completion). Previously, `process_pending_secret_requests()` was skipped when `Done` was emitted before the first `wait_event()` (#1454)
 - Anomaly detector now classifies `[stderr]` tool output as `AnomalyOutcome::Error`. Previously the condition checked for dead-code pattern `[exit code` (never emitted by `ShellExecutor`), causing all shell stderr output to be silently classified as `Success` (#1453)
 - Shell audit logger (`ShellExecutor`) now classifies `[stderr]` output as `AuditResult::Error`, matching the anomaly detector fix (#1453)

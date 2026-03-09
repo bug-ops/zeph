@@ -366,18 +366,34 @@ impl<C: Channel> Agent<C> {
             };
             if let Ok(r) = result {
                 let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let completion_estimate_for_cost = r
-                    .as_ref()
-                    .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4);
+                // completion_tokens was set by process_response_streaming via heuristic;
+                // override with API-reported counts when available (non-streaming providers).
+                let (final_prompt, final_completion_opt) = self
+                    .provider
+                    .last_usage()
+                    .map_or((prompt_estimate, None), |(p, c)| (p, Some(c)));
                 self.update_metrics(|m| {
                     m.api_calls += 1;
                     m.last_llm_latency_ms = latency;
-                    m.context_tokens = prompt_estimate;
-                    m.prompt_tokens += prompt_estimate;
+                    m.context_tokens = final_prompt;
+                    m.prompt_tokens += final_prompt;
+                    if let Some(final_completion) = final_completion_opt {
+                        m.completion_tokens = m
+                            .completion_tokens
+                            .saturating_sub(
+                                r.as_ref()
+                                    .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4),
+                            )
+                            .saturating_add(final_completion);
+                    }
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
                 self.record_cache_usage();
-                self.record_cost(prompt_estimate, completion_estimate_for_cost);
+                let cost_completion = final_completion_opt.unwrap_or_else(|| {
+                    r.as_ref()
+                        .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4)
+                });
+                self.record_cost(final_prompt, cost_completion);
                 let raw = r?;
                 if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
                     d.dump_response(id, &raw);
@@ -411,17 +427,21 @@ impl<C: Channel> Agent<C> {
             match result {
                 Ok(Ok(resp)) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    let completion_estimate = u64::try_from(resp.len()).unwrap_or(0) / 4;
+                    let completion_heuristic = u64::try_from(resp.len()).unwrap_or(0) / 4;
+                    let (final_prompt, final_completion) = self
+                        .provider
+                        .last_usage()
+                        .unwrap_or((prompt_estimate, completion_heuristic));
                     self.update_metrics(|m| {
                         m.api_calls += 1;
                         m.last_llm_latency_ms = latency;
-                        m.context_tokens = prompt_estimate;
-                        m.prompt_tokens += prompt_estimate;
-                        m.completion_tokens += completion_estimate;
+                        m.context_tokens = final_prompt;
+                        m.prompt_tokens += final_prompt;
+                        m.completion_tokens += final_completion;
                         m.total_tokens = m.prompt_tokens + m.completion_tokens;
                     });
                     self.record_cache_usage();
-                    self.record_cost(prompt_estimate, completion_estimate);
+                    self.record_cost(final_prompt, final_completion);
                     // S2: scan for markdown image exfiltration in non-streaming path.
                     let cleaned = self.scan_output_and_warn(&resp);
                     if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
@@ -984,9 +1004,15 @@ impl<C: Channel> Agent<C> {
 
         self.channel.flush_chunks().await?;
 
-        let completion_estimate = u64::try_from(response.len()).unwrap_or(0) / 4;
+        // For streaming paths, last_usage() is None (providers don't return usage in streams),
+        // so the heuristic is the fallback. For non-streaming via this path, use real counts.
+        let completion_heuristic = u64::try_from(response.len()).unwrap_or(0) / 4;
+        let completion_tokens = self
+            .provider
+            .last_usage()
+            .map_or(completion_heuristic, |(_, out)| out);
         self.update_metrics(|m| {
-            m.completion_tokens += completion_estimate;
+            m.completion_tokens += completion_tokens;
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
         });
 
@@ -1234,6 +1260,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
@@ -1287,7 +1314,7 @@ impl<C: Channel> Agent<C> {
 
         let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.cached_prompt_tokens;
-        let completion_estimate = match &result {
+        let completion_heuristic = match &result {
             ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
             ChatResponse::ToolUse {
                 text, tool_calls, ..
@@ -1300,20 +1327,24 @@ impl<C: Channel> Agent<C> {
                 u64::try_from(text_len + calls_len).unwrap_or(0) / 4
             }
         };
+        let (final_prompt, final_completion) = self
+            .provider
+            .last_usage()
+            .unwrap_or((prompt_estimate, completion_heuristic));
         let router_stats = self.provider.router_thompson_stats();
         self.update_metrics(|m| {
             m.api_calls += 1;
             m.last_llm_latency_ms = latency;
-            m.context_tokens = prompt_estimate;
-            m.prompt_tokens += prompt_estimate;
-            m.completion_tokens += completion_estimate;
+            m.context_tokens = final_prompt;
+            m.prompt_tokens += final_prompt;
+            m.completion_tokens += final_completion;
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
             if !router_stats.is_empty() {
                 m.router_thompson_stats = router_stats;
             }
         });
         self.record_cache_usage();
-        self.record_cost(prompt_estimate, completion_estimate);
+        self.record_cost(final_prompt, final_completion);
 
         if let Some((input_tokens, output_tokens)) = self.provider.last_usage() {
             let context_window =
