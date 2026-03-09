@@ -80,25 +80,183 @@ struct RawFrontmatter {
     deprecated_requires_secrets: bool,
 }
 
+/// Detect whether `value` is a YAML block scalar indicator (`>` or `|`),
+/// optionally followed by chomping/indent modifiers (`-`, `+`, digits).
+///
+/// Returns `Some(folded)` for plain `>` or `|`, and `None` if not a block scalar.
+/// Returns an `Err` if a modifier is present (chomping/indent indicators are not supported).
+fn detect_block_scalar(value: &str) -> Result<Option<bool>, SkillError> {
+    match value {
+        ">" => Ok(Some(true)),
+        "|" => Ok(Some(false)),
+        v if v.starts_with('>') || v.starts_with('|') => Err(SkillError::Invalid(format!(
+            "YAML block scalar modifiers are not supported (got '{v}'): \
+             use plain '>' or '|' without chomping or indentation indicators"
+        ))),
+        _ => Ok(None),
+    }
+}
+
+/// Collect YAML block scalar continuation lines (for `>` folded and `|` literal).
+///
+/// Returns the assembled string value. Lines after the indicator must be indented.
+/// For `>` (folded): blank lines become `\n`, non-blank lines are joined with spaces.
+/// For `|` (literal): relative indentation beyond the block indent level is preserved.
+fn collect_block_scalar<'a>(
+    lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    folded: bool,
+) -> String {
+    // Collect raw (untrimmed) lines that belong to this block scalar.
+    // Blank lines between indented lines are part of the block (YAML spec).
+    let mut raw_parts: Vec<&'a str> = Vec::new();
+    let mut tab_warned = false;
+
+    while let Some(&next) = lines.peek() {
+        if next.starts_with(' ') {
+            lines.next();
+            raw_parts.push(next);
+        } else if next.starts_with('\t') {
+            // YAML 1.2 forbids tabs for indentation; warn but accept leniently.
+            if !tab_warned {
+                tracing::warn!(
+                    "tab indentation in YAML block scalar is not spec-compliant (YAML 1.2 §8.1)"
+                );
+                tab_warned = true;
+            }
+            lines.next();
+            raw_parts.push(next);
+        } else if next.trim().is_empty() {
+            // Blank line: eagerly consume; trailing blanks are stripped below.
+            lines.next();
+            raw_parts.push("");
+        } else {
+            break;
+        }
+    }
+
+    // Strip trailing blank parts (they are outside the block content).
+    while raw_parts.last() == Some(&"") {
+        raw_parts.pop();
+    }
+
+    if raw_parts.is_empty() {
+        return String::new();
+    }
+
+    if folded {
+        // Folded (`>`): trim each line (indentation is not meaningful), then
+        // join non-blank runs with spaces and blank lines become paragraph breaks.
+        let parts: Vec<&str> = raw_parts.iter().map(|s| s.trim()).collect();
+        let mut result = String::new();
+        let mut i = 0;
+        while i < parts.len() {
+            if parts[i].is_empty() {
+                result.push('\n');
+                i += 1;
+            } else {
+                let start = i;
+                while i < parts.len() && !parts[i].is_empty() {
+                    i += 1;
+                }
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push(' ');
+                }
+                result.push_str(&parts[start..i].join(" "));
+            }
+        }
+        result.trim().to_string()
+    } else {
+        // Literal (`|`): compute block indentation from first non-blank content line,
+        // strip exactly that many leading spaces from every line (preserving extra indent).
+        let block_indent = raw_parts
+            .iter()
+            .find(|s| !s.trim().is_empty())
+            .map_or(0, |s| s.len() - s.trim_start().len());
+        let parts: Vec<&str> = raw_parts
+            .iter()
+            .map(|s| {
+                if s.trim().is_empty() {
+                    ""
+                } else {
+                    &s[block_indent.min(s.len())..]
+                }
+            })
+            .collect();
+        parts.join("\n").trim().to_string()
+    }
+}
+
+/// Apply a parsed inline (non-block-scalar) key-value pair to `raw`.
+fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
+    match key {
+        "name" => raw.name = Some(value),
+        "description" => raw.description = Some(value),
+        "compatibility" => {
+            if !value.is_empty() {
+                raw.compatibility = Some(value);
+            }
+        }
+        "license" => {
+            if !value.is_empty() {
+                raw.license = Some(value);
+            }
+        }
+        "allowed-tools" => {
+            raw.allowed_tools = value.split_whitespace().map(ToString::to_string).collect();
+        }
+        "x-requires-secrets" => {
+            raw.requires_secrets = value
+                .split(',')
+                .map(|s| s.trim().to_lowercase().replace('-', "_"))
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        "requires-secrets" => {
+            raw.deprecated_requires_secrets = true;
+            // Only apply if x-requires-secrets was not already parsed.
+            // The canonical x-requires-secrets always wins over the deprecated form.
+            if raw.requires_secrets.is_empty() {
+                raw.requires_secrets = value
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase().replace('-', "_"))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+        }
+        "metadata" if value.is_empty() => {
+            // Handled by caller — sets in_metadata flag.
+        }
+        _ => {
+            if !value.is_empty() {
+                raw.metadata.push((key.to_string(), value));
+            }
+        }
+    }
+}
+
 fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
-    let mut name = None;
-    let mut description = None;
-    let mut compatibility = None;
-    let mut license = None;
-    let mut metadata = Vec::new();
-    let mut allowed_tools = Vec::new();
-    let mut requires_secrets = Vec::new();
-    let mut deprecated_requires_secrets = false;
+    let mut raw = RawFrontmatter {
+        name: None,
+        description: None,
+        compatibility: None,
+        license: None,
+        metadata: Vec::new(),
+        allowed_tools: Vec::new(),
+        requires_secrets: Vec::new(),
+        deprecated_requires_secrets: false,
+    };
     let mut in_metadata = false;
 
-    for line in yaml_str.lines() {
+    let mut lines = yaml_str.lines().peekable();
+
+    while let Some(line) = lines.next() {
         if in_metadata {
             if line.starts_with("  ") || line.starts_with('\t') {
                 let trimmed = line.trim();
                 if let Some((k, v)) = trimmed.split_once(':') {
                     let v = v.trim();
                     if !v.is_empty() {
-                        metadata.push((k.trim().to_string(), v.to_string()));
+                        raw.metadata.push((k.trim().to_string(), v.to_string()));
                     }
                 }
                 continue;
@@ -112,64 +270,57 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim();
-            let value = value.trim().to_string();
-            match key {
-                "name" => name = Some(value),
-                "description" => description = Some(value),
-                "compatibility" => {
-                    if !value.is_empty() {
-                        compatibility = Some(value);
+            let value = value.trim();
+
+            match detect_block_scalar(value) {
+                Err(e) => {
+                    tracing::warn!("frontmatter key '{key}': {e}");
+                    continue;
+                }
+                Ok(Some(folded)) => {
+                    let collected = collect_block_scalar(&mut lines, folded);
+                    match key {
+                        "name" => {
+                            if !collected.is_empty() {
+                                raw.name = Some(collected);
+                            }
+                        }
+                        "description" => {
+                            if !collected.is_empty() {
+                                raw.description = Some(collected);
+                            }
+                        }
+                        "compatibility" => {
+                            if !collected.is_empty() {
+                                raw.compatibility = Some(collected);
+                            }
+                        }
+                        "license" => {
+                            if !collected.is_empty() {
+                                raw.license = Some(collected);
+                            }
+                        }
+                        other => {
+                            tracing::warn!(
+                                "frontmatter key '{other}' does not support block scalars; value ignored"
+                            );
+                        }
                     }
+                    continue;
                 }
-                "license" => {
-                    if !value.is_empty() {
-                        license = Some(value);
-                    }
-                }
-                "allowed-tools" => {
-                    allowed_tools = value.split_whitespace().map(ToString::to_string).collect();
-                }
-                "x-requires-secrets" => {
-                    requires_secrets = value
-                        .split(',')
-                        .map(|s| s.trim().to_lowercase().replace('-', "_"))
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-                "requires-secrets" => {
-                    deprecated_requires_secrets = true;
-                    // Only apply if x-requires-secrets was not already parsed.
-                    // The canonical x-requires-secrets always wins over the deprecated form.
-                    if requires_secrets.is_empty() {
-                        requires_secrets = value
-                            .split(',')
-                            .map(|s| s.trim().to_lowercase().replace('-', "_"))
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
-                "metadata" if value.is_empty() => {
-                    in_metadata = true;
-                }
-                _ => {
-                    if !value.is_empty() {
-                        metadata.push((key.to_string(), value));
-                    }
-                }
+                Ok(None) => {}
+            }
+
+            let value = value.to_string();
+            if key == "metadata" && value.is_empty() {
+                in_metadata = true;
+            } else {
+                apply_field(&mut raw, key, value);
             }
         }
     }
 
-    RawFrontmatter {
-        name,
-        description,
-        compatibility,
-        license,
-        metadata,
-        allowed_tools,
-        requires_secrets,
-        deprecated_requires_secrets,
-    }
+    raw
 }
 
 fn split_frontmatter(content: &str) -> Result<(&str, &str), SkillError> {
@@ -829,6 +980,93 @@ mod tests {
     }
 
     #[test]
+    fn description_folded_block_scalar() {
+        let yaml = "description: >\n  Create, cancel, and manage periodic tasks.\n  Use when the user wants to schedule recurring work.\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.description.as_deref(),
+            Some(
+                "Create, cancel, and manage periodic tasks. Use when the user wants to schedule recurring work."
+            )
+        );
+    }
+
+    #[test]
+    fn description_literal_block_scalar() {
+        let yaml = "description: |\n  First line.\n  Second line.\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.description.as_deref(),
+            Some("First line.\nSecond line.")
+        );
+    }
+
+    #[test]
+    fn description_folded_blank_line_becomes_paragraph_break() {
+        let yaml = "description: >\n  First paragraph.\n\n  Second paragraph.\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.description.as_deref(),
+            Some("First paragraph.\nSecond paragraph.")
+        );
+    }
+
+    #[test]
+    fn compatibility_folded_block_scalar() {
+        let yaml = "compatibility: >\n  linux\n  macos\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.compatibility.as_deref(), Some("linux macos"));
+    }
+
+    #[test]
+    fn license_literal_block_scalar() {
+        let yaml = "license: |\n  MIT OR Apache-2.0\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.license.as_deref(), Some("MIT OR Apache-2.0"));
+    }
+
+    #[test]
+    fn block_scalar_followed_by_other_fields() {
+        let yaml = "name: my-skill\ndescription: >\n  A folded\n  description here.\ncompatibility: linux\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+        assert_eq!(
+            raw.description.as_deref(),
+            Some("A folded description here.")
+        );
+        assert_eq!(raw.compatibility.as_deref(), Some("linux"));
+    }
+
+    #[test]
+    fn block_scalar_single_line_folded() {
+        let yaml = "description: >\n  Single line only.\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("Single line only."));
+    }
+
+    #[test]
+    fn full_skill_with_folded_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nname: my-skill\ndescription: >\n  Create, cancel, and manage periodic tasks.\n  Use when the user wants to schedule recurring work.\n---\n# Body\n";
+        let path = write_skill(dir.path(), "my-skill", content);
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(
+            meta.description,
+            "Create, cancel, and manage periodic tasks. Use when the user wants to schedule recurring work."
+        );
+    }
+
+    #[test]
+    fn full_skill_with_literal_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let content =
+            "---\nname: my-skill\ndescription: |\n  Line one.\n  Line two.\n---\n# Body\n";
+        let path = write_skill(dir.path(), "my-skill", content);
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.description, "Line one.\nLine two.");
+    }
+
+    #[test]
     fn empty_compatibility_produces_none() {
         let raw = parse_frontmatter("compatibility:\n");
         assert!(raw.compatibility.is_none());
@@ -862,5 +1100,118 @@ mod tests {
         let raw = parse_frontmatter(yaml);
         assert!(raw.metadata.is_empty());
         assert_eq!(raw.name.as_deref(), Some("my-skill"));
+    }
+
+    // --- Block scalar edge cases ---
+
+    #[test]
+    fn literal_block_scalar_preserves_relative_indentation() {
+        // S1: literal | must not strip extra indentation beyond the base level.
+        let yaml = "description: |\n  def foo():\n    return 1\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("def foo():\n  return 1"));
+    }
+
+    #[test]
+    fn chomping_indicator_produces_error_and_is_skipped() {
+        // S2: values like `>-`, `>+`, `|-`, `|+`, `>2` must not silently store the indicator.
+        let yaml = "description: >-\n  Some text.\nname: my-skill\n";
+        let raw = parse_frontmatter(yaml);
+        // The unsupported modifier must be rejected; description stays None.
+        assert!(
+            raw.description.is_none(),
+            "expected description=None for unsupported >- modifier, got {:?}",
+            raw.description
+        );
+        // Other fields after the bad line still parse correctly.
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+    }
+
+    #[test]
+    fn pipe_modifier_indicator_produces_error_and_is_skipped() {
+        let yaml = "description: |+\n  Some text.\nname: my-skill\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.description.is_none());
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+    }
+
+    #[test]
+    fn indent_modifier_indicator_produces_error_and_is_skipped() {
+        let yaml = "description: >2\n  Some text.\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.description.is_none());
+    }
+
+    #[test]
+    fn empty_block_scalar_produces_none_for_description() {
+        // Tester gap 1: `description: >` with no continuation lines → None.
+        let yaml = "description: >\nname: my-skill\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(
+            raw.description.is_none(),
+            "empty block scalar should produce None for description"
+        );
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+    }
+
+    #[test]
+    fn block_scalar_as_last_frontmatter_field() {
+        // Tester gap 2: block scalar is the last field before closing `---`.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nname: my-skill\ndescription: >\n  The last field.\n---\n# Body\n";
+        let path = write_skill(dir.path(), "my-skill", content);
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.description, "The last field.");
+    }
+
+    #[test]
+    fn block_scalar_followed_by_allowed_tools() {
+        // Tester gap 3: block scalar description followed by allowed-tools.
+        let yaml = "description: >\n  Some desc.\nallowed-tools: bash python\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("Some desc."));
+        assert_eq!(raw.allowed_tools, vec!["bash", "python"]);
+    }
+
+    #[test]
+    fn block_scalar_followed_by_requires_secrets() {
+        // Tester gap 4: block scalar description followed by x-requires-secrets.
+        let yaml = "description: >\n  Some desc.\nx-requires-secrets: github_token\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("Some desc."));
+        assert_eq!(raw.requires_secrets, vec!["github_token"]);
+    }
+
+    #[test]
+    fn name_folded_block_scalar() {
+        // Tester gap 5: name field with > block scalar (unusual but supported).
+        // Note: name validation will reject multi-word or invalid names downstream,
+        // but the parser should assemble the value correctly.
+        let yaml = "name: >\n  my-skill\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.name.as_deref(), Some("my-skill"));
+    }
+
+    #[test]
+    fn block_scalar_continuation_trailing_whitespace_stripped() {
+        // Tester gap 6: trailing whitespace on continuation lines is stripped.
+        let yaml = "description: >\n  Line with spaces.   \n  More text.  \n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.description.as_deref(),
+            Some("Line with spaces. More text.")
+        );
+    }
+
+    #[test]
+    fn block_scalar_unsupported_key_does_not_populate_allowed_tools() {
+        // M2: block scalar on unsupported key (allowed-tools) must be silently discarded.
+        let yaml = "allowed-tools: >\n  bash\n  python\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(
+            raw.allowed_tools.is_empty(),
+            "block scalar on allowed-tools should be discarded, got {:?}",
+            raw.allowed_tools
+        );
     }
 }
