@@ -309,11 +309,16 @@ impl GraphStore {
 
     // ── Edges ─────────────────────────────────────────────────────────────────
 
-    /// Insert a new edge between two entities.
+    /// Insert a new edge between two entities, or update the existing active edge.
+    ///
+    /// An active edge is identified by `(source_entity_id, target_entity_id, relation)` with
+    /// `valid_to IS NULL`. If such an edge already exists, its `confidence` is updated to the
+    /// maximum of the stored and incoming values, and the existing id is returned. This prevents
+    /// duplicate edges from repeated extraction of the same context messages.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database insert fails.
+    /// Returns an error if the database query fails.
     pub async fn insert_edge(
         &self,
         source_entity_id: i64,
@@ -324,6 +329,31 @@ impl GraphStore {
         episode_id: Option<MessageId>,
     ) -> Result<i64, MemoryError> {
         let confidence = confidence.clamp(0.0, 1.0);
+
+        let existing: Option<(i64, f64)> = sqlx::query_as(
+            "SELECT id, confidence FROM graph_edges
+             WHERE source_entity_id = ?1
+               AND target_entity_id = ?2
+               AND relation = ?3
+               AND valid_to IS NULL
+             LIMIT 1",
+        )
+        .bind(source_entity_id)
+        .bind(target_entity_id)
+        .bind(relation)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((existing_id, stored_conf)) = existing {
+            let updated_conf = f64::from(confidence).max(stored_conf);
+            sqlx::query("UPDATE graph_edges SET confidence = ?1 WHERE id = ?2")
+                .bind(updated_conf)
+                .bind(existing_id)
+                .execute(&self.pool)
+                .await?;
+            return Ok(existing_id);
+        }
+
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, episode_id)
@@ -1237,6 +1267,80 @@ mod tests {
             .await
             .unwrap();
         assert!(eid > 0);
+    }
+
+    #[tokio::test]
+    async fn insert_edge_deduplicates_active_edge() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("Google", "Google", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        let id1 = gs
+            .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.7, None)
+            .await
+            .unwrap();
+
+        // Re-inserting the same (source, target, relation) must return the same id.
+        let id2 = gs
+            .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.9, None)
+            .await
+            .unwrap();
+        assert_eq!(id1, id2, "duplicate active edge must not be created");
+
+        // Confidence should be updated to the higher value.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
+                .fetch_one(&gs.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "only one active edge must exist");
+
+        let conf: f64 = sqlx::query_scalar("SELECT confidence FROM graph_edges WHERE id = ?1")
+            .bind(id1)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+        // Use 1e-6 tolerance: 0.9_f32 → f64 conversion is ~0.8999999761581421.
+        assert!(
+            (conf - f64::from(0.9_f32)).abs() < 1e-6,
+            "confidence must be updated to max, got {conf}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_edge_different_relations_are_distinct() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("Acme", "Acme", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        let id1 = gs
+            .insert_edge(src, tgt, "founded", "Bob founded Acme", 0.8, None)
+            .await
+            .unwrap();
+        let id2 = gs
+            .insert_edge(src, tgt, "chairs", "Bob chairs Acme", 0.8, None)
+            .await
+            .unwrap();
+        assert_ne!(id1, id2, "different relations must produce distinct edges");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
+                .fetch_one(&gs.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
