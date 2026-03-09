@@ -178,6 +178,30 @@ impl AnyProvider {
         self.chat(messages).await
     }
 
+    /// Route a tool-aware request to a specific named provider (for orchestrators),
+    /// or fall through to `chat_with_tools` with default routing.
+    ///
+    /// For non-orchestrator providers, the `name` is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LlmError`] if the underlying provider call fails.
+    pub async fn chat_with_named_provider_and_tools(
+        &self,
+        name: &str,
+        messages: &[Message],
+        tools: &[crate::provider::ToolDefinition],
+    ) -> Result<crate::provider::ChatResponse, crate::LlmError> {
+        if let Self::Orchestrator(orch) = self {
+            return orch.chat_for_named_with_tools(name, messages, tools).await;
+        }
+        tracing::debug!(
+            name,
+            "chat_with_named_provider_and_tools: not an orchestrator, ignoring model name"
+        );
+        self.chat_with_tools(messages, tools).await
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {
