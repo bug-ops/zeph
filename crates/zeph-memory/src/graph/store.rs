@@ -957,14 +957,34 @@ impl GraphStore {
 
     // ── Backfill helpers ──────────────────────────────────────────────────────
 
-    /// Find an entity by name only (no type filter). Uses FTS5 prefix search with alias fallback.
+    /// Find an entity by name only (no type filter).
     ///
-    /// This is a convenience wrapper around `find_entities_fuzzy` returning the best match.
+    /// Uses a two-phase lookup to ensure exact name matches are always prioritised:
+    /// 1. Exact case-insensitive match on `name` or `canonical_name`.
+    /// 2. If no exact match found, falls back to FTS5 prefix search (see `find_entities_fuzzy`).
+    ///
+    /// This prevents FTS5 from returning a different entity whose *summary* mentions the
+    /// searched name (e.g. searching "Alice" returning "Google" because Google's summary
+    /// contains "Alice").
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     pub async fn find_entity_by_name(&self, name: &str) -> Result<Vec<Entity>, MemoryError> {
+        let rows: Vec<EntityRow> = sqlx::query_as(
+            "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE name = ?1 COLLATE NOCASE OR canonical_name = ?1 COLLATE NOCASE
+             LIMIT 5",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if !rows.is_empty() {
+            return rows.into_iter().map(entity_from_row).collect();
+        }
+
         self.find_entities_fuzzy(name, 5).await
     }
 
@@ -2388,6 +2408,89 @@ mod tests {
         assert!(results.is_empty(), "only parens should return no results");
         let results = gs.find_entities_fuzzy("\"\"\"", 10).await.unwrap();
         assert!(results.is_empty(), "only quotes should return no results");
+    }
+
+    // ── find_entity_by_name tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_entity_by_name_exact_wins_over_summary_mention() {
+        // Regression test for: /graph facts Alice returns Google because Google's
+        // summary mentions "Alice".
+        let gs = setup().await;
+        gs.upsert_entity(
+            "Alice",
+            "Alice",
+            EntityType::Person,
+            Some("A person named Alice"),
+        )
+        .await
+        .unwrap();
+        // Google's summary mentions "Alice" — without the fix, FTS5 could rank this first.
+        gs.upsert_entity(
+            "Google",
+            "Google",
+            EntityType::Organization,
+            Some("Company where Charlie, Alice, and Bob have worked"),
+        )
+        .await
+        .unwrap();
+
+        let results = gs.find_entity_by_name("Alice").await.unwrap();
+        assert!(!results.is_empty(), "must find at least one entity");
+        assert_eq!(
+            results[0].name, "Alice",
+            "exact name match must come first, not entity with 'Alice' in summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_case_insensitive_exact() {
+        let gs = setup().await;
+        gs.upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        let results = gs.find_entity_by_name("bob").await.unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].name, "Bob");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_falls_back_to_fuzzy_when_no_exact_match() {
+        let gs = setup().await;
+        gs.upsert_entity("Charlie", "Charlie", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // "Char" is not an exact match for "Charlie" → FTS5 prefix fallback should find it.
+        let results = gs.find_entity_by_name("Char").await.unwrap();
+        assert!(!results.is_empty(), "prefix search must find Charlie");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_returns_empty_for_unknown() {
+        let gs = setup().await;
+        let results = gs.find_entity_by_name("NonExistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_matches_canonical_name() {
+        // Verify the exact-match phase checks canonical_name, not only name.
+        let gs = setup().await;
+        // upsert_entity sets canonical_name = second arg
+        gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // Searching by canonical_name "Dave" must return the entity even though
+        // the display name is "Dave (Engineer)".
+        let results = gs.find_entity_by_name("Dave").await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "canonical_name match must return entity"
+        );
+        assert_eq!(results[0].canonical_name, "Dave");
     }
 
     async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {

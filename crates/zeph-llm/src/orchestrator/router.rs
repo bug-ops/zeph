@@ -158,6 +158,16 @@ impl LlmProvider for SubProvider {
             Self::Candle(p) => p.name(),
         }
     }
+
+    fn context_window(&self) -> Option<usize> {
+        match self {
+            Self::Ollama(p) => p.context_window(),
+            Self::Claude(p) => p.context_window(),
+            Self::OpenAi(p) => p.context_window(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.context_window(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +283,53 @@ mod tests {
         ));
         // Ollama does not support structured tool_use in the current implementation
         assert!(!sub.supports_tool_use());
+    }
+
+    #[test]
+    fn sub_provider_context_window_delegates() {
+        let ollama = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        let expected = ollama.context_window();
+        let sub = SubProvider::Ollama(ollama);
+        assert_eq!(sub.context_window(), expected);
+
+        let claude = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        let expected = claude.context_window();
+        let sub = SubProvider::Claude(claude);
+        assert_eq!(sub.context_window(), expected);
+    }
+
+    #[test]
+    fn sub_provider_context_window_claude_returns_some() {
+        // claude-sonnet model must return Some(200_000), not None
+        let sub = SubProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-5-20250929".into(),
+            1024,
+        ));
+        assert_eq!(sub.context_window(), Some(200_000));
+    }
+
+    #[test]
+    fn sub_provider_context_window_openai_delegates() {
+        // gpt-4o must return Some(128_000) via SubProvider delegation
+        let sub = SubProvider::OpenAi(OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        ));
+        assert_eq!(sub.context_window(), Some(128_000));
+    }
+
+    #[test]
+    fn sub_provider_context_window_ollama_after_set() {
+        // After set_context_window, SubProvider must return Some(...) not None
+        let mut ollama =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        ollama.set_context_window(8192);
+        let sub = SubProvider::Ollama(ollama);
+        assert_eq!(sub.context_window(), Some(8192));
     }
 }
