@@ -2732,6 +2732,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn cache_skipped_when_no_user_message() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        let provider = mock_provider_streaming(vec!["llm response".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+        agent.response_cache = Some(cache);
+
+        // Only system/assistant messages, no user message.
+        agent.messages.push(Message {
+            role: Role::System,
+            content: "you are helpful".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Should skip cache (no user message) and call LLM.
+        let result = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(result.as_deref(), Some("llm response"));
+    }
+
     mod retry_tests {
         use crate::agent::agent_tests::*;
         use zeph_llm::LlmError;
