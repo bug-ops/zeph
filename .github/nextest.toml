@@ -11,6 +11,9 @@
 # CI profile that runs ALL tests including integration tests
 # Override with: cargo nextest run --profile ci
 default-filter = "all()"
+# Integration tests are largely I/O-bound (testcontainers, network).
+# Running more threads than vCPUs improves throughput while waiting on containers.
+test-threads = 8
 
 [profile.ci.junit]
 # Store JUnit XML report for CI

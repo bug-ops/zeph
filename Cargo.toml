@@ -236,6 +236,7 @@ panic = "abort"
 debug = true
 
 [profile.ci]
-inherits = "release"
-lto = "thin"
+inherits = "dev"
+debug = 0
+incremental = false
 codegen-units = 16
