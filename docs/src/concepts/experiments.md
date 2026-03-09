@@ -62,7 +62,7 @@ The default search space covers five LLM generation parameters:
 
 | Parameter | Min | Max | Step | Default |
 |-----------|-----|-----|------|---------|
-| `temperature` | 0.0 | 2.0 | 0.1 | 0.7 |
+| `temperature` | 0.0 | 1.0 | 0.1 | 0.7 |
 | `top_p` | 0.1 | 1.0 | 0.05 | 0.9 |
 | `top_k` | 1 | 100 | 5 | 40 |
 | `frequency_penalty` | -2.0 | 2.0 | 0.2 | 0.0 |
