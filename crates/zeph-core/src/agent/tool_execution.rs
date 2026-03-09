@@ -160,6 +160,7 @@ impl<C: Channel> Agent<C> {
             "using legacy text extraction path"
         );
         self.tool_orchestrator.clear_doom_history();
+        self.tool_orchestrator.clear_recent_tool_calls();
 
         for iteration in 0..self.tool_orchestrator.max_iterations {
             if self.cancel_token.is_cancelled() {
@@ -1091,6 +1092,7 @@ impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)]
     async fn process_response_native_tools(&mut self) -> Result<(), super::error::AgentError> {
         self.tool_orchestrator.clear_doom_history();
+        self.tool_orchestrator.clear_recent_tool_calls();
 
         let tool_defs: Vec<ToolDefinition> = self
             .tool_executor

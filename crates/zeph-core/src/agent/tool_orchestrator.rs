@@ -46,6 +46,11 @@ impl ToolOrchestrator {
         self.doom_loop_history.clear();
     }
 
+    /// Reset the repeat-detection sliding window between user turns.
+    pub(super) fn clear_recent_tool_calls(&mut self) {
+        self.recent_tool_calls.clear();
+    }
+
     /// Returns `true` if the last `DOOM_LOOP_WINDOW` hashes are identical.
     pub(super) fn is_doom_loop(&self) -> bool {
         if self.doom_loop_history.len() < DOOM_LOOP_WINDOW {
