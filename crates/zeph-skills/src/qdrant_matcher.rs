@@ -41,6 +41,7 @@ impl Embeddable for &SkillMeta {
     }
 }
 
+#[derive(Clone)]
 pub struct QdrantSkillMatcher {
     registry: EmbeddingRegistry,
 }

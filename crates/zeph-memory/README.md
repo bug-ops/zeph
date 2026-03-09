@@ -23,7 +23,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 |--------|-------------|
 | `sqlite` | SQLite storage for conversations, messages, and user corrections (`zeph_corrections` table, migration 018 adds `outcome_detail` column); visibility-aware queries (`load_history_filtered` via CTE, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()`; composite covering index `(conversation_id, id)` on messages for efficient history reads |
 | `sqlite::history` | Input history persistence for CLI channel |
-| `sqlite::acp_sessions` | ACP session and event persistence for session resume and lifecycle tracking |
+| `sqlite::acp_sessions` | ACP session and event persistence for session resume, lifecycle tracking, and per-session conversation isolation (migration 026 adds `conversation_id` column) |
 | `qdrant` | Qdrant client for vector upsert and search |
 | `qdrant_ops` | `QdrantOps` — high-level Qdrant operations |
 | `semantic` | `SemanticMemory` — orchestrates SQLite + Qdrant |
@@ -118,8 +118,12 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 
 ## ACP session storage
 
-`SqliteStore` provides persistence for ACP session lifecycle and event replay. Two methods added for custom method support:
+`SqliteStore` provides persistence for ACP session lifecycle, event replay, and per-session conversation isolation:
 
+- `create_acp_session_with_conversation(session_id, conversation_id)` — creates a session record with an associated `ConversationId` foreign key (migration 026). Each ACP session maps to exactly one Zeph conversation.
+- `get_acp_session_conversation_id(session_id)` — returns the `ConversationId` for a session, or `None` for legacy sessions created before migration 026.
+- `set_acp_session_conversation_id(session_id, conversation_id)` — updates the conversation mapping for an existing session. Used to backfill legacy sessions on first resume.
+- `copy_conversation(source, target)` — copies all messages and summaries from one conversation to another within a single transaction, preserving insertion order. Used by `fork_session` to clone history into a new isolated conversation.
 - `list_acp_sessions()` — returns all sessions ordered by `created_at DESC` as `Vec<AcpSessionInfo>` (id + created_at). Used by `_session/list` to merge persisted sessions with in-memory state.
 - `import_acp_events(session_id, &[(&str, &str)])` — bulk-inserts events inside a single SQLite transaction. All events are written atomically (commit or rollback). Used by `_session/import` for portable session transfer.
 

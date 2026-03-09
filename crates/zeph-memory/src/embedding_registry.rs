@@ -84,6 +84,7 @@ impl From<std::num::TryFromIntError> for EmbeddingRegistryError {
 /// Owns a [`QdrantOps`] instance, a collection name and a UUID namespace for
 /// deterministic point IDs (uuid v5).  The in-memory `hashes` map enables
 /// O(1) delta detection between syncs.
+#[derive(Clone)]
 pub struct EmbeddingRegistry {
     ops: QdrantOps,
     collection: String,

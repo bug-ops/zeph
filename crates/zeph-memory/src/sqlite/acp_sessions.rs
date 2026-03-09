@@ -3,6 +3,7 @@
 
 use crate::error::MemoryError;
 use crate::sqlite::SqliteStore;
+use crate::types::ConversationId;
 
 pub struct AcpSessionEvent {
     pub event_type: String,
@@ -223,6 +224,102 @@ impl SqliteStore {
             .await?;
         Ok(count > 0)
     }
+
+    /// Create a new ACP session record with an associated conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn create_acp_session_with_conversation(
+        &self,
+        session_id: &str,
+        conversation_id: ConversationId,
+    ) -> Result<(), MemoryError> {
+        sqlx::query("INSERT OR IGNORE INTO acp_sessions (id, conversation_id) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(conversation_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the conversation ID associated with an ACP session.
+    ///
+    /// Returns `None` if the session has no conversation mapping (legacy session).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn get_acp_session_conversation_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ConversationId>, MemoryError> {
+        let row: Option<(Option<ConversationId>,)> =
+            sqlx::query_as("SELECT conversation_id FROM acp_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(cid,)| cid))
+    }
+
+    /// Update the conversation mapping for an ACP session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn set_acp_session_conversation_id(
+        &self,
+        session_id: &str,
+        conversation_id: ConversationId,
+    ) -> Result<(), MemoryError> {
+        sqlx::query("UPDATE acp_sessions SET conversation_id = ? WHERE id = ?")
+            .bind(conversation_id)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Copy all messages from one conversation to another, preserving order.
+    ///
+    /// Summaries are intentionally NOT copied: their `first_message_id`/`last_message_id`
+    /// reference message IDs from the source conversation which differ from the new IDs
+    /// assigned to the copied messages, making the compaction cursor incorrect. The forked
+    /// session inherits the full message history and builds its own compaction state from
+    /// scratch. Other per-conversation state also excluded: embeddings (re-indexed on demand),
+    /// deferred tool summaries (treated as fresh context budget).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn copy_conversation(
+        &self,
+        source: ConversationId,
+        target: ConversationId,
+    ) -> Result<(), MemoryError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Copy messages in order. Only columns present across all migrations are included;
+        // per-message auto-fields (id, created_at, last_accessed, access_count, qdrant_cleaned)
+        // are excluded so they are generated fresh for the target conversation.
+        sqlx::query(
+            "INSERT INTO messages \
+                (conversation_id, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at) \
+             SELECT ?, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at \
+             FROM messages WHERE conversation_id = ? ORDER BY id",
+        )
+        .bind(target)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+
+        // Summaries are NOT copied — their message ID boundaries reference the source
+        // conversation and would corrupt the compaction cursor in the forked session.
+        // The forked session builds compaction state from its own messages.
+
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +508,150 @@ mod tests {
         assert!(
             after > before,
             "updated_at should increase after event insert: before={before} after={after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_session_with_conversation_and_retrieve() {
+        let store = make_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        store
+            .create_acp_session_with_conversation("sess-1", cid)
+            .await
+            .unwrap();
+        let retrieved = store
+            .get_acp_session_conversation_id("sess-1")
+            .await
+            .unwrap();
+        assert_eq!(retrieved, Some(cid));
+    }
+
+    #[tokio::test]
+    async fn get_conversation_id_returns_none_for_legacy_session() {
+        let store = make_store().await;
+        store.create_acp_session("legacy").await.unwrap();
+        let cid = store
+            .get_acp_session_conversation_id("legacy")
+            .await
+            .unwrap();
+        assert!(cid.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_conversation_id_returns_none_for_missing_session() {
+        let store = make_store().await;
+        let cid = store
+            .get_acp_session_conversation_id("no-such")
+            .await
+            .unwrap();
+        assert!(cid.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_conversation_id_updates_existing_session() {
+        let store = make_store().await;
+        store.create_acp_session("sess-2").await.unwrap();
+        let cid = store.create_conversation().await.unwrap();
+        store
+            .set_acp_session_conversation_id("sess-2", cid)
+            .await
+            .unwrap();
+        let retrieved = store
+            .get_acp_session_conversation_id("sess-2")
+            .await
+            .unwrap();
+        assert_eq!(retrieved, Some(cid));
+    }
+
+    #[tokio::test]
+    async fn copy_conversation_copies_messages_in_order() {
+        use zeph_llm::provider::Role;
+        let store = make_store().await;
+        let src = store.create_conversation().await.unwrap();
+        store.save_message(src, "user", "hello").await.unwrap();
+        store.save_message(src, "assistant", "world").await.unwrap();
+
+        let dst = store.create_conversation().await.unwrap();
+        store.copy_conversation(src, dst).await.unwrap();
+
+        let msgs = store.load_history(dst, 100).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::User);
+        assert_eq!(msgs[0].content, "hello");
+        assert_eq!(msgs[1].role, Role::Assistant);
+        assert_eq!(msgs[1].content, "world");
+    }
+
+    #[tokio::test]
+    async fn copy_conversation_empty_source_is_noop() {
+        let store = make_store().await;
+        let src = store.create_conversation().await.unwrap();
+        let dst = store.create_conversation().await.unwrap();
+        store.copy_conversation(src, dst).await.unwrap();
+        let msgs = store.load_history(dst, 100).await.unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn copy_conversation_does_not_copy_summaries() {
+        // Summaries are intentionally excluded because their first/last_message_id
+        // boundaries would reference source message IDs, corrupting the compaction cursor.
+        let store = make_store().await;
+        let src = store.create_conversation().await.unwrap();
+        store.save_message(src, "user", "hello").await.unwrap();
+        // Insert a summary directly so we can verify it is not copied.
+        sqlx::query(
+            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
+             VALUES (?, 'summary text', 1, 1, 10)",
+        )
+        .bind(src)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let dst = store.create_conversation().await.unwrap();
+        store.copy_conversation(src, dst).await.unwrap();
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
+                .bind(dst)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 0,
+            "summaries must not be copied to forked conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_sessions_get_distinct_conversation_ids() {
+        let store = make_store().await;
+        let cid1 = store.create_conversation().await.unwrap();
+        let cid2 = store.create_conversation().await.unwrap();
+        store
+            .create_acp_session_with_conversation("sess-a", cid1)
+            .await
+            .unwrap();
+        store
+            .create_acp_session_with_conversation("sess-b", cid2)
+            .await
+            .unwrap();
+
+        let retrieved1 = store
+            .get_acp_session_conversation_id("sess-a")
+            .await
+            .unwrap();
+        let retrieved2 = store
+            .get_acp_session_conversation_id("sess-b")
+            .await
+            .unwrap();
+
+        assert!(retrieved1.is_some());
+        assert!(retrieved2.is_some());
+        assert_ne!(
+            retrieved1, retrieved2,
+            "concurrent sessions must get distinct conversation_ids"
         );
     }
 }
