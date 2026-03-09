@@ -587,7 +587,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
-        use crate::orchestration::{Aggregator, LlmAggregator};
+        use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
         let Some(graph) = self.pending_graph.take() else {
             self.channel
@@ -595,38 +595,347 @@ impl<C: Channel> Agent<C> {
                 .await?;
             return Ok(());
         };
-        let summary = format_plan_summary(&graph);
+
+        // When subagent manager is not configured, restore graph and inform the user.
+        if self.subagent_manager.is_none() {
+            self.channel
+                .send(
+                    "No sub-agents configured. Add sub-agent definitions to config \
+                     to enable plan execution.",
+                )
+                .await?;
+            self.pending_graph = Some(graph);
+            return Ok(());
+        }
+
+        // REV-2: pre-validate before moving graph into the constructor so we can
+        // restore it to pending_graph on failure.
+        if graph.tasks.is_empty() {
+            self.channel.send("Plan has no tasks.").await?;
+            self.pending_graph = Some(graph);
+            return Ok(());
+        }
+        // resume_from() rejects Completed and Canceled — guard those here too.
+        if matches!(graph.status, GraphStatus::Completed | GraphStatus::Canceled) {
+            self.channel
+                .send(&format!(
+                    "Cannot re-execute a {} plan. Use `/plan <goal>` to create a new one.",
+                    graph.status
+                ))
+                .await?;
+            self.pending_graph = Some(graph);
+            return Ok(());
+        }
+
+        let available_agents = self
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        // Use resume_from() for graphs that are no longer in Created status
+        // (e.g., after /plan retry which calls reset_for_retry and sets status=Running).
+        let mut scheduler = if graph.status == GraphStatus::Created {
+            DagScheduler::new(
+                graph,
+                &self.orchestration_config,
+                Box::new(RuleBasedRouter),
+                available_agents,
+            )
+        } else {
+            DagScheduler::resume_from(
+                graph,
+                &self.orchestration_config,
+                Box::new(RuleBasedRouter),
+                available_agents,
+            )
+        }
+        .map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        let task_count = scheduler.graph().tasks.len();
         self.channel
-            .send(&format!("Confirmed. Executing plan:\n{summary}"))
+            .send(&format!(
+                "Confirmed. Executing plan ({task_count} tasks)..."
+            ))
             .await?;
 
-        // Phase 5: attempt aggregation of any already-completed tasks.
-        // In a future integration phase the scheduler will run first; for now
-        // we aggregate whatever results are already present in the graph.
-        let aggregator = LlmAggregator::new(self.provider.clone(), &self.orchestration_config);
-        let final_status = match aggregator.aggregate(&graph).await {
-            Ok(synthesis) => {
-                self.channel.send(&synthesis).await?;
-                "completed"
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "aggregation failed after plan confirm");
-                self.channel
-                    .send("Plan confirmed. Execution and aggregation will run when the scheduler is wired.")
-                    .await?;
-                "failed"
-            }
-        };
-        // Update snapshot status and record completion time so the TUI can
-        // show the result for 30 s before clearing the panel.
+        let final_status = self.run_scheduler_loop(&mut scheduler, task_count).await?;
+
+        let completed_graph = scheduler.into_graph();
+
+        // Final TUI snapshot update.
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(&completed_graph);
+        self.update_metrics(|m| {
+            m.orchestration_graph = Some(snapshot);
+        });
+
+        let result_label = self
+            .finalize_plan_execution(completed_graph, final_status)
+            .await?;
+
         let now = std::time::Instant::now();
         self.update_metrics(|m| {
             if let Some(ref mut s) = m.orchestration_graph {
-                final_status.clone_into(&mut s.status);
+                result_label.clone_into(&mut s.status);
                 s.completed_at = Some(now);
             }
         });
         Ok(())
+    }
+
+    /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
+    ///
+    /// # Known limitations
+    ///
+    /// The agent is single-threaded; this loop blocks all message processing while
+    /// running. `/plan cancel` cannot interrupt an active execution. A future phase
+    /// will add a `CancellationToken` field to `Agent` and wire it into this loop.
+    /// (SEC-M34-001, tracked in GitHub issue.)
+    async fn run_scheduler_loop(
+        &mut self,
+        scheduler: &mut crate::orchestration::DagScheduler,
+        task_count: usize,
+    ) -> Result<crate::orchestration::GraphStatus, error::AgentError> {
+        use crate::orchestration::SchedulerAction;
+
+        // Sequential spawn counter for human-readable "task N/M" progress messages.
+        // task_id.index() reflects array position and can be non-contiguous for
+        // parallel plans (e.g. 0, 2, 4), so we use a local counter instead.
+        let mut spawn_counter: usize = 0;
+
+        let final_status = 'tick: loop {
+            let actions = scheduler.tick();
+
+            for action in actions {
+                match action {
+                    SchedulerAction::Spawn {
+                        task_id,
+                        agent_def_name,
+                        prompt,
+                    } => {
+                        spawn_counter += 1;
+                        let task_title = scheduler
+                            .graph()
+                            .tasks
+                            .get(task_id.index())
+                            .map_or("unknown", |t| t.title.as_str());
+                        let _ = self
+                            .channel
+                            .send_status(&format!(
+                                "Executing task {spawn_counter}/{task_count}: {task_title}..."
+                            ))
+                            .await;
+
+                        let provider = self.provider.clone();
+                        let tool_executor = Arc::clone(&self.tool_executor);
+                        let skills = self.filtered_skills_for(&agent_def_name);
+                        let cfg = self.subagent_config.clone();
+                        let event_tx = scheduler.event_sender();
+
+                        let mgr = self
+                            .subagent_manager
+                            .as_mut()
+                            .expect("subagent_manager checked above");
+                        match mgr.spawn_for_task(
+                            &agent_def_name,
+                            &prompt,
+                            provider,
+                            tool_executor,
+                            skills,
+                            &cfg,
+                            task_id,
+                            event_tx,
+                        ) {
+                            Ok(handle_id) => {
+                                scheduler.record_spawn(task_id, handle_id, agent_def_name);
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, %task_id, "spawn_for_task failed");
+                                let extra = scheduler.record_spawn_failure(task_id, &e.to_string());
+                                for a in extra {
+                                    match a {
+                                        SchedulerAction::Cancel { agent_handle_id } => {
+                                            if let Some(m) = self.subagent_manager.as_mut() {
+                                                // benign race: agent may have already finished
+                                                let _ =
+                                                    m.cancel(&agent_handle_id).inspect_err(|err| {
+                                                        tracing::trace!(
+                                                            error = %err,
+                                                            "cancel after spawn failure: agent already gone"
+                                                        );
+                                                    });
+                                            }
+                                        }
+                                        SchedulerAction::Done { status } => {
+                                            break 'tick status;
+                                        }
+                                        SchedulerAction::Spawn { .. } => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SchedulerAction::Cancel { agent_handle_id } => {
+                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                            // benign race: agent may have already finished
+                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                tracing::trace!(error = %e, "cancel: agent already gone");
+                            });
+                        }
+                    }
+                    SchedulerAction::Done { status } => {
+                        break 'tick status;
+                    }
+                }
+            }
+
+            // Drain all pending secret requests this tick (MED-2 fix).
+            self.process_pending_secret_requests().await;
+
+            // Update TUI with current graph state.
+            let snapshot = crate::metrics::TaskGraphSnapshot::from(scheduler.graph());
+            self.update_metrics(|m| {
+                m.orchestration_graph = Some(snapshot);
+            });
+
+            scheduler.wait_event().await;
+        };
+
+        Ok(final_status)
+    }
+
+    /// Bridge pending secret requests from sub-agents to the user (non-blocking, time-bounded).
+    ///
+    /// SEC-P1-02: explicit user confirmation is required before granting any secret to a
+    /// sub-agent. Denial is the default on timeout or channel error.
+    async fn process_pending_secret_requests(&mut self) {
+        loop {
+            let pending = self
+                .subagent_manager
+                .as_mut()
+                .and_then(crate::subagent::SubAgentManager::try_recv_secret_request);
+            let Some((req_handle_id, req)) = pending else {
+                break;
+            };
+            let prompt = format!(
+                "Sub-agent requests secret '{}'. Allow?{}",
+                req.secret_key,
+                req.reason
+                    .as_deref()
+                    .map(|r| format!(" Reason: {r}"))
+                    .unwrap_or_default()
+            );
+            // CRIT-1 fix: use select! to avoid blocking the tick loop forever.
+            let approved = tokio::select! {
+                result = self.channel.confirm(&prompt) => result.unwrap_or(false),
+                () = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                    let _ = self.channel.send("Secret request timed out.").await;
+                    false
+                }
+            };
+            if let Some(mgr) = self.subagent_manager.as_mut() {
+                if approved {
+                    let ttl = std::time::Duration::from_secs(300);
+                    let key = req.secret_key.clone();
+                    if mgr.approve_secret(&req_handle_id, &key, ttl).is_ok() {
+                        let _ = mgr.deliver_secret(&req_handle_id, key);
+                    }
+                } else {
+                    let _ = mgr.deny_secret(&req_handle_id);
+                }
+            }
+        }
+    }
+
+    /// Aggregate results or report failure after the tick loop completes.
+    async fn finalize_plan_execution(
+        &mut self,
+        completed_graph: crate::orchestration::TaskGraph,
+        final_status: crate::orchestration::GraphStatus,
+    ) -> Result<&'static str, error::AgentError> {
+        use std::fmt::Write;
+
+        use crate::orchestration::{Aggregator, GraphStatus, LlmAggregator};
+
+        let result_label = match final_status {
+            GraphStatus::Completed => {
+                // Update task completion counters.
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                self.update_metrics(|m| m.orchestration.tasks_completed += completed_count);
+
+                let aggregator =
+                    LlmAggregator::new(self.provider.clone(), &self.orchestration_config);
+                match aggregator.aggregate(&completed_graph).await {
+                    Ok(synthesis) => {
+                        self.channel.send(&synthesis).await?;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "aggregation failed");
+                        self.channel
+                            .send(
+                                "Plan completed but aggregation failed. \
+                                 Check individual task results.",
+                            )
+                            .await?;
+                    }
+                }
+                "completed"
+            }
+            GraphStatus::Failed => {
+                let failed_tasks: Vec<_> = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+                    .collect();
+                self.update_metrics(|m| {
+                    m.orchestration.tasks_failed += failed_tasks.len() as u64;
+                });
+                let mut msg = format!(
+                    "Plan failed. {}/{} tasks failed:\n",
+                    failed_tasks.len(),
+                    completed_graph.tasks.len()
+                );
+                for t in &failed_tasks {
+                    // SEC-M34-002: truncate raw task output before displaying to user.
+                    let err: std::borrow::Cow<str> =
+                        t.result.as_ref().map_or("unknown error".into(), |r| {
+                            if r.output.len() > 500 {
+                                r.output.chars().take(500).collect::<String>().into()
+                            } else {
+                                r.output.as_str().into()
+                            }
+                        });
+                    let _ = writeln!(msg, "  - {}: {err}", t.title);
+                }
+                msg.push_str("\nUse `/plan retry` to retry failed tasks.");
+                self.channel.send(&msg).await?;
+                // Store graph back so /plan retry and /plan resume work.
+                self.pending_graph = Some(completed_graph);
+                "failed"
+            }
+            GraphStatus::Paused => {
+                self.channel
+                    .send(
+                        "Plan paused due to a task failure (ask strategy). \
+                         Use `/plan resume` to continue or `/plan retry` to retry failed tasks.",
+                    )
+                    .await?;
+                self.pending_graph = Some(completed_graph);
+                "paused"
+            }
+            other => {
+                tracing::warn!(%other, "unexpected graph status after Done");
+                self.channel
+                    .send(&format!("Plan ended with status: {other}"))
+                    .await?;
+                "canceled"
+            }
+        };
+        Ok(result_label)
     }
 
     async fn handle_plan_status(
@@ -644,7 +953,21 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
-        self.channel.send("No recent plans.").await?;
+        if let Some(ref graph) = self.pending_graph {
+            let summary = format_plan_summary(graph);
+            let status_label = match graph.status {
+                crate::orchestration::GraphStatus::Created => "awaiting confirmation",
+                crate::orchestration::GraphStatus::Running => "running",
+                crate::orchestration::GraphStatus::Paused => "paused",
+                crate::orchestration::GraphStatus::Failed => "failed (retryable)",
+                _ => "unknown",
+            };
+            self.channel
+                .send(&format!("{summary}\nStatus: {status_label}"))
+                .await?;
+        } else {
+            self.channel.send("No recent plans.").await?;
+        }
         Ok(())
     }
 
@@ -718,12 +1041,12 @@ impl<C: Channel> Agent<C> {
 
         self.channel
             .send(&format!(
-                "Resuming plan: {}\nScheduler execution will run in a future integration phase.",
+                "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
                 graph.goal
             ))
             .await?;
 
-        // Store resumed graph back as pending. resume_from() will set status=Running.
+        // Store resumed graph back as pending. resume_from() will set status=Running in confirm.
         self.pending_graph = Some(graph);
         Ok(())
     }
@@ -778,6 +1101,17 @@ impl<C: Channel> Agent<C> {
 
         dag::reset_for_retry(&mut graph).map_err(|e| error::AgentError::Other(e.to_string()))?;
 
+        // HIGH-1 fix: reset_for_retry only resets Failed/Canceled tasks. Any tasks that were
+        // in Running state at pause time are left as Running with stale assigned_agent handles
+        // (those sub-agents are long dead). Reset them to Ready so resume_from() does not try
+        // to wait for their events.
+        for task in &mut graph.tasks {
+            if task.status == crate::orchestration::TaskStatus::Running {
+                task.status = crate::orchestration::TaskStatus::Ready;
+                task.assigned_agent = None;
+            }
+        }
+
         tracing::info!(
             graph_id = %graph.id,
             failed_count,
@@ -787,12 +1121,12 @@ impl<C: Channel> Agent<C> {
         self.channel
             .send(&format!(
                 "Retrying {failed_count} failed task(s) in plan: {}\n\
-                 Scheduler execution will run in a future integration phase.",
+                 Use `/plan confirm` to execute.",
                 graph.goal
             ))
             .await?;
 
-        // Store retried graph back for re-execution.
+        // Store retried graph back for re-execution via /plan confirm.
         self.pending_graph = Some(graph);
         Ok(())
     }
@@ -4741,6 +5075,290 @@ mod compaction_e2e {
         assert!(
             resp.contains("completed"),
             "sub-agent must complete successfully; got: {resp}"
+        );
+    }
+
+    // ── /plan handler unit tests ─────────────────────────────────────────────
+
+    use crate::orchestration::{
+        GraphStatus, PlanCommand, TaskGraph, TaskNode, TaskResult, TaskStatus,
+    };
+
+    fn agent_with_orchestration() -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+        agent
+    }
+
+    fn make_simple_graph(status: GraphStatus) -> TaskGraph {
+        let mut g = TaskGraph::new("test goal");
+        let mut node = TaskNode::new(0, "task-0", "do something");
+        node.status = match status {
+            GraphStatus::Created => TaskStatus::Pending,
+            GraphStatus::Running => TaskStatus::Ready,
+            _ => TaskStatus::Completed,
+        };
+        if status == GraphStatus::Running || status == GraphStatus::Completed {
+            node.result = Some(TaskResult {
+                output: "done".into(),
+                artifacts: vec![],
+                duration_ms: 0,
+                agent_id: None,
+                agent_def: None,
+            });
+            if status == GraphStatus::Completed {
+                node.status = TaskStatus::Completed;
+            }
+        }
+        g.tasks.push(node);
+        g.status = status;
+        g
+    }
+
+    /// GAP-1: handle_plan_confirm with subagent_manager = None → fallback message,
+    /// graph restored in pending_graph.
+    #[tokio::test]
+    async fn plan_confirm_no_manager_restores_graph() {
+        let mut agent = agent_with_orchestration();
+
+        let graph = make_simple_graph(GraphStatus::Created);
+        agent.pending_graph = Some(graph);
+
+        // No subagent_manager set.
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        // Graph must be restored.
+        assert!(
+            agent.pending_graph.is_some(),
+            "graph must be restored when no manager configured"
+        );
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("sub-agent")),
+            "must send fallback message; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-2: handle_plan_confirm with pending_graph = None → "No pending plan" message.
+    #[tokio::test]
+    async fn plan_confirm_no_pending_graph_sends_message() {
+        let mut agent = agent_with_orchestration();
+
+        // No pending_graph.
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("No pending plan")),
+            "must send 'No pending plan' message; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-3: happy path — pre-built Running graph with one already-Completed task.
+    /// resume_from() accepts it; first tick() emits Done{Completed}; aggregation called.
+    #[tokio::test]
+    async fn plan_confirm_completed_graph_aggregates() {
+        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::hooks::SubagentHooks;
+        use crate::subagent::{SubAgentDef, SubAgentManager};
+
+        // MockProvider returns the aggregation synthesis.
+        let provider = mock_provider(vec!["synthesis result".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "worker".into(),
+            description: "A worker".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are helpful.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        });
+        agent.subagent_manager = Some(mgr);
+
+        // Graph with one already-Completed task in Running status: resume_from() accepts it,
+        // and the first tick() will find no running/ready tasks → Done{Completed}.
+        let mut graph = TaskGraph::new("test goal");
+        let mut node = TaskNode::new(0, "task-0", "already done");
+        node.status = TaskStatus::Completed;
+        node.result = Some(TaskResult {
+            output: "task output".into(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+        agent.pending_graph = Some(graph);
+
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        // Aggregation synthesis should appear in messages.
+        assert!(
+            msgs.iter().any(|m| m.contains("synthesis result")),
+            "aggregation synthesis must be sent to user; got: {msgs:?}"
+        );
+        // Graph must be cleared after successful completion.
+        assert!(
+            agent.pending_graph.is_none(),
+            "pending_graph must be cleared after Completed"
+        );
+    }
+
+    /// GAP-4: handle_plan_confirm with a Paused graph → pending_graph gets restored,
+    /// paused message sent to user.
+    ///
+    /// A graph in Paused status: resume_from() sets status=Running; the first tick()
+    /// finds no Running, no Ready tasks (all Pending with unmet deps in a cycle that
+    /// reset_for_retry would fix) → deadlock → Done{Failed}. We build the simplest
+    /// case: a graph where the only task is Skipped (terminal but not Completed),
+    /// meaning all tasks are terminal → Done{Completed}. Instead we use a Paused
+    /// graph directly via finalize_plan_execution logic — but the Paused signal comes
+    /// from the scheduler's `FailureStrategy::Ask` path which we cannot easily trigger
+    /// with a mock.
+    ///
+    /// So we test a simpler invariant: a graph with `status=Paused` passed to
+    /// `handle_plan_confirm` via `resume_from` → becomes Running → first tick finds
+    /// a Ready task that cannot be spawned (no matching agent) → record_spawn_failure
+    /// → if the graph has `FailureStrategy::Abort`, Done{Failed}. We verify the graph
+    /// is restored and a failure message is sent.
+    #[tokio::test]
+    async fn plan_confirm_spawn_failure_restores_pending() {
+        use crate::subagent::SubAgentManager;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+
+        // Manager with no defined agents → spawn_for_task returns NotFound.
+        agent.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph in Created status with one task; scheduler will try to spawn it,
+        // fail (no agents), record_spawn_failure → Done{Failed}.
+        let mut graph = TaskGraph::new("failing goal");
+        let node = TaskNode::new(0, "task-0", "cannot be spawned");
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Created;
+        agent.pending_graph = Some(graph);
+
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        // Graph must be restored for /plan retry.
+        assert!(
+            agent.pending_graph.is_some(),
+            "pending_graph must be restored after Failed so /plan retry works"
+        );
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("failed")),
+            "failure message must be sent; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-5: handle_plan_list with pending_graph → shows summary + status label.
+    #[tokio::test]
+    async fn plan_list_with_pending_graph_shows_summary() {
+        let mut agent = agent_with_orchestration();
+
+        agent.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+
+        agent.handle_plan_command(PlanCommand::List).await.unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("awaiting confirmation")),
+            "must show 'awaiting confirmation' status; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-6: handle_plan_list with no graph → "No recent plans."
+    #[tokio::test]
+    async fn plan_list_no_graph_shows_no_recent() {
+        let mut agent = agent_with_orchestration();
+
+        agent.handle_plan_command(PlanCommand::List).await.unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("No recent plans")),
+            "must show 'No recent plans'; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-7: handle_plan_retry resets Running tasks to Ready and clears assigned_agent.
+    #[tokio::test]
+    async fn plan_retry_resets_running_tasks_to_ready() {
+        let mut agent = agent_with_orchestration();
+
+        let mut graph = TaskGraph::new("retry test");
+        let mut failed = TaskNode::new(0, "failed-task", "desc");
+        failed.status = TaskStatus::Failed;
+        let mut stale_running = TaskNode::new(1, "stale-task", "desc");
+        stale_running.status = TaskStatus::Running;
+        stale_running.assigned_agent = Some("old-handle-id".into());
+        graph.tasks.push(failed);
+        graph.tasks.push(stale_running);
+        graph.status = GraphStatus::Failed;
+        agent.pending_graph = Some(graph);
+
+        agent
+            .handle_plan_command(PlanCommand::Retry(None))
+            .await
+            .unwrap();
+
+        let g = agent
+            .pending_graph
+            .as_ref()
+            .expect("graph must be present after retry");
+
+        // Failed task must be reset to Ready.
+        assert_eq!(
+            g.tasks[0].status,
+            TaskStatus::Ready,
+            "failed task must be reset to Ready"
+        );
+
+        // Stale Running task must be reset to Ready and assigned_agent cleared.
+        assert_eq!(
+            g.tasks[1].status,
+            TaskStatus::Ready,
+            "stale Running task must be reset to Ready"
+        );
+        assert!(
+            g.tasks[1].assigned_agent.is_none(),
+            "assigned_agent must be cleared for stale Running task"
         );
     }
 }
