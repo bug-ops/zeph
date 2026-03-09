@@ -1303,12 +1303,14 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        if let Some(rest) = trimmed.strip_prefix("/skill ") {
+        if trimmed == "/skill" || trimmed.starts_with("/skill ") {
+            let rest = trimmed.strip_prefix("/skill").unwrap_or("").trim();
             self.handle_skill_command(rest).await?;
             return Ok(());
         }
 
-        if let Some(rest) = trimmed.strip_prefix("/feedback ") {
+        if trimmed == "/feedback" || trimmed.starts_with("/feedback ") {
+            let rest = trimmed.strip_prefix("/feedback").unwrap_or("").trim();
             self.handle_feedback(rest).await?;
             return Ok(());
         }
@@ -1319,8 +1321,13 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        if let Some(path) = trimmed.strip_prefix("/image ") {
-            return self.handle_image_command(path.trim()).await;
+        if trimmed == "/image" || trimmed.starts_with("/image ") {
+            let path = trimmed.strip_prefix("/image").unwrap_or("").trim();
+            if path.is_empty() {
+                self.channel.send("Usage: /image <path>").await?;
+                return Ok(());
+            }
+            return self.handle_image_command(path).await;
         }
 
         if trimmed == "/plan" || trimmed.starts_with("/plan ") {
@@ -4254,6 +4261,81 @@ pub(super) mod agent_tests {
                 );
             }
         }
+    }
+
+    // Regression tests for issue #1418: bare slash commands must not fall through to LLM.
+
+    #[tokio::test]
+    async fn bare_skill_command_does_not_invoke_llm() {
+        // Provider has no responses — if LLM is called the agent would receive an empty response
+        // and send "empty response" to the channel. The handler should return before reaching LLM.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/skill".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent = agent.channel.sent_messages();
+        // Handler sends the "Unknown /skill subcommand" usage message — not an LLM response.
+        assert!(
+            sent.iter().any(|m| m.contains("Unknown /skill subcommand")),
+            "bare /skill must send usage; got: {sent:?}"
+        );
+        // No assistant message should be added to history (LLM was not called).
+        assert!(
+            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            "bare /skill must not produce an assistant message; messages: {:?}",
+            agent.messages
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_feedback_command_does_not_invoke_llm() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/feedback".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("Usage: /feedback")),
+            "bare /feedback must send usage; got: {sent:?}"
+        );
+        assert!(
+            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            "bare /feedback must not produce an assistant message; messages: {:?}",
+            agent.messages
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_image_command_sends_usage() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/image".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("Usage: /image <path>")),
+            "bare /image must send usage; got: {sent:?}"
+        );
+        assert!(
+            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            "bare /image must not produce an assistant message; messages: {:?}",
+            agent.messages
+        );
     }
 }
 
