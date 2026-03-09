@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `ShellExecutor` blocklist now detects blocked commands wrapped in backtick substitution (`` `cmd` ``), `$(cmd)`, `<(cmd)`, and `>(cmd)` process substitution. Previously these constructs bypassed `find_blocked_command` because the subshell prefix was attached to the command token during tokenization. `SUBSHELL_METACHARS` in `check_blocklist` extended with `<(` and `>(` (#1483)
+- `/graph facts <name>` now returns the entity whose name exactly matches the query instead of an entity that merely mentions the name in its summary. `find_entity_by_name` uses a two-phase lookup: exact case-insensitive match on `name`/`canonical_name` first, FTS5 prefix search only as fallback (#1472)
 - Graph memory: `insert_edge` now deduplicates active edges on `(source_entity_id, target_entity_id, relation)`; re-extraction no longer creates duplicate rows, and confidence is updated to the higher value on repeat extractions (#1471)
 - AgentRouter inline fallback: when no sub-agents are configured, `DagScheduler` now emits `SchedulerAction::RunInline` instead of immediately marking the task as `Failed`. The main agent provider executes the task prompt directly, allowing single-agent setups to use `/plan` without any sub-agent definitions (#1463)
 - `/plan status` now reflects actual graph state: messages are matched per `GraphStatus` variant (`Created`, `Running`, `Paused`, `Failed`, `Completed`, `Canceled`) instead of always showing "awaiting confirmation" (#1463)
