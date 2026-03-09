@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `/graph facts <name>` now returns the entity whose name exactly matches the query instead of an entity that merely mentions the name in its summary. `find_entity_by_name` uses a two-phase lookup: exact case-insensitive match on `name`/`canonical_name` first, FTS5 prefix search only as fallback (#1472)
 - AgentRouter inline fallback: when no sub-agents are configured, `DagScheduler` now emits `SchedulerAction::RunInline` instead of immediately marking the task as `Failed`. The main agent provider executes the task prompt directly, allowing single-agent setups to use `/plan` without any sub-agent definitions (#1463)
 - `/plan status` now reflects actual graph state: messages are matched per `GraphStatus` variant (`Created`, `Running`, `Paused`, `Failed`, `Completed`, `Canceled`) instead of always showing "awaiting confirmation" (#1463)
 - `extract_fenced_blocks()` in `zeph-tools` now requires a word-boundary after the language tag: `` ```bashrc `` no longer matches when searching for `bash` (#1461)

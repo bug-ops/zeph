@@ -2370,6 +2370,25 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    #[tokio::test]
+    async fn find_entity_by_name_matches_canonical_name() {
+        // Verify the exact-match phase checks canonical_name, not only name.
+        let gs = setup().await;
+        // upsert_entity sets canonical_name = second arg
+        gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // Searching by canonical_name "Dave" must return the entity even though
+        // the display name is "Dave (Engineer)".
+        let results = gs.find_entity_by_name("Dave").await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "canonical_name match must return entity"
+        );
+        assert_eq!(results[0].canonical_name, "Dave");
+    }
+
     async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {
         // Insert a conversation first (FK constraint).
         let conv_id: i64 =
