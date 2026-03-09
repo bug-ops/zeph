@@ -352,6 +352,7 @@ impl<C: Channel> Agent<C> {
                 expired_edge_retention_days: cfg.expired_edge_retention_days,
                 max_entities_cap: cfg.max_entities,
                 community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
+                community_summary_concurrency: cfg.community_summary_concurrency,
             }
         };
 

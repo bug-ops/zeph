@@ -1945,6 +1945,10 @@ fn default_graph_community_summary_max_prompt_bytes() -> usize {
     8192
 }
 
+fn default_graph_community_summary_concurrency() -> usize {
+    4
+}
+
 fn default_graph_entity_similarity_threshold() -> f32 {
     0.85
 }
@@ -2009,6 +2013,9 @@ pub struct GraphConfig {
     /// Maximum prompt size in bytes for community summary generation. Default: 8192.
     #[serde(default = "default_graph_community_summary_max_prompt_bytes")]
     pub community_summary_max_prompt_bytes: usize,
+    /// Maximum concurrent LLM calls during community summarization. Default: 4.
+    #[serde(default = "default_graph_community_summary_concurrency")]
+    pub community_summary_concurrency: usize,
 }
 
 impl Default for GraphConfig {
@@ -2028,6 +2035,7 @@ impl Default for GraphConfig {
             expired_edge_retention_days: default_graph_expired_edge_retention_days(),
             max_entities: 0,
             community_summary_max_prompt_bytes: default_graph_community_summary_max_prompt_bytes(),
+            community_summary_concurrency: default_graph_community_summary_concurrency(),
         }
     }
 }
@@ -2987,6 +2995,7 @@ eval_budget_tokens = 50000
         assert_eq!(cfg.expired_edge_retention_days, 90);
         assert_eq!(cfg.max_entities, 0);
         assert_eq!(cfg.community_summary_max_prompt_bytes, 8192);
+        assert_eq!(cfg.community_summary_concurrency, 4);
     }
 
     #[test]
