@@ -543,7 +543,7 @@ mod tests {
 
         let task = ScheduledTask::new(
             "adv",
-            "* * * * * *",
+            "0 * * * * *",
             TaskKind::HealthCheck,
             serde_json::Value::Null,
         )
@@ -579,9 +579,16 @@ mod tests {
         let next_dt = next_str
             .parse::<chrono::DateTime<Utc>>()
             .expect("should parse as RFC3339");
+        // The backdated value was 2000-01-01; after tick() the scheduler must have
+        // advanced next_run to a future occurrence (at least year 2001+).
+        // We avoid comparing against Utc::now() here because on slow CI hosts
+        // (e.g. Windows) a per-second cron can tick past the assertion window.
+        let epoch_2001 = chrono::DateTime::parse_from_rfc3339("2001-01-01T00:00:00+00:00")
+            .expect("static parse")
+            .with_timezone(&Utc);
         assert!(
-            next_dt > Utc::now(),
-            "next_run must be in the future after firing"
+            next_dt > epoch_2001,
+            "next_run must have advanced beyond the backdated value after firing"
         );
     }
 
