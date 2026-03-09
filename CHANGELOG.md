@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-03-09
+
 ### Fixed
 
 - Register SIGTERM handler (`tokio::signal::unix::SignalKind::terminate()`) alongside the existing Ctrl-C handler in the daemon signal task. Both signals now trigger graceful shutdown, ensuring `remove_pid_file()` is always reached on `kill <pid>` (#1414)
@@ -1921,7 +1923,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/bug-ops/zeph/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/bug-ops/zeph/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/bug-ops/zeph/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bug-ops/zeph/compare/v0.12.6...v0.13.0
