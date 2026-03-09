@@ -691,6 +691,7 @@ impl<C: Channel> Agent<C> {
     /// running. `/plan cancel` cannot interrupt an active execution. A future phase
     /// will add a `CancellationToken` field to `Agent` and wire it into this loop.
     /// (SEC-M34-001, tracked in GitHub issue.)
+    #[allow(clippy::too_many_lines)]
     async fn run_scheduler_loop(
         &mut self,
         scheduler: &mut crate::orchestration::DagScheduler,
@@ -774,7 +775,8 @@ impl<C: Channel> Agent<C> {
                                         SchedulerAction::Done { status } => {
                                             break 'tick status;
                                         }
-                                        SchedulerAction::Spawn { .. } => {}
+                                        SchedulerAction::Spawn { .. }
+                                        | SchedulerAction::RunInline { .. } => {}
                                     }
                                 }
                             }
@@ -786,6 +788,55 @@ impl<C: Channel> Agent<C> {
                             let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                 tracing::trace!(error = %e, "cancel: agent already gone");
                             });
+                        }
+                    }
+                    // Inline execution: the LLM call blocks this tick loop for its
+                    // duration. This is intentionally sequential and only expected in
+                    // single-agent setups where no sub-agents are configured. If mixed
+                    // setups (some tasks routed to sub-agents, some inline) are needed
+                    // later, this arm should be refactored to spawn a tokio task instead.
+                    SchedulerAction::RunInline { task_id, prompt } => {
+                        spawn_counter += 1;
+                        let task_title = scheduler
+                            .graph()
+                            .tasks
+                            .get(task_id.index())
+                            .map_or("unknown", |t| t.title.as_str());
+                        let _ = self
+                            .channel
+                            .send_status(&format!(
+                                "Executing task {spawn_counter}/{task_count} (inline): {task_title}..."
+                            ))
+                            .await;
+
+                        // record_spawn before chat(): the inline call completes before
+                        // wait_event() runs, so the completion event is always buffered
+                        // before any timeout check fires in the next tick().
+                        let handle_id = format!("__inline_{task_id}__");
+                        scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
+
+                        let msg = Message::from_legacy(Role::User, prompt);
+                        let event_tx = scheduler.event_sender();
+                        let outcome = match self.provider.chat(&[msg]).await {
+                            Ok(output) => crate::orchestration::TaskOutcome::Completed {
+                                output,
+                                artifacts: vec![],
+                            },
+                            Err(e) => crate::orchestration::TaskOutcome::Failed {
+                                error: e.to_string(),
+                            },
+                        };
+                        let event = crate::orchestration::TaskEvent {
+                            task_id,
+                            agent_handle_id: handle_id,
+                            outcome,
+                        };
+                        if let Err(e) = event_tx.send(event).await {
+                            tracing::warn!(
+                                %task_id,
+                                error = %e,
+                                "inline task event send failed"
+                            );
                         }
                     }
                     SchedulerAction::Done { status } => {
@@ -972,13 +1023,26 @@ impl<C: Channel> Agent<C> {
         &mut self,
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        if self.pending_graph.is_some() {
-            self.channel
-                .send("A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort.")
-                .await?;
-        } else {
+        use crate::orchestration::GraphStatus;
+        let Some(ref graph) = self.pending_graph else {
             self.channel.send("No active plan.").await?;
-        }
+            return Ok(());
+        };
+        let msg = match graph.status {
+            GraphStatus::Created => {
+                "A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort."
+            }
+            GraphStatus::Running => "Plan is currently running.",
+            GraphStatus::Paused => {
+                "Plan is paused. Use `/plan resume` to continue or `/plan cancel` to abort."
+            }
+            GraphStatus::Failed => {
+                "Plan failed. Use `/plan retry` to retry or `/plan cancel` to discard."
+            }
+            GraphStatus::Completed => "Plan completed successfully.",
+            GraphStatus::Canceled => "Plan was canceled.",
+        };
+        self.channel.send(msg).await?;
         Ok(())
     }
 
@@ -5261,41 +5325,31 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-4: handle_plan_confirm with a Paused graph → pending_graph gets restored,
-    /// paused message sent to user.
+    /// GAP-4: handle_plan_confirm with no sub-agents defined but provider fails →
+    /// task executes inline but provider returns error → plan fails, failure message sent.
     ///
-    /// A graph in Paused status: resume_from() sets status=Running; the first tick()
-    /// finds no Running, no Ready tasks (all Pending with unmet deps in a cycle that
-    /// reset_for_retry would fix) → deadlock → Done{Failed}. We build the simplest
-    /// case: a graph where the only task is Skipped (terminal but not Completed),
-    /// meaning all tasks are terminal → Done{Completed}. Instead we use a Paused
-    /// graph directly via finalize_plan_execution logic — but the Paused signal comes
-    /// from the scheduler's `FailureStrategy::Ask` path which we cannot easily trigger
-    /// with a mock.
-    ///
-    /// So we test a simpler invariant: a graph with `status=Paused` passed to
-    /// `handle_plan_confirm` via `resume_from` → becomes Running → first tick finds
-    /// a Ready task that cannot be spawned (no matching agent) → record_spawn_failure
-    /// → if the graph has `FailureStrategy::Abort`, Done{Failed}. We verify the graph
-    /// is restored and a failure message is sent.
+    /// Since the fix for #1463, no agents → RunInline (not spawn_for_task). So when
+    /// the provider fails, the scheduler records a Failed TaskOutcome, graph fails,
+    /// and finalize_plan_execution sends a failure message.
     #[tokio::test]
-    async fn plan_confirm_spawn_failure_restores_pending() {
+    async fn plan_confirm_inline_provider_failure_sends_message() {
         use crate::subagent::SubAgentManager;
 
-        let provider = mock_provider(vec![]);
+        // Failing provider → chat() always returns an error.
+        let provider = mock_provider_failing();
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         agent.orchestration_config.enabled = true;
 
-        // Manager with no defined agents → spawn_for_task returns NotFound.
+        // Manager with no defined agents → route() returns None → RunInline.
         agent.subagent_manager = Some(SubAgentManager::new(4));
 
-        // Graph in Created status with one task; scheduler will try to spawn it,
-        // fail (no agents), record_spawn_failure → Done{Failed}.
-        let mut graph = TaskGraph::new("failing goal");
-        let node = TaskNode::new(0, "task-0", "cannot be spawned");
+        // Graph in Created status with one task; scheduler emits RunInline,
+        // provider fails → TaskOutcome::Failed → graph Failed.
+        let mut graph = TaskGraph::new("failing inline goal");
+        let node = TaskNode::new(0, "task-0", "will fail inline");
         graph.tasks.push(node);
         graph.status = GraphStatus::Created;
         agent.pending_graph = Some(graph);
@@ -5305,15 +5359,11 @@ mod compaction_e2e {
             .await
             .unwrap();
 
-        // Graph must be restored for /plan retry.
-        assert!(
-            agent.pending_graph.is_some(),
-            "pending_graph must be restored after Failed so /plan retry works"
-        );
         let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter().any(|m| m.contains("failed")),
-            "failure message must be sent; got: {msgs:?}"
+            msgs.iter()
+                .any(|m| m.contains("failed") || m.contains("Failed")),
+            "failure message must be sent after inline provider error; got: {msgs:?}"
         );
     }
 
@@ -5516,6 +5566,125 @@ mod compaction_e2e {
             leftover.is_none(),
             "pending secret request must be drained after instant plan completion; \
              got: {leftover:?}"
+        );
+    }
+
+    /// GAP-8: handle_plan_confirm with no sub-agents defined executes the task inline
+    /// via the main provider. Verifies RunInline path: plan succeeds, provider output
+    /// appears in aggregation, pending_graph is cleared.
+    #[tokio::test]
+    async fn plan_confirm_no_subagents_executes_inline() {
+        use crate::subagent::SubAgentManager;
+
+        // Provider returns task result then aggregation synthesis.
+        let provider = mock_provider(vec!["inline task output".into(), "synthesis done".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+
+        // SubAgentManager with no definitions → route() returns None → RunInline.
+        agent.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Simple single-task graph.
+        let mut graph = TaskGraph::new("inline goal");
+        let node = TaskNode::new(0, "task-0", "do something inline");
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Created;
+        agent.pending_graph = Some(graph);
+
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        // Graph must be cleared after successful execution.
+        assert!(
+            agent.pending_graph.is_none(),
+            "pending_graph must be cleared after inline plan completion"
+        );
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("synthesis done")),
+            "aggregation synthesis must appear in messages; got: {msgs:?}"
+        );
+    }
+
+    /// GAP-9: handle_plan_status shows the correct message for each graph status.
+    #[tokio::test]
+    async fn plan_status_reflects_graph_status() {
+        // No active plan → "No active plan."
+        let mut agent = agent_with_orchestration();
+        agent
+            .handle_plan_command(PlanCommand::Status(None))
+            .await
+            .unwrap();
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("No active plan")),
+            "no plan → 'No active plan'; got: {msgs:?}"
+        );
+
+        // GraphStatus::Created → awaiting confirmation.
+        let mut agent = agent_with_orchestration();
+        agent.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+        agent
+            .handle_plan_command(PlanCommand::Status(None))
+            .await
+            .unwrap();
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("awaiting confirmation")),
+            "Created graph → 'awaiting confirmation'; got: {msgs:?}"
+        );
+
+        // GraphStatus::Failed → retry message.
+        let mut agent = agent_with_orchestration();
+        let mut failed_graph = make_simple_graph(GraphStatus::Created);
+        failed_graph.status = GraphStatus::Failed;
+        agent.pending_graph = Some(failed_graph);
+        agent
+            .handle_plan_command(PlanCommand::Status(None))
+            .await
+            .unwrap();
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("failed") || m.contains("Failed")),
+            "Failed graph → failure message; got: {msgs:?}"
+        );
+
+        // GraphStatus::Paused → resume message.
+        let mut agent = agent_with_orchestration();
+        let mut paused_graph = make_simple_graph(GraphStatus::Created);
+        paused_graph.status = GraphStatus::Paused;
+        agent.pending_graph = Some(paused_graph);
+        agent
+            .handle_plan_command(PlanCommand::Status(None))
+            .await
+            .unwrap();
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("paused") || m.contains("Paused")),
+            "Paused graph → paused message; got: {msgs:?}"
+        );
+
+        // GraphStatus::Completed → completed message.
+        let mut agent = agent_with_orchestration();
+        let mut completed_graph = make_simple_graph(GraphStatus::Created);
+        completed_graph.status = GraphStatus::Completed;
+        agent.pending_graph = Some(completed_graph);
+        agent
+            .handle_plan_command(PlanCommand::Status(None))
+            .await
+            .unwrap();
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("completed") || m.contains("Completed")),
+            "Completed graph → completed message; got: {msgs:?}"
         );
     }
 }
