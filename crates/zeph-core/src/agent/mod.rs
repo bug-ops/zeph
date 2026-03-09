@@ -4190,8 +4190,7 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let (tx, _rx) = watch::channel(MetricsSnapshot::default());
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_metrics(tx);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
 
         // Simulate metrics that would be populated by a real LLM call.
         agent.update_metrics(|m| {
@@ -4205,8 +4204,14 @@ pub(super) mod agent_tests {
 
         let messages = sent.lock().unwrap();
         let output = messages.join("\n");
-        assert!(output.contains("API calls: 3"), "expected non-zero api_calls in /status output; got: {output}");
-        assert!(output.contains("100 prompt / 50 completion"), "expected non-zero tokens in /status output; got: {output}");
+        assert!(
+            output.contains("API calls: 3"),
+            "expected non-zero api_calls in /status output; got: {output}"
+        );
+        assert!(
+            output.contains("100 prompt / 50 completion"),
+            "expected non-zero tokens in /status output; got: {output}"
+        );
     }
 
     #[tokio::test]
