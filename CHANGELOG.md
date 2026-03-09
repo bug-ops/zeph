@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Correct A2A agent card discovery endpoint from `/.well-known/agent-card.json` to `/.well-known/agent.json` per A2A spec (#1412)
 - Experiment engine now applies generation parameter variations (temperature, top_p, etc.) to the subject provider before evaluation, fixing all-zero delta scores (#1407). `AnyProvider::with_generation_overrides` clones and patches the provider; each variation is scored with its specific parameters rather than the unmodified baseline provider. `GenerationOverrides` moved to `zeph_llm::provider` and re-exported from `zeph_core::experiments::snapshot` for backwards compatibility.
 - Sub-agent transcript sweep no longer logs a spurious `transcript sweep failed` warning on first run when the transcript directory does not exist yet; the directory is now created automatically (#1397)
 
@@ -1546,7 +1547,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Per-IP rate limiting middleware with configurable 60-second sliding window (Issue #85)
 - Request body size limit (1 MiB) via `tower-http::limit::RequestBodyLimitLayer` (Issue #85)
 - `A2aServerConfig` with env var overrides: `ZEPH_A2A_ENABLED`, `ZEPH_A2A_HOST`, `ZEPH_A2A_PORT`, `ZEPH_A2A_PUBLIC_URL`, `ZEPH_A2A_AUTH_TOKEN`, `ZEPH_A2A_RATE_LIMIT`
-- Agent card served at `/.well-known/agent-card.json` (public, no auth required)
+- Agent card served at `/.well-known/agent.json` (public, no auth required)
 - Graceful shutdown integration via tokio watch channel
 - Server module gated behind `server` feature flag on `zeph-a2a` crate
 
