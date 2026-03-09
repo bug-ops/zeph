@@ -720,4 +720,26 @@ mod tests {
             "with managed dir should fail due to bad path: {sent_with_dir:?}"
         );
     }
+
+    #[test]
+    fn default_graph_config_is_disabled() {
+        let agent = make_agent();
+        assert!(
+            !agent.memory_state.graph_config.enabled,
+            "graph_config must default to disabled"
+        );
+    }
+
+    #[test]
+    fn with_graph_config_enabled_sets_flag() {
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let agent = make_agent().with_graph_config(cfg);
+        assert!(
+            agent.memory_state.graph_config.enabled,
+            "with_graph_config must set enabled flag"
+        );
+    }
 }

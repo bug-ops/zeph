@@ -348,7 +348,9 @@ pub(crate) async fn run_daemon(
         agent
     };
 
-    let mut agent = agent.with_document_config(config.memory.documents.clone());
+    let mut agent = agent
+        .with_document_config(config.memory.documents.clone())
+        .with_graph_config(config.memory.graph.clone());
 
     agent.load_history().await?;
     agent
