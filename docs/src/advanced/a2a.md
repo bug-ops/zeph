@@ -12,7 +12,7 @@ ZEPH_A2A_ENABLED=true ZEPH_A2A_AUTH_TOKEN=secret ./target/release/zeph
 
 | Endpoint | Description | Auth |
 |----------|-------------|------|
-| `/.well-known/agent-card.json` | Agent discovery | Public (no auth) |
+| `/.well-known/agent.json` | Agent discovery | Public (no auth) |
 | `/a2a` | JSON-RPC endpoint (`message/send`, `tasks/get`, `tasks/cancel`) | Bearer token |
 | `/a2a/stream` | SSE streaming endpoint | Bearer token |
 

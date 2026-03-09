@@ -286,6 +286,63 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .cloned()
         .collect();
     let skill_count = all_meta_owned.len();
+
+    // Populate trust DB for all loaded skills.
+    {
+        let trust_cfg = config.skills.trust.clone();
+        let managed_dir = zeph_core::bootstrap::managed_skills_dir();
+        for meta in &all_meta_owned {
+            let source_kind = if meta.skill_dir.starts_with(&managed_dir) {
+                zeph_memory::sqlite::SourceKind::Hub
+            } else {
+                zeph_memory::sqlite::SourceKind::Local
+            };
+            let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
+                &trust_cfg.default_level
+            } else {
+                &trust_cfg.local_level
+            };
+            match zeph_skills::compute_skill_hash(&meta.skill_dir) {
+                Ok(current_hash) => {
+                    // Check if there's an existing record to handle hash mismatch.
+                    let existing = memory
+                        .sqlite()
+                        .load_skill_trust(&meta.name)
+                        .await
+                        .ok()
+                        .flatten();
+                    let trust_level_str = if let Some(ref row) = existing {
+                        if row.blake3_hash == current_hash {
+                            row.trust_level.clone()
+                        } else {
+                            trust_cfg.hash_mismatch_level.to_string()
+                        }
+                    } else {
+                        initial_level.to_string()
+                    };
+                    let source_path = meta.skill_dir.to_str();
+                    if let Err(e) = memory
+                        .sqlite()
+                        .upsert_skill_trust(
+                            &meta.name,
+                            &trust_level_str,
+                            source_kind,
+                            None,
+                            source_path,
+                            &current_hash,
+                        )
+                        .await
+                    {
+                        tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
+                }
+            }
+        }
+    }
+
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
     let (matcher, cli_history) = tokio::join!(
         app.build_skill_matcher(&provider, &all_meta_refs, &memory),
@@ -354,11 +411,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
         std::sync::Arc::new(tool_setup.executor);
-    let tool_executor =
+    let inner_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
         )));
+    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
+        zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone()),
+    ));
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
@@ -412,6 +472,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_trust_config(config.skills.trust.clone())
     .with_memory(
         std::sync::Arc::clone(&memory),
         conversation_id,

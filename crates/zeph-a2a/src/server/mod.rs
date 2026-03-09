@@ -210,7 +210,7 @@ mod tests {
         let app = router::build_router_with_config(test_state(), None, 0);
 
         let req = axum::http::Request::builder()
-            .uri("/.well-known/agent-card.json")
+            .uri("/.well-known/agent.json")
             .body(Body::empty())
             .unwrap();
 
