@@ -6,8 +6,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::provider::{ChatStream, LlmProvider, Message};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct MockProvider {
     responses: Arc<Mutex<VecDeque<String>>>,
@@ -23,6 +24,13 @@ pub struct MockProvider {
     errors: Arc<Mutex<VecDeque<crate::LlmError>>>,
     /// When set, every `chat()` call appends a clone of the messages slice here.
     recorded: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
+    /// Whether this mock reports native `tool_use` support.
+    pub tool_use: bool,
+    /// Pre-configured `ChatResponse` sequence returned from `chat_with_tools()`.
+    /// When exhausted, falls back to `ChatResponse::Text` via `chat()`.
+    tool_responses: Arc<Mutex<VecDeque<ChatResponse>>>,
+    /// Records how many times `chat_with_tools()` was called.
+    pub tool_call_count: Arc<Mutex<u32>>,
 }
 
 impl Default for MockProvider {
@@ -37,6 +45,9 @@ impl Default for MockProvider {
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
+            tool_use: false,
+            tool_responses: Arc::new(Mutex::new(VecDeque::new())),
+            tool_call_count: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -84,6 +95,19 @@ impl MockProvider {
         let buf = Arc::new(Mutex::new(Vec::new()));
         self.recorded = Some(Arc::clone(&buf));
         (self, buf)
+    }
+
+    /// Enable native `tool_use` support with a pre-configured sequence of `ChatResponse`
+    /// values returned from `chat_with_tools()`.
+    ///
+    /// Returns a shared counter that records how many times `chat_with_tools()` was called,
+    /// so tests can assert the LLM was called exactly once (cache hit) or twice (cache miss).
+    #[must_use]
+    pub fn with_tool_use(mut self, responses: Vec<ChatResponse>) -> (Self, Arc<Mutex<u32>>) {
+        self.tool_use = true;
+        self.tool_responses = Arc::new(Mutex::new(VecDeque::from(responses)));
+        let counter = Arc::clone(&self.tool_call_count);
+        (self, counter)
     }
 }
 
@@ -144,5 +168,23 @@ impl LlmProvider for MockProvider {
 
     fn supports_embeddings(&self) -> bool {
         self.supports_embeddings
+    }
+
+    fn supports_tool_use(&self) -> bool {
+        self.tool_use
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, crate::LlmError> {
+        *self.tool_call_count.lock().unwrap() += 1;
+        let queued = self.tool_responses.lock().unwrap().pop_front();
+        if let Some(response) = queued {
+            return Ok(response);
+        }
+        // Fallback: delegate to chat() and wrap in Text.
+        Ok(ChatResponse::Text(self.chat(messages).await?))
     }
 }

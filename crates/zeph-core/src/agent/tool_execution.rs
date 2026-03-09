@@ -1020,8 +1020,10 @@ impl<C: Channel> Agent<C> {
                 tracing::debug!("response cache hit");
                 // M4: scan cached responses before sending to channel.
                 let cleaned = self.scan_output_and_warn(&cached);
-                let display = self.maybe_redact(&cleaned);
-                self.channel.send(&display).await?;
+                if !cleaned.is_empty() {
+                    let display = self.maybe_redact(&cleaned);
+                    self.channel.send(&display).await?;
+                }
                 return Ok(Some(cleaned));
             }
         }
@@ -1056,6 +1058,18 @@ impl<C: Channel> Agent<C> {
             tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
             "native tool_use: collected tool definitions"
         );
+
+        if let Some(cached) = self.check_response_cache().await? {
+            self.persist_message(Role::Assistant, &cached, &[], false)
+                .await;
+            self.messages
+                .push(Message::from_legacy(Role::Assistant, cached.as_str()));
+            if cached.contains(MAX_TOKENS_TRUNCATION_MARKER) {
+                let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
+            }
+            self.channel.flush_chunks().await?;
+            return Ok(());
+        }
 
         for iteration in 0..self.tool_orchestrator.max_iterations {
             if *self.shutdown.borrow() {
@@ -1125,6 +1139,7 @@ impl<C: Channel> Agent<C> {
                     let display = self.maybe_redact(&cleaned);
                     self.channel.send(&display).await?;
                 }
+                self.store_response_in_cache(&cleaned).await;
                 self.persist_message(Role::Assistant, &cleaned, &[], false)
                     .await;
                 self.messages
@@ -3678,5 +3693,154 @@ mod tests {
         );
         let ev = snap.security_events.back().unwrap();
         assert_eq!(ev.category, SecurityEventCategory::ExfiltrationBlock);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Native tool_use response cache integration tests
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn native_tool_use_response_cache_hit_skips_llm_call() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        let user_content = "native cache test question";
+
+        let (mock, call_count) = MockProvider::with_responses(vec![])
+            .with_tool_use(vec![ChatResponse::Text("native provider response".into())]);
+        let provider = AnyProvider::Mock(mock);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+        agent.response_cache = Some(cache);
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: user_content.into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // First call: cache miss → provider is called, response stored in cache.
+        agent.process_response().await.unwrap();
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            1,
+            "provider must be called once on cache miss"
+        );
+
+        // Restore user message for second turn (process_response pushes assistant reply).
+        agent.messages.push(Message {
+            role: Role::User,
+            content: user_content.into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Second call with the same user message: cache hit → provider must NOT be called again.
+        agent.process_response().await.unwrap();
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            1,
+            "provider must not be called again on cache hit"
+        );
+
+        // The cached response must have been sent to the channel.
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s == "native provider response"),
+            "cached response must be sent on cache hit; got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_tool_use_cache_stores_only_text_responses() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role, ToolUseRequest};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        // Provider returns ToolUse on iteration 1, Text on iteration 2.
+        // The ToolUse iteration must NOT trigger store_response_in_cache.
+        let tool_call_id = "call_abc";
+        let tool_call = ToolUseRequest {
+            id: tool_call_id.into(),
+            name: "unknown_tool".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, call_count) = MockProvider::with_responses(vec![]).with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("final text answer".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+        agent.response_cache = Some(Arc::clone(&cache));
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "tool then text question".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Run: iteration 1 → ToolUse (no cache store), iteration 2 → Text (cache store).
+        agent.process_response().await.unwrap();
+
+        // Provider must have been called exactly twice (ToolUse + Text).
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            2,
+            "provider must be called twice: once for ToolUse, once for Text"
+        );
+
+        // The Text response must have been sent to the channel.
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|s| s == "final text answer"),
+            "Text response must be sent to channel; got: {sent:?}"
+        );
+
+        // Cache must contain the Text response keyed by the last user message visible
+        // at the time store_response_in_cache() was called.
+        // After handle_native_tool_calls(), the last User message is the tool-result wrapper.
+        let tool_result_content = format!("[tool_result: {tool_call_id}]\n(no output)");
+        let key = ResponseCache::compute_key(&tool_result_content, &agent.runtime.model_name);
+        let cached = cache.get(&key).await.unwrap();
+        assert_eq!(
+            cached.as_deref(),
+            Some("final text answer"),
+            "Text response must be stored in cache after tool loop completes"
+        );
+
+        // Verify the cache does NOT contain a ToolUse response under the original user key.
+        let original_key =
+            ResponseCache::compute_key("tool then text question", &agent.runtime.model_name);
+        let original_cached = cache.get(&original_key).await.unwrap();
+        assert_eq!(
+            original_cached, None,
+            "cache must not store a ToolUse response under the original user message key"
+        );
     }
 }
