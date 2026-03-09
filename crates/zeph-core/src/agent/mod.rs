@@ -4179,6 +4179,41 @@ pub(super) mod agent_tests {
         assert!(output.contains("Tokens:"), "expected Tokens: field");
     }
 
+    // Regression test for #1415: MetricsCollector must be wired in CLI mode (no TUI).
+    // Before the fix, metrics_tx was None in non-TUI mode so /status always showed zeros.
+    #[tokio::test]
+    async fn status_command_shows_metrics_in_cli_mode() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/status".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, _rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        // Simulate metrics that would be populated by a real LLM call.
+        agent.update_metrics(|m| {
+            m.api_calls = 3;
+            m.prompt_tokens = 100;
+            m.completion_tokens = 50;
+        });
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        let output = messages.join("\n");
+        assert!(
+            output.contains("API calls: 3"),
+            "expected non-zero api_calls in /status output; got: {output}"
+        );
+        assert!(
+            output.contains("100 prompt / 50 completion"),
+            "expected non-zero tokens in /status output; got: {output}"
+        );
+    }
+
     #[tokio::test]
     async fn exit_command_breaks_run_loop() {
         let provider = mock_provider(vec![]);
