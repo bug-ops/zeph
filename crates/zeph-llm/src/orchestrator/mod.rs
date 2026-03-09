@@ -200,22 +200,24 @@ impl ModelOrchestrator {
         let chain = self
             .routes
             .get(&task)
-            .or_else(|| self.routes.get(&TaskType::General))
-            .ok_or(LlmError::NoRoute)?;
+            .or_else(|| self.routes.get(&TaskType::General));
 
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
-        for name in chain {
-            let Some(provider) = self.providers.get(name) else {
-                continue;
-            };
-            tried.insert(name);
-            match provider.chat(messages).await {
-                Ok(response) => return Ok(response),
-                Err(e) => {
-                    self.emit_status(format!("Provider {name} failed, trying next..."));
-                    tracing::warn!("provider {name} failed: {e:#}, trying next");
-                    last_error = Some(e);
+
+        if let Some(chain) = chain {
+            for name in chain {
+                let Some(provider) = self.providers.get(name) else {
+                    continue;
+                };
+                tried.insert(name);
+                match provider.chat(messages).await {
+                    Ok(response) => return Ok(response),
+                    Err(e) => {
+                        self.emit_status(format!("Provider {name} failed, trying next..."));
+                        tracing::warn!("provider {name} failed: {e:#}, trying next");
+                        last_error = Some(e);
+                    }
                 }
             }
         }
@@ -237,6 +239,37 @@ impl ModelOrchestrator {
         Err(last_error.unwrap_or(LlmError::NoProviders))
     }
 
+    /// Route a chat request to a specific named provider.
+    ///
+    /// If `name` is not found in the providers map, falls back to default routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError`] if the underlying provider call fails.
+    pub(crate) async fn chat_for_named(
+        &self,
+        name: &str,
+        messages: &[Message],
+    ) -> Result<String, LlmError> {
+        if let Some(provider) = self.providers.get(name) {
+            match provider.chat(messages).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    tracing::warn!(
+                        name,
+                        "named provider failed: {e:#}, falling back to default routing"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                name,
+                "named provider not found, falling back to default routing"
+            );
+        }
+        self.chat_with_fallback(messages).await
+    }
+
     async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         if let Some(selected) = self.try_llm_routing(messages).await
             && let Some(provider) = self.providers.get(&selected)
@@ -255,22 +288,24 @@ impl ModelOrchestrator {
         let chain = self
             .routes
             .get(&task)
-            .or_else(|| self.routes.get(&TaskType::General))
-            .ok_or(LlmError::NoRoute)?;
+            .or_else(|| self.routes.get(&TaskType::General));
 
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
-        for name in chain {
-            let Some(provider) = self.providers.get(name) else {
-                continue;
-            };
-            tried.insert(name);
-            match provider.chat_stream(messages).await {
-                Ok(stream) => return Ok(stream),
-                Err(e) => {
-                    self.emit_status(format!("Provider {name} failed, trying next..."));
-                    tracing::warn!("provider {name} stream failed: {e:#}, trying next");
-                    last_error = Some(e);
+
+        if let Some(chain) = chain {
+            for name in chain {
+                let Some(provider) = self.providers.get(name) else {
+                    continue;
+                };
+                tried.insert(name);
+                match provider.chat_stream(messages).await {
+                    Ok(stream) => return Ok(stream),
+                    Err(e) => {
+                        self.emit_status(format!("Provider {name} failed, trying next..."));
+                        tracing::warn!("provider {name} stream failed: {e:#}, trying next");
+                        last_error = Some(e);
+                    }
                 }
             }
         }
@@ -710,6 +745,9 @@ mod tests {
 
     #[tokio::test]
     async fn chat_with_fallback_no_route_configured() {
+        // When no routes are configured, the orchestrator must fall back to default_provider
+        // instead of returning NoRoute. The default provider is unreachable here, so we get
+        // a connection error — but NOT a "no route configured" error.
         let mut providers = HashMap::new();
         providers.insert(
             "ollama".into(),
@@ -726,15 +764,18 @@ mod tests {
         let result = orch.chat(&user_msg("hello")).await;
         assert!(result.is_err());
         assert!(
-            result
+            !result
                 .unwrap_err()
                 .to_string()
-                .contains("no route configured")
+                .contains("no route configured"),
+            "expected connection error, not NoRoute"
         );
     }
 
     #[tokio::test]
     async fn stream_with_fallback_no_route_configured() {
+        // When no routes are configured, stream must fall back to default_provider
+        // instead of returning NoRoute. The default provider is unreachable here.
         let mut providers = HashMap::new();
         providers.insert(
             "ollama".into(),
@@ -750,7 +791,10 @@ mod tests {
 
         let result = orch.chat_stream(&user_msg("hello")).await;
         match result {
-            Err(e) => assert!(e.to_string().contains("no route configured")),
+            Err(e) => assert!(
+                !e.to_string().contains("no route configured"),
+                "expected connection error, not NoRoute"
+            ),
             Ok(_) => panic!("expected error"),
         }
     }
@@ -873,7 +917,8 @@ mod tests {
     async fn llm_routing_empty_messages_returns_none_early() {
         // try_llm_routing returns None early when messages is empty (REV-4 fix).
         // With no routes configured and llm_routing=true, empty messages means
-        // try_llm_routing returns None, then rule-based routing runs and returns NoRoute.
+        // try_llm_routing returns None, then rule-based routing skips (no chain),
+        // and default_provider fallback runs (unreachable → connection error).
         let mut providers = HashMap::new();
         providers.insert(
             "ollama".into(),
@@ -891,19 +936,21 @@ mod tests {
         // Empty messages slice: try_llm_routing does messages.last().cloned()? → returns None
         let result = orch.chat(&[]).await;
         assert!(result.is_err());
-        // Should be NoRoute error (not a connection error from LLM routing attempt)
+        // Should be a connection error (default_provider fallback), not NoRoute
         assert!(
-            result
+            !result
                 .unwrap_err()
                 .to_string()
-                .contains("no route configured")
+                .contains("no route configured"),
+            "expected connection error from default_provider fallback, not NoRoute"
         );
     }
 
     #[tokio::test]
     async fn llm_routing_disabled_skips_llm_routing() {
         // With llm_routing=false, try_llm_routing returns None immediately.
-        // Falls through to rule-based routing which has no route → NoRoute error.
+        // Falls through to rule-based routing (no chain), then default_provider fallback
+        // runs (unreachable → connection error), NOT NoRoute.
         let mut providers = HashMap::new();
         providers.insert(
             "ollama".into(),
@@ -921,10 +968,11 @@ mod tests {
         let result = orch.chat(&user_msg("hello")).await;
         assert!(result.is_err());
         assert!(
-            result
+            !result
                 .unwrap_err()
                 .to_string()
-                .contains("no route configured")
+                .contains("no route configured"),
+            "expected connection error from default_provider fallback, not NoRoute"
         );
     }
 
@@ -956,12 +1004,14 @@ mod tests {
     #[tokio::test]
     async fn llm_routing_valid_json_known_model_selects_provider() {
         // LLM routing enabled; default provider (mock_server) returns valid ModelSelection JSON
-        // with a known model name "target". The orchestrator should route to "target".
-        // "target" is also unreachable, so the final result is an error,
-        // but we verify the routing happened by checking that the error came from "target".
+        // with a known model name "target". The orchestrator should try "target" first.
+        // "target" is unreachable, so it fails, then falls back to default_provider "router"
+        // (mock server) which succeeds.
 
         // Ollama API response format for a single non-streaming message
-        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"{\"model\":\"target\",\"reason\":\"best fit\"}"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        // First call: LLM routing request → selects "target"
+        // Second call: "target" fails, default_provider "router" handles actual chat
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"fallback response"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
 
         let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
 
@@ -982,24 +1032,28 @@ mod tests {
                 "test".into(),
             )),
         );
-        // No routes configured — so rule-based always hits NoRoute
+        // No routes configured — after "target" fails, default_provider "router" takes over
         let orch =
             ModelOrchestrator::new(HashMap::new(), providers, "router".into(), "router".into())
                 .unwrap()
                 .with_llm_routing(true);
 
         let result = orch.chat(&user_msg("hello")).await;
-        // LLM routing selects "target" which is unreachable, then no rule-based route → error
-        assert!(result.is_err());
+        // "target" is unreachable, LLM routing falls back to default_provider "router" → success
+        assert!(
+            result.is_ok(),
+            "expected success via default_provider fallback, got: {result:?}"
+        );
     }
 
     #[tokio::test]
     async fn llm_routing_valid_json_unknown_model_falls_back_to_rule_based() {
         // LLM routing enabled; default provider returns valid ModelSelection JSON
         // but the model name "unknown-provider" is not in providers.
-        // try_llm_routing returns None, rule-based routing runs and fails with NoRoute.
+        // try_llm_routing returns None, no rule-based routes, default_provider "router"
+        // handles the chat and succeeds.
 
-        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"{\"model\":\"unknown-provider\",\"reason\":\"best fit\"}"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"default response"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
 
         let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
 
@@ -1019,13 +1073,11 @@ mod tests {
                 .with_llm_routing(true);
 
         let result = orch.chat(&user_msg("hello")).await;
-        assert!(result.is_err());
-        // Should fail with NoRoute (rule-based fallback) not a connection error
+        // try_llm_routing returns None (unknown provider), no rule-based routes,
+        // default_provider "router" handles the chat → success
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no route configured")
+            result.is_ok(),
+            "expected success from default_provider fallback, got: {result:?}"
         );
     }
 
@@ -1046,5 +1098,188 @@ mod tests {
         assert!(!orch.llm_routing);
         let orch = orch.with_llm_routing(true);
         assert!(orch.llm_routing);
+    }
+
+    #[tokio::test]
+    async fn chat_with_fallback_uses_default_when_no_routes() {
+        // Regression test for issue #1396: when routes map is empty, orchestrator must
+        // use default_provider instead of returning NoRoute.
+        // The mock server responds successfully, so the call must succeed.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"hello from default"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        // No routes configured
+        let orch = ModelOrchestrator::new(
+            HashMap::new(),
+            providers,
+            "default".into(),
+            "default".into(),
+        )
+        .unwrap();
+
+        let result = orch.chat(&user_msg("hello")).await;
+        assert!(
+            result.is_ok(),
+            "expected success from default_provider fallback, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "hello from default");
+    }
+
+    #[tokio::test]
+    async fn chat_with_fallback_uses_default_when_no_general_route() {
+        // Regression test for issue #1396: when only a specific route exists (e.g. Coding)
+        // and the message is classified as General, orchestrator must fall back to
+        // default_provider rather than returning NoRoute.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"hello from default"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "coding".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        // Only Coding route configured; no General route
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::Coding, vec!["coding".into()]);
+
+        let orch =
+            ModelOrchestrator::new(routes, providers, "default".into(), "default".into()).unwrap();
+
+        // "hello world" is General task — no route, must fall back to default_provider
+        let result = orch.chat(&user_msg("hello world")).await;
+        assert!(
+            result.is_ok(),
+            "expected success from default_provider fallback, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "hello from default");
+    }
+
+    #[tokio::test]
+    async fn chat_for_named_routes_to_known_provider() {
+        // chat_for_named must route to the named provider when it exists.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"named response"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "target".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+
+        let orch = ModelOrchestrator::new(
+            HashMap::new(),
+            providers,
+            "default".into(),
+            "default".into(),
+        )
+        .unwrap();
+
+        let result = orch.chat_for_named("target", &user_msg("hello")).await;
+        assert!(
+            result.is_ok(),
+            "expected success from named provider, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "named response");
+    }
+
+    #[tokio::test]
+    async fn chat_for_named_falls_back_when_unknown() {
+        // chat_for_named must fall back to default routing when the named provider is unknown.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"default response"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::General, vec!["default".into()]);
+
+        let orch =
+            ModelOrchestrator::new(routes, providers, "default".into(), "default".into()).unwrap();
+
+        let result = orch.chat_for_named("nonexistent", &user_msg("hello")).await;
+        assert!(
+            result.is_ok(),
+            "expected success via default routing fallback, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "default response");
+    }
+
+    #[tokio::test]
+    async fn chat_for_named_falls_back_when_provider_fails() {
+        // When named provider exists but its chat() call fails, chat_for_named must
+        // fall through to chat_with_fallback instead of propagating the error directly.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"fallback response"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "broken".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::General, vec!["default".into()]);
+
+        let orch =
+            ModelOrchestrator::new(routes, providers, "default".into(), "default".into()).unwrap();
+
+        // "broken" exists but is unreachable → must fall back to default routing → success
+        let result = orch.chat_for_named("broken", &user_msg("hello")).await;
+        assert!(
+            result.is_ok(),
+            "expected success via fallback after named provider failure, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "fallback response");
     }
 }

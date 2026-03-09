@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Sub-agent LLM call no longer fails with `no route configured` when `model` is omitted in the agent definition. `ModelOrchestrator::chat_with_fallback` and `stream_with_fallback` now fall through to `default_provider` when no matching route chain exists, instead of returning `LlmError::NoRoute` early. Sub-agents with an explicit `model` field now route to the named provider via the new `chat_for_named` method, with fallback to default routing if the named provider fails (#1396)
 - `/image` command crash when file does not exist: CLI channel now prints a user-facing error and continues instead of propagating `ChannelError::Io` and exiting (#1391)
 - `/image` command silently ignoring valid files: image is now held in `pending_attachments` and attached to the next outgoing message, so the follow-up prompt sees the image (#1391)
 - `agent/mod.rs` `/image` handler stored loaded image parts in a local Vec that was immediately dropped; parts are now held in `Agent::pending_image_parts` and merged into the next `process_user_message` call (#1391)

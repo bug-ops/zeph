@@ -55,6 +55,11 @@ struct AgentLoopArgs {
     initial_messages: Vec<Message>,
     /// Optional transcript writer for appending messages during the loop.
     transcript_writer: Option<TranscriptWriter>,
+    /// Named provider to route LLM calls through (from `SubAgentDef.model`).
+    ///
+    /// When `Some`, LLM calls are routed to this specific provider name via
+    /// `AnyProvider::chat_with_named_provider`. When `None`, default routing is used.
+    model: Option<String>,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -189,6 +194,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         agent_name,
         initial_messages,
         mut transcript_writer,
+        model,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -237,7 +243,12 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             break;
         }
 
-        let response = match provider.chat(&messages).await {
+        let llm_result = if let Some(ref m) = model {
+            provider.chat_with_named_provider(m, &messages).await
+        } else {
+            provider.chat(&messages).await
+        };
+        let response = match llm_result {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(error = %e, "sub-agent LLM call failed");
@@ -849,6 +860,7 @@ impl SubAgentManager {
                 agent_name: agent_name_clone,
                 initial_messages: vec![],
                 transcript_writer,
+                model: def.model.clone(),
             }));
 
         let handle_transcript_dir = if config.transcript_enabled {
@@ -1285,6 +1297,7 @@ impl SubAgentManager {
                 agent_name: agent_name_clone,
                 initial_messages,
                 transcript_writer,
+                model: def.model.clone(),
             }));
 
         let resume_handle_transcript_dir = if config.transcript_enabled {
