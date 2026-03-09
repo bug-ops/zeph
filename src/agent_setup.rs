@@ -36,10 +36,13 @@ pub(crate) async fn build_tool_setup(
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
         .with_permissions(permission_policy)
         .with_output_filters(filter_registry);
+    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
     {
-        shell_executor = shell_executor.with_audit(logger);
+        let logger = std::sync::Arc::new(logger);
+        shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
+        scrape_executor = scrape_executor.with_audit(logger);
     }
 
     let tool_event_rx = if with_tool_events {
@@ -49,8 +52,6 @@ pub(crate) async fn build_tool_setup(
     } else {
         None
     };
-
-    let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools

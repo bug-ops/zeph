@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use url::Url;
 
+use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ScrapeConfig;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 
@@ -62,6 +64,7 @@ impl ExtractMode {
 pub struct WebScrapeExecutor {
     timeout: Duration,
     max_body_bytes: usize,
+    audit_logger: Option<Arc<AuditLogger>>,
 }
 
 impl WebScrapeExecutor {
@@ -70,7 +73,14 @@ impl WebScrapeExecutor {
         Self {
             timeout: Duration::from_secs(config.timeout),
             max_body_bytes: config.max_body_bytes,
+            audit_logger: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_audit(mut self, logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = Some(logger);
+        self
     }
 
     fn build_client(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
@@ -118,7 +128,28 @@ impl ToolExecutor for WebScrapeExecutor {
                     e.to_string(),
                 ))
             })?;
-            outputs.push(self.scrape_instruction(&instruction).await?);
+            let start = Instant::now();
+            let scrape_result = self.scrape_instruction(&instruction).await;
+            #[allow(clippy::cast_possible_truncation)]
+            let duration_ms = start.elapsed().as_millis() as u64;
+            match scrape_result {
+                Ok(output) => {
+                    self.log_audit(
+                        "web_scrape",
+                        &instruction.url,
+                        AuditResult::Success,
+                        duration_ms,
+                    )
+                    .await;
+                    outputs.push(output);
+                }
+                Err(e) => {
+                    let audit_result = tool_error_to_audit_result(&e);
+                    self.log_audit("web_scrape", &instruction.url, audit_result, duration_ms)
+                        .await;
+                    return Err(e);
+                }
+            }
         }
 
         Ok(Some(ToolOutput {
@@ -138,40 +169,100 @@ impl ToolExecutor for WebScrapeExecutor {
         match call.tool_id.as_str() {
             "web_scrape" => {
                 let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
-                let result = self.scrape_instruction(&instruction).await?;
-                Ok(Some(ToolOutput {
-                    tool_name: "web-scrape".to_owned(),
-                    summary: result,
-                    blocks_executed: 1,
-                    filter_stats: None,
-                    diff: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                }))
+                let start = Instant::now();
+                let result = self.scrape_instruction(&instruction).await;
+                #[allow(clippy::cast_possible_truncation)]
+                let duration_ms = start.elapsed().as_millis() as u64;
+                match result {
+                    Ok(output) => {
+                        self.log_audit(
+                            "web_scrape",
+                            &instruction.url,
+                            AuditResult::Success,
+                            duration_ms,
+                        )
+                        .await;
+                        Ok(Some(ToolOutput {
+                            tool_name: "web-scrape".to_owned(),
+                            summary: output,
+                            blocks_executed: 1,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        }))
+                    }
+                    Err(e) => {
+                        let audit_result = tool_error_to_audit_result(&e);
+                        self.log_audit("web_scrape", &instruction.url, audit_result, duration_ms)
+                            .await;
+                        Err(e)
+                    }
+                }
             }
             "fetch" => {
                 let p: FetchParams = deserialize_params(&call.params)?;
-                let result = self.handle_fetch(&p).await?;
-                Ok(Some(ToolOutput {
-                    tool_name: "fetch".to_owned(),
-                    summary: result,
-                    blocks_executed: 1,
-                    filter_stats: None,
-                    diff: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                }))
+                let start = Instant::now();
+                let result = self.handle_fetch(&p).await;
+                #[allow(clippy::cast_possible_truncation)]
+                let duration_ms = start.elapsed().as_millis() as u64;
+                match result {
+                    Ok(output) => {
+                        self.log_audit("fetch", &p.url, AuditResult::Success, duration_ms)
+                            .await;
+                        Ok(Some(ToolOutput {
+                            tool_name: "fetch".to_owned(),
+                            summary: output,
+                            blocks_executed: 1,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        }))
+                    }
+                    Err(e) => {
+                        let audit_result = tool_error_to_audit_result(&e);
+                        self.log_audit("fetch", &p.url, audit_result, duration_ms)
+                            .await;
+                        Err(e)
+                    }
+                }
             }
             _ => Ok(None),
         }
     }
 }
 
+fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
+    match e {
+        ToolError::Blocked { command } => AuditResult::Blocked {
+            reason: command.clone(),
+        },
+        ToolError::Timeout { .. } => AuditResult::Timeout,
+        _ => AuditResult::Error {
+            message: e.to_string(),
+        },
+    }
+}
+
 impl WebScrapeExecutor {
+    async fn log_audit(&self, tool: &str, command: &str, result: AuditResult, duration_ms: u64) {
+        if let Some(ref logger) = self.audit_logger {
+            let entry = AuditEntry {
+                timestamp: chrono_now(),
+                tool: tool.into(),
+                command: command.into(),
+                result,
+                duration_ms,
+            };
+            logger.log(&entry).await;
+        }
+    }
+
     async fn handle_fetch(&self, params: &FetchParams) -> Result<String, ToolError> {
         let parsed = validate_url(&params.url)?;
         let (host, addrs) = resolve_and_validate(&parsed).await?;
@@ -894,6 +985,7 @@ mod tests {
         let executor = WebScrapeExecutor {
             timeout: Duration::from_secs(5),
             max_body_bytes: 1_048_576,
+            audit_logger: None,
         };
         (executor, server)
     }
@@ -1180,6 +1272,7 @@ mod tests {
         let small_limit_executor = WebScrapeExecutor {
             timeout: Duration::from_secs(5),
             max_body_bytes: 10,
+            audit_logger: None,
         };
         let server = wiremock::MockServer::start().await;
         Mock::given(method("GET"))
@@ -1650,6 +1743,219 @@ mod tests {
         assert!(addrs.is_empty());
         drop(url);
         drop(url_no_host);
+    }
+
+    // --- audit logging ---
+
+    /// Helper: build an AuditLogger writing to a temp file, and return the logger + path.
+    async fn make_file_audit_logger(
+        dir: &tempfile::TempDir,
+    ) -> (
+        std::sync::Arc<crate::audit::AuditLogger>,
+        std::path::PathBuf,
+    ) {
+        use crate::audit::AuditLogger;
+        use crate::config::AuditConfig;
+        let path = dir.path().join("audit.log");
+        let config = AuditConfig {
+            enabled: true,
+            destination: path.display().to_string(),
+        };
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&config).await.unwrap());
+        (logger, path)
+    }
+
+    #[tokio::test]
+    async fn with_audit_sets_logger() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        assert!(executor.audit_logger.is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let (logger, _path) = make_file_audit_logger(&dir).await;
+        let executor = executor.with_audit(logger);
+        assert!(executor.audit_logger.is_some());
+    }
+
+    #[test]
+    fn tool_error_to_audit_result_blocked_maps_correctly() {
+        let err = ToolError::Blocked {
+            command: "scheme not allowed: http".into(),
+        };
+        let result = tool_error_to_audit_result(&err);
+        assert!(
+            matches!(result, AuditResult::Blocked { reason } if reason == "scheme not allowed: http")
+        );
+    }
+
+    #[test]
+    fn tool_error_to_audit_result_timeout_maps_correctly() {
+        let err = ToolError::Timeout { timeout_secs: 15 };
+        let result = tool_error_to_audit_result(&err);
+        assert!(matches!(result, AuditResult::Timeout));
+    }
+
+    #[test]
+    fn tool_error_to_audit_result_execution_error_maps_correctly() {
+        let err = ToolError::Execution(std::io::Error::other("connection refused"));
+        let result = tool_error_to_audit_result(&err);
+        assert!(
+            matches!(result, AuditResult::Error { message } if message.contains("connection refused"))
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_audit_blocked_url_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (logger, log_path) = make_file_audit_logger(&dir).await;
+
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config).with_audit(logger);
+
+        let call = crate::executor::ToolCall {
+            tool_id: "fetch".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert("url".to_owned(), serde_json::json!("http://example.com"));
+                m
+            },
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"tool\":\"fetch\""),
+            "expected tool=fetch in audit: {content}"
+        );
+        assert!(
+            content.contains("\"type\":\"blocked\""),
+            "expected type=blocked in audit: {content}"
+        );
+        assert!(
+            content.contains("http://example.com"),
+            "expected URL in audit command field: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_audit_success_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (logger, log_path) = make_file_audit_logger(&dir).await;
+
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config).with_audit(logger);
+
+        executor
+            .log_audit(
+                "fetch",
+                "https://example.com/page",
+                AuditResult::Success,
+                42,
+            )
+            .await;
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"tool\":\"fetch\""),
+            "expected tool=fetch in audit: {content}"
+        );
+        assert!(
+            content.contains("\"type\":\"success\""),
+            "expected type=success in audit: {content}"
+        );
+        assert!(
+            content.contains("\"command\":\"https://example.com/page\""),
+            "expected command URL in audit: {content}"
+        );
+        assert!(
+            content.contains("\"duration_ms\":42"),
+            "expected duration_ms in audit: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_audit_blocked_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (logger, log_path) = make_file_audit_logger(&dir).await;
+
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config).with_audit(logger);
+
+        executor
+            .log_audit(
+                "web_scrape",
+                "http://evil.com/page",
+                AuditResult::Blocked {
+                    reason: "scheme not allowed: http".into(),
+                },
+                0,
+            )
+            .await;
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"tool\":\"web_scrape\""),
+            "expected tool=web_scrape in audit: {content}"
+        );
+        assert!(
+            content.contains("\"type\":\"blocked\""),
+            "expected type=blocked in audit: {content}"
+        );
+        assert!(
+            content.contains("scheme not allowed"),
+            "expected block reason in audit: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_scrape_audit_blocked_url_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (logger, log_path) = make_file_audit_logger(&dir).await;
+
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config).with_audit(logger);
+
+        let call = crate::executor::ToolCall {
+            tool_id: "web_scrape".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert("url".to_owned(), serde_json::json!("http://example.com"));
+                m.insert("select".to_owned(), serde_json::json!("h1"));
+                m
+            },
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"tool\":\"web_scrape\""),
+            "expected tool=web_scrape in audit: {content}"
+        );
+        assert!(
+            content.contains("\"type\":\"blocked\""),
+            "expected type=blocked in audit: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_audit_logger_does_not_panic_on_blocked_fetch() {
+        let config = ScrapeConfig::default();
+        let executor = WebScrapeExecutor::new(&config);
+        assert!(executor.audit_logger.is_none());
+
+        let call = crate::executor::ToolCall {
+            tool_id: "fetch".to_owned(),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert("url".to_owned(), serde_json::json!("http://example.com"));
+                m
+            },
+        };
+        // Must not panic even without an audit logger
+        let result = executor.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
     // CR-10: fetch end-to-end via execute_tool_call -> handle_fetch -> fetch_html
