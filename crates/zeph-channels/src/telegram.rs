@@ -292,6 +292,10 @@ async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<
 }
 
 impl Channel for TelegramChannel {
+    fn supports_exit(&self) -> bool {
+        false
+    }
+
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         self.rx.try_recv().ok().map(|incoming| {
             self.chat_id = Some(incoming.chat_id);

@@ -60,6 +60,14 @@ pub trait Channel: Send {
         None
     }
 
+    /// Whether `/exit` and `/quit` commands should terminate the agent loop.
+    ///
+    /// Returns `false` for persistent server-side channels (e.g. Telegram) where
+    /// breaking the loop would not meaningfully exit from the user's perspective.
+    fn supports_exit(&self) -> bool {
+        true
+    }
+
     /// Send a text response.
     ///
     /// # Errors
@@ -340,6 +348,10 @@ impl LoopbackChannel {
 }
 
 impl Channel for LoopbackChannel {
+    fn supports_exit(&self) -> bool {
+        false
+    }
+
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.input_rx.recv().await)
     }

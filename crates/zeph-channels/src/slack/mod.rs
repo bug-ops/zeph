@@ -122,6 +122,10 @@ impl SlackChannel {
 }
 
 impl Channel for SlackChannel {
+    fn supports_exit(&self) -> bool {
+        false
+    }
+
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         let incoming = self.rx.try_recv().ok()?;
         self.channel_id = Some(incoming.channel_id);

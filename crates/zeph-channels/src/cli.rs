@@ -120,7 +120,11 @@ impl Channel for CliChannel {
                 ReadLineResult::Interrupted | ReadLineResult::Eof => return Ok(None),
                 ReadLineResult::Line(l) => {
                     let trimmed = l.trim();
-                    if trimmed == "exit" || trimmed == "quit" {
+                    if trimmed == "exit"
+                        || trimmed == "quit"
+                        || trimmed == "/exit"
+                        || trimmed == "/quit"
+                    {
                         return Ok(None);
                     }
                     // In pipe mode, skip empty lines (formatting) and read the next one.

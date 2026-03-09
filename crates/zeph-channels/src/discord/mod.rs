@@ -136,6 +136,10 @@ impl DiscordChannel {
 }
 
 impl Channel for DiscordChannel {
+    fn supports_exit(&self) -> bool {
+        false
+    }
+
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         loop {
             let incoming = self.rx.try_recv().ok()?;

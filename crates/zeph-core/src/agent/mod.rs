@@ -20,6 +20,7 @@ mod mcp;
 mod message_queue;
 mod persistence;
 mod skill_management;
+pub mod slash_commands;
 mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
@@ -1009,6 +1010,17 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
+            if trimmed == "/exit" || trimmed == "/quit" {
+                if self.channel.supports_exit() {
+                    break;
+                }
+                let _ = self
+                    .channel
+                    .send("/exit is not supported in this channel.")
+                    .await;
+                continue;
+            }
+
             self.process_user_message(text, image_parts).await?;
         }
 
@@ -1270,6 +1282,16 @@ impl<C: Channel> Agent<C> {
             token.cancel();
         });
         let trimmed = text.trim();
+
+        if trimmed == "/help" {
+            self.handle_help_command().await?;
+            return Ok(());
+        }
+
+        if trimmed == "/status" {
+            self.handle_status_command().await?;
+            return Ok(());
+        }
 
         if trimmed == "/skills" {
             self.handle_skills_command().await?;
@@ -1650,6 +1672,101 @@ impl<C: Channel> Agent<C> {
         self.channel
             .send(&format!("Image loaded: {path}. Send your message."))
             .await?;
+        Ok(())
+    }
+
+    async fn handle_help_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+
+        let mut out = String::from("Slash commands:\n\n");
+
+        let categories = [
+            slash_commands::SlashCategory::Info,
+            slash_commands::SlashCategory::Session,
+            slash_commands::SlashCategory::Model,
+            slash_commands::SlashCategory::Memory,
+            slash_commands::SlashCategory::Tools,
+            slash_commands::SlashCategory::Planning,
+            slash_commands::SlashCategory::Debug,
+            slash_commands::SlashCategory::Advanced,
+        ];
+
+        for cat in &categories {
+            let entries: Vec<_> = slash_commands::COMMANDS
+                .iter()
+                .filter(|c| &c.category == cat)
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            let _ = writeln!(out, "{}:", cat.as_str());
+            for cmd in entries {
+                if cmd.args.is_empty() {
+                    let _ = write!(out, "  {}", cmd.name);
+                } else {
+                    let _ = write!(out, "  {} {}", cmd.name, cmd.args);
+                }
+                let _ = write!(out, "  — {}", cmd.description);
+                if let Some(feat) = cmd.feature_gate {
+                    let _ = write!(out, " [requires: {feat}]");
+                }
+                let _ = writeln!(out);
+            }
+            let _ = writeln!(out);
+        }
+
+        self.channel.send(out.trim_end()).await?;
+        Ok(())
+    }
+
+    async fn handle_status_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+
+        let uptime = self.start_time.elapsed().as_secs();
+        let msg_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .count();
+
+        let (api_calls, prompt_tokens, completion_tokens, cost_cents, mcp_servers) =
+            if let Some(ref tx) = self.metrics_tx {
+                let m = tx.borrow();
+                (
+                    m.api_calls,
+                    m.prompt_tokens,
+                    m.completion_tokens,
+                    m.cost_spent_cents,
+                    m.mcp_server_count,
+                )
+            } else {
+                (0, 0, 0, 0.0, 0)
+            };
+
+        let skill_count = self
+            .skill_state
+            .registry
+            .read()
+            .map(|r| r.all_meta().len())
+            .unwrap_or(0);
+
+        let mut out = String::from("Session status:\n\n");
+        let _ = writeln!(out, "Provider:  {}", self.provider.name());
+        let _ = writeln!(out, "Model:     {}", self.runtime.model_name);
+        let _ = writeln!(out, "Uptime:    {uptime}s");
+        let _ = writeln!(out, "Turns:     {msg_count}");
+        let _ = writeln!(out, "API calls: {api_calls}");
+        let _ = writeln!(
+            out,
+            "Tokens:    {prompt_tokens} prompt / {completion_tokens} completion"
+        );
+        let _ = writeln!(out, "Skills:    {skill_count}");
+        let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
+        if cost_cents > 0.0 {
+            let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+        }
+
+        self.channel.send(out.trim_end()).await?;
         Ok(())
     }
 
@@ -2358,6 +2475,7 @@ pub(super) mod agent_tests {
         chunks: Arc<Mutex<Vec<String>>>,
         confirmations: Arc<Mutex<Vec<bool>>>,
         pub(crate) statuses: Arc<Mutex<Vec<String>>>,
+        exit_supported: bool,
     }
 
     impl MockChannel {
@@ -2368,7 +2486,13 @@ pub(super) mod agent_tests {
                 chunks: Arc::new(Mutex::new(Vec::new())),
                 confirmations: Arc::new(Mutex::new(Vec::new())),
                 statuses: Arc::new(Mutex::new(Vec::new())),
+                exit_supported: true,
             }
+        }
+
+        pub(crate) fn without_exit_support(mut self) -> Self {
+            self.exit_supported = false;
+            self
         }
 
         pub(crate) fn with_confirmations(mut self, confirmations: Vec<bool>) -> Self {
@@ -2436,6 +2560,10 @@ pub(super) mod agent_tests {
             } else {
                 confs.remove(0)
             })
+        }
+
+        fn supports_exit(&self) -> bool {
+            self.exit_supported
         }
     }
 
@@ -3928,6 +4056,147 @@ pub(super) mod agent_tests {
             messages.iter().any(|m| m.contains("Fetched")),
             "expected fetch confirmation, got: {messages:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn help_command_lists_commands() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/help".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        assert!(!messages.is_empty(), "expected /help output");
+        let output = messages.join("\n");
+        assert!(output.contains("/help"), "expected /help in output");
+        assert!(output.contains("/exit"), "expected /exit in output");
+        assert!(output.contains("/status"), "expected /status in output");
+        assert!(output.contains("/skills"), "expected /skills in output");
+        assert!(output.contains("/model"), "expected /model in output");
+    }
+
+    #[tokio::test]
+    async fn help_command_does_not_include_unknown_commands() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/help".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        let output = messages.join("\n");
+        // /ingest does not exist in the codebase — must not appear
+        assert!(
+            !output.contains("/ingest"),
+            "unexpected /ingest in /help output"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_command_includes_provider_and_model() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/status".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        assert!(!messages.is_empty(), "expected /status output");
+        let output = messages.join("\n");
+        assert!(output.contains("Provider:"), "expected Provider: field");
+        assert!(output.contains("Model:"), "expected Model: field");
+        assert!(output.contains("Uptime:"), "expected Uptime: field");
+        assert!(output.contains("Tokens:"), "expected Tokens: field");
+    }
+
+    #[tokio::test]
+    async fn exit_command_breaks_run_loop() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/exit".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        // /exit should not produce any LLM message — only system message in history
+        assert_eq!(agent.messages.len(), 1, "expected only system message");
+    }
+
+    #[tokio::test]
+    async fn quit_command_breaks_run_loop() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/quit".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+        assert_eq!(agent.messages.len(), 1, "expected only system message");
+    }
+
+    #[tokio::test]
+    async fn exit_command_sends_info_and_continues_when_not_supported() {
+        let provider = mock_provider(vec![]);
+        // Channel that does not support exit: /exit should NOT break the loop,
+        // it should send an info message and then yield the next message.
+        let channel = MockChannel::new(vec![
+            "/exit".to_string(),
+            // second message is empty → causes recv() to return None → loop exits naturally
+        ])
+        .without_exit_support();
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("/exit is not supported")),
+            "expected info message, got: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn slash_commands_registry_has_no_ingest() {
+        use super::slash_commands::COMMANDS;
+        assert!(
+            !COMMANDS.iter().any(|c| c.name == "/ingest"),
+            "/ingest is not implemented and must not appear in COMMANDS"
+        );
+    }
+
+    #[test]
+    fn slash_commands_graph_and_plan_have_no_feature_gate() {
+        use super::slash_commands::COMMANDS;
+        for cmd in COMMANDS {
+            if cmd.name == "/graph" || cmd.name == "/plan" {
+                assert!(
+                    cmd.feature_gate.is_none(),
+                    "{} should have feature_gate: None",
+                    cmd.name
+                );
+            }
+        }
     }
 }
 

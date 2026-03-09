@@ -70,6 +70,17 @@ impl Channel for AnyChannel {
         }
     }
 
+    fn supports_exit(&self) -> bool {
+        match self {
+            Self::Cli(c) => c.supports_exit(),
+            Self::Telegram(c) => c.supports_exit(),
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.supports_exit(),
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.supports_exit(),
+        }
+    }
+
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_status, text)
     }

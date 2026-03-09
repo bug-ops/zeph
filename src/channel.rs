@@ -59,6 +59,13 @@ impl Channel for AppChannel {
             Self::Tui(c) => c.try_recv(),
         }
     }
+
+    fn supports_exit(&self) -> bool {
+        match self {
+            Self::Standard(c) => c.supports_exit(),
+            Self::Tui(c) => c.supports_exit(),
+        }
+    }
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_status, text)
     }
