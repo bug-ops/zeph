@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Shell timeouts in `ShellExecutor` now return `Err(ToolError::Timeout { timeout_secs })` instead of `Ok(ToolOutput)` with an error string. Fixes dead `ToolError::Timeout` code path and enables `max_tool_retries` retry-with-backoff for timed-out shell commands (#1420)
 - `/model <id>` now validates the provided model name against the cached model list before switching. If the model is not found in a non-empty list, an error is returned with the list of available models. If the model list is unavailable (cold start or provider does not support listing), a warning is shown and the switch proceeds (#1417)
 - `/status` command now shows real API call count, token usage, and cost in CLI mode (non-TUI). `MetricsCollector` watch channel is always initialized in `runner.rs`; in CLI mode the receiver is dropped immediately, in TUI mode it flows to the TUI widget as before (#1415)
 - Register SIGTERM handler (`tokio::signal::unix::SignalKind::terminate()`) alongside the existing Ctrl-C handler in the daemon signal task. Both signals now trigger graceful shutdown, ensuring `remove_pid_file()` is always reached on `kill <pid>` (#1414)
