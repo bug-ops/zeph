@@ -9,9 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - MCP HTTP transport: statically configured servers (from `[[mcp.servers]]`) now bypass SSRF validation, allowing connections to `localhost` and other private IPs. Dynamically added servers (`/mcp add`, ACP) retain full SSRF protection (#1441)
+- Wire `graph_config` into agent bootstrap: `runner.rs` and `daemon.rs` now call `with_graph_config(config.memory.graph.clone())` at construction time, matching the existing `with_document_config()` pattern. Previously `graph_config.enabled` was always `false` at startup (despite `[memory.graph] enabled = true` in config), causing `maybe_spawn_graph_extraction()` to return immediately and leaving graph extraction, entity resolution, and BFS recall as dead code in production (#1437)
 - Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
 - `/plan list` now shows the pending plan summary and status label instead of always returning "No recent plans" (#1434)
 - `/plan retry` now resets stale `Running` tasks to `Ready` and clears `assigned_agent` before re-execution to prevent scheduler deadlock (#1434)
+- Cross-session history restore no longer produces orphaned `tool_use` blocks that cause Claude API 400 errors (#1383): fix empty-content skip dropping tool-only user messages (RC3), add reverse orphan detection for unmatched `tool_result` parts (RC2), downgrade orphaned `ToolResult` blocks in `split_messages_structured` (RC1), filter system messages from visible index to prevent wrong-neighbor lookups (RC4), persist tombstone `ToolResult` on native tool call cancellation to pair already-persisted `ToolUse` (RC5)
 - Store token usage in `chat_typed` so `eval_budget_tokens` is enforced with Claude provider (#1426)
 - `/experiment status` now shows the last completed session (session ID, experiment count, accepted count, best delta) when an experiment is not running. Previously it always showed "idle" with no history, making scheduled experiment results invisible (#1425)
 - `FilteredToolExecutor::execute_erased()` and `execute_confirmed_erased()` previously returned `Err(ToolError::Blocked)` for every LLM response unconditionally, causing sub-agent loops to exhaust all `max_turns` without producing output (#1432)
