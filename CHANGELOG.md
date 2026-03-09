@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Add `protocolVersion` field to A2A agent card (`/.well-known/agent.json`); value is set to `A2A_PROTOCOL_VERSION` constant (`"0.2.1"`) and emitted by the default `AgentCardBuilder` (#1442)
 - Wire `graph_config` into agent bootstrap: `runner.rs` and `daemon.rs` now call `with_graph_config(config.memory.graph.clone())` at construction time, matching the existing `with_document_config()` pattern. Previously `graph_config.enabled` was always `false` at startup (despite `[memory.graph] enabled = true` in config), causing `maybe_spawn_graph_extraction()` to return immediately and leaving graph extraction, entity resolution, and BFS recall as dead code in production (#1437)
 - Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
 - `/plan list` now shows the pending plan summary and status label instead of always returning "No recent plans" (#1434)
