@@ -318,10 +318,12 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             let raw_key = rest.split(']').next().unwrap_or("").trim().to_owned();
             // SEC-P1-02: Validate key name to prevent prompt-injection via malformed keys.
             // Only allow alphanumeric, hyphen, underscore — matches vault key naming conventions.
+            // Length is capped at 100 chars to prevent oversized confirmation prompts.
             let key_name = if raw_key
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 && !raw_key.is_empty()
+                && raw_key.len() <= 100
             {
                 raw_key
             } else {

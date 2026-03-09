@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Secret request prompt now truncates `secret_key` to 100 chars (UTF-8 safe) in all confirmation dialogs; input validation in the sub-agent loop rejects keys longer than 100 chars at the source (#1480)
 - AgentRouter inline fallback: when no sub-agents are configured, `DagScheduler` now emits `SchedulerAction::RunInline` instead of immediately marking the task as `Failed`. The main agent provider executes the task prompt directly, allowing single-agent setups to use `/plan` without any sub-agent definitions (#1463)
 - `/plan status` now reflects actual graph state: messages are matched per `GraphStatus` variant (`Created`, `Running`, `Paused`, `Failed`, `Completed`, `Canceled`) instead of always showing "awaiting confirmation" (#1463)
 - `/feedback` command now correctly classifies feedback sentiment: positive or neutral feedback is stored as `user_approval` outcome type instead of always using `user_rejection`, preventing self-learning confidence inversion for praised skills
