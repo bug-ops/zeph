@@ -33,11 +33,13 @@ pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync
 
 /// Per-session context passed to the agent spawner.
 ///
-/// Carries the session identity and the pre-created [`ConversationId`] so that
-/// each ACP session maps to exactly one Zeph conversation in `SQLite`.
+/// `conversation_id` is `Some` when a `SQLite`-backed [`ConversationId`] was
+/// successfully created or retrieved for this session.  `None` means the store
+/// was unavailable at session creation time; the agent operates without
+/// persistent history in that case.
 pub struct SessionContext {
     pub session_id: acp::SessionId,
-    pub conversation_id: ConversationId,
+    pub conversation_id: Option<ConversationId>,
     pub working_dir: PathBuf,
 }
 
@@ -654,6 +656,45 @@ struct McpRemoveParams {
     id: String,
 }
 
+/// Look up the `ConversationId` for an existing ACP session, creating one for legacy
+/// sessions that predate migration 026 (where `conversation_id` is `NULL`).
+///
+/// Returns `None` when the store is unavailable or all creation attempts fail, allowing
+/// the caller to proceed in ephemeral (no-history) mode rather than failing the session.
+async fn resolve_conversation_id(
+    store: &zeph_memory::sqlite::SqliteStore,
+    session_id: &acp::SessionId,
+) -> Option<ConversationId> {
+    match store
+        .get_acp_session_conversation_id(&session_id.to_string())
+        .await
+    {
+        Ok(Some(cid)) => Some(cid),
+        Ok(None) => {
+            // Legacy session (conversation_id IS NULL): create and persist.
+            match store.create_conversation().await {
+                Ok(cid) => {
+                    if let Err(e) = store
+                        .set_acp_session_conversation_id(&session_id.to_string(), cid)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to set conversation_id for legacy session");
+                    }
+                    Some(cid)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create conversation for legacy session; session will have no persistent history");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to look up conversation_id; session will have no persistent history");
+            None
+        }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 #[allow(clippy::too_many_lines)]
 impl acp::Agent for ZephAcpAgent {
@@ -824,43 +865,30 @@ impl acp::Agent for ZephAcpAgent {
         };
         self.sessions.borrow_mut().insert(session_id.clone(), entry);
 
-        // Create a fresh conversation for this session. Awaited synchronously so that
-        // conversation_id is guaranteed to be persisted before the agent loop starts.
-        let conversation_id = if let Some(ref store) = self.store {
+        // Create a fresh conversation for this session and persist the session<->conversation
+        // mapping synchronously so that load_session can always find it.  Both operations are
+        // fast SQLite writes; keeping them inline avoids a race where the agent starts
+        // load_history() before the mapping is committed.
+        let conversation_id: Option<ConversationId> = if let Some(ref store) = self.store {
             let sid = session_id.to_string();
             match store.create_conversation().await {
                 Ok(cid) => {
-                    let store = store.clone();
-                    let cid_clone = cid;
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = store
-                            .create_acp_session_with_conversation(&sid, cid_clone)
-                            .await
-                        {
-                            tracing::warn!(error = %e, "failed to persist ACP session");
-                        }
-                    });
-                    cid
+                    if let Err(e) = store.create_acp_session_with_conversation(&sid, cid).await {
+                        tracing::warn!(error = %e, "failed to persist ACP session mapping; history may not survive restart");
+                    }
+                    Some(cid)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to create conversation for ACP session; agent will not persist history");
-                    let store = store.clone();
-                    let sid_clone = sid.clone();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e2) = store.create_acp_session(&sid_clone).await {
-                            tracing::warn!(error = %e2, "failed to persist ACP session");
-                        }
-                    });
-                    // Fallback: create an ephemeral conversation ID placeholder; agent will
-                    // call create_conversation itself if memory is available via SemanticMemory.
-                    // This path is only hit when the SQLite store is unreachable.
-                    zeph_memory::ConversationId(0)
+                    tracing::warn!(error = %e, "failed to create conversation for ACP session; session will have no persistent history");
+                    if let Err(e2) = store.create_acp_session(&sid).await {
+                        tracing::warn!(error = %e2, "failed to persist ACP session");
+                    }
+                    None
                 }
             }
         } else {
-            // No persistent store: use ConversationId(0) as a sentinel.
-            // The agent's SemanticMemory will create its own conversation if needed.
-            zeph_memory::ConversationId(0)
+            // No persistent store: session operates without history persistence.
+            None
         };
 
         let session_ctx = SessionContext {
@@ -1273,37 +1301,7 @@ impl acp::Agent for ZephAcpAgent {
 
         // Look up existing conversation_id for this session, or create one for legacy sessions.
         let session_cwd = std::env::current_dir().unwrap_or_default();
-        let conversation_id = match store
-            .get_acp_session_conversation_id(&args.session_id.to_string())
-            .await
-        {
-            Ok(Some(cid)) => cid,
-            Ok(None) => {
-                // Legacy session: create a new conversation and persist the mapping.
-                match store.create_conversation().await {
-                    Ok(cid) => {
-                        let store_clone = store.clone();
-                        let sid = args.session_id.to_string();
-                        tokio::task::spawn_local(async move {
-                            if let Err(e) =
-                                store_clone.set_acp_session_conversation_id(&sid, cid).await
-                            {
-                                tracing::warn!(error = %e, "failed to set conversation_id for legacy session");
-                            }
-                        });
-                        cid
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to create conversation for legacy load_session");
-                        zeph_memory::ConversationId(0)
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to look up conversation_id for load_session");
-                zeph_memory::ConversationId(0)
-            }
-        };
+        let conversation_id = resolve_conversation_id(store, &args.session_id).await;
 
         // Rebuild agent loop for the restored session.
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
@@ -1523,7 +1521,15 @@ impl acp::Agent for ZephAcpAgent {
                     acp::Error::internal_error().data("internal error")
                 })?;
 
-            // Determine source conversation_id, then create new conversation and copy messages.
+            // Persist session, copy events, and copy conversation history synchronously before
+            // spawning the agent loop. This eliminates a race where the agent calls load_history()
+            // before copy_conversation completes and starts with empty history (C1).
+            let new_id_str = new_id.to_string();
+            let pairs: Vec<(&str, &str)> = source_events
+                .iter()
+                .map(|ev| (ev.event_type.as_str(), ev.payload.as_str()))
+                .collect();
+
             match s.create_conversation().await {
                 Ok(forked_cid) => {
                     let source_cid = s
@@ -1531,63 +1537,35 @@ impl acp::Agent for ZephAcpAgent {
                         .await
                         .unwrap_or(None);
 
-                    let new_id_str = new_id.to_string();
-                    let store_clone = s.clone();
-                    let pairs: Vec<(String, String)> = source_events
-                        .into_iter()
-                        .map(|ev| (ev.event_type, ev.payload))
-                        .collect();
-
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = store_clone
-                            .create_acp_session_with_conversation(&new_id_str, forked_cid)
-                            .await
-                        {
-                            tracing::warn!(error = %e, "failed to create forked ACP session");
-                            return;
-                        }
-                        let refs: Vec<(&str, &str)> = pairs
-                            .iter()
-                            .map(|(t, p)| (t.as_str(), p.as_str()))
-                            .collect();
-                        if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
-                            tracing::warn!(error = %e, "failed to import events for forked session");
-                        }
-                        // Copy conversation history from source if available.
-                        if let Some(src_cid) = source_cid
-                            && let Err(e) = store_clone.copy_conversation(src_cid, forked_cid).await
-                        {
-                            tracing::warn!(error = %e, "failed to copy conversation for forked session");
-                        }
-                    });
-                    forked_cid
+                    if let Err(e) = s
+                        .create_acp_session_with_conversation(&new_id_str, forked_cid)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to persist forked ACP session mapping");
+                    }
+                    if let Err(e) = s.import_acp_events(&new_id_str, &pairs).await {
+                        tracing::warn!(error = %e, "failed to import events for forked session");
+                    }
+                    if let Some(src_cid) = source_cid
+                        && let Err(e) = s.copy_conversation(src_cid, forked_cid).await
+                    {
+                        tracing::warn!(error = %e, "failed to copy conversation for forked session");
+                    }
+                    Some(forked_cid)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to create conversation for forked session");
-                    let new_id_str = new_id.to_string();
-                    let store_clone = s.clone();
-                    let pairs: Vec<(String, String)> = source_events
-                        .into_iter()
-                        .map(|ev| (ev.event_type, ev.payload))
-                        .collect();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = store_clone.create_acp_session(&new_id_str).await {
-                            tracing::warn!(error = %e, "failed to create forked ACP session");
-                            return;
-                        }
-                        let refs: Vec<(&str, &str)> = pairs
-                            .iter()
-                            .map(|(t, p)| (t.as_str(), p.as_str()))
-                            .collect();
-                        if let Err(e) = store_clone.import_acp_events(&new_id_str, &refs).await {
-                            tracing::warn!(error = %e, "failed to import events for forked session");
-                        }
-                    });
-                    zeph_memory::ConversationId(0)
+                    tracing::warn!(error = %e, "failed to create conversation for forked session; history will not be copied");
+                    if let Err(e2) = s.create_acp_session(&new_id_str).await {
+                        tracing::warn!(error = %e2, "failed to persist forked ACP session");
+                    }
+                    if let Err(e2) = s.import_acp_events(&new_id_str, &pairs).await {
+                        tracing::warn!(error = %e2, "failed to import events for forked session");
+                    }
+                    None
                 }
             }
         } else {
-            zeph_memory::ConversationId(0)
+            None
         };
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
@@ -1669,12 +1647,13 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         // LRU eviction: find and remove the oldest idle session when at limit.
+        // Exclude the session being resumed from eviction candidates (I3).
         if self.sessions.borrow().len() >= self.max_sessions {
             let evict_id = {
                 let sessions = self.sessions.borrow();
                 sessions
                     .iter()
-                    .filter(|(_, e)| e.output_rx.borrow().is_some())
+                    .filter(|(id, e)| *id != &args.session_id && e.output_rx.borrow().is_some())
                     .min_by_key(|(_, e)| e.last_active.get())
                     .map(|(id, _)| id.clone())
             };
@@ -1692,33 +1671,7 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         // Look up existing conversation_id for this session (same as load_session).
-        let conversation_id = match store
-            .get_acp_session_conversation_id(&args.session_id.to_string())
-            .await
-        {
-            Ok(Some(cid)) => cid,
-            Ok(None) => match store.create_conversation().await {
-                Ok(cid) => {
-                    let store_clone = store.clone();
-                    let sid = args.session_id.to_string();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = store_clone.set_acp_session_conversation_id(&sid, cid).await
-                        {
-                            tracing::warn!(error = %e, "failed to set conversation_id for legacy resume_session");
-                        }
-                    });
-                    cid
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create conversation for legacy resume_session");
-                    zeph_memory::ConversationId(0)
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to look up conversation_id for resume_session");
-                zeph_memory::ConversationId(0)
-            }
-        };
+        let conversation_id = resolve_conversation_id(store, &args.session_id).await;
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);

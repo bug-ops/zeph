@@ -196,7 +196,8 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
   - `shell_executor: Option<AcpShellExecutor>` — shell commands routed through the IDE terminal proxy
   - `permission_gate: Option<AcpPermissionGate>` — confirmation requests forwarded to the IDE UI
   - `cancel_signal: Arc<Notify>` — shared with `LoopbackHandle`; firing it interrupts the running agent turn
-- `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>) -> ...>` factory that the main binary supplies; wires `AcpContext` into `CompositeExecutor` before starting the agent loop
+- `SessionContext` — per-session struct carrying `session_id`, `conversation_id`, and `working_dir`; ensures each ACP session maps to exactly one Zeph conversation in SQLite
+- `AgentSpawner` — `Arc<dyn Fn(LoopbackChannel, Option<AcpContext>, SessionContext) -> ...>` factory that the main binary supplies; wires `AcpContext` and `SessionContext` into the agent loop
 - `AcpPermissionGate` — permission gate backed by `acp::Connection`; cache key uses `tool_call_id` as fallback when `title` is `None` to prevent distinct untitled tools from sharing a cached decision. `AllowAlways`/`RejectAlways` decisions are persisted to a TOML file (`~/.config/zeph/acp-permissions.toml` by default, configurable via `acp.permission_file` or `ZEPH_ACP_PERMISSION_FILE`). The file is written atomically with `0o600` permissions on Unix. Persisted rules are loaded on startup and saved on each decision change
 - `AcpFileExecutor` / `AcpShellExecutor` — IDE-proxied file and shell backends; each spawns a local task for the connection handler
 - **Model switching** — `set_session_config_option` with `config_id = "model"` validates the requested model against `available_models` allowlist, resolves it via `ProviderFactory` (`Arc<dyn Fn(&str) -> Option<AnyProvider>>`), and stores the result in a shared `provider_override: Arc<RwLock<Option<AnyProvider>>>` that the agent loop checks on each turn. RwLock uses `PoisonError::into_inner` for poison recovery
@@ -210,7 +211,7 @@ Agent Client Protocol server — IDE integration via ACP (optional, feature-gate
 
 `ZephAcpAgent` supports multi-session concurrency with configurable `max_sessions` (default 4). Sessions are tracked in an LRU map; when the limit is reached, the least-recently-used session is evicted and its agent task cancelled.
 
-- **Persistence** — session state and events are persisted to SQLite via `acp_sessions` and `acp_session_events` tables (migration 013 in `zeph-memory`). On `load_session`, stored history is replayed as `session/update` notifications per ACP spec.
+- **Persistence** — session state and events are persisted to SQLite via `acp_sessions` and `acp_session_events` tables. Each session links to a `conversation_id` (migration 026) so that message history is isolated per-session. On `load_session`, the existing conversation is restored; on `fork_session`, messages are copied to a new conversation.
 - **Idle reaper** — a background task periodically scans sessions and removes those idle longer than `session_idle_timeout_secs` (default 1800).
 - **Configuration** — `AcpConfig` exposes `max_sessions` and `session_idle_timeout_secs`, with env overrides `ZEPH_ACP_MAX_SESSIONS` and `ZEPH_ACP_SESSION_IDLE_TIMEOUT_SECS`.
 

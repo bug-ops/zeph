@@ -37,7 +37,7 @@ zeph-acp = { version = "0.14.1", features = ["acp-http"] }
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session support, LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
+| `agent` | `AcpContext` — IDE-proxied capabilities (file executor, shell executor, permission gate, cancel signal) wired into the agent loop per session; `SessionContext` — per-session identity carrying `session_id`, `conversation_id`, and `working_dir` so each ACP session maps to exactly one Zeph conversation in SQLite; `AgentSpawner` factory type; `ZephAcpAgent` ACP protocol handler with multi-session isolation (each session gets its own `ConversationId`), LRU eviction, idle reaper, SQLite persistence, rich content support (images, embedded resources, tool locations), runtime model switching via `ProviderFactory`, and MCP server management via `ext_method` |
 | `transport` | `serve_stdio` / `serve_connection` (stdio), HTTP+SSE handlers (`post_handler`, `get_handler`), WebSocket handler (`ws_upgrade_handler`), duplex bridge, axum router; `AcpServerConfig` |
 | `fs` | `AcpFileExecutor` — file system executor backed by IDE-proxied ACP file operations |
 | `terminal` | `AcpShellExecutor` — shell executor backed by IDE-proxied ACP terminal; configurable command timeout with `kill_terminal` on expiry; deferred `terminal/release` ensures terminal remains alive until IDE receives `ToolCallContent::Terminal` |
@@ -45,7 +45,7 @@ zeph-acp = { version = "0.14.1", features = ["acp-http"] }
 | `mcp_bridge` | `acp_mcp_servers_to_entries` — converts ACP-advertised MCP servers (Stdio, Http, Sse) into `McpServerEntry` configs |
 | `error` | `AcpError` typed error enum (includes `ResourceLink` variant for resolution failures) |
 
-**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
+**Re-exports:** `AcpContext`, `AgentSpawner`, `ProviderFactory`, `SessionContext`, `AcpError`, `AcpFileExecutor`, `AcpPermissionGate`, `AcpShellExecutor`, `AcpServerConfig`, `serve_connection`, `serve_stdio`, `acp_mcp_servers_to_entries`
 
 **Re-exports (feature `acp-http`):** `SendAgentSpawner`, `AcpHttpState`, `acp_router`
 
@@ -64,6 +64,27 @@ pub struct AcpContext {
 ```
 
 The `cancel_signal` is shared with the agent's `LoopbackHandle` so that an IDE cancel request immediately interrupts the running inference loop.
+
+## SessionContext
+
+`SessionContext` carries per-session identity into the agent spawner, ensuring each ACP session maps to exactly one Zeph conversation:
+
+```rust
+pub struct SessionContext {
+    pub session_id: acp::SessionId,
+    pub conversation_id: ConversationId,
+    pub working_dir: PathBuf,
+}
+```
+
+The `conversation_id` is pre-created in SQLite before the agent loop starts. This guarantees that the session-to-conversation mapping is persisted atomically, enabling:
+
+- **Session isolation** — concurrent sessions maintain independent conversation histories.
+- **Session fork** — `fork_session` copies the source conversation's messages into a new conversation via `copy_conversation`.
+- **Session resume** — `load_session` and `resume_session` look up the existing `conversation_id` from the `acp_sessions` table; legacy sessions (pre-migration 026) get a new conversation created on demand.
+
+> [!NOTE]
+> When the SQLite store is unavailable, `ConversationId(0)` is used as a sentinel. The agent's `SemanticMemory` will create its own conversation if needed.
 
 ## ResourceLink resolution
 
@@ -263,9 +284,11 @@ Requires a shared `McpManager` reference set via `AcpServerConfig::mcp_manager`.
 
 `ZephAcpAgent` manages multiple concurrent sessions with the following capabilities:
 
+- **Per-session conversation isolation** — each session is assigned its own `ConversationId` at creation time (migration 026). Concurrent sessions maintain fully independent conversation histories in SQLite, preventing cross-session message leakage.
 - **LRU eviction** — when the number of active sessions reaches `max_sessions`, the least-recently-used session is evicted to free resources.
-- **SQLite persistence** — session events are persisted to `acp_sessions` and `acp_session_events` tables (migration 013) via `zeph-memory`. This enables session resume across process restarts.
-- **Session resume** — `load_session` replays persisted history as `session/update` events, restoring the conversation state.
+- **SQLite persistence** — session events are persisted to `acp_sessions` and `acp_session_events` tables (migrations 013, 026) via `zeph-memory`. The `acp_sessions` table carries a `conversation_id` foreign key linking each session to its conversation.
+- **Session resume** — `load_session` replays persisted history as `session/update` events, restoring the conversation state. The existing `conversation_id` is looked up from the store; legacy sessions (pre-026) get a new conversation created on demand.
+- **Session fork** — `fork_session` creates a new conversation and copies the source session's messages via `copy_conversation`, preserving history while isolating future turns.
 - **Idle reaper** — a background task periodically removes sessions that have been idle longer than `session_idle_timeout_secs`.
 
 ### Configuration
@@ -292,18 +315,18 @@ When the IDE user selects "always allow" or "always deny" for a tool, `AcpPermis
 
 ```rust
 pub type AgentSpawner = Arc<
-    dyn Fn(LoopbackChannel, Option<AcpContext>) -> Pin<Box<dyn Future<Output = ()> + 'static>>
+    dyn Fn(LoopbackChannel, Option<AcpContext>, SessionContext) -> Pin<Box<dyn Future<Output = ()> + 'static>>
         + 'static,
 >;
 ```
 
-The host constructs an `AgentSpawner` closure that wires `AcpContext` capabilities into `Agent` via `with_cancel_signal()` on the builder, then passes the closure to `serve_stdio` or `serve_connection`.
+The host constructs an `AgentSpawner` closure that wires `AcpContext` capabilities and `SessionContext` (session identity + pre-created `ConversationId`) into `Agent` via the builder, then passes the closure to `serve_stdio` or `serve_connection`.
 
 For HTTP transport, use `SendAgentSpawner` which requires `Send + Sync`:
 
 ```rust
 pub type SendAgentSpawner = Arc<
-    dyn Fn(LoopbackChannel, Option<AcpContext>) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+    dyn Fn(LoopbackChannel, Option<AcpContext>, SessionContext) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
         + Send + Sync + 'static,
 >;
 ```
