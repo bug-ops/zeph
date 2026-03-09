@@ -899,7 +899,7 @@ impl<C: Channel> Agent<C> {
             }
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
-                req.secret_key,
+                crate::text::truncate_to_chars(&req.secret_key, 100),
                 req.reason
                     .as_deref()
                     .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
@@ -2430,8 +2430,10 @@ impl<C: Channel> Agent<C> {
                         // wait for operator input. The grant TTL (300s below) is a security
                         // bound on how long an approved secret remains usable. Both values are
                         // intentionally different: short confirm window, longer grant lifetime.
-                        let prompt =
-                            format!("Sub-agent requests secret '{}'. Allow?", req.secret_key);
+                        let prompt = format!(
+                            "Sub-agent requests secret '{}'. Allow?",
+                            crate::text::truncate_to_chars(&req.secret_key, 100)
+                        );
                         let approved = self.channel.confirm(&prompt).await.unwrap_or(false);
                         if let Some(mgr) = self.subagent_manager.as_mut() {
                             if approved {
@@ -2629,8 +2631,10 @@ impl<C: Channel> Agent<C> {
                         .as_mut()
                         .and_then(|m| m.try_recv_secret_request());
                     if let Some((req_task_id, req)) = pending {
-                        let confirm_prompt =
-                            format!("Sub-agent requests secret '{}'. Allow?", req.secret_key);
+                        let confirm_prompt = format!(
+                            "Sub-agent requests secret '{}'. Allow?",
+                            crate::text::truncate_to_chars(&req.secret_key, 100)
+                        );
                         let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
                         if let Some(mgr) = self.subagent_manager.as_mut() {
                             if approved {
@@ -5815,7 +5819,7 @@ mod secret_reason_truncation {
     fn build_prompt(secret_key: &str, reason: Option<&str>) -> String {
         format!(
             "Sub-agent requests secret '{}'. Allow?{}",
-            secret_key,
+            crate::text::truncate_to_chars(secret_key, 100),
             reason
                 .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
                 .unwrap_or_default()
@@ -5867,5 +5871,33 @@ mod secret_reason_truncation {
         let prompt = build_prompt("MY_SECRET", None);
         assert!(!prompt.contains("Reason:"));
         assert!(prompt.ends_with("Allow?"));
+    }
+
+    #[test]
+    fn secret_key_short_unchanged() {
+        let prompt = build_prompt("MY_API_KEY", None);
+        assert!(prompt.contains("MY_API_KEY"));
+    }
+
+    #[test]
+    fn secret_key_over_100_chars_truncated() {
+        let key = "A".repeat(150);
+        let prompt = build_prompt(&key, None);
+        // Extract the key portion between "secret '" and "'."
+        let after_quote = prompt.split("secret '").nth(1).unwrap();
+        let key_in_prompt = after_quote.split("'. Allow?").next().unwrap();
+        // truncate_to_chars appends … when truncating: 100 chars + ellipsis = 101.
+        assert_eq!(key_in_prompt.chars().count(), 101);
+        assert!(key_in_prompt.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn secret_key_exactly_100_chars_unchanged() {
+        let key = "B".repeat(100);
+        let prompt = build_prompt(&key, None);
+        let after_quote = prompt.split("secret '").nth(1).unwrap();
+        let key_in_prompt = after_quote.split("'. Allow?").next().unwrap();
+        assert_eq!(key_in_prompt.chars().count(), 100);
+        assert!(!key_in_prompt.ends_with('\u{2026}'));
     }
 }

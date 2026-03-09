@@ -8,6 +8,7 @@ pub use classifier::{ModelSelection, TaskType};
 pub use router::SubProvider;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
@@ -20,6 +21,7 @@ pub struct ModelOrchestrator {
     embed_provider: String,
     status_tx: Option<StatusTx>,
     llm_routing: bool,
+    last_used_provider: Arc<Mutex<Option<String>>>,
 }
 
 impl ModelOrchestrator {
@@ -51,6 +53,7 @@ impl ModelOrchestrator {
             embed_provider,
             status_tx: None,
             llm_routing: false,
+            last_used_provider: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -104,6 +107,14 @@ impl ModelOrchestrator {
             }
         }
         Ok(all)
+    }
+
+    fn last_used_provider_name(&self) -> String {
+        self.last_used_provider
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.default_provider.clone())
     }
 
     fn emit_status(&self, msg: impl Into<String>) {
@@ -189,7 +200,10 @@ impl ModelOrchestrator {
             && let Some(provider) = self.providers.get(&selected)
         {
             match provider.chat(messages).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    *self.last_used_provider.lock().unwrap() = Some(selected.clone());
+                    return Ok(response);
+                }
                 Err(e) => {
                     tracing::warn!("LLM-routed provider {selected} failed: {e:#}, falling back");
                 }
@@ -212,7 +226,10 @@ impl ModelOrchestrator {
                 };
                 tried.insert(name);
                 match provider.chat(messages).await {
-                    Ok(response) => return Ok(response),
+                    Ok(response) => {
+                        *self.last_used_provider.lock().unwrap() = Some(name.clone());
+                        return Ok(response);
+                    }
                     Err(e) => {
                         self.emit_status(format!("Provider {name} failed, trying next..."));
                         tracing::warn!("provider {name} failed: {e:#}, trying next");
@@ -231,7 +248,10 @@ impl ModelOrchestrator {
             ));
             tracing::info!("falling back to default provider {}", self.default_provider);
             match provider.chat(messages).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
+                    return Ok(response);
+                }
                 Err(e) => last_error = Some(e),
             }
         }
@@ -312,7 +332,10 @@ impl ModelOrchestrator {
             && let Some(provider) = self.providers.get(&selected)
         {
             match provider.chat_stream(messages).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    *self.last_used_provider.lock().unwrap() = Some(selected.clone());
+                    return Ok(stream);
+                }
                 Err(e) => {
                     tracing::warn!(
                         "LLM-routed provider {selected} stream failed: {e:#}, falling back"
@@ -337,7 +360,10 @@ impl ModelOrchestrator {
                 };
                 tried.insert(name);
                 match provider.chat_stream(messages).await {
-                    Ok(stream) => return Ok(stream),
+                    Ok(stream) => {
+                        *self.last_used_provider.lock().unwrap() = Some(name.clone());
+                        return Ok(stream);
+                    }
                     Err(e) => {
                         self.emit_status(format!("Provider {name} failed, trying next..."));
                         tracing::warn!("provider {name} stream failed: {e:#}, trying next");
@@ -359,7 +385,10 @@ impl ModelOrchestrator {
                 self.default_provider
             );
             match provider.chat_stream(messages).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
+                    return Ok(stream);
+                }
                 Err(e) => last_error = Some(e),
             }
         }
@@ -428,9 +457,15 @@ impl LlmProvider for ModelOrchestrator {
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
+        let name = self.last_used_provider_name();
         self.providers
-            .get(&self.default_provider)
+            .get(&name)
             .and_then(LlmProvider::last_cache_usage)
+    }
+
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        let name = self.last_used_provider_name();
+        self.providers.get(&name).and_then(LlmProvider::last_usage)
     }
 
     #[allow(clippy::unnecessary_literal_bound)]
