@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `persist_message` now receives the correct `has_injection_flags` value derived from `sanitize_tool_output` injection pattern detection, not just URL extraction. Pure text injections (without URLs) now correctly activate `guard_memory_writes` in both legacy and native tool paths (#1491)
+- Native tool-use path (`handle_native_tool_calls`) now calls `sanitize_tool_output` for every tool result, applying source spotlighting and injection detection before content enters LLM context. Previously the sanitizer was only called on error self-reflection, leaving the native path completely unguarded (#1490)
+
 - Secret request prompt now truncates `secret_key` to 100 chars (UTF-8 safe) in all confirmation dialogs; input validation in the sub-agent loop rejects keys longer than 100 chars at the source (#1480)
 - Delegate `context_window()` in `SubProvider` to fix silent `auto_budget`, semantic recall, and graph recall failures when using the orchestrator provider (#1473)
 - `/graph facts <name>` now returns the entity whose name exactly matches the query instead of an entity that merely mentions the name in its summary. `find_entity_by_name` uses a two-phase lookup: exact case-insensitive match on `name`/`canonical_name` first, FTS5 prefix search only as fallback (#1472)
