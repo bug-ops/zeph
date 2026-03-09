@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::VecDeque;
-use std::io::IsTerminal;
+use std::io::{BufReader, IsTerminal};
 
+use tokio::sync::mpsc;
 use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
 
 use crate::line_editor::{self, ReadLineResult};
+
+const STDIN_CHANNEL_CAPACITY: usize = 32;
 
 type PersistFn = Box<dyn Fn(&str) + Send>;
 
@@ -52,21 +55,209 @@ impl std::fmt::Debug for InputHistory {
     }
 }
 
+/// Process a raw line from stdin: handle exit commands, empty-line logic,
+/// `/image` commands. Returns `None` to continue the loop, `Some(msg)` to
+/// send a message, or `Err(())` to break out of the loop.
+async fn process_line(
+    line: String,
+    is_tty: bool,
+    history: &mut Option<InputHistory>,
+    pending_attachments: &mut Vec<Attachment>,
+) -> Result<Option<ChannelMessage>, ()> {
+    let trimmed = line.trim();
+
+    match trimmed {
+        "exit" | "quit" | "/exit" | "/quit" => return Err(()),
+        "" => {
+            // TTY: empty Enter ends session. Pipe: skip formatting blank lines.
+            if is_tty {
+                return Err(());
+            }
+            return Ok(None);
+        }
+        _ => {}
+    }
+
+    if let Some(h) = history {
+        h.add(trimmed);
+    }
+
+    if let Some(path) = trimmed.strip_prefix("/image").map(str::trim) {
+        if path.is_empty() {
+            println!("Zeph: Usage: /image <path>");
+            return Ok(None);
+        }
+        let path_owned = path.to_owned();
+        match tokio::fs::read(&path_owned).await {
+            Err(e) => {
+                println!("Zeph: File not found: {path_owned}: {e}");
+            }
+            Ok(data) => {
+                let filename = std::path::Path::new(&path_owned)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_owned);
+                let size = data.len();
+                pending_attachments.push(Attachment {
+                    kind: AttachmentKind::Image,
+                    data,
+                    filename,
+                });
+                println!("Zeph: Image attached: {path_owned} ({size} bytes). Send your message.");
+            }
+        }
+        return Ok(None);
+    }
+
+    let attachments = std::mem::take(pending_attachments);
+    Ok(Some(ChannelMessage {
+        text: trimmed.to_string(),
+        attachments,
+    }))
+}
+
+/// Background stdin reader for TTY mode.
+///
+/// Spawns a `tokio::task::spawn_blocking` per line (using `line_editor::read_line`
+/// which manages crossterm raw mode internally).
+async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<ChannelMessage>) {
+    let mut pending_attachments: Vec<Attachment> = Vec::new();
+
+    loop {
+        let entries: Vec<String> = history
+            .as_ref()
+            .map(|h| h.entries().iter().cloned().collect())
+            .unwrap_or_default();
+
+        let Ok(Ok(result)) =
+            tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries)).await
+        else {
+            break;
+        };
+
+        let line = match result {
+            ReadLineResult::Interrupted | ReadLineResult::Eof => break,
+            ReadLineResult::Line(l) => l,
+        };
+
+        match process_line(line, true, &mut history, &mut pending_attachments).await {
+            Err(()) => break,
+            Ok(None) => {}
+            Ok(Some(msg)) => {
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Background stdin reader for piped (non-TTY) mode.
+///
+/// Runs a dedicated OS thread that owns a `BufReader<Stdin>` and calls
+/// `line_editor::read_line_piped` in a loop. Results are shuttled back to an
+/// async task via a tokio mpsc channel, avoiding repeated stdin locks.
+async fn run_piped_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<ChannelMessage>) {
+    tracing::debug!("stdin is not a terminal, using piped input mode");
+
+    let (line_tx, mut line_rx) = mpsc::channel::<Result<ReadLineResult, std::io::Error>>(1);
+
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut reader = BufReader::new(stdin);
+        loop {
+            let result = line_editor::read_line_piped(&mut reader);
+            let is_eof = matches!(result, Ok(ReadLineResult::Eof));
+            if line_tx.blocking_send(result).is_err() || is_eof {
+                break;
+            }
+        }
+    });
+
+    let mut pending_attachments: Vec<Attachment> = Vec::new();
+
+    loop {
+        let Some(Ok(result)) = line_rx.recv().await else {
+            break;
+        };
+
+        let line = match result {
+            ReadLineResult::Interrupted | ReadLineResult::Eof => break,
+            ReadLineResult::Line(l) => l,
+        };
+
+        match process_line(line, false, &mut history, &mut pending_attachments).await {
+            Err(()) => break,
+            Ok(None) => {}
+            Ok(Some(msg)) => {
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Spawn a background task that reads stdin and sends processed messages through `tx`.
+///
+/// This makes `CliChannel::recv()` cancel-safe: messages buffered in the mpsc
+/// channel are never dropped when the `recv()` future is cancelled by `tokio::select!`.
+fn spawn_stdin_reader(
+    is_tty: bool,
+    history: Option<InputHistory>,
+    tx: mpsc::Sender<ChannelMessage>,
+) {
+    tokio::spawn(async move {
+        if is_tty {
+            run_tty_reader(history, tx).await;
+        } else {
+            run_piped_reader(history, tx).await;
+        }
+    });
+}
+
+/// Pending configuration for the stdin reader background task.
+///
+/// The task is spawned lazily on the first call to `recv()`, ensuring that
+/// `CliChannel::new()` is safe to call outside of a Tokio runtime context.
+struct PendingReader {
+    history: Option<InputHistory>,
+    is_tty: bool,
+}
+
+impl std::fmt::Debug for PendingReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingReader")
+            .field("is_tty", &self.is_tty)
+            .finish_non_exhaustive()
+    }
+}
+
 /// CLI channel that reads from stdin and writes to stdout.
+///
+/// Input is read in a background task (spawned on first `recv()` call), making
+/// `recv()` cancel-safe: dropping the future (e.g. in a `tokio::select!` branch)
+/// never discards buffered input.
 #[derive(Debug)]
 pub struct CliChannel {
     accumulated: String,
-    history: Option<InputHistory>,
-    pending_attachments: Vec<Attachment>,
+    /// Lazily-initialized receiver. `None` until `recv()` is called for the first time.
+    input_rx: Option<mpsc::Receiver<ChannelMessage>>,
+    /// Pending configuration consumed when the background task is first spawned.
+    pending: Option<PendingReader>,
 }
 
 impl CliChannel {
     #[must_use]
     pub fn new() -> Self {
+        let is_tty = std::io::stdin().is_terminal();
         Self {
             accumulated: String::new(),
-            history: None,
-            pending_attachments: Vec::new(),
+            input_rx: None,
+            pending: Some(PendingReader {
+                history: None,
+                is_tty,
+            }),
         }
     }
 
@@ -76,11 +267,31 @@ impl CliChannel {
     /// for each new entry to persist it (e.g. via `SqliteStore::save_input_entry`).
     #[must_use]
     pub fn with_history(entries: Vec<String>, persist_fn: impl Fn(&str) + Send + 'static) -> Self {
+        let is_tty = std::io::stdin().is_terminal();
+        let history = InputHistory::new(entries, Box::new(persist_fn));
         Self {
             accumulated: String::new(),
-            history: Some(InputHistory::new(entries, Box::new(persist_fn))),
-            pending_attachments: Vec::new(),
+            input_rx: None,
+            pending: Some(PendingReader {
+                history: Some(history),
+                is_tty,
+            }),
         }
+    }
+
+    /// Ensure the background stdin reader is running and return a mutable
+    /// reference to the receiver. Called from within an async context only.
+    fn ensure_reader(&mut self) -> &mut mpsc::Receiver<ChannelMessage> {
+        if self.input_rx.is_none() {
+            let pending = self
+                .pending
+                .take()
+                .expect("PendingReader consumed before input_rx was set");
+            let (tx, rx) = mpsc::channel(STDIN_CHANNEL_CAPACITY);
+            spawn_stdin_reader(pending.is_tty, pending.history, tx);
+            self.input_rx = Some(rx);
+        }
+        self.input_rx.as_mut().expect("input_rx set above")
     }
 }
 
@@ -91,99 +302,13 @@ impl Default for CliChannel {
 }
 
 impl Channel for CliChannel {
+    /// Receive the next user message.
+    ///
+    /// This method is cancel-safe: dropping the future does not discard any
+    /// buffered input. The background stdin reader task buffers messages in an
+    /// mpsc channel; they remain available on the next `recv()` call.
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        let is_tty = std::io::stdin().is_terminal();
-
-        loop {
-            let entries: Vec<String> = self
-                .history
-                .as_ref()
-                .map(|h| h.entries().iter().cloned().collect())
-                .unwrap_or_default();
-
-            let result = if is_tty {
-                tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries))
-                    .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?
-                    .map_err(ChannelError::Io)?
-            } else {
-                tracing::debug!("stdin is not a terminal, using piped input mode");
-                tokio::task::spawn_blocking(|| {
-                    let stdin = std::io::stdin();
-                    let mut locked = stdin.lock();
-                    line_editor::read_line_piped(&mut locked)
-                })
-                .await
-                .map_err(|e| ChannelError::Other(e.to_string()))?
-                .map_err(ChannelError::Io)?
-            };
-
-            let line = match result {
-                ReadLineResult::Interrupted | ReadLineResult::Eof => return Ok(None),
-                ReadLineResult::Line(l) => {
-                    let trimmed = l.trim();
-                    if trimmed == "exit"
-                        || trimmed == "quit"
-                        || trimmed == "/exit"
-                        || trimmed == "/quit"
-                    {
-                        return Ok(None);
-                    }
-                    // In pipe mode, skip empty lines (formatting) and read the next one.
-                    // In TTY mode, an empty Enter press means the user is done.
-                    if trimmed.is_empty() {
-                        if is_tty {
-                            return Ok(None);
-                        }
-                        continue;
-                    }
-                    l
-                }
-            };
-
-            let trimmed = line.trim();
-
-            if let Some(h) = &mut self.history {
-                h.add(trimmed);
-            }
-
-            self.accumulated.clear();
-
-            if let Some(path) = trimmed.strip_prefix("/image").map(str::trim) {
-                if path.is_empty() {
-                    println!("Zeph: Usage: /image <path>");
-                    continue;
-                }
-                let path_owned = path.to_owned();
-                match tokio::fs::read(&path_owned).await {
-                    Err(e) => {
-                        println!("Zeph: File not found: {path_owned}: {e}");
-                    }
-                    Ok(data) => {
-                        let filename = std::path::Path::new(&path_owned)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(str::to_owned);
-                        let size = data.len();
-                        self.pending_attachments.push(Attachment {
-                            kind: AttachmentKind::Image,
-                            data,
-                            filename,
-                        });
-                        println!(
-                            "Zeph: Image attached: {path_owned} ({size} bytes). Send your message."
-                        );
-                    }
-                }
-                continue;
-            }
-
-            let attachments = std::mem::take(&mut self.pending_attachments);
-            return Ok(Some(ChannelMessage {
-                text: trimmed.to_string(),
-                attachments,
-            }));
-        }
+        Ok(self.ensure_reader().recv().await)
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
@@ -201,6 +326,7 @@ impl Channel for CliChannel {
 
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         println!();
+        self.accumulated.clear();
         Ok(())
     }
 
@@ -242,11 +368,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cli_channel_flush_chunks_retains_buffer() {
+    async fn cli_channel_flush_chunks_clears_buffer() {
         let mut ch = CliChannel::new();
         ch.send_chunk("test").await.unwrap();
         ch.flush_chunks().await.unwrap();
-        assert_eq!(ch.accumulated, "test");
+        assert!(ch.accumulated.is_empty());
     }
 
     #[test]
@@ -284,37 +410,32 @@ mod tests {
 
         let path = tmp.path().to_str().unwrap().to_owned();
 
-        // Simulate the internal logic: a valid file should be pushed to pending_attachments
         let data = tokio::fs::read(&path).await.unwrap();
         let filename = std::path::Path::new(&path)
             .file_name()
             .and_then(|n| n.to_str())
             .map(str::to_owned);
 
-        let mut ch = CliChannel::new();
-        ch.pending_attachments.push(Attachment {
+        let mut pending_attachments: Vec<Attachment> = Vec::new();
+        pending_attachments.push(Attachment {
             kind: AttachmentKind::Image,
             data: data.clone(),
             filename,
         });
 
-        assert_eq!(ch.pending_attachments.len(), 1);
-        assert_eq!(ch.pending_attachments[0].data, image_bytes);
-        assert_eq!(ch.pending_attachments[0].kind, AttachmentKind::Image);
+        assert_eq!(pending_attachments.len(), 1);
+        assert_eq!(pending_attachments[0].data, image_bytes);
+        assert_eq!(pending_attachments[0].kind, AttachmentKind::Image);
 
-        // mem::take clears pending and returns attachments to attach to next message
-        let taken = std::mem::take(&mut ch.pending_attachments);
-        assert!(ch.pending_attachments.is_empty());
+        let taken = std::mem::take(&mut pending_attachments);
+        assert!(pending_attachments.is_empty());
         assert_eq!(taken.len(), 1);
     }
 
     #[tokio::test]
     async fn image_command_missing_file_is_handled_gracefully() {
-        // Missing file should produce an I/O error that is caught and not propagated
         let result = tokio::fs::read("/nonexistent/path/image.png").await;
         assert!(result.is_err());
-        // The new behaviour wraps the error in a user-facing message instead of ChannelError::Io
-        // Verify the error kind is what we expect
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
@@ -333,15 +454,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_channel_new_has_empty_pending_attachments() {
+    fn cli_channel_new_has_empty_accumulated() {
         let ch = CliChannel::new();
-        assert!(ch.pending_attachments.is_empty());
+        assert!(ch.accumulated.is_empty());
     }
 
     #[test]
-    fn cli_channel_with_history_has_empty_pending_attachments() {
+    fn cli_channel_with_history_constructs_ok() {
         let ch = CliChannel::with_history(vec![], |_| {});
-        assert!(ch.pending_attachments.is_empty());
+        assert!(ch.accumulated.is_empty());
     }
 
     #[test]
@@ -370,5 +491,37 @@ mod tests {
         let mut history = InputHistory::new(vec![], Box::new(|_| {}));
         history.add("");
         assert_eq!(history.entries().len(), 0);
+    }
+
+    /// Verify that recv() is cancel-safe: dropping the future does not discard
+    /// buffered input. This is the regression test for the tokio::select! race
+    /// that caused stdin input to be silently lost when a reload branch won.
+    #[tokio::test]
+    async fn recv_is_cancel_safe_via_mpsc_buffer() {
+        // Create a direct mpsc pair to simulate the background reader.
+        let (tx, rx) = mpsc::channel::<ChannelMessage>(32);
+        let mut ch = CliChannel {
+            accumulated: String::new(),
+            input_rx: Some(rx),
+            pending: None,
+        };
+
+        // Pre-fill the channel with a message (simulates background reader
+        // having already buffered input before select! cancellation).
+        tx.send(ChannelMessage {
+            text: "hello".to_string(),
+            attachments: vec![],
+        })
+        .await
+        .unwrap();
+
+        // Simulate select! cancellation: drop the recv() future without polling it.
+        // This models the scenario where a reload branch wins the select! race.
+        drop(ch.recv());
+
+        // The buffered message must still be available on the next recv() call.
+        let result = ch.recv().await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().text, "hello");
     }
 }

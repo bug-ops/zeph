@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Cross-session history restore no longer produces orphaned `tool_use` blocks that cause Claude API 400 errors (#1383): fix empty-content skip dropping tool-only user messages (RC3), add reverse orphan detection for unmatched `tool_result` parts (RC2), downgrade orphaned `ToolResult` blocks in `split_messages_structured` (RC1), filter system messages from visible index to prevent wrong-neighbor lookups (RC4), persist tombstone `ToolResult` on native tool call cancellation to pair already-persisted `ToolUse` (RC5)
 - Store token usage in `chat_typed` so `eval_budget_tokens` is enforced with Claude provider (#1426)
 - `/experiment status` now shows the last completed session (session ID, experiment count, accepted count, best delta) when an experiment is not running. Previously it always showed "idle" with no history, making scheduled experiment results invisible (#1425)
+- `FilteredToolExecutor::execute_erased()` and `execute_confirmed_erased()` previously returned `Err(ToolError::Blocked)` for every LLM response unconditionally, causing sub-agent loops to exhaust all `max_turns` without producing output (#1432)
+- The executor now inspects the response for actual fenced-block tool invocations by matching against registered `InvocationHint::FencedBlock` language tags via `extract_fenced_blocks()`
+- Plain text responses and markdown code fences that do not match any registered tool tag now return `Ok(None)`, allowing the agent loop to break normally; SEC-03 policy is preserved for genuine fenced-block tool invocations
 
 ## [0.14.2] - 2026-03-09
 
