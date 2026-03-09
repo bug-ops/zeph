@@ -291,16 +291,33 @@ impl ShellExecutor {
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
 
-            let result = if out.contains("[error]") {
+            let is_timeout = out.contains("[error] command timed out");
+            let result = if is_timeout {
+                AuditResult::Timeout
+            } else if out.contains("[error]") {
                 AuditResult::Error {
                     message: out.clone(),
                 }
-            } else if out.contains("timed out") {
-                AuditResult::Timeout
             } else {
                 AuditResult::Success
             };
             self.log_audit(block, result, duration_ms).await;
+
+            if is_timeout {
+                if let Some(ref tx) = self.tool_event_tx {
+                    let _ = tx.send(ToolEvent::Completed {
+                        tool_name: "bash".to_owned(),
+                        command: (*block).to_owned(),
+                        output: out.clone(),
+                        success: false,
+                        filter_stats: None,
+                        diff: None,
+                    });
+                }
+                return Err(ToolError::Timeout {
+                    timeout_secs: self.timeout.as_secs(),
+                });
+            }
 
             let sanitized = sanitize_output(&out);
             let mut per_block_stats: Option<FilterStats> = None;
@@ -976,9 +993,39 @@ mod tests {
         let executor = ShellExecutor::new(&config);
         let response = "Run:\n```bash\nsleep 60\n```";
         let result = executor.execute(response).await;
-        assert!(result.is_ok());
-        let output = result.unwrap().unwrap();
-        assert!(output.summary.contains("timed out"));
+        assert!(matches!(
+            result,
+            Err(ToolError::Timeout { timeout_secs: 1 })
+        ));
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn timeout_logged_as_audit_timeout_not_error() {
+        use crate::audit::AuditLogger;
+        use crate::config::AuditConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let audit_config = AuditConfig {
+            enabled: true,
+            destination: log_path.display().to_string(),
+        };
+        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let config = ShellConfig {
+            timeout: 1,
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config).with_audit(logger);
+        let _ = executor.execute("```bash\nsleep 60\n```").await;
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"type\":\"timeout\""),
+            "expected AuditResult::Timeout, got: {content}"
+        );
+        assert!(
+            !content.contains("\"type\":\"error\""),
+            "timeout must not be logged as error: {content}"
+        );
     }
 
     #[tokio::test]
