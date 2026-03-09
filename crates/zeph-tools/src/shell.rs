@@ -10,7 +10,9 @@ use tokio_util::sync::CancellationToken;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::audit::{AuditEntry, AuditLogger, AuditResult};
+use std::sync::Arc;
+
+use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
 use crate::executor::{
     FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
@@ -96,7 +98,7 @@ pub struct ShellExecutor {
     blocked_commands: Vec<String>,
     allowed_paths: Vec<PathBuf>,
     confirm_patterns: Vec<String>,
-    audit_logger: Option<AuditLogger>,
+    audit_logger: Option<Arc<AuditLogger>>,
     tool_event_tx: Option<ToolEventTx>,
     permission_policy: Option<PermissionPolicy>,
     output_filter_registry: Option<OutputFilterRegistry>,
@@ -161,7 +163,7 @@ impl ShellExecutor {
     }
 
     #[must_use]
-    pub fn with_audit(mut self, logger: AuditLogger) -> Self {
+    pub fn with_audit(mut self, logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = Some(logger);
         self
     }
@@ -822,15 +824,6 @@ fn extract_bash_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "bash")
 }
 
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{secs}")
-}
-
 /// Kill a child process and its descendants.
 /// On unix, sends SIGKILL to child processes via `pkill -KILL -P <pid>` before
 /// killing the parent, preventing zombie subprocesses.
@@ -1081,7 +1074,7 @@ mod tests {
             enabled: true,
             destination: log_path.display().to_string(),
         };
-        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
         let config = ShellConfig {
             timeout: 1,
             ..default_config()
@@ -1110,7 +1103,7 @@ mod tests {
             enabled: true,
             destination: log_path.display().to_string(),
         };
-        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
         let executor = ShellExecutor::new(&default_config()).with_audit(logger);
         let _ = executor.execute("```bash\necho err >&2\n```").await;
         let content = tokio::fs::read_to_string(&log_path).await.unwrap();
@@ -1808,7 +1801,7 @@ mod tests {
             enabled: true,
             destination: "stdout".into(),
         };
-        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
         let executor = executor.with_audit(logger);
         assert!(executor.audit_logger.is_some());
     }
@@ -1945,7 +1938,7 @@ mod tests {
             enabled: true,
             destination: "stdout".into(),
         };
-        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
         let executor = ShellExecutor::new(&config).with_audit(logger);
         let response = "```bash\ndangerous command\n```";
         let result = executor.execute(response).await;

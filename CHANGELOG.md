@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `handle_native_tool_calls()` now routes tool output through `sanitize_tool_output()` before placing it in `MessagePart::ToolResult`. Previously, the native tool-use path (Claude provider) bypassed `ContentSanitizer` entirely: injection detection, exfiltration URL extraction, quarantine summarizer, and security metrics were all silently skipped. `flagged_urls` was never populated, so `validate_tool_call()` and memory-write guarding (`persist_message`) were also effectively disabled for this path (#1490)
 - `ShellExecutor` blocklist now detects blocked commands wrapped in backtick substitution (`` `cmd` ``), `$(cmd)`, `<(cmd)`, and `>(cmd)` process substitution. Previously these constructs bypassed `find_blocked_command` because the subshell prefix was attached to the command token during tokenization. `SUBSHELL_METACHARS` in `check_blocklist` extended with `<(` and `>(` (#1483)
 - Secret request prompt now truncates `secret_key` to 100 chars (UTF-8 safe) in all confirmation dialogs; input validation in the sub-agent loop rejects keys longer than 100 chars at the source (#1480)
 - Delegate `context_window()` in `SubProvider` to fix silent `auto_budget`, semantic recall, and graph recall failures when using the orchestrator provider (#1473)
