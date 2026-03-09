@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Wire `GraphStore` in the production bootstrap path: `build_memory()` now calls `with_graph_store()` when `[memory.graph] enabled = true`, making all 5 `/graph` slash commands and graph-based BFS recall functional (#1410)
 - Sub-agent transcript sweep no longer logs a spurious `transcript sweep failed` warning on first run when the transcript directory does not exist yet; the directory is now created automatically (#1397)
 
 ### Performance
