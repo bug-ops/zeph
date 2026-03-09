@@ -2182,6 +2182,20 @@ impl<C: Channel> Agent<C> {
 
         let trust_map = self.build_skill_trust_map().await;
 
+        // Apply the most restrictive trust level among active skills to the executor gate.
+        let effective_trust = if self.skill_state.active_skill_names.is_empty() {
+            zeph_tools::TrustLevel::Trusted
+        } else {
+            self.skill_state
+                .active_skill_names
+                .iter()
+                .filter_map(|name| trust_map.get(name).copied())
+                .fold(zeph_tools::TrustLevel::Trusted, |acc, lvl| {
+                    acc.min_trust(lvl)
+                })
+        };
+        self.tool_executor.set_effective_trust(effective_trust);
+
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
         let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
             &self.memory_state.memory

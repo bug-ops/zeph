@@ -230,7 +230,7 @@ Configure via `config.toml` or environment variable:
 auth_token = "secret"  # or use vault: ZEPH_A2A_AUTH_TOKEN
 ```
 
-The `/.well-known/agent-card.json` endpoint is intentionally public and bypasses auth to allow agent discovery.
+The `/.well-known/agent.json` endpoint is intentionally public and bypasses auth to allow agent discovery.
 
 If `auth_token` is `None` at startup, the server logs a `WARN`-level message:
 

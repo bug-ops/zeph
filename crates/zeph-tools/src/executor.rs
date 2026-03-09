@@ -266,6 +266,9 @@ pub trait ToolExecutor: Send + Sync {
 
     /// Inject environment variables for the currently active skill. No-op by default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+
+    /// Set the effective trust level for the currently active skill. No-op by default.
+    fn set_effective_trust(&self, _level: crate::TrustLevel) {}
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -292,6 +295,9 @@ pub trait ErasedToolExecutor: Send + Sync {
 
     /// Inject environment variables for the currently active skill. No-op by default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+
+    /// Set the effective trust level for the currently active skill. No-op by default.
+    fn set_effective_trust(&self, _level: crate::TrustLevel) {}
 }
 
 impl<T: ToolExecutor> ErasedToolExecutor for T {
@@ -325,6 +331,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         ToolExecutor::set_skill_env(self, env);
+    }
+
+    fn set_effective_trust(&self, level: crate::TrustLevel) {
+        ToolExecutor::set_effective_trust(self, level);
     }
 }
 
@@ -368,6 +378,10 @@ impl ToolExecutor for DynExecutor {
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         ErasedToolExecutor::set_skill_env(self.0.as_ref(), env);
+    }
+
+    fn set_effective_trust(&self, level: crate::TrustLevel) {
+        ErasedToolExecutor::set_effective_trust(self.0.as_ref(), level);
     }
 }
 
@@ -837,5 +851,36 @@ mod tests {
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().summary, "tool_call_result");
+    }
+
+    #[test]
+    fn dyn_executor_set_effective_trust_delegates() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        struct TrustCapture(AtomicU8);
+        impl ToolExecutor for TrustCapture {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            fn set_effective_trust(&self, level: crate::TrustLevel) {
+                // encode: Trusted=0, Verified=1, Quarantined=2, Blocked=3
+                let v = match level {
+                    crate::TrustLevel::Trusted => 0u8,
+                    crate::TrustLevel::Verified => 1,
+                    crate::TrustLevel::Quarantined => 2,
+                    crate::TrustLevel::Blocked => 3,
+                };
+                self.0.store(v, Ordering::Relaxed);
+            }
+        }
+
+        let inner = std::sync::Arc::new(TrustCapture(AtomicU8::new(0)));
+        let exec =
+            DynExecutor(std::sync::Arc::clone(&inner) as std::sync::Arc<dyn ErasedToolExecutor>);
+        ToolExecutor::set_effective_trust(&exec, crate::TrustLevel::Quarantined);
+        assert_eq!(inner.0.load(Ordering::Relaxed), 2);
+
+        ToolExecutor::set_effective_trust(&exec, crate::TrustLevel::Blocked);
+        assert_eq!(inner.0.load(Ordering::Relaxed), 3);
     }
 }

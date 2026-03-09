@@ -21,11 +21,13 @@ pub use provider::{
 pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills_dir};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use tokio::sync::{mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
+use zeph_memory::GraphStore;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::SkillMatcherBackend;
@@ -164,7 +166,7 @@ impl AppBuilder {
 
     pub async fn build_memory(&self, provider: &AnyProvider) -> anyhow::Result<SemanticMemory> {
         let embed_model = self.embedding_model();
-        let memory = match self.config.memory.vector_backend {
+        let mut memory = match self.config.memory.vector_backend {
             crate::config::VectorBackend::Sqlite => {
                 SemanticMemory::with_sqlite_backend_and_pool_size(
                     &self.config.memory.sqlite_path,
@@ -197,6 +199,13 @@ impl AppBuilder {
                 Ok(_) => {}
                 Err(e) => tracing::warn!("embed_missing failed: {e:#}"),
             }
+        }
+
+        if self.config.memory.graph.enabled {
+            let pool = memory.sqlite().pool().clone();
+            let store = Arc::new(GraphStore::new(pool));
+            memory = memory.with_graph_store(store);
+            tracing::info!("graph memory enabled, GraphStore attached");
         }
 
         Ok(memory)

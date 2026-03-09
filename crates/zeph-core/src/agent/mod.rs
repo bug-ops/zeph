@@ -133,6 +133,7 @@ pub(super) struct SkillState {
     pub(super) registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
     pub(super) skill_paths: Vec<PathBuf>,
     pub(super) managed_dir: Option<PathBuf>,
+    pub(super) trust_config: crate::config::TrustConfig,
     pub(super) matcher: Option<SkillMatcherBackend>,
     pub(super) max_active_skills: usize,
     pub(super) disambiguation_threshold: f32,
@@ -360,6 +361,7 @@ impl<C: Channel> Agent<C> {
                 registry,
                 skill_paths: Vec::new(),
                 managed_dir: None,
+                trust_config: crate::config::TrustConfig::default(),
                 matcher,
                 max_active_skills,
                 disambiguation_threshold: 0.05,
@@ -2234,6 +2236,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
         if new_registry.fingerprint()
@@ -2262,6 +2265,65 @@ impl<C: Channel> Agent<C> {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
+
+        // Update trust DB records for reloaded skills.
+        if let Some(ref memory) = self.memory_state.memory {
+            let trust_cfg = self.skill_state.trust_config.clone();
+            let managed_dir = self.skill_state.managed_dir.clone();
+            for meta in &all_meta {
+                let source_kind = if managed_dir
+                    .as_ref()
+                    .is_some_and(|d| meta.skill_dir.starts_with(d))
+                {
+                    zeph_memory::sqlite::SourceKind::Hub
+                } else {
+                    zeph_memory::sqlite::SourceKind::Local
+                };
+                let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
+                    &trust_cfg.default_level
+                } else {
+                    &trust_cfg.local_level
+                };
+                match zeph_skills::compute_skill_hash(&meta.skill_dir) {
+                    Ok(current_hash) => {
+                        let existing = memory
+                            .sqlite()
+                            .load_skill_trust(&meta.name)
+                            .await
+                            .ok()
+                            .flatten();
+                        let trust_level_str = if let Some(ref row) = existing {
+                            if row.blake3_hash == current_hash {
+                                row.trust_level.clone()
+                            } else {
+                                trust_cfg.hash_mismatch_level.to_string()
+                            }
+                        } else {
+                            initial_level.to_string()
+                        };
+                        let source_path = meta.skill_dir.to_str();
+                        if let Err(e) = memory
+                            .sqlite()
+                            .upsert_skill_trust(
+                                &meta.name,
+                                &trust_level_str,
+                                source_kind,
+                                None,
+                                source_path,
+                                &current_hash,
+                            )
+                            .await
+                        {
+                            tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
+                    }
+                }
+            }
+        }
+
         let all_meta = all_meta.iter().collect::<Vec<_>>();
         let provider = self.provider.clone();
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {

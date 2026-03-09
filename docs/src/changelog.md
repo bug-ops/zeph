@@ -925,7 +925,7 @@ See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for f
 - Per-IP rate limiting middleware with configurable 60-second sliding window (Issue #85)
 - Request body size limit (1 MiB) via `tower-http::limit::RequestBodyLimitLayer` (Issue #85)
 - `A2aServerConfig` with env var overrides: `ZEPH_A2A_ENABLED`, `ZEPH_A2A_HOST`, `ZEPH_A2A_PORT`, `ZEPH_A2A_PUBLIC_URL`, `ZEPH_A2A_AUTH_TOKEN`, `ZEPH_A2A_RATE_LIMIT`
-- Agent card served at `/.well-known/agent-card.json` (public, no auth required)
+- Agent card served at `/.well-known/agent.json` (public, no auth required)
 - Graceful shutdown integration via tokio watch channel
 - Server module gated behind `server` feature flag on `zeph-a2a` crate
 
