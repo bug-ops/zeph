@@ -126,6 +126,13 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: nextest-archive.tar.zst
           retention-days: 1
+      - name: Upload binary
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v6
+        with:
+          name: zeph-binary
+          path: target/ci/zeph
+          retention-days: 1
 
   test:
     name: Test (${{ matrix.os }})
@@ -194,25 +201,21 @@ jobs:
 
   docker-build-and-scan:
     name: Docker Build and Security Scan
+    needs: [build-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Download binary
+        uses: actions/download-artifact@v7
         with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build binary for Docker (ci profile)
+          name: zeph-binary
+          path: target/ci
+      - name: Prepare binaries for Docker
         run: |
-          cargo build --profile ci
           mkdir -p binaries
-          # Same binary for both arch variants — scan-only, not for deployment
           cp target/ci/zeph binaries/zeph-amd64
           cp target/ci/zeph binaries/zeph-arm64
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
       - uses: docker/setup-buildx-action@v3
       - name: Build Docker image
         uses: docker/build-push-action@v6
