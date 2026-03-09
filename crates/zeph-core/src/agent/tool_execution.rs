@@ -1706,6 +1706,22 @@ impl<C: Channel> Agent<C> {
                     Err(e) => (format!("[error] {e}"), true, None, None, false, None, None),
                 };
 
+            // Record skill learning outcomes for the native tool path (mirrors legacy path in
+            // handle_tool_result). Must happen before processing so self_reflection can inject
+            // corrective context before the result is persisted to message history.
+            if output.contains("[error]") || output.contains("[exit code") {
+                let kind = FailureKind::from_error(&output);
+                self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
+                    .await;
+                if !self.learning_engine.was_reflection_used()
+                    && self.attempt_self_reflection(&output, &output).await?
+                {
+                    return Ok(());
+                }
+            } else {
+                self.record_skill_outcomes("success", None, None).await;
+            }
+
             let processed = self.maybe_summarize_tool_output(&output).await;
             let body = if let Some(ref stats) = inline_stats {
                 format!("{stats}\n{processed}")
@@ -4311,5 +4327,226 @@ mod tests {
         // Very large attempt: bit-shift is capped at 10, so base = 500 * 1024 >> saturate to MAX_MS.
         let delay = retry_backoff_ms(100);
         assert!(delay <= 5625, "large attempt delay exceeds cap: {delay}");
+    }
+
+    // ── record_skill_outcomes in native tool path (issue #1436) ───────────────
+    //
+    // These tests verify that handle_native_tool_calls() correctly calls
+    // record_skill_outcomes() for all three result variants:
+    //   * Ok(Some(out)) with success output
+    //   * Ok(Some(out)) with error output (contains "[error]" or "[exit code")
+    //   * Err(e) (executor returned an error)
+    //
+    // Without memory configured, record_skill_outcomes() is a no-op (early return at
+    // learning.rs:33), so these tests verify absence-of-panic and correct code path
+    // execution. Tests with real SQLite memory are in learning.rs.
+
+    struct FixedOutputExecutor {
+        summary: String,
+        is_err: bool,
+    }
+
+    impl ToolExecutor for FixedOutputExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            let summary = self.summary.clone();
+            let is_err = self.is_err;
+            let tool_id = call.tool_id.clone();
+            async move {
+                if is_err {
+                    Err(ToolError::Execution(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "executor error",
+                    )))
+                } else {
+                    Ok(Some(ToolOutput {
+                        tool_name: tool_id,
+                        summary,
+                        blocks_executed: 1,
+                        diff: None,
+                        filter_stats: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                }
+            }
+        }
+    }
+
+    /// Builds a minimal `ToolUseRequest` for test use.
+    fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
+        zeph_llm::provider::ToolUseRequest {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({"command": "echo test"}),
+        }
+    }
+
+    // R-NTP-1: success output — no panic, result part is not an error.
+    #[tokio::test]
+    async fn native_tool_success_outcome_does_not_panic() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+        let executor = FixedOutputExecutor {
+            summary: "hello world".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![make_tool_use_request("id-s", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let last = agent.messages.last().unwrap();
+        assert!(
+            !last.content.contains("[error]"),
+            "success output must not mark result as error: {}",
+            last.content
+        );
+    }
+
+    // R-NTP-2: error marker in output — no panic, result part contains error marker.
+    #[tokio::test]
+    async fn native_tool_error_output_does_not_panic() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+        let executor = FixedOutputExecutor {
+            summary: "[error] command not found".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![make_tool_use_request("id-e", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let last = agent.messages.last().unwrap();
+        assert!(
+            last.content.contains("[error]") || last.content.contains("error"),
+            "error output must be reflected in result: {}",
+            last.content
+        );
+    }
+
+    // R-NTP-3: exit code marker in output — no panic, treated as failure.
+    #[tokio::test]
+    async fn native_tool_exit_code_output_does_not_panic() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+        let executor = FixedOutputExecutor {
+            summary: "some output\n[exit code 1]".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![make_tool_use_request("id-x", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // Function completed without panic — the exit code path was exercised.
+        let last = agent.messages.last().unwrap();
+        assert!(
+            !last.parts.is_empty(),
+            "result parts must not be empty after exit code output"
+        );
+    }
+
+    // R-NTP-4: executor Err — no panic, result part marked as error.
+    #[tokio::test]
+    async fn native_tool_executor_error_does_not_panic() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+        let executor = FixedOutputExecutor {
+            summary: String::new(),
+            is_err: true,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![make_tool_use_request("id-err", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let last = agent.messages.last().unwrap();
+        assert!(
+            last.content.contains("[error]"),
+            "executor error must be reflected in result: {}",
+            last.content
+        );
+    }
+
+    // R-NTP-5: no active skills — record_skill_outcomes is a no-op; no panic.
+    #[tokio::test]
+    async fn native_tool_no_active_skills_does_not_panic() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+        let executor = FixedOutputExecutor {
+            summary: "[error] something went wrong".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        // active_skill_names intentionally empty — record_skill_outcomes returns early
+
+        let tool_calls = vec![make_tool_use_request("id-noskill", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // No panic and result is present.
+        let last = agent.messages.last().unwrap();
+        assert!(
+            !last.parts.is_empty(),
+            "result parts must not be empty even when no active skills"
+        );
     }
 }
