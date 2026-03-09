@@ -682,6 +682,15 @@ impl SubAgentManager {
         &mut self.definitions
     }
 
+    /// Insert a pre-built handle directly into the active agents map.
+    ///
+    /// Used in tests to simulate an agent that has already run and left a pending secret
+    /// request in its channel without going through the full spawn lifecycle.
+    #[cfg(test)]
+    pub(crate) fn insert_handle_for_test(&mut self, id: String, handle: SubAgentHandle) {
+        self.agents.insert(id, handle);
+    }
+
     /// Spawn a sub-agent by definition name with real background execution.
     ///
     /// Returns the `task_id` (UUID string) that can be used with [`cancel`](Self::cancel)

@@ -801,6 +801,10 @@ impl<C: Channel> Agent<C> {
             scheduler.wait_event().await;
         };
 
+        // Final drain: if the loop exited via Done on the first tick, secret
+        // requests buffered before completion would otherwise be silently dropped.
+        self.process_pending_secret_requests().await;
+
         Ok(final_status)
     }
 
@@ -5359,6 +5363,133 @@ mod compaction_e2e {
         assert!(
             g.tasks[1].assigned_agent.is_none(),
             "assigned_agent must be cleared for stale Running task"
+        );
+    }
+
+    /// Regression test for issue #1454: secret requests queued before the first `tick()` were
+    /// silently dropped when a single-task plan completed on the very first tick (instant
+    /// completion) because `process_pending_secret_requests()` was only called inside the
+    /// `'tick: loop` body, which exits immediately via `break` before reaching the drain call.
+    ///
+    /// The fix adds a final `process_pending_secret_requests()` drain after the loop exits.
+    /// This test verifies that drain by:
+    /// 1. Pre-loading a `SecretRequest` into the manager's channel **before** the plan runs.
+    /// 2. Using a graph where the first `tick()` emits `Done` (all tasks already Completed).
+    /// 3. Asserting that `try_recv_secret_request()` returns `None` after the plan loop,
+    ///    proving the drain was executed.
+    #[tokio::test]
+    async fn test_secret_drain_after_instant_completion() {
+        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use crate::subagent::hooks::SubagentHooks;
+        use crate::subagent::{
+            PermissionGrants, SecretRequest, SubAgentDef, SubAgentHandle, SubAgentManager,
+            SubAgentState, SubAgentStatus,
+        };
+        use tokio_util::sync::CancellationToken;
+
+        // Channel with one pre-loaded confirmation (approve) so the bridge can resolve the
+        // pending request when it is finally drained.
+        let channel = MockChannel::new(vec![]).with_confirmations(vec![true]);
+
+        // Provider returns aggregation synthesis (needed to satisfy finalize_plan_execution).
+        let provider = mock_provider(vec!["synthesis".into()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+
+        // Build a manager with one agent definition (needed by finalize_plan_execution).
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "worker".into(),
+            description: "A worker".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are helpful.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        });
+
+        // Create a fake handle whose `pending_secret_rx` already contains one SecretRequest.
+        // This simulates a sub-agent that queued the request before the plan loop ran.
+        let (secret_request_tx, pending_secret_rx) = tokio::sync::mpsc::channel::<SecretRequest>(4);
+        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
+        let (status_tx, status_rx) = watch::channel(SubAgentStatus {
+            state: SubAgentState::Completed,
+            last_message: None,
+            turns_used: 1,
+            started_at: std::time::Instant::now(),
+        });
+        drop(status_tx);
+
+        // Pre-load the secret request into the channel before plan execution starts.
+        secret_request_tx
+            .send(SecretRequest {
+                secret_key: "api-key".into(),
+                reason: Some("test drain".into()),
+            })
+            .await
+            .expect("channel must accept request");
+        drop(secret_request_tx); // close sender so try_recv returns None after drain
+
+        let fake_handle_id = "deadbeef-0000-0000-0000-000000000001".to_owned();
+        let def_clone = mgr.definitions()[0].clone();
+        mgr.insert_handle_for_test(
+            fake_handle_id.clone(),
+            SubAgentHandle {
+                id: fake_handle_id.clone(),
+                def: def_clone,
+                task_id: fake_handle_id.clone(),
+                state: SubAgentState::Completed,
+                join_handle: None,
+                cancel: CancellationToken::new(),
+                status_rx,
+                grants: PermissionGrants::default(),
+                pending_secret_rx,
+                secret_tx,
+                started_at_str: "2026-01-01T00:00:00Z".to_owned(),
+                transcript_dir: None,
+            },
+        );
+        agent.subagent_manager = Some(mgr);
+
+        // Graph with one already-Completed task in Running status: the first tick() finds no
+        // Running/Ready tasks and emits Done{Completed} immediately (instant completion).
+        let mut graph = TaskGraph::new("instant goal");
+        let mut node = TaskNode::new(0, "task-0", "already done");
+        node.status = TaskStatus::Completed;
+        node.result = Some(TaskResult {
+            output: "task output".into(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+        agent.pending_graph = Some(graph);
+
+        // Run the plan loop — the fix adds a post-loop drain call.
+        agent
+            .handle_plan_command(PlanCommand::Confirm)
+            .await
+            .unwrap();
+
+        // After plan completion, the secret request must have been drained.
+        // If the drain was NOT called, try_recv_secret_request() would return Some(_).
+        let leftover = agent
+            .subagent_manager
+            .as_mut()
+            .and_then(SubAgentManager::try_recv_secret_request);
+        assert!(
+            leftover.is_none(),
+            "pending secret request must be drained after instant plan completion; \
+             got: {leftover:?}"
         );
     }
 }

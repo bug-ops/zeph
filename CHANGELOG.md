@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Secret requests from sub-agents are now always processed before the plan scheduler terminates, even when the sole task completes on the first tick (instant completion). Previously, `process_pending_secret_requests()` was skipped when `Done` was emitted before the first `wait_event()` (#1454)
 - MCP HTTP transport: statically configured servers (from `[[mcp.servers]]`) now bypass SSRF validation, allowing connections to `localhost` and other private IPs. Dynamically added servers (`/mcp add`, ACP) retain full SSRF protection (#1441)
 - Wire `graph_config` into agent bootstrap: `runner.rs` and `daemon.rs` now call `with_graph_config(config.memory.graph.clone())` at construction time, matching the existing `with_document_config()` pattern. Previously `graph_config.enabled` was always `false` at startup (despite `[memory.graph] enabled = true` in config), causing `maybe_spawn_graph_extraction()` to return immediately and leaving graph extraction, entity resolution, and BFS recall as dead code in production (#1437)
 - Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
