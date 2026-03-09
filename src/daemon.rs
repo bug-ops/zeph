@@ -368,15 +368,24 @@ pub(crate) async fn run_daemon(
 
     let shutdown_tx_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received Ctrl-C, initiating daemon shutdown");
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("received Ctrl-C, initiating daemon shutdown");
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("received SIGTERM, initiating daemon shutdown");
+                }
             }
-            _ = sigterm.recv() => {
-                tracing::info!("received SIGTERM, initiating daemon shutdown");
-            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("received Ctrl-C, initiating daemon shutdown");
         }
         let _ = shutdown_tx_signal.send(true);
     });
