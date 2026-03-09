@@ -2042,10 +2042,68 @@ async fn agent_tool_loop_three_iterations() {
     assert!(collected.len() >= 3);
 }
 
-// -- agent with memory records skill usage for active skills --
+// -- agent with memory records skill usage only for embedding-matched skills --
 
 #[tokio::test]
 async fn agent_records_skill_usage() {
+    use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+
+    let tmpdir = tempfile::tempdir().unwrap();
+    let db_path = tmpdir.path().join("test.db");
+    let db_str = db_path.to_str().unwrap();
+
+    // Provider must support embeddings so the InMemory matcher can score the query.
+    let mut provider_inner = MockProvider::default();
+    provider_inner.default_response = "ok".to_string();
+    provider_inner.supports_embeddings = true;
+    provider_inner.embedding = vec![1.0_f32];
+    let provider = AnyProvider::Mock(provider_inner);
+
+    let outputs = Arc::new(Mutex::new(Vec::new()));
+    let channel = MockChannel::new(vec!["hello"], outputs.clone());
+    let executor = MockToolExecutor;
+
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("tracked-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: tracked-skill\ndescription: tracked\n---\nbody",
+    )
+    .unwrap();
+
+    let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+
+    // Build InMemory matcher with fixed embeddings so tracked-skill is always scored.
+    let all_meta = registry.all_meta();
+    let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32]) })
+    };
+    let matcher = SkillMatcher::new(&all_meta, embed_fn)
+        .await
+        .expect("matcher must build");
+    let backend = Some(SkillMatcherBackend::InMemory(matcher));
+
+    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
+        .await
+        .unwrap();
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let mut agent = Agent::new(provider.clone(), channel, registry, backend, 5, executor)
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+    agent.run().await.unwrap();
+
+    let store = SqliteStore::new(db_str).await.unwrap();
+    let usage = store.load_skill_usage().await.unwrap();
+    let has_tracked = usage.iter().any(|u| u.skill_name == "tracked-skill");
+    assert!(has_tracked);
+}
+
+// -- agent without embedding matcher does not record skill usage --
+
+#[tokio::test]
+async fn agent_no_matcher_skips_skill_usage() {
     let tmpdir = tempfile::tempdir().unwrap();
     let db_path = tmpdir.path().join("test.db");
     let db_str = db_path.to_str().unwrap();
@@ -2071,6 +2129,7 @@ async fn agent_records_skill_usage() {
         .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
+    // No matcher: all skills fall back to the full set — usage must NOT be recorded.
     let mut agent = Agent::new(provider.clone(), channel, registry, None, 5, executor).with_memory(
         std::sync::Arc::new(memory),
         cid,
@@ -2082,8 +2141,10 @@ async fn agent_records_skill_usage() {
 
     let store = SqliteStore::new(db_str).await.unwrap();
     let usage = store.load_skill_usage().await.unwrap();
-    let has_tracked = usage.iter().any(|u| u.skill_name == "tracked-skill");
-    assert!(has_tracked);
+    assert!(
+        usage.is_empty(),
+        "no usage should be recorded when skill matching falls back to the full set"
+    );
 }
 
 // -- streaming provider with empty response --

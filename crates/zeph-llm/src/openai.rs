@@ -24,6 +24,7 @@ pub struct OpenAiProvider {
     reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     generation_overrides: Option<GenerationOverrides>,
 }
 
@@ -39,6 +40,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("reasoning_effort", &self.reasoning_effort)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_cache", &self.last_cache.lock().ok())
+            .field("last_usage", &self.last_usage.lock().ok())
             .field("generation_overrides", &self.generation_overrides)
             .finish()
     }
@@ -56,6 +58,7 @@ impl Clone for OpenAiProvider {
             reasoning_effort: self.reasoning_effort.clone(),
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
+            last_usage: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
         }
     }
@@ -84,6 +87,7 @@ impl OpenAiProvider {
             reasoning_effort,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
+            last_usage: std::sync::Mutex::new(None),
             generation_overrides: None,
         }
     }
@@ -186,21 +190,24 @@ impl OpenAiProvider {
     }
 
     fn store_cache_usage(&self, usage: &OpenAiUsage) {
+        if let Ok(mut guard) = self.last_usage.lock() {
+            *guard = Some((usage.prompt_tokens, usage.completion_tokens));
+        }
         let cached = usage
             .prompt_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens);
-        if cached > 0 {
-            if let Ok(mut guard) = self.last_cache.lock() {
-                *guard = Some((0, cached));
-            }
-            tracing::debug!(
-                prompt_tokens = usage.prompt_tokens,
-                cached_tokens = cached,
-                completion_tokens = usage.completion_tokens,
-                "OpenAI API usage"
-            );
+        if cached > 0
+            && let Ok(mut guard) = self.last_cache.lock()
+        {
+            *guard = Some((0, cached));
         }
+        tracing::debug!(
+            prompt_tokens = usage.prompt_tokens,
+            cached_tokens = cached,
+            completion_tokens = usage.completion_tokens,
+            "OpenAI API usage"
+        );
     }
 
     fn emit_status(&self, msg: impl Into<String>) {
@@ -459,6 +466,10 @@ impl LlmProvider for OpenAiProvider {
         self.last_cache.lock().ok().and_then(|g| *g)
     }
 
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        self.last_usage.lock().ok().and_then(|g| *g)
+    }
+
     fn supports_structured_output(&self) -> bool {
         true
     }
@@ -509,6 +520,11 @@ impl LlmProvider for OpenAiProvider {
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
+
+        if let Some(ref usage) = resp.usage {
+            self.store_cache_usage(usage);
+        }
+
         let content = resp
             .choices
             .first()
@@ -1670,6 +1686,40 @@ mod tests {
     fn last_cache_usage_initially_none() {
         let p = test_provider();
         assert!(p.last_cache_usage().is_none());
+    }
+
+    #[test]
+    fn last_usage_initially_none() {
+        let p = test_provider();
+        assert!(p.last_usage().is_none());
+    }
+
+    #[test]
+    fn store_cache_usage_stores_token_counts() {
+        let p = test_provider();
+        let usage = OpenAiUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            prompt_tokens_details: None,
+        };
+        p.store_cache_usage(&usage);
+        let (prompt, completion) = p.last_usage().unwrap();
+        assert_eq!(prompt, 1000);
+        assert_eq!(completion, 200);
+    }
+
+    #[test]
+    fn clone_resets_last_usage() {
+        let p = test_provider();
+        let usage = OpenAiUsage {
+            prompt_tokens: 500,
+            completion_tokens: 100,
+            prompt_tokens_details: None,
+        };
+        p.store_cache_usage(&usage);
+        assert!(p.last_usage().is_some());
+        let cloned = p.clone();
+        assert!(cloned.last_usage().is_none());
     }
 
     #[test]
