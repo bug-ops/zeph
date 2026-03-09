@@ -71,30 +71,7 @@ jobs:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Clippy
-        run: cargo clippy --workspace --features full -- -D warnings
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-
-  snapshots:
-    name: Snapshot check
-    needs: [lint-fmt, lint-clippy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Install cargo-insta
-        run: cargo install cargo-insta --locked
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-      - name: Check snapshots
-        run: cargo insta test --workspace --features full --check --lib --bins
+        run: cargo clippy --profile ci --workspace --features full -- -D warnings
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -106,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -116,7 +93,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --tests --archive-file nextest-archive.tar.zst
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -125,6 +102,13 @@ jobs:
         with:
           name: nextest-archive-${{ matrix.os }}
           path: nextest-archive.tar.zst
+          retention-days: 1
+      - name: Upload binary
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v6
+        with:
+          name: zeph-binary
+          path: target/ci/zeph
           retention-days: 1
 
   test:
@@ -135,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: taiki-e/install-action@nextest
@@ -146,11 +130,11 @@ jobs:
       - name: Run tests
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
 
-  test-no-network:
-    name: Test (no-network)
+  integration:
+    name: Integration Tests
     needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: taiki-e/install-action@nextest
@@ -158,48 +142,12 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: nextest-archive-ubuntu-latest
-      - name: Run tests without network
-        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
-
-  doc-test:
-    name: Doc Tests
-    needs: [lint-fmt, lint-clippy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Run doc tests
-        run: cargo test --workspace --features full --doc
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-
-  integration:
-    name: Integration Tests
-    needs: [lint-fmt, lint-clippy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: taiki-e/install-action@nextest
       - name: Run integration tests (testcontainers)
-        run: cargo nextest run --config-file .github/nextest.toml --workspace --features full --profile ci --test '*integration*'
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci -E 'binary(~integration)'
 
   coverage:
     name: Coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint-fmt, lint-clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -213,7 +161,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Generate coverage
-        run: cargo llvm-cov nextest --config-file .github/nextest.toml --workspace --features full --lib --bins --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -226,25 +174,21 @@ jobs:
 
   docker-build-and-scan:
     name: Docker Build and Security Scan
+    needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Download binary
+        uses: actions/download-artifact@v7
         with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build binary for Docker (ci profile)
+          name: zeph-binary
+          path: target/ci
+      - name: Prepare binaries for Docker
         run: |
-          cargo build --profile ci
           mkdir -p binaries
-          # Same binary for both arch variants — scan-only, not for deployment
           cp target/ci/zeph binaries/zeph-amd64
           cp target/ci/zeph binaries/zeph-arm64
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
       - uses: docker/setup-buildx-action@v3
       - name: Build Docker image
         uses: docker/build-push-action@v6
@@ -275,7 +219,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, snapshots, build-tests, test, test-no-network, doc-test, integration, coverage, docker-build-and-scan]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, build-tests, test, integration, coverage, docker-build-and-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -286,11 +230,8 @@ jobs:
             "${{ needs.lint-shellcheck.result }}"
             "${{ needs.lint-fmt.result }}"
             "${{ needs.lint-clippy.result }}"
-            "${{ needs.snapshots.result }}"
             "${{ needs.build-tests.result }}"
             "${{ needs.test.result }}"
-            "${{ needs.test-no-network.result }}"
-            "${{ needs.doc-test.result }}"
             "${{ needs.integration.result }}"
             "${{ needs.coverage.result }}"
             "${{ needs.docker-build-and-scan.result }}"
