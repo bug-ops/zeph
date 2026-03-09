@@ -703,6 +703,11 @@ impl<C: Channel> Agent<C> {
         // parallel plans (e.g. 0, 2, 4), so we use a local counter instead.
         let mut spawn_counter: usize = 0;
 
+        // Tracks (handle_id, secret_key) pairs denied this plan execution to prevent
+        // re-prompting the user when a sub-agent re-requests the same secret after denial.
+        let mut denied_secrets: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
 
@@ -790,7 +795,8 @@ impl<C: Channel> Agent<C> {
             }
 
             // Drain all pending secret requests this tick (MED-2 fix).
-            self.process_pending_secret_requests().await;
+            self.process_pending_secret_requests(&mut denied_secrets)
+                .await;
 
             // Update TUI with current graph state.
             let snapshot = crate::metrics::TaskGraphSnapshot::from(scheduler.graph());
@@ -803,7 +809,8 @@ impl<C: Channel> Agent<C> {
 
         // Final drain: if the loop exited via Done on the first tick, secret
         // requests buffered before completion would otherwise be silently dropped.
-        self.process_pending_secret_requests().await;
+        self.process_pending_secret_requests(&mut std::collections::HashSet::new())
+            .await;
 
         Ok(final_status)
     }
@@ -812,7 +819,13 @@ impl<C: Channel> Agent<C> {
     ///
     /// SEC-P1-02: explicit user confirmation is required before granting any secret to a
     /// sub-agent. Denial is the default on timeout or channel error.
-    async fn process_pending_secret_requests(&mut self) {
+    ///
+    /// `denied` tracks `(handle_id, secret_key)` pairs already denied this plan execution.
+    /// Re-requests for a denied pair are auto-denied without prompting the user.
+    async fn process_pending_secret_requests(
+        &mut self,
+        denied: &mut std::collections::HashSet<(String, String)>,
+    ) {
         loop {
             let pending = self
                 .subagent_manager
@@ -821,12 +834,24 @@ impl<C: Channel> Agent<C> {
             let Some((req_handle_id, req)) = pending else {
                 break;
             };
+            let deny_key = (req_handle_id.clone(), req.secret_key.clone());
+            if denied.contains(&deny_key) {
+                tracing::debug!(
+                    handle_id = %req_handle_id,
+                    secret_key = %req.secret_key,
+                    "skipping duplicate secret prompt for already-denied key"
+                );
+                if let Some(mgr) = self.subagent_manager.as_mut() {
+                    let _ = mgr.deny_secret(&req_handle_id);
+                }
+                continue;
+            }
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
                 req.secret_key,
                 req.reason
                     .as_deref()
-                    .map(|r| format!(" Reason: {r}"))
+                    .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
                     .unwrap_or_default()
             );
             // CRIT-1 fix: use select! to avoid blocking the tick loop forever.
@@ -845,6 +870,7 @@ impl<C: Channel> Agent<C> {
                         let _ = mgr.deliver_secret(&req_handle_id, key);
                     }
                 } else {
+                    denied.insert(deny_key);
                     let _ = mgr.deny_secret(&req_handle_id);
                 }
             }
@@ -5611,5 +5637,66 @@ mod compaction_e2e {
             "pending secret request must be drained after instant plan completion; \
              got: {leftover:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod secret_reason_truncation {
+    /// Build the prompt string the same way `process_pending_secret_requests` does.
+    fn build_prompt(secret_key: &str, reason: Option<&str>) -> String {
+        format!(
+            "Sub-agent requests secret '{}'. Allow?{}",
+            secret_key,
+            reason
+                .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
+                .unwrap_or_default()
+        )
+    }
+
+    #[test]
+    fn reason_short_ascii_unchanged() {
+        let reason = "need access to external API";
+        let prompt = build_prompt("MY_SECRET", Some(reason));
+        assert!(prompt.contains(reason));
+    }
+
+    #[test]
+    fn reason_over_200_chars_truncated_to_200() {
+        let reason = "a".repeat(300);
+        let prompt = build_prompt("MY_SECRET", Some(&reason));
+        // Extract the reason portion after "Reason: "
+        let after = prompt.split("Reason: ").nth(1).unwrap();
+        // truncate_to_chars appends … (U+2026) when truncating: 200 chars + ellipsis = 201.
+        assert_eq!(after.chars().count(), 201);
+        assert!(after.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn reason_exactly_200_chars_unchanged() {
+        let reason = "b".repeat(200);
+        let prompt = build_prompt("MY_SECRET", Some(&reason));
+        let after = prompt.split("Reason: ").nth(1).unwrap();
+        // Exactly at limit: no truncation, no ellipsis.
+        assert_eq!(after.chars().count(), 200);
+        assert!(!after.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn reason_multibyte_utf8_truncated_at_char_boundary() {
+        // Each Cyrillic char is 2 bytes; 300 chars = 600 bytes.
+        let reason = "й".repeat(300);
+        let prompt = build_prompt("MY_SECRET", Some(&reason));
+        let after = prompt.split("Reason: ").nth(1).unwrap();
+        // truncate_to_chars appends … when truncating: 200 chars + ellipsis = 201.
+        assert_eq!(after.chars().count(), 201);
+        assert!(after.ends_with('\u{2026}'));
+        assert!(std::str::from_utf8(after.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn reason_none_produces_no_reason_suffix() {
+        let prompt = build_prompt("MY_SECRET", None);
+        assert!(!prompt.contains("Reason:"));
+        assert!(prompt.ends_with("Allow?"));
     }
 }
