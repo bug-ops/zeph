@@ -22,6 +22,7 @@ static EXPLICIT_REJECTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         Regex::new(r"(?i)^(no|nope|wrong|incorrect|that'?s\s+not\s+(right|correct|what\s+i))")
             .unwrap(),
+        Regex::new(r"(?i)^that'?s\s+(wrong|incorrect|bad|terrible|not\s+helpful)\b").unwrap(),
         Regex::new(r"(?i)\b(don'?t|do\s+not|stop|quit)\s+(do|doing|use|using)\b").unwrap(),
         Regex::new(r"(?i)\bthat\s+(didn'?t|does\s*n'?t|won'?t)\s+work\b").unwrap(),
         Regex::new(r"(?i)\b(bad|terrible|useless|broken)\s+(answer|response|output|result)\b")
@@ -469,6 +470,30 @@ mod tests {
     fn detect_explicit_rejection_that_didnt_work() {
         let d = detector();
         let signal = d.detect("that didn't work at all", &[]).unwrap();
+        assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+    }
+
+    #[test]
+    fn detect_explicit_rejection_thats_wrong() {
+        let d = detector();
+        let signal = d
+            .detect("That's wrong, I wanted something different", &[])
+            .unwrap();
+        assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+        assert!(signal.confidence >= 0.6);
+    }
+
+    #[test]
+    fn detect_explicit_rejection_thats_incorrect() {
+        let d = detector();
+        let signal = d.detect("that's incorrect", &[]).unwrap();
+        assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+    }
+
+    #[test]
+    fn detect_explicit_rejection_thats_bad() {
+        let d = detector();
+        let signal = d.detect("That's bad, try again", &[]).unwrap();
         assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
     }
 
