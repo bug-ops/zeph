@@ -2802,3 +2802,126 @@ fn logging_rotation_serde_roundtrip() {
         .expect("parse toml");
     assert_eq!(never, LogRotation::Never);
 }
+
+// --- Threshold ordering validation tests ---
+
+#[test]
+fn deferred_above_compaction_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 0.85;
+    config.memory.compaction_threshold = 0.80;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold") && err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_equal_compaction_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 0.80;
+    config.memory.compaction_threshold = 0.80;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold") && err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_below_compaction_accepted_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 0.70;
+    config.memory.compaction_threshold = 0.80;
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn compaction_threshold_zero_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compaction_threshold = 0.0;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compaction_threshold_one_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compaction_threshold = 1.0;
+    config.memory.deferred_apply_threshold = 0.70;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compaction_threshold_negative_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compaction_threshold = -0.1;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_threshold_zero_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 0.0;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_threshold_one_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 1.0;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_threshold_above_one_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = 1.5;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deferred_threshold_nan_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.deferred_apply_threshold = f32::NAN;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("deferred_apply_threshold"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compaction_threshold_infinity_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.compaction_threshold = f32::INFINITY;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("compaction_threshold"),
+        "unexpected error: {err}"
+    );
+}
