@@ -232,6 +232,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_trust_config(mut self, config: crate::config::TrustConfig) -> Self {
+        self.skill_state.trust_config = config;
+        self
+    }
+
+    #[must_use]
     pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
         self.config_path = Some(path);
         self.config_reload_rx = Some(rx);
