@@ -8,11 +8,25 @@ use std::sync::Arc;
 use zeph_skills::loader::Skill;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::ToolCall;
-use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
-use zeph_tools::registry::ToolDef;
+use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput, extract_fenced_blocks};
+use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use super::def::{SkillFilter, ToolPolicy};
 use super::error::SubAgentError;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Collect all fenced-block language tags from an executor's tool definitions.
+fn collect_fenced_tags(executor: &dyn ErasedToolExecutor) -> Vec<&'static str> {
+    executor
+        .tool_definitions_erased()
+        .into_iter()
+        .filter_map(|def| match def.invocation {
+            InvocationHint::FencedBlock(tag) => Some(tag),
+            InvocationHint::ToolCall => None,
+        })
+        .collect()
+}
 
 // ── Tool filtering ────────────────────────────────────────────────────────────
 
@@ -27,16 +41,21 @@ pub struct FilteredToolExecutor {
     inner: Arc<dyn ErasedToolExecutor>,
     policy: ToolPolicy,
     disallowed: Vec<String>,
+    /// Fenced-block language tags collected from `inner` at construction time.
+    /// Used to detect actual fenced-block tool invocations in LLM responses.
+    fenced_tags: Vec<&'static str>,
 }
 
 impl FilteredToolExecutor {
     /// Create a new filtered executor.
     #[must_use]
     pub fn new(inner: Arc<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
+        let fenced_tags = collect_fenced_tags(&*inner);
         Self {
             inner,
             policy,
             disallowed: Vec::new(),
+            fenced_tags,
         }
     }
 
@@ -50,11 +69,20 @@ impl FilteredToolExecutor {
         policy: ToolPolicy,
         disallowed: Vec<String>,
     ) -> Self {
+        let fenced_tags = collect_fenced_tags(&*inner);
         Self {
             inner,
             policy,
             disallowed,
+            fenced_tags,
         }
+    }
+
+    /// Return `true` if `response` contains at least one fenced block matching a registered tool.
+    fn has_fenced_tool_invocation(&self, response: &str) -> bool {
+        self.fenced_tags
+            .iter()
+            .any(|tag| !extract_fenced_blocks(response, tag).is_empty())
     }
 
     /// Check whether `tool_id` is allowed under the current policy and denylist.
@@ -76,29 +104,43 @@ impl FilteredToolExecutor {
 impl ErasedToolExecutor for FilteredToolExecutor {
     fn execute_erased<'a>(
         &'a self,
-        _response: &'a str,
+        response: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
-        // Fenced-block (markdown code block) invocation cannot have the tool name
-        // extracted before execution, so it cannot be checked against ToolPolicy.
         // Sub-agents must use structured tool calls (execute_tool_call_erased).
-        // Fenced-block execution is disabled entirely for sub-agents to prevent
-        // policy bypass (SEC-03).
-        tracing::warn!("sub-agent attempted fenced-block tool invocation — blocked by policy");
-        Box::pin(std::future::ready(Err(ToolError::Blocked {
-            command: "fenced-block".into(),
-        })))
+        // Fenced-block execution is disabled to prevent policy bypass (SEC-03).
+        //
+        // However, this method is also called for plain-text LLM responses that
+        // contain markdown code fences unrelated to tool invocations. Returning
+        // Err unconditionally causes the agent loop to treat every text response
+        // as a failed tool call and exhaust all turns without producing output.
+        //
+        // Only block when the response actually contains a fenced block that
+        // matches a registered fenced-block tool language tag.
+        if self.has_fenced_tool_invocation(response) {
+            tracing::warn!("sub-agent attempted fenced-block tool invocation — blocked by policy");
+            return Box::pin(std::future::ready(Err(ToolError::Blocked {
+                command: "fenced-block".into(),
+            })));
+        }
+        Box::pin(std::future::ready(Ok(None)))
     }
 
     fn execute_confirmed_erased<'a>(
         &'a self,
-        _response: &'a str,
+        response: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
-        // Same as execute_erased: fenced-block is disabled for sub-agents.
-        Box::pin(std::future::ready(Err(ToolError::Blocked {
-            command: "fenced-block".into(),
-        })))
+        // Same policy as execute_erased: only block actual fenced-block invocations.
+        if self.has_fenced_tool_invocation(response) {
+            tracing::warn!(
+                "sub-agent attempted confirmed fenced-block tool invocation — blocked by policy"
+            );
+            return Box::pin(std::future::ready(Err(ToolError::Blocked {
+                command: "fenced-block".into(),
+            })));
+        }
+        Box::pin(std::future::ready(Ok(None)))
     }
 
     fn tool_definitions_erased(&self) -> Vec<ToolDef> {
@@ -295,6 +337,71 @@ mod tests {
 
     struct StubExecutor {
         tools: Vec<&'static str>,
+    }
+
+    /// Stub executor that exposes tools with `InvocationHint::FencedBlock(tag)`.
+    struct StubFencedExecutor {
+        tag: &'static str,
+    }
+
+    impl ErasedToolExecutor for StubFencedExecutor {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+            use zeph_tools::registry::InvocationHint;
+            vec![ToolDef {
+                id: self.tag.into(),
+                description: "fenced stub".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::FencedBlock(self.tag),
+            }]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            let result = Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+            }));
+            Box::pin(std::future::ready(result))
+        }
+    }
+
+    fn fenced_stub_box(tag: &'static str) -> Arc<dyn ErasedToolExecutor> {
+        Arc::new(StubFencedExecutor { tag })
     }
 
     impl ErasedToolExecutor for StubExecutor {
@@ -507,18 +614,99 @@ mod tests {
         assert_eq!(defs.len(), 2);
     }
 
+    // ── fenced-block detection tests (fix for #1432) ──────────────────────
+
     #[tokio::test]
-    async fn fenced_block_execute_is_blocked() {
-        let exec = FilteredToolExecutor::new(stub_box(&["shell"]), ToolPolicy::InheritAll);
-        let res = exec.execute_erased("```shell\nls\n```").await;
-        assert!(res.is_err());
+    async fn fenced_block_matching_tag_is_blocked() {
+        // Executor has a FencedBlock("bash") tool; response contains ```bash block.
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let res = exec.execute_erased("```bash\nls\n```").await;
+        assert!(
+            res.is_err(),
+            "actual fenced-block invocation must be blocked"
+        );
     }
 
     #[tokio::test]
-    async fn fenced_block_execute_confirmed_is_blocked() {
+    async fn fenced_block_matching_tag_confirmed_is_blocked() {
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let res = exec.execute_confirmed_erased("```bash\nls\n```").await;
+        assert!(
+            res.is_err(),
+            "actual fenced-block invocation (confirmed) must be blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_fenced_tools_plain_text_returns_ok_none() {
+        // No fenced-block tools registered → plain text must return Ok(None).
         let exec = FilteredToolExecutor::new(stub_box(&["shell"]), ToolPolicy::InheritAll);
-        let res = exec.execute_confirmed_erased("```shell\nls\n```").await;
-        assert!(res.is_err());
+        let res = exec.execute_erased("This is a plain text response.").await;
+        assert!(
+            res.unwrap().is_none(),
+            "plain text must not be treated as a tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn markdown_non_tool_fence_returns_ok_none() {
+        // Response has a ```rust fence but no FencedBlock tool with tag "rust" is registered.
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let res = exec
+            .execute_erased("Here is some code:\n```rust\nfn main() {}\n```")
+            .await;
+        assert!(
+            res.unwrap().is_none(),
+            "non-tool code fence must not trigger blocking"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_fenced_tools_plain_text_confirmed_returns_ok_none() {
+        let exec = FilteredToolExecutor::new(stub_box(&["shell"]), ToolPolicy::InheritAll);
+        let res = exec
+            .execute_confirmed_erased("Plain response without any fences.")
+            .await;
+        assert!(res.unwrap().is_none());
+    }
+
+    /// Regression test for #1432: fenced executor + plain text (no fences at all) must return
+    /// Ok(None) so the agent loop can break. Previously this returned Err(Blocked)
+    /// unconditionally, exhausting all sub-agent turns.
+    #[tokio::test]
+    async fn fenced_executor_plain_text_returns_ok_none() {
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let res = exec
+            .execute_erased("Here is my analysis of the code. No shell commands needed.")
+            .await;
+        assert!(
+            res.unwrap().is_none(),
+            "plain text with fenced executor must not be treated as a tool call"
+        );
+    }
+
+    /// Unclosed fence (no closing ```) must not trigger blocking — it is not an executable
+    /// tool invocation. Verified by debugger as an intentional false-negative.
+    #[tokio::test]
+    async fn unclosed_fenced_block_returns_ok_none() {
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let res = exec.execute_erased("```bash\nls -la\n").await;
+        assert!(
+            res.unwrap().is_none(),
+            "unclosed fenced block must not be treated as a tool invocation"
+        );
+    }
+
+    /// Multiple fenced blocks where one matches a registered tag — must block.
+    #[tokio::test]
+    async fn multiple_fences_one_matching_tag_is_blocked() {
+        let exec = FilteredToolExecutor::new(fenced_stub_box("bash"), ToolPolicy::InheritAll);
+        let response = "Here is an example:\n```python\nprint('hello')\n```\nAnd the fix:\n```bash\nrm -rf /tmp/old\n```";
+        let res = exec.execute_erased(response).await;
+        assert!(
+            res.is_err(),
+            "response containing a matching fenced block must be blocked"
+        );
     }
 
     // ── disallowed_tools (tools.except) tests ─────────────────────────────

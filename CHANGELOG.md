@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `FilteredToolExecutor::execute_erased()` and `execute_confirmed_erased()` previously returned `Err(ToolError::Blocked)` for every LLM response unconditionally, causing sub-agent loops to exhaust all `max_turns` without producing output (#1432)
+- The executor now inspects the response for actual fenced-block tool invocations by matching against registered `InvocationHint::FencedBlock` language tags via `extract_fenced_blocks()`
+- Plain text responses and markdown code fences that do not match any registered tool tag now return `Ok(None)`, allowing the agent loop to break normally; SEC-03 policy is preserved for genuine fenced-block tool invocations
+
 ## [0.14.2] - 2026-03-09
 
 ### Fixed
