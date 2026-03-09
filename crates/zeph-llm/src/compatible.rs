@@ -137,6 +137,10 @@ impl LlmProvider for CompatibleProvider {
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.inner.last_cache_usage()
     }
+
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        self.inner.last_usage()
+    }
 }
 
 #[cfg(test)]
@@ -226,5 +230,10 @@ mod tests {
         let p = test_provider();
         let result = p.embed("test").await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn last_usage_initially_none() {
+        assert!(test_provider().last_usage().is_none());
     }
 }
