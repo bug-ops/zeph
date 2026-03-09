@@ -232,7 +232,6 @@ impl SqliteStore {
              SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes, \
              COUNT(*) - SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as failures \
              FROM skill_outcomes \
-             WHERE outcome NOT IN ('user_approval', 'user_rejection') \
              GROUP BY skill_name \
              ORDER BY total DESC",
         )
