@@ -282,11 +282,12 @@ impl SqliteStore {
 
     /// Copy all messages from one conversation to another, preserving order.
     ///
-    /// Also copies associated summaries. Per-conversation state that is intentionally
-    /// NOT copied: embeddings (re-indexed on demand), deferred tool summaries (treated as
-    /// fresh context budget), and compaction position markers (the forked session starts
-    /// with full message visibility). The forked session inherits conversation history but
-    /// begins fresh compaction tracking.
+    /// Summaries are intentionally NOT copied: their `first_message_id`/`last_message_id`
+    /// reference message IDs from the source conversation which differ from the new IDs
+    /// assigned to the copied messages, making the compaction cursor incorrect. The forked
+    /// session inherits the full message history and builds its own compaction state from
+    /// scratch. Other per-conversation state also excluded: embeddings (re-indexed on demand),
+    /// deferred tool summaries (treated as fresh context budget).
     ///
     /// # Errors
     ///
@@ -312,22 +313,9 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
-        // Copy summaries so the forked session has compaction state context.
-        // The message IDs in first_message_id/last_message_id reference the new conversation's
-        // messages by positional offset — since we insert in order, the IDs will differ.
-        // We copy the summary content and token estimates but adjust message IDs by offset.
-        // If offset mapping is complex, copy without ID adjustment (slight approximation).
-        // For MVP: copy summaries without message ID remapping; they provide context but
-        // compaction position is reset to fresh tracking in the new session.
-        sqlx::query(
-            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
-             SELECT ?, content, first_message_id, last_message_id, token_estimate \
-             FROM summaries WHERE conversation_id = ? ORDER BY id",
-        )
-        .bind(target)
-        .bind(source)
-        .execute(&mut *tx)
-        .await?;
+        // Summaries are NOT copied — their message ID boundaries reference the source
+        // conversation and would corrupt the compaction cursor in the forked session.
+        // The forked session builds compaction state from its own messages.
 
         tx.commit().await?;
         Ok(())
@@ -602,5 +590,65 @@ mod tests {
         store.copy_conversation(src, dst).await.unwrap();
         let msgs = store.load_history(dst, 100).await.unwrap();
         assert!(msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn copy_conversation_does_not_copy_summaries() {
+        // Summaries are intentionally excluded because their first/last_message_id
+        // boundaries would reference source message IDs, corrupting the compaction cursor.
+        let store = make_store().await;
+        let src = store.create_conversation().await.unwrap();
+        store.save_message(src, "user", "hello").await.unwrap();
+        // Insert a summary directly so we can verify it is not copied.
+        sqlx::query(
+            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
+             VALUES (?, 'summary text', 1, 1, 10)",
+        )
+        .bind(src)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let dst = store.create_conversation().await.unwrap();
+        store.copy_conversation(src, dst).await.unwrap();
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
+                .bind(dst)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "summaries must not be copied to forked conversation");
+    }
+
+    #[tokio::test]
+    async fn concurrent_sessions_get_distinct_conversation_ids() {
+        let store = make_store().await;
+        let cid1 = store.create_conversation().await.unwrap();
+        let cid2 = store.create_conversation().await.unwrap();
+        store
+            .create_acp_session_with_conversation("sess-a", cid1)
+            .await
+            .unwrap();
+        store
+            .create_acp_session_with_conversation("sess-b", cid2)
+            .await
+            .unwrap();
+
+        let retrieved1 = store
+            .get_acp_session_conversation_id("sess-a")
+            .await
+            .unwrap();
+        let retrieved2 = store
+            .get_acp_session_conversation_id("sess-b")
+            .await
+            .unwrap();
+
+        assert!(retrieved1.is_some());
+        assert!(retrieved2.is_some());
+        assert_ne!(
+            retrieved1, retrieved2,
+            "concurrent sessions must get distinct conversation_ids"
+        );
     }
 }
