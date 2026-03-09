@@ -12,31 +12,32 @@ use zeph_core::agent::Agent;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(any(feature = "acp", feature = "acp-http"))]
 use zeph_core::vault::Secret;
-
-/// Run Zeph as an ACP server over stdio.
-///
-/// All dependencies needed to construct an Agent inside the ACP spawner.
-/// Consumed once on first `session/new` (Phase 1 MVP: single session).
 #[cfg(feature = "acp")]
-struct AgentDeps {
+use zeph_tools::ErasedToolExecutor;
+
+/// Shared dependencies reused across all ACP sessions.
+///
+/// Fields in this struct are expensive to create and safe to share across sessions.
+/// `AnyProvider` is intentionally shared via `Arc` — all provider variants use internal
+/// HTTP connection pools (`reqwest::Client`) that benefit from connection reuse across sessions.
+/// This is equivalent to sharing an HTTP client pool, which is the intended design.
+///
+/// Per-session state (`conversation_id`, reload receivers, cancel signals) is created fresh
+/// in `spawn_acp_agent` for each session.
+#[cfg(feature = "acp")]
+struct SharedAgentDeps {
     provider: zeph_llm::any::AnyProvider,
     registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
+    /// Shared skill matcher: `Clone` is cheap for Qdrant (connection-pool sharing), and
+    /// involves copying in-memory embedding vectors only for the `InMemory` variant.
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     max_active_skills: usize,
-    tool_executor: zeph_tools::CompositeExecutor<
-        zeph_tools::CompositeExecutor<
-            zeph_tools::FileExecutor,
-            zeph_tools::CompositeExecutor<zeph_tools::ShellExecutor, zeph_tools::WebScrapeExecutor>,
-        >,
-        zeph_mcp::McpToolExecutor,
-    >,
+    tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor>,
     max_tool_iterations: usize,
     model_name: String,
     embed_model: String,
     skill_paths: Vec<PathBuf>,
-    reload_rx: tokio::sync::mpsc::Receiver<zeph_skills::watcher::SkillEvent>,
     memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
-    conversation_id: zeph_memory::ConversationId,
     history_limit: u32,
     recall_limit: usize,
     summarization_threshold: usize,
@@ -45,6 +46,11 @@ struct AgentDeps {
     compaction_preserve_tail: usize,
     prune_protect_tokens: usize,
     deferred_apply_threshold: f32,
+    /// Broadcast sender for skill reload events. Each session subscribes independently.
+    skill_reload_tx: tokio::sync::broadcast::Sender<zeph_skills::watcher::SkillEvent>,
+    /// Broadcast sender for config reload events. Each session subscribes independently.
+    config_reload_tx: tokio::sync::broadcast::Sender<zeph_core::config_watcher::ConfigEvent>,
+    /// Shared shutdown signal (`watch::Receiver` is `Clone`).
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     security: zeph_core::config::SecurityConfig,
     timeouts: zeph_core::config::TimeoutConfig,
@@ -53,7 +59,6 @@ struct AgentDeps {
     overflow_config: zeph_tools::OverflowConfig,
     permission_policy: zeph_tools::PermissionPolicy,
     config_path: PathBuf,
-    config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
@@ -91,6 +96,44 @@ struct AgentDeps {
     debug_config: zeph_core::config::DebugConfig,
 }
 
+/// Forward events from a `broadcast::Receiver` to an `mpsc::Receiver`.
+///
+/// The forwarding task exits when:
+/// - The `mpsc::Sender` is dropped (agent loop finished): `tx.send()` returns `Err`.
+/// - The `CancellationToken` is cancelled (session evicted or shutdown).
+/// - The broadcast channel is closed: `brx.recv()` returns `RecvError::Closed`.
+///
+/// Lagged broadcast events are logged and skipped — skill/config reloads are infrequent
+/// and a missed reload only delays hot-reload, not correctness.
+#[cfg(feature = "acp")]
+fn broadcast_to_mpsc<T: Clone + Send + 'static>(
+    mut brx: tokio::sync::broadcast::Receiver<T>,
+    cancel: zeph_memory::CancellationToken,
+) -> tokio::sync::mpsc::Receiver<T> {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                result = brx.recv() => {
+                    match result {
+                        Ok(item) => {
+                            if tx.send(item).await.is_err() {
+                                break; // Receiver dropped: agent loop finished.
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "broadcast_to_mpsc: lagged, some reload events dropped");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
 /// Build all agent dependencies from config for the ACP server.
 #[cfg(feature = "acp")]
 #[allow(clippy::too_many_lines)]
@@ -99,7 +142,7 @@ async fn build_acp_deps(
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
-) -> anyhow::Result<(AgentDeps, Box<dyn std::any::Any>)> {
+) -> anyhow::Result<(SharedAgentDeps, Box<dyn std::any::Any>)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     let (provider, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
@@ -118,11 +161,6 @@ async fn build_acp_deps(
         .build_skill_matcher(&provider, &all_meta_refs, &memory)
         .await;
     let config = app.config();
-
-    let conversation_id = match memory.sqlite().latest_conversation_id().await? {
-        Some(id) => id,
-        None => memory.sqlite().create_conversation().await?,
-    };
 
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -155,7 +193,9 @@ async fn build_acp_deps(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
     );
-    let tool_executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+    let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
+        zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
+    );
 
     let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
     let summary_provider = app.build_summary_provider();
@@ -163,14 +203,42 @@ async fn build_acp_deps(
     let acp_project_rules = collect_project_rules(&skill_paths);
     let zeph_core::bootstrap::WatcherBundle {
         skill_watcher,
-        skill_reload_rx: reload_rx,
+        skill_reload_rx: mpsc_skill_rx,
         config_watcher,
-        config_reload_rx,
+        config_reload_rx: mpsc_config_rx,
     } = app.build_watchers();
     let config_path_owned = app.config_path().to_owned();
     let (_, shutdown_rx) = AppBuilder::build_shutdown();
 
-    let deps = AgentDeps {
+    // Convert mpsc receivers from watchers to broadcast senders so each ACP session
+    // can subscribe independently. Option A (critic S3): keep watchers unchanged,
+    // forward mpsc→broadcast only here in build_acp_deps.
+    // Size the buffer proportionally to max_sessions so a burst of reloads does not
+    // cause Lagged drops when many sessions are active (S3).
+    let broadcast_cap = std::cmp::max(64, config.acp.max_sessions * 2);
+    let (skill_reload_tx, _) = tokio::sync::broadcast::channel(broadcast_cap);
+    let (config_reload_tx, _) = tokio::sync::broadcast::channel(broadcast_cap);
+
+    {
+        let skill_tx = skill_reload_tx.clone();
+        tokio::spawn(async move {
+            let mut rx = mpsc_skill_rx;
+            while let Some(ev) = rx.recv().await {
+                let _ = skill_tx.send(ev);
+            }
+        });
+    }
+    {
+        let cfg_tx = config_reload_tx.clone();
+        tokio::spawn(async move {
+            let mut rx = mpsc_config_rx;
+            while let Some(ev) = rx.recv().await {
+                let _ = cfg_tx.send(ev);
+            }
+        });
+    }
+
+    let deps = SharedAgentDeps {
         provider,
         registry,
         matcher,
@@ -180,9 +248,9 @@ async fn build_acp_deps(
         model_name: config.llm.model.clone(),
         embed_model,
         skill_paths,
-        reload_rx,
+        skill_reload_tx,
+        config_reload_tx,
         memory,
-        conversation_id,
         history_limit: config.memory.history_limit,
         recall_limit: config.memory.semantic.recall_limit,
         summarization_threshold: config.memory.summarization_threshold,
@@ -201,7 +269,6 @@ async fn build_acp_deps(
             .tools
             .permission_policy(config.security.autonomy_level),
         config_path: config_path_owned,
-        config_reload_rx,
         mcp_tools,
         mcp_registry,
         mcp_manager,
@@ -242,31 +309,59 @@ async fn build_acp_deps(
     Ok((deps, keepalive))
 }
 
-/// Spawn an `Agent` from pre-built deps and run its loop on the given channel.
+/// Spawn an `Agent` from shared deps and per-session context, then run its loop.
+///
+/// Called once per ACP session. Each invocation creates independent per-session state:
+/// - Per-session `mpsc::Receiver` adapters from shared broadcast senders.
+/// - A fresh `CancellationToken` for the broadcast adapter lifetime.
+/// - The session's own `conversation_id` from `SessionContext`.
 ///
 /// When `acp_ctx` is `Some`, ACP executors are composed on top of the local tool executor
 /// (ACP-first, local fallback). When `None`, local tools handle everything.
 #[cfg(feature = "acp")]
 #[allow(clippy::too_many_lines)]
 async fn spawn_acp_agent(
-    d: AgentDeps,
+    d: std::sync::Arc<SharedAgentDeps>,
     channel: zeph_core::channel::LoopbackChannel,
     acp_ctx: Option<zeph_acp::AcpContext>,
+    session_ctx: zeph_acp::SessionContext,
 ) {
     use std::sync::Arc;
-    use zeph_tools::ErasedToolExecutor;
+
+    // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
+    // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
+    // signal so the forwarding task exits when the session ends (eviction, shutdown, or
+    // natural completion). This satisfies critic finding S1.
+    let adapter_cancel = zeph_memory::CancellationToken::new();
+    let reload_rx = broadcast_to_mpsc(d.skill_reload_tx.subscribe(), adapter_cancel.clone());
+    let config_reload_rx =
+        broadcast_to_mpsc(d.config_reload_tx.subscribe(), adapter_cancel.clone());
 
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
-    let memory_executor =
-        zeph_core::memory_tools::MemoryToolExecutor::new(Arc::clone(&d.memory), d.conversation_id);
+    // When conversation_id is None (store unavailable), memory_tools use id=0 which maps to no
+    // persisted history — the tool calls succeed but return empty results.
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
+        Arc::clone(&d.memory),
+        session_ctx
+            .conversation_id
+            .unwrap_or(zeph_memory::ConversationId(0)),
+    );
     let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&d.registry));
     let (tool_executor, cancel_signal, provider_override, parent_tool_use_id) =
         if let Some(ctx) = acp_ctx {
             let cancel_signal = Arc::clone(&ctx.cancel_signal);
             let provider_override = Arc::clone(&ctx.provider_override);
             let parent_tool_use_id = ctx.parent_tool_use_id.clone();
-            let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(d.tool_executor);
+            // Link adapter_cancel to session cancel_signal so the broadcast forwarding task
+            // exits when the ACP session is cancelled (eviction, shutdown, or completion).
+            let adapter_cancel_clone = adapter_cancel.clone();
+            let cancel_signal_clone = Arc::clone(&cancel_signal);
+            tokio::spawn(async move {
+                cancel_signal_clone.notified().await;
+                adapter_cancel_clone.cancel();
+            });
+            let mut base: Arc<dyn ErasedToolExecutor> = Arc::clone(&d.tool_executor) as Arc<_>;
             if let Some(fs) = ctx.file_executor {
                 // Suppress FileExecutor's read/write/glob when AcpFileExecutor is active.
                 // edit and grep remain available from FileExecutor (no ACP equivalents yet).
@@ -293,36 +388,31 @@ async fn spawn_acp_agent(
                 parent_tool_use_id,
             )
         } else {
+            // No AcpContext: the adapter forwarding tasks run until adapter_cancel.cancel() is
+            // called explicitly at function end (line below), or until the mpsc sender is dropped.
             let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
                 skill_loader_executor,
                 zeph_tools::CompositeExecutor::new(
                     memory_executor,
-                    zeph_tools::DynExecutor(Arc::new(d.tool_executor)),
+                    zeph_tools::DynExecutor(Arc::clone(&d.tool_executor) as Arc<_>),
                 ),
             ));
             (zeph_tools::DynExecutor(base), None, None, None)
         };
 
     let mut agent = Agent::new_with_registry_arc(
-        d.provider,
+        d.provider.clone(),
         channel,
-        d.registry,
-        d.matcher,
+        Arc::clone(&d.registry),
+        d.matcher.clone(),
         d.max_active_skills,
         tool_executor,
     )
     .with_max_tool_iterations(d.max_tool_iterations)
-    .with_model_name(d.model_name)
-    .with_embedding_model(d.embed_model)
-    .with_skill_reload(d.skill_paths, d.reload_rx)
+    .with_model_name(d.model_name.clone())
+    .with_embedding_model(d.embed_model.clone())
+    .with_skill_reload(d.skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
-    .with_memory(
-        Arc::clone(&d.memory),
-        d.conversation_id,
-        d.history_limit,
-        d.recall_limit,
-        d.summarization_threshold,
-    )
     .with_context_budget(
         d.budget_tokens,
         0.20,
@@ -331,27 +421,39 @@ async fn spawn_acp_agent(
         d.prune_protect_tokens,
     )
     .with_deferred_apply_threshold(d.deferred_apply_threshold)
-    .with_shutdown(d.shutdown_rx)
-    .with_security(d.security, d.timeouts)
+    .with_shutdown(d.shutdown_rx.clone())
+    .with_security(d.security.clone(), d.timeouts)
     .with_redact_credentials(d.redact_credentials)
     .with_tool_summarization(d.tool_summarization)
-    .with_overflow_config(d.overflow_config)
-    .with_permission_policy(d.permission_policy)
-    .with_config_reload(d.config_path, d.config_reload_rx)
+    .with_overflow_config(d.overflow_config.clone())
+    .with_permission_policy(d.permission_policy.clone())
+    .with_config_reload(d.config_path.clone(), config_reload_rx)
     .with_mcp(
-        d.mcp_tools,
-        d.mcp_registry,
-        Some(d.mcp_manager),
+        d.mcp_tools.clone(),
+        d.mcp_registry.clone(),
+        Some(Arc::clone(&d.mcp_manager)),
         &d.mcp_config,
     )
-    .with_mcp_shared_tools(d.mcp_shared_tools)
-    .with_learning(d.learning)
+    .with_mcp_shared_tools(Arc::clone(&d.mcp_shared_tools))
+    .with_learning(d.learning.clone())
     .with_tool_call_cutoff(d.tool_call_cutoff)
     .with_available_secrets(
         d.secrets
             .iter()
             .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
     );
+
+    // Apply per-session memory only when a ConversationId was successfully allocated.
+    // When None (store unavailable at session creation), the agent operates without persistent history.
+    if let Some(cid) = session_ctx.conversation_id {
+        agent = agent.with_memory(
+            Arc::clone(&d.memory),
+            cid,
+            d.history_limit,
+            d.recall_limit,
+            d.summarization_threshold,
+        );
+    }
 
     if let Some(signal) = cancel_signal {
         agent = agent.with_cancel_signal(signal);
@@ -365,19 +467,25 @@ async fn spawn_acp_agent(
         agent = agent.with_parent_tool_use_id(parent_id);
     }
 
-    if let Some(sp) = d.summary_provider {
+    if let Some(sp) = d.summary_provider.clone() {
         agent = agent.with_summary_provider(sp);
     }
 
-    if let Some(jp) = d.judge_provider {
+    if let Some(jp) = d.judge_provider.clone() {
         agent = agent.with_judge_provider(jp);
     }
 
-    agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider);
+    agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider.clone());
 
     if d.debug_config.enabled {
+        // Use session_id as a subdirectory prefix so concurrent sessions never share the same
+        // timestamped directory and collide on file names (I2).
+        let session_dump_dir = d
+            .debug_config
+            .output_dir
+            .join(session_ctx.session_id.to_string());
         match zeph_core::debug_dump::DebugDumper::new(
-            d.debug_config.output_dir.as_path(),
+            session_dump_dir.as_path(),
             d.debug_config.format,
         ) {
             Ok(dumper) => agent = agent.with_debug_dumper(dumper),
@@ -392,6 +500,10 @@ async fn spawn_acp_agent(
     if let Err(e) = agent.run().await {
         tracing::error!("ACP agent loop error: {e:#}");
     }
+
+    // Ensure the adapter cancellation token is dropped/cancelled after the agent loop exits,
+    // which terminates the broadcast forwarding tasks for this session.
+    adapter_cancel.cancel();
 }
 
 /// Collect model keys from config when `acp.available_models` is not set.
@@ -475,7 +587,7 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 /// After a successful fetch, each unique provider slug present in `acp_available_models`
 /// is expanded from its on-disk cache, replacing the single config-time fallback entry.
 #[cfg(feature = "acp")]
-async fn warm_model_caches(deps: &mut AgentDeps) {
+async fn warm_model_caches(deps: &mut SharedAgentDeps) {
     use zeph_llm::model_cache::ModelCache;
 
     let provider = deps.provider.clone();
@@ -700,7 +812,8 @@ fn collect_project_rules(skill_paths: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Run the ACP server over stdin/stdout.
 ///
-/// Phase 1 MVP: supports a single concurrent session (the first `session/new` request).
+/// Supports multiple concurrent sessions via `SharedAgentDeps` — each `session/new` spawns
+/// an independent agent loop with its own conversation history.
 ///
 /// # Errors
 ///
@@ -713,7 +826,6 @@ pub(crate) async fn run_acp_server(
     vault_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
@@ -741,18 +853,12 @@ pub(crate) async fn run_acp_server(
         sqlite_path: Some(deps.sqlite_path.clone()),
     };
 
-    let deps = Arc::new(Mutex::new(Some(deps)));
+    let shared = Arc::new(deps);
 
-    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx| {
-        let deps = Arc::clone(&deps);
+    let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
+        let shared = Arc::clone(&shared);
         Box::pin(async move {
-            let Some(d) = deps.lock().await.take() else {
-                tracing::warn!(
-                    "ACP spawner called more than once — Phase 1 supports single session"
-                );
-                return;
-            };
-            Box::pin(spawn_acp_agent(d, channel, acp_ctx)).await;
+            spawn_acp_agent(shared, channel, acp_ctx, session_ctx).await;
         })
     });
 
@@ -776,7 +882,6 @@ pub(crate) async fn run_acp_http_server(
     auth_token_override: Option<String>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
@@ -808,18 +913,12 @@ pub(crate) async fn run_acp_http_server(
         sqlite_path: Some(deps.sqlite_path.clone()),
     };
 
-    let deps = Arc::new(Mutex::new(Some(deps)));
+    let shared = Arc::new(deps);
 
-    let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx| {
-        let deps = Arc::clone(&deps);
+    let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
+        let shared = Arc::clone(&shared);
         Box::pin(async move {
-            let Some(d) = deps.lock().await.take() else {
-                tracing::warn!(
-                    "ACP spawner called more than once — Phase 1 supports single session"
-                );
-                return;
-            };
-            Box::pin(spawn_acp_agent(d, channel, acp_ctx)).await;
+            spawn_acp_agent(shared, channel, acp_ctx, session_ctx).await;
         })
     });
 
@@ -941,5 +1040,38 @@ mod tests {
             .collect();
         assert!(names.contains(&"branching.md".to_owned()));
         assert!(names.contains(&"SKILL.md".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_mpsc_forwards_items() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<u32>(16);
+        let cancel = zeph_memory::CancellationToken::new();
+        let mut rx = broadcast_to_mpsc(brx, cancel.clone());
+
+        btx.send(1).unwrap();
+        btx.send(2).unwrap();
+        drop(btx); // Close broadcast — adapter exits on Closed.
+
+        assert_eq!(rx.recv().await, Some(1));
+        assert_eq!(rx.recv().await, Some(2));
+        // After broadcast closes the adapter task exits and mpsc is also closed.
+        assert_eq!(rx.recv().await, None);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_mpsc_cancellation_stops_task() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<u32>(16);
+        let cancel = zeph_memory::CancellationToken::new();
+        let mut rx = broadcast_to_mpsc(brx, cancel.clone());
+
+        cancel.cancel();
+        // Give the spawned task a chance to exit.
+        tokio::task::yield_now().await;
+
+        // After cancellation the adapter task exits, closing the mpsc sender.
+        // Sending on broadcast should succeed (no one listening) but recv returns None.
+        drop(btx);
+        assert_eq!(rx.recv().await, None);
     }
 }

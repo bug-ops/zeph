@@ -9,7 +9,7 @@ use agent_client_protocol as acp;
 use serde_json::value::RawValue;
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use zeph_acp::{AcpServerConfig, AgentSpawner, serve_connection};
+use zeph_acp::{AcpServerConfig, AgentSpawner, SessionContext, serve_connection};
 use zeph_core::channel::LoopbackChannel;
 
 /// No-op ACP client for testing.
@@ -32,7 +32,7 @@ impl acp::Client for NoopClient {
 }
 
 fn make_echo_spawner() -> AgentSpawner {
-    Arc::new(|_channel: LoopbackChannel, _ctx| Box::pin(async {}))
+    Arc::new(|_channel: LoopbackChannel, _ctx, _session_ctx: SessionContext| Box::pin(async {}))
 }
 
 fn make_server_config() -> AcpServerConfig {

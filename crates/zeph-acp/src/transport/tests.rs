@@ -12,15 +12,17 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt as _;
 use zeph_core::channel::LoopbackChannel;
 
-use crate::agent::{AcpContext, SendAgentSpawner};
+use crate::agent::{AcpContext, SendAgentSpawner, SessionContext};
 use crate::transport::AcpServerConfig;
 use crate::transport::http::{AcpHttpState, ConnectionHandle};
 use crate::transport::router::acp_router;
 
 fn noop_spawner() -> SendAgentSpawner {
-    Arc::new(|_channel: LoopbackChannel, _ctx: Option<AcpContext>| {
-        Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
-    })
+    Arc::new(
+        |_channel: LoopbackChannel, _ctx: Option<AcpContext>, _session_ctx: SessionContext| {
+            Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
+        },
+    )
 }
 
 fn test_state() -> AcpHttpState {

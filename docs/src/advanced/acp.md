@@ -229,6 +229,33 @@ Zeph advertises the following capabilities in the `initialize` response:
 
 `mcp_capabilities` is present when an `McpManager` is available (i.e., MCP servers are configured). It advertises support for the HTTP MCP transport, allowing IDEs to pass MCP server definitions that use HTTP endpoints.
 
+## Session isolation
+
+Each ACP session maps 1:1 to a Zeph conversation in SQLite. When the IDE opens a new session, Zeph creates a fresh `ConversationId` and links it to the ACP session ID. All subsequent message history, compaction summaries, and persistence operations for that session are scoped to its conversation — no data leaks between sessions.
+
+The mapping is stored in the `acp_sessions` table via the `conversation_id` column (added in migration `026`). Legacy sessions that predate this column receive a new conversation on first `load_session` or `resume_session` call.
+
+**Memory isolation boundaries:**
+
+| Store | Isolation |
+|-------|-----------|
+| **SQLite messages** | Per-conversation — each session reads and writes its own message history |
+| **Compaction summaries** | Per-conversation — summaries are scoped to the conversation they were created in |
+| **Semantic memory (Qdrant)** | Shared — all sessions contribute to and query the same vector store |
+
+This design means that knowledge saved to semantic memory in one session is available to all sessions (useful for cross-session context), while conversation history remains private to each session.
+
+### Session lifecycle and conversations
+
+| Operation | Conversation behavior |
+|-----------|----------------------|
+| `new_session` | Creates a fresh `ConversationId` and persists the mapping before the agent loop starts |
+| `load_session` | Looks up the existing `conversation_id` for the session; creates one for legacy sessions that lack it |
+| `resume_session` | Same as `load_session` — restores the linked conversation without replaying history |
+| `fork_session` | Creates a new `ConversationId` and asynchronously copies messages and summaries from the source conversation |
+
+The `SessionContext` type carries `session_id`, `conversation_id`, and `working_dir` into the agent spawner, ensuring the agent loop operates on the correct conversation from the first turn.
+
 ## Session management
 
 ### list_sessions
@@ -254,7 +281,7 @@ Zeph advertises the following capabilities in the `initialize` response:
 
 ### fork_session
 
-`fork_session` creates a new session that starts with a copy of the source session's persisted event history. The forked session is independent — changes to either session do not affect the other.
+`fork_session` creates a new session that starts with a copy of the source session's conversation. Zeph creates a new `ConversationId` for the fork and asynchronously copies all messages and compaction summaries from the source conversation. The forked session is independent — changes to either session do not affect the other.
 
 ```json
 // Request
@@ -270,11 +297,11 @@ Zeph advertises the following capabilities in the `initialize` response:
 }
 ```
 
-Event history is copied asynchronously from SQLite. If no store is configured, the fork starts with an empty history.
+Message and summary copying runs asynchronously after the response is returned. There is a brief window where the forked session's agent loop starts before all history is written to SQLite. If no store is configured, the fork starts with an empty conversation.
 
 ### resume_session
 
-`resume_session` restores a previously terminated session from SQLite persistence without replaying its event history into the agent loop. Use this to reconnect to a session after a process restart.
+`resume_session` restores a previously terminated session from SQLite persistence without replaying its event history into the agent loop. The session's `conversation_id` is looked up from the `acp_sessions` table, so the resumed session continues writing to the same conversation. Use this to reconnect to a session after a process restart.
 
 ```json
 // Request
@@ -353,7 +380,7 @@ Returns `404` if the session does not exist. Returns `400` if the `session_id` i
 
 ### Resuming a session
 
-To resume a persisted session, send a `new_session` request (stdio or HTTP) with the existing `session_id`. Zeph loads the stored event log, reconstructs the conversation context, and continues from where the session left off:
+To resume a persisted session, send a `new_session` request (stdio or HTTP) with the existing `session_id`. Zeph looks up the linked `conversation_id`, loads the stored message history, reconstructs the conversation context, and continues from where the session left off:
 
 ```json
 {
@@ -778,11 +805,13 @@ When `unstable-session-fork` is active, the agent advertises `fork` in `session_
 The fork operation:
 
 1. Looks up the source session — in memory or in the SQLite store.
-2. Copies all persisted events from the source into a new session record (async, does not block the response).
-3. Spawns a fresh agent loop for the new session starting from the forked state.
-4. Returns the new session ID and any available model config options.
+2. Creates a new `ConversationId` for the forked session.
+3. Copies all persisted events from the source ACP session record (async, does not block the response).
+4. Copies messages and summaries from the source conversation to the new conversation (async).
+5. Spawns a fresh agent loop for the new session starting from the forked state.
+6. Returns the new session ID and any available model config options.
 
-The source session remains active and unchanged. Both sessions are independent after the fork.
+The source session remains active and unchanged. Both sessions are independent after the fork — each writes to its own conversation.
 
 ```jsonc
 // Request
@@ -802,7 +831,8 @@ The resume operation:
 
 1. Checks whether the session is already active in memory — if so, returns immediately (no-op).
 2. Verifies the session exists in SQLite.
-3. Spawns a fresh agent loop for the session **without** replaying historical events through the loop. The session's stored event log is preserved in SQLite and accessible via `_session/get`.
+3. Looks up the session's `conversation_id` (creates one for legacy sessions without it).
+4. Spawns a fresh agent loop for the session **without** replaying historical events through the loop. The session's stored conversation history is preserved in SQLite and accessible via `_session/get`.
 
 ```jsonc
 // Request

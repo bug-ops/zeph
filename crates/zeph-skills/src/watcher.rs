@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::error::SkillError;
 
+#[derive(Clone)]
 pub enum SkillEvent {
     Changed,
 }
