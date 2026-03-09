@@ -809,7 +809,8 @@ impl<C: Channel> Agent<C> {
 
         // Final drain: if the loop exited via Done on the first tick, secret
         // requests buffered before completion would otherwise be silently dropped.
-        self.process_pending_secret_requests().await;
+        self.process_pending_secret_requests(&mut std::collections::HashSet::new())
+            .await;
 
         Ok(final_status)
     }
