@@ -925,7 +925,6 @@ mod tests {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::config::LearningConfig;
-    use sqlx::prelude::*;
     use tokio::sync::watch;
     use zeph_llm::any::AnyProvider;
     use zeph_memory::semantic::SemanticMemory;
