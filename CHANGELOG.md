@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `/plan retry` now resets stale `Running` tasks to `Ready` and clears `assigned_agent` before re-execution to prevent scheduler deadlock (#1434)
 - Store token usage in `chat_typed` so `eval_budget_tokens` is enforced with Claude provider (#1426)
 - `/experiment status` now shows the last completed session (session ID, experiment count, accepted count, best delta) when an experiment is not running. Previously it always showed "idle" with no history, making scheduled experiment results invisible (#1425)
+- `FilteredToolExecutor::execute_erased()` and `execute_confirmed_erased()` previously returned `Err(ToolError::Blocked)` for every LLM response unconditionally, causing sub-agent loops to exhaust all `max_turns` without producing output (#1432)
+- The executor now inspects the response for actual fenced-block tool invocations by matching against registered `InvocationHint::FencedBlock` language tags via `extract_fenced_blocks()`
+- Plain text responses and markdown code fences that do not match any registered tool tag now return `Ok(None)`, allowing the agent loop to break normally; SEC-03 policy is preserved for genuine fenced-block tool invocations
 
 ## [0.14.2] - 2026-03-09
 
