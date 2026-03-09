@@ -208,14 +208,21 @@ pub(crate) async fn run_daemon(
     } else {
         zeph_tools::OutputFilterRegistry::new(false)
     };
-    let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
+    let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
         .with_permissions(
             config
                 .tools
                 .permission_policy(config.security.autonomy_level),
         )
         .with_output_filters(filter_registry);
-    let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    if config.tools.audit.enabled
+        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+    {
+        let logger = std::sync::Arc::new(logger);
+        shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
+        scrape_executor = scrape_executor.with_audit(logger);
+    }
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
