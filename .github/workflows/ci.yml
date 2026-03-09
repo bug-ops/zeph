@@ -160,7 +160,7 @@ jobs:
         with:
           name: nextest-archive-ubuntu-latest
       - name: Run integration tests (testcontainers)
-        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --test '*integration*'
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci -E 'binary(~integration)'
 
   coverage:
     name: Coverage
