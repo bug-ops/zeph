@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-03-09
+
 ### Fixed
 
 - Shell timeouts in `ShellExecutor` now return `Err(ToolError::Timeout { timeout_secs })` instead of `Ok(ToolOutput)` with an error string. Fixes dead `ToolError::Timeout` code path and enables `max_tool_retries` retry-with-backoff for timed-out shell commands (#1420)
+- `/model <id>` now validates the provided model name against the cached model list before switching. If the model is not found in a non-empty list, an error is returned with the list of available models. If the model list is unavailable (cold start or provider does not support listing), a warning is shown and the switch proceeds (#1417)
 - `/status` command now shows real API call count, token usage, and cost in CLI mode (non-TUI). `MetricsCollector` watch channel is always initialized in `runner.rs`; in CLI mode the receiver is dropped immediately, in TUI mode it flows to the TUI widget as before (#1415)
 - Register SIGTERM handler (`tokio::signal::unix::SignalKind::terminate()`) alongside the existing Ctrl-C handler in the daemon signal task. Both signals now trigger graceful shutdown, ensuring `remove_pid_file()` is always reached on `kill <pid>` (#1414)
 - Correct A2A agent card discovery endpoint from `/.well-known/agent-card.json` to `/.well-known/agent.json` per A2A spec (#1412)
@@ -1923,7 +1926,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/bug-ops/zeph/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/bug-ops/zeph/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/bug-ops/zeph/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bug-ops/zeph/compare/v0.12.6...v0.13.0

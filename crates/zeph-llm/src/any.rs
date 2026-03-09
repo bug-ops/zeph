@@ -75,7 +75,7 @@ impl AnyProvider {
     /// Fetch available models from this provider and update the disk cache.
     ///
     /// Returns an empty list for providers that do not support remote model discovery
-    /// (Candle, Mock) without returning an error.
+    /// (Candle) without returning an error.
     ///
     /// # Errors
     ///
@@ -107,7 +107,7 @@ impl AnyProvider {
             AnyProvider::Orchestrator(p) => p.list_models_remote().await,
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
-            AnyProvider::Mock(_) => Ok(vec![]),
+            AnyProvider::Mock(p) => Ok(p.models.clone()),
         }
     }
 
