@@ -78,26 +78,20 @@ jobs:
 
   snapshots:
     name: Snapshot check
-    needs: [lint-fmt, lint-clippy]
+    needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Download test archive
+        uses: actions/download-artifact@v7
         with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Install cargo-insta
-        run: cargo install cargo-insta --locked
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
+          name: nextest-archive-ubuntu-latest
       - name: Check snapshots
-        run: cargo insta test --profile ci --workspace --features full --check --lib --bins
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
         env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
+          INSTA_UPDATE: no
 
   build-tests:
     name: Build Tests (${{ matrix.os }})
@@ -116,7 +110,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --tests --archive-file nextest-archive.tar.zst
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -155,22 +149,18 @@ jobs:
 
   integration:
     name: Integration Tests
-    needs: [lint-fmt, lint-clippy]
+    needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
+      - name: Download test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: nextest-archive-ubuntu-latest
       - name: Run integration tests (testcontainers)
-        run: cargo nextest run --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --profile ci --test '*integration*'
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --test '*integration*'
 
   coverage:
     name: Coverage
