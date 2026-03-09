@@ -71,7 +71,7 @@ jobs:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Clippy
-        run: cargo clippy --workspace --features full -- -D warnings
+        run: cargo clippy --profile ci --workspace --features full -- -D warnings
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -94,7 +94,7 @@ jobs:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
       - name: Check snapshots
-        run: cargo insta test --workspace --features full --check --lib --bins
+        run: cargo insta test --profile ci --workspace --features full --check --lib --bins
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -116,7 +116,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -159,7 +159,7 @@ jobs:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run doc tests
-        run: cargo test --workspace --features full --doc
+        run: cargo test --profile ci --workspace --features full --doc
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -178,7 +178,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run integration tests (testcontainers)
-        run: cargo nextest run --config-file .github/nextest.toml --workspace --features full --profile ci --test '*integration*'
+        run: cargo nextest run --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --profile ci --test '*integration*'
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
@@ -199,7 +199,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Generate coverage
-        run: cargo llvm-cov nextest --config-file .github/nextest.toml --workspace --features full --lib --bins --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
