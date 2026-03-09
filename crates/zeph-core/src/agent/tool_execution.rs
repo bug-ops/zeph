@@ -1985,7 +1985,7 @@ fn retry_backoff_ms(attempt: usize) -> u64 {
     capped.saturating_sub(jitter_range).saturating_add(jitter)
 }
 
-fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
+pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
     let mut params = serde_json::to_value(&def.schema).unwrap_or_default();
     if let serde_json::Value::Object(ref mut map) = params {
         map.remove("$schema");

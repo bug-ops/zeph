@@ -270,6 +270,43 @@ impl ModelOrchestrator {
         self.chat_with_fallback(messages).await
     }
 
+    /// Route a tool-aware chat request to a specific named provider.
+    ///
+    /// If `name` is not found in the providers map, falls back to the default
+    /// provider's `chat_with_tools`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError`] if the underlying provider call fails.
+    pub(crate) async fn chat_for_named_with_tools(
+        &self,
+        name: &str,
+        messages: &[Message],
+        tools: &[crate::provider::ToolDefinition],
+    ) -> Result<crate::provider::ChatResponse, LlmError> {
+        if let Some(provider) = self.providers.get(name) {
+            match provider.chat_with_tools(messages, tools).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    tracing::warn!(
+                        name,
+                        "named provider chat_with_tools failed: {e:#}, falling back to default"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                name,
+                "named provider not found, falling back to default for chat_with_tools"
+            );
+        }
+        let provider = self
+            .providers
+            .get(&self.default_provider)
+            .ok_or(LlmError::NoProviders)?;
+        provider.chat_with_tools(messages, tools).await
+    }
+
     async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         if let Some(selected) = self.try_llm_routing(messages).await
             && let Some(provider) = self.providers.get(&selected)

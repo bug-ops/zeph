@@ -21,7 +21,7 @@ mod message_queue;
 mod persistence;
 mod skill_management;
 pub mod slash_commands;
-mod tool_execution;
+pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
 mod utils;

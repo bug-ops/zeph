@@ -11,8 +11,10 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
-use zeph_tools::executor::ErasedToolExecutor;
+use zeph_llm::provider::{
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
+};
+use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use crate::config::SubAgentConfig;
 
@@ -72,89 +74,110 @@ fn make_message(role: Role, content: String) -> Message {
 }
 
 // Returns `true` if no tool was called (loop should break).
+//
+// Handles structured `ChatResponse` from `chat_with_tools`:
+// - `ChatResponse::Text`: pushes assistant message and returns true (done).
+// - `ChatResponse::ToolUse`: executes each tool call via `execute_tool_call_erased`,
+//   builds multi-part assistant + tool-result user messages, returns false (continue).
 async fn handle_tool_step(
     executor: &FilteredToolExecutor,
-    response: String,
+    response: ChatResponse,
     messages: &mut Vec<Message>,
     hooks: &super::hooks::SubagentHooks,
     task_id: &str,
     agent_name: &str,
 ) -> bool {
-    // Extract tool name from response for hook matching (best-effort; empty = no match).
-    let tool_name = extract_tool_name(&response);
-
-    // Build hook environment once for both pre and post hooks.
-    let hook_env = make_hook_env(task_id, agent_name, tool_name.as_deref().unwrap_or(""));
-
-    // PreToolUse: fire matching hooks before execution.
-    if let Some(ref name) = tool_name {
-        let pre_hooks: Vec<&HookDef> = matching_hooks(&hooks.pre_tool_use, name);
-        if !pre_hooks.is_empty() {
-            let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
-            if let Err(e) = fire_hooks(&pre_owned, &hook_env).await {
-                tracing::warn!(error = %e, tool = %name, "PreToolUse hook failed");
-            }
-        }
-    }
-
-    let result = match executor.execute_erased(&response).await {
-        Ok(Some(output)) => {
-            messages.push(make_message(Role::Assistant, response));
-            messages.push(make_message(
-                Role::User,
-                format!(
-                    "[tool output: {}]\n```\n{}\n```",
-                    output.tool_name, output.summary
-                ),
-            ));
-            false
-        }
-        Ok(None) => {
-            messages.push(make_message(Role::Assistant, response));
+    match response {
+        ChatResponse::Text(text) => {
+            messages.push(make_message(Role::Assistant, text));
             true
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "sub-agent tool execution failed");
-            messages.push(make_message(Role::Assistant, response));
-            messages.push(make_message(Role::User, format!("[tool error]: {e}")));
-            false
-        }
-    };
-
-    // PostToolUse: fire matching hooks after execution (only when a tool was called).
-    if !result
-        && let Some(ref name) = tool_name
-        && !hooks.post_tool_use.is_empty()
-    {
-        let post_hooks: Vec<&HookDef> = matching_hooks(&hooks.post_tool_use, name);
-        if !post_hooks.is_empty() {
-            let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
-            if let Err(e) = fire_hooks(&post_owned, &hook_env).await {
-                tracing::warn!(error = %e, tool = %name, "PostToolUse hook failed");
+        ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks: _,
+        } => {
+            // Build the assistant message with ToolUse parts.
+            let mut assistant_parts: Vec<MessagePart> = Vec::new();
+            if let Some(ref t) = text
+                && !t.is_empty()
+            {
+                assistant_parts.push(MessagePart::Text { text: t.clone() });
             }
-        }
-    }
+            for tc in &tool_calls {
+                assistant_parts.push(MessagePart::ToolUse {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    input: tc.input.clone(),
+                });
+            }
+            messages.push(Message::from_parts(Role::Assistant, assistant_parts));
 
-    result
-}
+            // Execute each tool call and collect results.
+            let mut result_parts: Vec<MessagePart> = Vec::new();
+            for tc in &tool_calls {
+                let hook_env = make_hook_env(task_id, agent_name, &tc.name);
 
-/// Extract the tool name from an LLM response string.
-///
-/// Looks for JSON-like `"tool_name": "SomeTool"` or `"name": "SomeTool"` patterns.
-/// Returns `None` if no tool call pattern is found.
-fn extract_tool_name(response: &str) -> Option<String> {
-    for key in [r#""tool_name": ""#, r#""name": ""#] {
-        if let Some(pos) = response.find(key) {
-            let after = &response[pos + key.len()..];
-            if let Some(end) = after.find('"') {
-                let name = after[..end].to_owned();
-                if !name.is_empty() {
-                    return Some(name);
+                // PreToolUse hooks.
+                let pre_hooks: Vec<&HookDef> = matching_hooks(&hooks.pre_tool_use, &tc.name);
+                if !pre_hooks.is_empty() {
+                    let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
+                    if let Err(e) = fire_hooks(&pre_owned, &hook_env).await {
+                        tracing::warn!(error = %e, tool = %tc.name, "PreToolUse hook failed");
+                    }
+                }
+
+                let params: serde_json::Map<String, serde_json::Value> =
+                    if let serde_json::Value::Object(map) = &tc.input {
+                        map.clone()
+                    } else {
+                        serde_json::Map::new()
+                    };
+                let call = ToolCall {
+                    // tool_id holds the tool *name* for executor routing, not the LLM-assigned call ID (tc.id).
+                    tool_id: tc.name.clone(),
+                    params,
+                };
+                let (content, is_error) = match executor.execute_tool_call_erased(&call).await {
+                    Ok(Some(output)) => (
+                        format!(
+                            "[tool output: {}]\n```\n{}\n```",
+                            output.tool_name, output.summary
+                        ),
+                        false,
+                    ),
+                    Ok(None) => (String::new(), false),
+                    Err(e) => {
+                        tracing::warn!(error = %e, tool = %tc.name, "sub-agent tool execution failed");
+                        (format!("[tool error]: {e}"), true)
+                    }
+                };
+                result_parts.push(MessagePart::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content,
+                    is_error,
+                });
+
+                // PostToolUse hooks (only when tool was attempted).
+                if !hooks.post_tool_use.is_empty() {
+                    let post_hooks: Vec<&HookDef> = matching_hooks(&hooks.post_tool_use, &tc.name);
+                    if !post_hooks.is_empty() {
+                        let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
+                        if let Err(e) = fire_hooks(&post_owned, &hook_env).await {
+                            tracing::warn!(
+                                error = %e,
+                                tool = %tc.name,
+                                "PostToolUse hook failed"
+                            );
+                        }
+                    }
                 }
             }
+
+            messages.push(Message::from_parts(Role::User, result_parts));
+            false
         }
     }
-    None
 }
 
 fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<String, String> {
@@ -222,13 +245,21 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
     let mut seq: u32 = history_len as u32;
 
     // Append the new task prompt to the transcript (history messages are already on disk).
-    if let Some(writer) = &mut transcript_writer {
-        let task_msg = messages.last().unwrap();
+    if let Some(writer) = &mut transcript_writer
+        && let Some(task_msg) = messages.last()
+    {
         if let Err(e) = writer.append(seq, task_msg) {
             tracing::warn!(error = %e, "failed to write transcript entry");
         }
         seq += 1;
     }
+
+    // Collect tool definitions once before the loop so they are included in every LLM request.
+    let tool_defs: Vec<ToolDefinition> = executor
+        .tool_definitions_erased()
+        .iter()
+        .map(crate::agent::tool_execution::tool_def_to_definition)
+        .collect();
 
     let mut turns: u32 = 0;
     let mut last_result = String::new();
@@ -244,9 +275,11 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
         }
 
         let llm_result = if let Some(ref m) = model {
-            provider.chat_with_named_provider(m, &messages).await
+            provider
+                .chat_with_named_provider_and_tools(m, &messages, &tool_defs)
+                .await
         } else {
-            provider.chat(&messages).await
+            provider.chat_with_tools(&messages, &tool_defs).await
         };
         let response = match llm_result {
             Ok(r) => r,
@@ -262,17 +295,26 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
             }
         };
 
+        // Extract the text portion for status update and secret detection.
+        let response_text = match &response {
+            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::ToolUse { text, .. } => text.as_deref().unwrap_or_default().to_owned(),
+        };
+
         turns += 1;
-        last_result.clone_from(&response);
+        last_result.clone_from(&response_text);
         let _ = status_tx.send(SubAgentStatus {
             state: SubAgentState::Working,
-            last_message: Some(response.chars().take(120).collect()),
+            last_message: Some(response_text.chars().take(120).collect()),
             turns_used: turns,
             started_at,
         });
 
         // Detect secret request protocol: sub-agent emits [REQUEST_SECRET: key_name]
-        if let Some(rest) = response.strip_prefix(SECRET_REQUEST_PREFIX) {
+        // Only applies to text responses (tool calls cannot carry this prefix).
+        if let ChatResponse::Text(_) = &response
+            && let Some(rest) = response_text.strip_prefix(SECRET_REQUEST_PREFIX)
+        {
             let raw_key = rest.split(']').next().unwrap_or("").trim().to_owned();
             // SEC-P1-02: Validate key name to prevent prompt-injection via malformed keys.
             // Only allow alphanumeric, hyphen, underscore — matches vault key naming conventions.
@@ -298,7 +340,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                         "background sub-agent secret request auto-denied (no interactive prompt)"
                     );
                     let reply = format!("[secret:{key_name}] request denied");
-                    let assistant_msg = make_message(Role::Assistant, response);
+                    let assistant_msg = make_message(Role::Assistant, response_text);
                     let user_msg = make_message(Role::User, reply);
                     append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
                     append_transcript(&mut transcript_writer, &mut seq, &user_msg);
@@ -329,7 +371,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                             format!("[secret:{key_name}] request denied")
                         }
                     };
-                    let assistant_msg = make_message(Role::Assistant, response);
+                    let assistant_msg = make_message(Role::Assistant, response_text);
                     let user_msg = make_message(Role::User, reply);
                     append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
                     append_transcript(&mut transcript_writer, &mut seq, &user_msg);
@@ -1887,6 +1929,8 @@ mod tests {
     #[tokio::test]
     async fn tool_call_loop_two_turns() {
         use std::sync::Mutex;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
         use zeph_tools::ToolCall;
 
         struct ToolOnceExecutor {
@@ -1937,7 +1981,6 @@ mod tests {
                 let mut n = self.calls.lock().unwrap();
                 *n += 1;
                 let result = if *n == 1 {
-                    // First call: return tool output (simulates tool call)
                     Ok(Some(ToolOutput {
                         tool_name: call.tool_id.clone(),
                         summary: "step 1 done".into(),
@@ -1961,8 +2004,21 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(sample_def());
 
-        // Two responses: first triggers tool handling, second is final.
-        let provider = mock_provider(vec!["turn 1 response", "final answer"]);
+        // First response: ToolUse with a shell call; second: Text with final answer.
+        let tool_response = ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![ToolUseRequest {
+                id: "call-1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": "echo hi"}),
+            }],
+            thinking_blocks: vec![],
+        };
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            tool_response,
+            ChatResponse::Text("final answer".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
         let executor = Arc::new(ToolOnceExecutor {
             calls: Mutex::new(0),
         });
@@ -3085,5 +3141,219 @@ mod tests {
         );
 
         std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    // ── regression tests for #1467: sub-agent tools passed to LLM ────────────
+
+    fn make_agent_loop_args(
+        provider: AnyProvider,
+        executor: FilteredToolExecutor,
+        max_turns: u32,
+    ) -> AgentLoopArgs {
+        let (status_tx, _status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: std::time::Instant::now(),
+        });
+        let (secret_request_tx, _secret_request_rx) = tokio::sync::mpsc::channel(1);
+        let (_secret_approved_tx, secret_rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
+        AgentLoopArgs {
+            provider,
+            executor,
+            system_prompt: "You are a bot".into(),
+            task_prompt: "Do something".into(),
+            skills: None,
+            max_turns,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            status_tx,
+            started_at: std::time::Instant::now(),
+            secret_request_tx,
+            secret_rx,
+            background: false,
+            hooks: super::super::hooks::SubagentHooks::default(),
+            task_id: "test-task".into(),
+            agent_name: "test-bot".into(),
+            initial_messages: vec![],
+            transcript_writer: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_agent_loop_passes_tools_to_provider() {
+        use std::sync::Arc;
+        use zeph_llm::provider::ChatResponse;
+        use zeph_tools::registry::{InvocationHint, ToolDef};
+
+        // Executor that exposes one tool definition.
+        struct SingleToolExecutor;
+
+        impl ErasedToolExecutor for SingleToolExecutor {
+            fn execute_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn execute_confirmed_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+                vec![ToolDef {
+                    id: std::borrow::Cow::Borrowed("shell"),
+                    description: std::borrow::Cow::Borrowed("Run a shell command"),
+                    schema: schemars::Schema::default(),
+                    invocation: InvocationHint::ToolCall,
+                }]
+            }
+
+            fn execute_tool_call_erased<'a>(
+                &'a self,
+                _call: &'a ToolCall,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+        }
+
+        // MockProvider with tool_use: records call count for chat_with_tools.
+        let (mock, tool_call_count) =
+            MockProvider::default().with_tool_use(vec![ChatResponse::Text("done".into())]);
+        let provider = AnyProvider::Mock(mock);
+        let executor =
+            FilteredToolExecutor::new(Arc::new(SingleToolExecutor), ToolPolicy::InheritAll);
+
+        let args = make_agent_loop_args(provider, executor, 1);
+        let result = run_agent_loop(args).await;
+        assert!(result.is_ok(), "loop failed: {result:?}");
+        assert_eq!(
+            *tool_call_count.lock().unwrap(),
+            1,
+            "chat_with_tools must have been called exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_agent_loop_executes_native_tool_call() {
+        use std::sync::{Arc, Mutex};
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_tools::registry::ToolDef;
+
+        struct TrackingExecutor {
+            calls: Mutex<Vec<String>>,
+        }
+
+        impl ErasedToolExecutor for TrackingExecutor {
+            fn execute_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn execute_confirmed_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+                vec![]
+            }
+
+            fn execute_tool_call_erased<'a>(
+                &'a self,
+                call: &'a ToolCall,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                self.calls.lock().unwrap().push(call.tool_id.clone());
+                let output = ToolOutput {
+                    tool_name: call.tool_id.clone(),
+                    summary: "executed".into(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                };
+                Box::pin(std::future::ready(Ok(Some(output))))
+            }
+        }
+
+        // Provider: first call returns ToolUse, second returns Text.
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("all done".into()),
+        ]);
+
+        let tracker = Arc::new(TrackingExecutor {
+            calls: Mutex::new(vec![]),
+        });
+        let tracker_clone = Arc::clone(&tracker);
+        let executor = FilteredToolExecutor::new(tracker_clone, ToolPolicy::InheritAll);
+
+        let args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
+        let result = run_agent_loop(args).await;
+        assert!(result.is_ok(), "loop failed: {result:?}");
+        assert_eq!(result.unwrap(), "all done");
+
+        let recorded = tracker.calls.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "execute_tool_call_erased must be called once"
+        );
+        assert_eq!(recorded[0], "shell");
     }
 }
