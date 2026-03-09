@@ -3,6 +3,8 @@
 
 //! Trust-level enforcement layer for tool execution.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use crate::TrustLevel;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
@@ -12,12 +14,39 @@ use crate::registry::ToolDef;
 /// Tools denied when a Quarantined skill is active.
 const QUARANTINE_DENIED: &[&str] = &["bash", "file_write", "web_scrape"];
 
+fn trust_to_u8(level: TrustLevel) -> u8 {
+    match level {
+        TrustLevel::Trusted => 0,
+        TrustLevel::Verified => 1,
+        TrustLevel::Quarantined => 2,
+        TrustLevel::Blocked => 3,
+    }
+}
+
+fn u8_to_trust(v: u8) -> TrustLevel {
+    match v {
+        0 => TrustLevel::Trusted,
+        1 => TrustLevel::Verified,
+        2 => TrustLevel::Quarantined,
+        _ => TrustLevel::Blocked,
+    }
+}
+
 /// Wraps an inner `ToolExecutor` and applies trust-level permission overlays.
-#[derive(Debug)]
 pub struct TrustGateExecutor<T: ToolExecutor> {
     inner: T,
     policy: PermissionPolicy,
-    effective_trust: TrustLevel,
+    effective_trust: AtomicU8,
+}
+
+impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for TrustGateExecutor<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrustGateExecutor")
+            .field("inner", &self.inner)
+            .field("policy", &self.policy)
+            .field("effective_trust", &self.effective_trust())
+            .finish()
+    }
 }
 
 impl<T: ToolExecutor> TrustGateExecutor<T> {
@@ -26,21 +55,22 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         Self {
             inner,
             policy,
-            effective_trust: TrustLevel::Trusted,
+            effective_trust: AtomicU8::new(trust_to_u8(TrustLevel::Trusted)),
         }
     }
 
-    pub fn set_effective_trust(&mut self, level: TrustLevel) {
-        self.effective_trust = level;
+    pub fn set_effective_trust(&self, level: TrustLevel) {
+        self.effective_trust
+            .store(trust_to_u8(level), Ordering::Relaxed);
     }
 
     #[must_use]
     pub fn effective_trust(&self) -> TrustLevel {
-        self.effective_trust
+        u8_to_trust(self.effective_trust.load(Ordering::Relaxed))
     }
 
     fn check_trust(&self, tool_id: &str, input: &str) -> Result<(), ToolError> {
-        match self.effective_trust {
+        match self.effective_trust() {
             TrustLevel::Blocked => {
                 return Err(ToolError::Blocked {
                     command: "all tools blocked (trust=blocked)".to_owned(),
@@ -70,19 +100,31 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
 
 impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        if self.effective_trust == TrustLevel::Blocked {
-            return Err(ToolError::Blocked {
-                command: "all tools blocked (trust=blocked)".to_owned(),
-            });
+        match self.effective_trust() {
+            TrustLevel::Blocked | TrustLevel::Quarantined => {
+                return Err(ToolError::Blocked {
+                    command: format!(
+                        "tool execution denied (trust={})",
+                        format!("{:?}", self.effective_trust()).to_lowercase()
+                    ),
+                });
+            }
+            TrustLevel::Trusted | TrustLevel::Verified => {}
         }
         self.inner.execute(response).await
     }
 
     async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        if self.effective_trust == TrustLevel::Blocked {
-            return Err(ToolError::Blocked {
-                command: "all tools blocked (trust=blocked)".to_owned(),
-            });
+        match self.effective_trust() {
+            TrustLevel::Blocked | TrustLevel::Quarantined => {
+                return Err(ToolError::Blocked {
+                    command: format!(
+                        "tool execution denied (trust={})",
+                        format!("{:?}", self.effective_trust()).to_lowercase()
+                    ),
+                });
+            }
+            TrustLevel::Trusted | TrustLevel::Verified => {}
         }
         self.inner.execute_confirmed(response).await
     }
@@ -99,6 +141,15 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             .unwrap_or("");
         self.check_trust(&call.tool_id, input)?;
         self.inner.execute_tool_call(call).await
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        self.inner.set_skill_env(env);
+    }
+
+    fn set_effective_trust(&self, level: crate::TrustLevel) {
+        self.effective_trust
+            .store(trust_to_u8(level), Ordering::Relaxed);
     }
 }
 
@@ -148,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_allows_all() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Trusted);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
@@ -161,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn quarantined_denies_bash() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
@@ -170,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn quarantined_denies_file_write() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("file_write")).await;
@@ -180,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_allows_file_read() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
-        let mut gate = TrustGateExecutor::new(MockExecutor, policy);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(TrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
@@ -193,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_denies_everything() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Blocked);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
@@ -203,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn policy_deny_overrides_trust() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&["sudo".into()], &[]);
-        let mut gate = TrustGateExecutor::new(MockExecutor, policy);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(TrustLevel::Trusted);
 
         let result = gate
@@ -214,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_denies_execute() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Blocked);
 
         let result = gate.execute("some response").await;
@@ -223,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_denies_execute_confirmed() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Blocked);
 
         let result = gate.execute_confirmed("some response").await;
@@ -232,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_allows_execute() {
-        let mut gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Trusted);
 
         let result = gate.execute("some response").await;
@@ -242,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn verified_with_allow_policy_succeeds() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
-        let mut gate = TrustGateExecutor::new(MockExecutor, policy);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(TrustLevel::Verified);
 
         let result = gate
@@ -250,5 +301,65 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_web_scrape() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("web_scrape")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[derive(Debug)]
+    struct EnvCapture {
+        captured: std::sync::Mutex<Option<std::collections::HashMap<String, String>>>,
+    }
+    impl EnvCapture {
+        fn new() -> Self {
+            Self {
+                captured: std::sync::Mutex::new(None),
+            }
+        }
+    }
+    impl ToolExecutor for EnvCapture {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+            *self.captured.lock().unwrap() = env;
+        }
+    }
+
+    #[test]
+    fn set_skill_env_forwarded_to_inner() {
+        let inner = EnvCapture::new();
+        let gate = TrustGateExecutor::new(inner, PermissionPolicy::default());
+
+        let mut env = std::collections::HashMap::new();
+        env.insert("MY_VAR".to_owned(), "42".to_owned());
+        gate.set_skill_env(Some(env.clone()));
+
+        let captured = gate.inner.captured.lock().unwrap();
+        assert_eq!(*captured, Some(env));
+    }
+
+    #[test]
+    fn set_effective_trust_interior_mutability() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        assert_eq!(gate.effective_trust(), TrustLevel::Trusted);
+
+        gate.set_effective_trust(TrustLevel::Quarantined);
+        assert_eq!(gate.effective_trust(), TrustLevel::Quarantined);
+
+        gate.set_effective_trust(TrustLevel::Blocked);
+        assert_eq!(gate.effective_trust(), TrustLevel::Blocked);
+
+        gate.set_effective_trust(TrustLevel::Trusted);
+        assert_eq!(gate.effective_trust(), TrustLevel::Trusted);
     }
 }

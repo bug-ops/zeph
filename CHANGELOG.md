@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Skill trust system was entirely non-functional: trust DB was never populated on skill load, `TrustGateExecutor` was defined but never wired into the executor chain, and trust commands always returned "not found". Fixed by populating `skill_trust` table after load/reload with source-based level (local→`local_level`, hub→`default_level`) and hash-mismatch detection, wrapping `CompositeExecutor` with `TrustGateExecutor` as the outermost layer, adding `set_effective_trust` to `ErasedToolExecutor` trait with forwarding through `DynExecutor`, overriding `set_effective_trust` in `impl ToolExecutor for TrustGateExecutor` (inherent method was shadowed by trait default no-op), and extending `Quarantined` trust blocking to `execute()`/`execute_confirmed()` paths (#1405)
 - `/image` command crash when file does not exist: CLI channel now prints a user-facing error and continues instead of propagating `ChannelError::Io` and exiting (#1391)
 - `/image` command silently ignoring valid files: image is now held in `pending_attachments` and attached to the next outgoing message, so the follow-up prompt sees the image (#1391)
 - `agent/mod.rs` `/image` handler stored loaded image parts in a local Vec that was immediately dropped; parts are now held in `Agent::pending_image_parts` and merged into the next `process_user_message` call (#1391)
