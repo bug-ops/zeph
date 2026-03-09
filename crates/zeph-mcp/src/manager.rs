@@ -33,6 +33,10 @@ pub struct ServerEntry {
     pub id: String,
     pub transport: McpTransport,
     pub timeout: Duration,
+    /// When `true`, SSRF validation is skipped for HTTP transports.
+    /// Set only for servers defined in static config (operator-controlled).
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 pub struct McpManager {
@@ -243,7 +247,9 @@ async fn connect_entry(
             )
             .await
         }
-        McpTransport::Http { url } => McpClient::connect_url(&entry.id, url, entry.timeout).await,
+        McpTransport::Http { url } => {
+            McpClient::connect_url(&entry.id, url, entry.timeout, entry.trusted).await
+        }
     }
 }
 
@@ -260,6 +266,7 @@ mod tests {
                 env: HashMap::new(),
             },
             timeout: Duration::from_secs(5),
+            trusted: false,
         }
     }
 
@@ -439,6 +446,7 @@ mod tests {
                 url: "http://127.0.0.1:1/nonexistent".into(),
             },
             timeout: Duration::from_secs(1),
+            trusted: false,
         }
     }
 

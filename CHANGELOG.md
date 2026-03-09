@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- MCP HTTP transport: statically configured servers (from `[[mcp.servers]]`) now bypass SSRF validation, allowing connections to `localhost` and other private IPs. Dynamically added servers (`/mcp add`, ACP) retain full SSRF protection (#1441)
 - Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
 - `/plan list` now shows the pending plan summary and status label instead of always returning "No recent plans" (#1434)
 - `/plan retry` now resets stale `Running` tasks to `Ready` and clears `assigned_agent` before re-execution to prevent scheduler deadlock (#1434)
