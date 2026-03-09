@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
+- `/plan list` now shows the pending plan summary and status label instead of always returning "No recent plans" (#1434)
+- `/plan retry` now resets stale `Running` tasks to `Ready` and clears `assigned_agent` before re-execution to prevent scheduler deadlock (#1434)
+- Cross-session history restore no longer produces orphaned `tool_use` blocks that cause Claude API 400 errors (#1383): fix empty-content skip dropping tool-only user messages (RC3), add reverse orphan detection for unmatched `tool_result` parts (RC2), downgrade orphaned `ToolResult` blocks in `split_messages_structured` (RC1), filter system messages from visible index to prevent wrong-neighbor lookups (RC4), persist tombstone `ToolResult` on native tool call cancellation to pair already-persisted `ToolUse` (RC5)
+- Store token usage in `chat_typed` so `eval_budget_tokens` is enforced with Claude provider (#1426)
+- `/experiment status` now shows the last completed session (session ID, experiment count, accepted count, best delta) when an experiment is not running. Previously it always showed "idle" with no history, making scheduled experiment results invisible (#1425)
+
 ## [0.14.2] - 2026-03-09
 
 ### Fixed

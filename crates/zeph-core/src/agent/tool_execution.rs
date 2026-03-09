@@ -1537,6 +1537,9 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
+                // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
+                // persisted above is always paired in the DB (prevents cross-session orphan).
+                self.persist_cancelled_tool_results(tool_calls).await;
                 return Ok(());
             }
 
@@ -1572,6 +1575,9 @@ impl<C: Channel> Agent<C> {
                         tracing::info!("tool execution cancelled by user");
                         self.update_metrics(|m| m.cancellations += 1);
                         self.channel.send("[Cancelled]").await?;
+                        // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
+                        // persisted above is always paired in the DB (prevents cross-session orphan).
+                        self.persist_cancelled_tool_results(tool_calls).await;
                         return Ok(());
                     }
                 };
@@ -1777,6 +1783,29 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
+    }
+
+    /// Persist a tombstone `ToolResult` (`is_error=true`) for every tool call in `tool_calls`.
+    ///
+    /// Called on early-return cancellation paths where the assistant `ToolUse` message was already
+    /// persisted but the matching user `ToolResult` message was not yet written. Without this, the
+    /// DB contains an orphaned `ToolUse` that will trigger a Claude API 400 on the next session.
+    pub(crate) async fn persist_cancelled_tool_results(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    ) {
+        let result_parts: Vec<MessagePart> = tool_calls
+            .iter()
+            .map(|tc| MessagePart::ToolResult {
+                tool_use_id: tc.id.clone(),
+                content: "[Cancelled]".to_owned(),
+                is_error: true,
+            })
+            .collect();
+        let user_msg = Message::from_parts(Role::User, result_parts);
+        self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
+            .await;
+        self.push_message(user_msg);
     }
 
     /// Inject environment variables from the active skill's required secrets into the executor.
