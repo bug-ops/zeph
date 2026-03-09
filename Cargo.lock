@@ -9403,6 +9403,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "serial_test",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

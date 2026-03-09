@@ -34,6 +34,8 @@ pub enum SchedulerAction {
     },
     /// Cancel a running sub-agent (on graph abort/skip).
     Cancel { agent_handle_id: String },
+    /// Execute a task inline via the main agent (no sub-agents configured).
+    RunInline { task_id: TaskId, prompt: String },
     /// Graph reached a terminal or paused state.
     Done { status: GraphStatus },
 }
@@ -342,27 +344,14 @@ impl DagScheduler {
             let task = &self.graph.tasks[task_id.index()];
 
             let Some(agent_def_name) = self.router.route(task, &self.available_agents) else {
-                tracing::warn!(
+                tracing::debug!(
                     task_id = %task_id,
                     title = %task.title,
-                    "no agent available for task, marking failed"
+                    "no agent available, routing task to main agent inline"
                 );
-                self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
-                let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
-                for cancel_task_id in cancel_ids {
-                    if let Some(running) = self.running.remove(&cancel_task_id) {
-                        actions.push(SchedulerAction::Cancel {
-                            agent_handle_id: running.agent_handle_id,
-                        });
-                    }
-                }
-                if self.graph.status != GraphStatus::Running {
-                    self.graph.finished_at = Some(super::graph::chrono_now());
-                    actions.push(SchedulerAction::Done {
-                        status: self.graph.status,
-                    });
-                    return actions;
-                }
+                let prompt = self.build_task_prompt(task);
+                self.graph.tasks[task_id.index()].status = TaskStatus::Running;
+                actions.push(SchedulerAction::RunInline { task_id, prompt });
                 continue;
             };
 
@@ -1380,16 +1369,16 @@ mod tests {
     }
 
     #[test]
-    fn test_no_agent_marks_task_failed() {
-        // NoneRouter: when no agent is available, task is marked failed.
+    fn test_no_agent_routes_inline() {
+        // NoneRouter: when no agent matches, task falls back to RunInline.
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
         let mut scheduler = make_scheduler_with_router(graph, Box::new(NoneRouter));
         let actions = scheduler.tick();
-        assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+        assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Running);
         assert!(
             actions
                 .iter()
-                .any(|a| matches!(a, SchedulerAction::Done { .. }))
+                .any(|a| matches!(a, SchedulerAction::RunInline { .. }))
         );
     }
 
