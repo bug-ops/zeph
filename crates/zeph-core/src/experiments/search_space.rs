@@ -52,7 +52,7 @@ impl ParameterRange {
             && step > 0.0
         {
             let quantized = self.min + ((value - self.min) / step).round() * step;
-            return self.clamp(quantized);
+            return self.clamp((quantized * 100.0).round() / 100.0);
         }
         value
     }
@@ -84,7 +84,7 @@ impl Default for SearchSpace {
                 ParameterRange {
                     kind: ParameterKind::Temperature,
                     min: 0.0,
-                    max: 2.0,
+                    max: 1.0,
                     step: Some(0.1),
                     default: 0.7,
                 },
@@ -308,7 +308,7 @@ mod tests {
     fn default_grid_size_is_reasonable() {
         let space = SearchSpace::default();
         let size = space.grid_size();
-        // Temperature: 21, TopP: 19, TopK: 20, Freq: 21, Pres: 21 = 102
+        // Temperature: 11, TopP: 19, TopK: 20, Freq: 21, Pres: 21 = 92
         assert!(size > 0);
         assert!(size < 200);
     }

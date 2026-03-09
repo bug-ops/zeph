@@ -5,6 +5,7 @@
 
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+pub use zeph_llm::provider::GenerationOverrides;
 
 use super::types::{ParameterKind, Variation, VariationValue};
 
@@ -175,19 +176,6 @@ impl ConfigSnapshot {
             presence_penalty: Some(self.presence_penalty),
         }
     }
-}
-
-/// Partial LLM generation parameter overrides derived from a `ConfigSnapshot`.
-///
-/// Only LLM-relevant fields are included; retrieval parameters are handled separately
-/// by the experiment engine.
-#[derive(Debug, Clone, Default)]
-pub struct GenerationOverrides {
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub top_k: Option<usize>,
-    pub frequency_penalty: Option<f64>,
-    pub presence_penalty: Option<f64>,
 }
 
 #[cfg(test)]

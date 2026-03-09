@@ -14,7 +14,9 @@ use schemars::JsonSchema;
 #[cfg(feature = "schema")]
 use serde::de::DeserializeOwned;
 
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
+};
 use crate::router::RouterProvider;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
@@ -128,6 +130,52 @@ impl AnyProvider {
         } else {
             vec![]
         }
+    }
+
+    /// Clone and patch this provider with generation parameter overrides.
+    ///
+    /// Used by the experiment engine to evaluate each variation with its specific parameters.
+    /// `Orchestrator` and `Router` variants are returned unchanged (overrides not supported).
+    #[must_use]
+    pub fn with_generation_overrides(self, overrides: GenerationOverrides) -> Self {
+        match self {
+            Self::Ollama(p) => Self::Ollama(p.with_generation_overrides(overrides)),
+            Self::Claude(p) => Self::Claude(p.with_generation_overrides(overrides)),
+            Self::OpenAi(p) => Self::OpenAi(p.with_generation_overrides(overrides)),
+            Self::Compatible(p) => Self::Compatible(p.with_generation_overrides(overrides)),
+            Self::Mock(p) => Self::Mock(p.with_generation_overrides(overrides)),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => {
+                tracing::warn!("generation overrides not supported for Candle provider");
+                Self::Candle(p)
+            }
+            Self::Orchestrator(_) | Self::Router(_) => {
+                tracing::warn!("generation overrides not supported for this provider variant");
+                self
+            }
+        }
+    }
+
+    /// Route to a specific named provider (for orchestrators), or fall through to default routing.
+    ///
+    /// For non-orchestrator providers, the `name` is ignored and regular `chat` is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LlmError`] if the underlying provider call fails.
+    pub async fn chat_with_named_provider(
+        &self,
+        name: &str,
+        messages: &[Message],
+    ) -> Result<String, crate::LlmError> {
+        if let Self::Orchestrator(orch) = self {
+            return orch.chat_for_named(name, messages).await;
+        }
+        tracing::debug!(
+            name,
+            "chat_with_named_provider: not an orchestrator, ignoring model name"
+        );
+        self.chat(messages).await
     }
 
     /// Propagate a status sender to the inner provider (where supported).
@@ -580,5 +628,26 @@ mod tests {
             "embed".into(),
         ));
         assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn any_ollama_with_generation_overrides_preserves_variant() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "test".into(),
+            "embed".into(),
+        ));
+        let overrides = crate::provider::GenerationOverrides {
+            temperature: Some(0.3),
+            top_p: None,
+            top_k: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let patched = provider.with_generation_overrides(overrides);
+        assert!(
+            matches!(patched, AnyProvider::Ollama(_)),
+            "variant must remain Ollama after with_generation_overrides"
+        );
     }
 }

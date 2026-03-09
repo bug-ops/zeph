@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 2432
+assertion_line: 2458
 expression: toml_str
 ---
 [agent]

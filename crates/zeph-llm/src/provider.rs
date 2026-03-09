@@ -111,6 +111,19 @@ pub type EmbedFn = Box<dyn Fn(&str) -> EmbedFuture + Send + Sync>;
 /// Sender for emitting status events (retries, fallbacks) to the UI.
 pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
 
+/// Partial LLM generation parameter overrides for experiment variation injection.
+///
+/// Applied by the experiment engine to clone-and-patch a provider before evaluation,
+/// so each variation is scored with its specific generation parameters.
+#[derive(Debug, Clone, Default)]
+pub struct GenerationOverrides {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<usize>,
+    pub frequency_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

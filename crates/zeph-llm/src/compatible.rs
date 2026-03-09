@@ -5,7 +5,9 @@ use std::fmt;
 
 use crate::error::LlmError;
 use crate::openai::OpenAiProvider;
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
+};
 
 pub struct CompatibleProvider {
     inner: OpenAiProvider,
@@ -65,6 +67,12 @@ impl CompatibleProvider {
 impl CompatibleProvider {
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         self.inner.status_tx = Some(tx);
+    }
+
+    #[must_use]
+    pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
+        self.inner = self.inner.with_generation_overrides(overrides);
+        self
     }
 }
 
