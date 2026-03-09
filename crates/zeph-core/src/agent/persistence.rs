@@ -7,15 +7,20 @@ use zeph_memory::sqlite::role_str;
 
 use super::Agent;
 
-/// Remove orphaned `ToolUse`/`ToolResult` messages at the boundaries of restored history.
+/// Remove orphaned `ToolUse`/`ToolResult` messages from restored history.
 ///
-/// Two failure modes are handled:
+/// Three failure modes are handled:
 /// 1. Trailing orphan: the last message is an assistant with `ToolUse` parts but no subsequent
 ///    user message with `ToolResult` — caused by LIMIT boundary splits or interrupted sessions.
 /// 2. Leading orphan: the first message is a user with `ToolResult` parts but no preceding
 ///    assistant message with `ToolUse` — caused by LIMIT boundary cuts.
+/// 3. Mid-history orphan: an assistant message with `ToolUse` parts is not followed by a user
+///    message with matching `ToolResult` parts — caused by compaction splitting a tool pair
+///    (`compact_context` hides one half via `replace_conversation`). The `ToolUse` parts are
+///    stripped from the assistant message (text content is preserved); if no text remains the
+///    message is removed entirely.
 ///
-/// Both cases are removed in a loop until the boundaries are clean.
+/// Boundary cases are resolved in a loop before the mid-history scan runs.
 fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
     let mut removed = 0;
 
@@ -79,6 +84,85 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
         break;
     }
 
+    // Mid-history scan: strip ToolUse parts from any assistant message whose tool IDs are not
+    // matched by ToolResult parts in the immediately following user message.
+    removed += strip_mid_history_orphans(messages);
+
+    removed
+}
+
+/// Scan all messages and strip `ToolUse` parts from assistant messages that lack a matching
+/// `ToolResult` in the next user message. Text parts are preserved; messages with no remaining
+/// content are removed.
+///
+/// Returns the number of messages removed (stripped-to-empty messages count as 1 each).
+fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
+    let mut removed = 0;
+    let mut i = 0;
+    while i < messages.len() {
+        let has_tool_use = messages[i].role == Role::Assistant
+            && messages[i]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+
+        if !has_tool_use {
+            i += 1;
+            continue;
+        }
+
+        // Collect tool_use IDs from this assistant message.
+        let tool_use_ids: Vec<String> = messages[i]
+            .parts
+            .iter()
+            .filter_map(|p| {
+                if let MessagePart::ToolUse { id, .. } = p {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Check whether the next message provides matching tool_result blocks.
+        let next_has_results = messages
+            .get(i + 1)
+            .is_some_and(|next| {
+                if next.role != Role::User {
+                    return false;
+                }
+                tool_use_ids.iter().all(|uid| {
+                    next.parts.iter().any(|p| {
+                        matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == uid)
+                    })
+                })
+            });
+
+        if next_has_results {
+            i += 1;
+            continue;
+        }
+
+        // Orphaned: strip ToolUse parts, keep text content.
+        tracing::warn!(
+            tool_ids = ?tool_use_ids,
+            index = i,
+            "stripping orphaned mid-history tool_use parts from assistant message"
+        );
+        messages[i]
+            .parts
+            .retain(|p| !matches!(p, MessagePart::ToolUse { .. }));
+
+        // If the message is now empty (no parts and no text content), remove it entirely.
+        let is_empty = messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
+        if is_empty {
+            messages.remove(i);
+            removed += 1;
+            // Do not advance i — the next message is now at position i.
+        } else {
+            i += 1;
+        }
+    }
     removed
 }
 
@@ -1467,5 +1551,171 @@ mod tests {
         assert_eq!(agent.messages[messages_before].content, "what is 2+2?");
         assert_eq!(agent.messages[messages_before + 1].role, Role::Assistant);
         assert_eq!(agent.messages[messages_before + 1].content, "4");
+    }
+
+    /// RC1 regression: mid-history assistant[ToolUse] without a following user[ToolResult] must
+    /// have its ToolUse parts stripped (text preserved). The message count stays the same because
+    /// the assistant message has a text content fallback — only ToolUse parts are removed.
+    #[tokio::test]
+    async fn sanitize_tool_pairs_strips_mid_history_orphan_tool_use() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Normal first exchange.
+        sqlite
+            .save_message(cid, "user", "first question")
+            .await
+            .unwrap();
+        sqlite
+            .save_message(cid, "assistant", "first answer")
+            .await
+            .unwrap();
+
+        // Mid-history orphan: assistant with ToolUse but NO following ToolResult user message.
+        // This models the compaction-split scenario (RC2) where replace_conversation hid the
+        // user[ToolResult] but left the assistant[ToolUse] visible.
+        let use_parts = serde_json::to_string(&[
+            MessagePart::ToolUse {
+                id: "call_mid_1".to_string(),
+                name: "shell".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+            },
+            MessagePart::Text {
+                text: "Let me check the files.".to_string(),
+            },
+        ])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "Let me check the files.", &use_parts)
+            .await
+            .unwrap();
+
+        // Another normal exchange after the orphan.
+        sqlite
+            .save_message(cid, "user", "second question")
+            .await
+            .unwrap();
+        sqlite
+            .save_message(cid, "assistant", "second answer")
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // All 5 messages remain (orphan message kept because it has text), but the orphaned
+        // message must have its ToolUse parts stripped.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 5,
+            "message count must be 5 (orphan message kept — has text content)"
+        );
+
+        // The orphaned assistant message (index 2 in the loaded slice) must have no ToolUse parts.
+        let orphan = &agent.messages[messages_before + 2];
+        assert_eq!(orphan.role, Role::Assistant);
+        assert!(
+            !orphan
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "orphaned ToolUse parts must be stripped from mid-history message"
+        );
+        // Text part must be preserved.
+        assert!(
+            orphan.parts.iter().any(
+                |p| matches!(p, MessagePart::Text { text } if text == "Let me check the files.")
+            ),
+            "text content of orphaned assistant message must be preserved"
+        );
+    }
+
+    /// Regression: a properly matched tool_use/tool_result pair must NOT be touched by the
+    /// mid-history scan — ensures the fix doesn't break valid tool exchanges.
+    #[tokio::test]
+    async fn sanitize_tool_pairs_preserves_matched_tool_pair() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        sqlite
+            .save_message(cid, "user", "run a command")
+            .await
+            .unwrap();
+
+        // Assistant sends a ToolUse.
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_ok".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "echo hi"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell]", &use_parts)
+            .await
+            .unwrap();
+
+        // Matching user ToolResult follows.
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_ok".to_string(),
+            content: "hi".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "user", "[tool_result: call_ok]\nhi", &result_parts)
+            .await
+            .unwrap();
+
+        sqlite.save_message(cid, "assistant", "done").await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.messages.len();
+        agent.load_history().await.unwrap();
+
+        // All 4 messages preserved, tool_use parts intact.
+        assert_eq!(
+            agent.messages.len(),
+            messages_before + 4,
+            "matched tool pair must not be removed"
+        );
+        let tool_msg = &agent.messages[messages_before + 1];
+        assert!(
+            tool_msg
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == "call_ok")),
+            "matched ToolUse parts must be preserved"
+        );
     }
 }

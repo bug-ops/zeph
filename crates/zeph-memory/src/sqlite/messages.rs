@@ -41,6 +41,29 @@ pub fn role_str(role: Role) -> &'static str {
     }
 }
 
+/// Deserialize message parts from a stored JSON string.
+///
+/// Returns an empty `Vec` and logs a warning if deserialization fails, including the role and
+/// a truncated excerpt of the malformed JSON for diagnostics.
+fn parse_parts_json(role_str: &str, parts_json: &str) -> Vec<MessagePart> {
+    if parts_json == "[]" {
+        return vec![];
+    }
+    match serde_json::from_str(parts_json) {
+        Ok(p) => p,
+        Err(e) => {
+            let truncated = parts_json.chars().take(120).collect::<String>();
+            tracing::warn!(
+                role = %role_str,
+                parts_json = %truncated,
+                error = %e,
+                "failed to deserialize message parts, falling back to empty"
+            );
+            vec![]
+        }
+    }
+}
+
 impl SqliteStore {
     /// Create a new conversation and return its ID.
     ///
@@ -142,11 +165,7 @@ impl SqliteStore {
             .into_iter()
             .map(
                 |(role_str, content, parts_json, agent_visible, user_visible)| {
-                    let parts: Vec<MessagePart> = if parts_json == "[]" {
-                        vec![]
-                    } else {
-                        serde_json::from_str(&parts_json).unwrap_or_default()
-                    };
+                    let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
                         content,
@@ -205,11 +224,7 @@ impl SqliteStore {
             .into_iter()
             .map(
                 |(role_str, content, parts_json, agent_visible, user_visible)| {
-                    let parts: Vec<MessagePart> = if parts_json == "[]" {
-                        vec![]
-                    } else {
-                        serde_json::from_str(&parts_json).unwrap_or_default()
-                    };
+                    let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
                         content,
@@ -335,11 +350,7 @@ impl SqliteStore {
 
         Ok(row.map(
             |(role_str, content, parts_json, agent_visible, user_visible)| {
-                let parts: Vec<MessagePart> = if parts_json == "[]" {
-                    vec![]
-                } else {
-                    serde_json::from_str(&parts_json).unwrap_or_default()
-                };
+                let parts = parse_parts_json(&role_str, &parts_json);
                 Message {
                     role: parse_role(&role_str),
                     content,
@@ -384,11 +395,7 @@ impl SqliteStore {
         Ok(rows
             .into_iter()
             .map(|(id, role_str, content, parts_json)| {
-                let parts: Vec<MessagePart> = if parts_json == "[]" {
-                    vec![]
-                } else {
-                    serde_json::from_str(&parts_json).unwrap_or_default()
-                };
+                let parts = parse_parts_json(&role_str, &parts_json);
                 (
                     id,
                     Message {

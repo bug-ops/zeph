@@ -1435,10 +1435,14 @@ fn split_messages_structured(
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
-    for msg in messages {
-        if !msg.metadata.agent_visible {
-            continue;
-        }
+    // Collect only agent-visible messages so we can peek at the next visible message when
+    // validating tool_use/tool_result pairs (FIX2: defensive orphan detection at emit time).
+    let visible: Vec<&Message> = messages
+        .iter()
+        .filter(|m| m.metadata.agent_visible)
+        .collect();
+
+    for (idx, msg) in visible.iter().enumerate() {
         match msg.role {
             Role::System => system_parts.push(msg.to_llm_content()),
             Role::User | Role::Assistant => {
@@ -1460,6 +1464,41 @@ fn split_messages_structured(
 
                 if has_structured_parts {
                     let is_assistant = msg.role == Role::Assistant;
+
+                    // For assistant messages, pre-compute which tool_use IDs are matched by
+                    // the next visible user message. Unmatched IDs are downgraded to text to
+                    // prevent Claude API 400 (tool_use without tool_result).
+                    let matched_tool_ids: Option<std::collections::HashSet<&str>> = if is_assistant
+                    {
+                        let next = visible.get(idx + 1);
+                        Some(
+                            msg.parts
+                                .iter()
+                                .filter_map(|p| {
+                                    if let MessagePart::ToolUse { id, .. } = p {
+                                        Some(id.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .filter(|uid| {
+                                    next.is_some_and(|next_msg| {
+                                        next_msg.role == Role::User
+                                            && next_msg.parts.iter().any(|np| {
+                                                matches!(
+                                                    np,
+                                                    MessagePart::ToolResult { tool_use_id, .. }
+                                                        if tool_use_id.as_str() == *uid
+                                                )
+                                            })
+                                    })
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+
                     let mut blocks = Vec::new();
                     for part in &msg.parts {
                         match part {
@@ -1484,11 +1523,28 @@ fn split_messages_structured(
                                 });
                             }
                             MessagePart::ToolUse { id, name, input } if is_assistant => {
-                                blocks.push(AnthropicContentBlock::ToolUse {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                });
+                                // Downgrade to text if the tool_use ID is not matched by the
+                                // next user message — prevents API 400 on orphaned tool_use.
+                                let matched = matched_tool_ids
+                                    .as_ref()
+                                    .is_some_and(|ids| ids.contains(id.as_str()));
+                                if matched {
+                                    blocks.push(AnthropicContentBlock::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input: input.clone(),
+                                    });
+                                } else {
+                                    tracing::warn!(
+                                        tool_use_id = %id,
+                                        tool_name = %name,
+                                        "downgrading unmatched tool_use to text in API request"
+                                    );
+                                    blocks.push(AnthropicContentBlock::Text {
+                                        text: format!("[tool_use: {name}] {input}"),
+                                        cache_control: None,
+                                    });
+                                }
                             }
                             MessagePart::ToolUse { name, input, .. } => {
                                 blocks.push(AnthropicContentBlock::Text {
@@ -2410,6 +2466,85 @@ mod tests {
         let user_json = serde_json::to_string(&chat[1]).unwrap();
         assert!(user_json.contains("tool_result"));
         assert!(user_json.contains("\"tool_use_id\":\"t1\""));
+    }
+
+    /// FIX2 regression: an assistant message with a ToolUse part that has NO matching ToolResult
+    /// in the next user message must emit a text block instead of a tool_use block, preventing
+    /// Claude API 400 errors caused by unmatched tool_use/tool_result pairs.
+    #[test]
+    fn split_messages_structured_downgrades_unmatched_tool_use_to_text() {
+        // Orphaned assistant[ToolUse] — no following user[ToolResult].
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "Let me run this.".into(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "orphan_id".into(),
+                        name: "shell".into(),
+                        input: serde_json::json!({"command": "ls"}),
+                    },
+                ],
+            ),
+            // Next message is NOT a ToolResult response — simulates compaction-split orphan.
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::Text {
+                    text: "Thanks, what did you find?".into(),
+                }],
+            ),
+        ];
+
+        let (_, chat) = split_messages_structured(&messages, false);
+        assert_eq!(chat.len(), 2);
+
+        // The assistant block must NOT contain a tool_use block for the unmatched ID.
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(
+            !assistant_json.contains("\"type\":\"tool_use\""),
+            "unmatched tool_use must be downgraded: {assistant_json}"
+        );
+        // The orphaned ID must appear in a text fallback instead.
+        assert!(
+            assistant_json.contains("orphan_id") || assistant_json.contains("shell"),
+            "downgraded tool_use must appear as text fallback: {assistant_json}"
+        );
+    }
+
+    /// FIX2 regression: a matched tool_use/tool_result pair must still emit a real tool_use block
+    /// — the defensive check must not break valid exchanges.
+    #[test]
+    fn split_messages_structured_preserves_matched_tool_use_block() {
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "matched_id".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "matched_id".into(),
+                    content: "hi".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let (_, chat) = split_messages_structured(&messages, false);
+        assert_eq!(chat.len(), 2);
+
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(
+            assistant_json.contains("\"type\":\"tool_use\""),
+            "matched tool_use must be emitted as tool_use block: {assistant_json}"
+        );
+        assert!(assistant_json.contains("\"id\":\"matched_id\""));
     }
 
     #[test]
