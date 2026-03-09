@@ -87,7 +87,7 @@ pub fn build_router_with_full_config(
         .layer(RequestBodyLimitLayer::new(max_body_size));
 
     Router::new()
-        .route("/.well-known/agent-card.json", get(agent_card_handler))
+        .route("/.well-known/agent.json", get(agent_card_handler))
         .merge(protected)
         .with_state(state)
 }
@@ -250,7 +250,7 @@ mod tests {
         let app = build_router_with_config(test_state(), Some("secret-token".into()), 0);
 
         let req = axum::http::Request::builder()
-            .uri("/.well-known/agent-card.json")
+            .uri("/.well-known/agent.json")
             .body(Body::empty())
             .unwrap();
 
