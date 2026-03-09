@@ -2,17 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use sqlx::SqlitePool;
-use zeph_llm::provider::{Message, Role};
 
 use crate::error::MemoryError;
-
-fn role_to_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
-}
 
 pub struct ResponseCache {
     pool: SqlitePool,
@@ -79,18 +70,18 @@ impl ResponseCache {
         Ok(result.rows_affected())
     }
 
-    /// Compute a deterministic cache key from messages and model name using blake3.
+    /// Compute a deterministic cache key from the last user message and model name using blake3.
+    ///
+    /// The key intentionally ignores conversation history so that identical user messages
+    /// produce cache hits regardless of what preceded them. This is the desired behavior for
+    /// a short-TTL response cache, but it means context-dependent questions (e.g. "Explain
+    /// this") may return a cached response from a different context. The TTL bounds staleness.
     #[must_use]
-    pub fn compute_key(messages: &[Message], model: &str) -> String {
+    pub fn compute_key(last_user_message: &str, model: &str) -> String {
         let mut hasher = blake3::Hasher::new();
-        for msg in messages {
-            let role = role_to_str(msg.role).as_bytes();
-            hasher.update(&(role.len() as u64).to_le_bytes());
-            hasher.update(role);
-            let content = msg.content.as_bytes();
-            hasher.update(&(content.len() as u64).to_le_bytes());
-            hasher.update(content);
-        }
+        let content = last_user_message.as_bytes();
+        hasher.update(&(content.len() as u64).to_le_bytes());
+        hasher.update(content);
         let model_bytes = model.as_bytes();
         hasher.update(&(model_bytes.len() as u64).to_le_bytes());
         hasher.update(model_bytes);
@@ -110,7 +101,6 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
     use crate::sqlite::SqliteStore;
-    use zeph_llm::provider::MessageMetadata;
 
     async fn test_cache() -> ResponseCache {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -164,93 +154,31 @@ mod tests {
 
     #[test]
     fn compute_key_deterministic() {
-        let msgs = vec![Message {
-            role: Role::User,
-            content: "hello".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        let k1 = ResponseCache::compute_key(&msgs, "gpt-4");
-        let k2 = ResponseCache::compute_key(&msgs, "gpt-4");
+        let k1 = ResponseCache::compute_key("hello", "gpt-4");
+        let k2 = ResponseCache::compute_key("hello", "gpt-4");
         assert_eq!(k1, k2);
     }
 
     #[test]
     fn compute_key_different_for_different_content() {
-        let msgs1 = vec![Message {
-            role: Role::User,
-            content: "hello".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        let msgs2 = vec![Message {
-            role: Role::User,
-            content: "world".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
         assert_ne!(
-            ResponseCache::compute_key(&msgs1, "gpt-4"),
-            ResponseCache::compute_key(&msgs2, "gpt-4")
+            ResponseCache::compute_key("hello", "gpt-4"),
+            ResponseCache::compute_key("world", "gpt-4")
         );
     }
 
     #[test]
     fn compute_key_different_for_different_model() {
-        let msgs = vec![Message {
-            role: Role::User,
-            content: "hello".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
         assert_ne!(
-            ResponseCache::compute_key(&msgs, "gpt-4"),
-            ResponseCache::compute_key(&msgs, "gpt-3.5")
+            ResponseCache::compute_key("hello", "gpt-4"),
+            ResponseCache::compute_key("hello", "gpt-3.5")
         );
     }
 
     #[test]
-    fn compute_key_empty_messages() {
-        let k = ResponseCache::compute_key(&[], "model");
+    fn compute_key_empty_message() {
+        let k = ResponseCache::compute_key("", "model");
         assert!(!k.is_empty());
-    }
-
-    #[test]
-    fn compute_key_no_length_prefix_ambiguity() {
-        // Without length-prefix, "ab"+"c" and "a"+"bc" would hash identically.
-        // With proper length-prefixing they must differ.
-        let msgs1 = vec![
-            Message {
-                role: Role::User,
-                content: "ab".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::User,
-                content: "c".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-        ];
-        let msgs2 = vec![
-            Message {
-                role: Role::User,
-                content: "a".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::User,
-                content: "bc".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-        ];
-        assert_ne!(
-            ResponseCache::compute_key(&msgs1, "model"),
-            ResponseCache::compute_key(&msgs2, "model")
-        );
     }
 
     #[tokio::test]
