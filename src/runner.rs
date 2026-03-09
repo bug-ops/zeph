@@ -388,6 +388,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         tool_executor,
     )
     .with_max_tool_iterations(config.agent.max_tool_iterations)
+    .with_max_tool_retries(config.agent.max_tool_retries)
+    .with_tool_repeat_threshold(config.agent.tool_repeat_threshold)
     .with_model_name(config.llm.model.clone())
     .with_embedding_model(embed_model.clone())
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)

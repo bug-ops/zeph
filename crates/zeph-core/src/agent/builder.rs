@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -103,6 +104,22 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
         self.tool_orchestrator.max_iterations = max;
+        self
+    }
+
+    /// Set the maximum number of retry attempts for transient tool errors (0 = disabled, max 5).
+    #[must_use]
+    pub fn with_max_tool_retries(mut self, max: usize) -> Self {
+        self.tool_orchestrator.max_tool_retries = max.min(5);
+        self
+    }
+
+    /// Set the repeat-detection threshold (0 = disabled).
+    /// Window size is `2 * threshold`.
+    #[must_use]
+    pub fn with_tool_repeat_threshold(mut self, threshold: usize) -> Self {
+        self.tool_orchestrator.repeat_threshold = threshold;
+        self.tool_orchestrator.recent_tool_calls = VecDeque::with_capacity(2 * threshold.max(1));
         self
     }
 

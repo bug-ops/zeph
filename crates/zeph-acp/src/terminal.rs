@@ -309,7 +309,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
         let mut defs = vec![ToolDef {
             id: "bash".into(),
-            description: "Execute a shell command in the IDE terminal".into(),
+            description: "Execute a shell command in the IDE terminal.\n\nParameters: command (string, required) - shell command to run\nReturns: stdout/stderr combined with exit code\nErrors: Timeout; permission denied by IDE; command blocked by policy\nExample: {\"command\": \"cargo build\"}".into(),
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::ToolCall,
         }];
@@ -317,7 +317,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
         if self.permission_gate.is_some() {
             defs.push(ToolDef {
                 id: "bash_stdin".into(),
-                description: "Write data to stdin of a running terminal process".into(),
+                description: "Write data to stdin of a running terminal process.\n\nParameters: terminal_id (string, required) - terminal to write to; data (string, required) - stdin data\nReturns: confirmation\nErrors: terminal not found; terminal process exited\nExample: {\"terminal_id\": \"term-1\", \"data\": \"yes\\n\"}".into(),
                 schema: schemars::schema_for!(BashStdinParams),
                 invocation: InvocationHint::ToolCall,
             });

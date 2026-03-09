@@ -91,18 +91,43 @@ impl DebugDumper {
     /// Dump raw tool output before any truncation or summarization.
     pub fn dump_tool_output(&self, tool_name: &str, output: &str) {
         let id = self.next_id();
-        let safe_name: String = tool_name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        let safe_name = sanitize_dump_name(tool_name);
         self.write(&format!("{id:04}-tool-{safe_name}.txt"), output.as_bytes());
     }
+
+    /// Dump a tool error with error classification for debugging transient/permanent failures.
+    pub fn dump_tool_error(&self, tool_name: &str, error: &zeph_tools::ToolError) {
+        let id = self.next_id();
+        let safe_name = sanitize_dump_name(tool_name);
+        let payload = serde_json::json!({
+            "tool": tool_name,
+            "error": error.to_string(),
+            "kind": error.kind().to_string(),
+        });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(json) => {
+                self.write(
+                    &format!("{id:04}-tool-error-{safe_name}.json"),
+                    json.as_bytes(),
+                );
+            }
+            Err(e) => {
+                tracing::warn!("dump_tool_error: failed to serialize error payload: {e}");
+            }
+        }
+    }
+}
+
+fn sanitize_dump_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Render messages as the API payload format (mirrors `split_messages_structured` in the

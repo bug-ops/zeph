@@ -143,6 +143,25 @@ pub enum ToolEvent {
 
 pub type ToolEventTx = tokio::sync::mpsc::UnboundedSender<ToolEvent>;
 
+/// Classifies a tool error as transient (retryable) or permanent (abort immediately).
+///
+/// Transient errors may succeed on retry (network blips, race conditions).
+/// Permanent errors will not succeed regardless of retries (policy, bad args, not found).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ErrorKind {
+    Transient,
+    Permanent,
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transient => f.write_str("transient"),
+            Self::Permanent => f.write_str("permanent"),
+        }
+    }
+}
+
 /// Errors that can occur during tool execution.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -166,6 +185,37 @@ pub enum ToolError {
 
     #[error("execution failed: {0}")]
     Execution(#[from] std::io::Error),
+}
+
+impl ToolError {
+    /// Classify this error as transient (retryable) or permanent.
+    ///
+    /// For `Execution(io::Error)`, the classification inspects `io::Error::kind()`:
+    /// - Transient: `TimedOut`, `WouldBlock`, `Interrupted`, `ConnectionReset`,
+    ///   `ConnectionAborted`, `BrokenPipe` — these may succeed on retry.
+    /// - Permanent: `NotFound`, `PermissionDenied`, `AlreadyExists`, and all other
+    ///   I/O error kinds — retrying would waste time with no benefit.
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Timeout { .. } => ErrorKind::Transient,
+            Self::Execution(io_err) => match io_err.kind() {
+                std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::Interrupted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe => ErrorKind::Transient,
+                // NotFound, PermissionDenied, AlreadyExists, and everything else: permanent.
+                _ => ErrorKind::Permanent,
+            },
+            Self::Blocked { .. }
+            | Self::SandboxViolation { .. }
+            | Self::ConfirmationRequired { .. }
+            | Self::Cancelled
+            | Self::InvalidParams { .. } => ErrorKind::Permanent,
+        }
+    }
 }
 
 /// Deserialize tool call params from a `serde_json::Map<String, Value>` into a typed struct.
@@ -488,6 +538,116 @@ mod tests {
         let err = ToolError::Execution(io_err);
         assert!(err.to_string().starts_with("execution failed:"));
         assert!(err.to_string().contains("bash not found"));
+    }
+
+    // ErrorKind classification tests
+    #[test]
+    fn error_kind_timeout_is_transient() {
+        let err = ToolError::Timeout { timeout_secs: 30 };
+        assert_eq!(err.kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_blocked_is_permanent() {
+        let err = ToolError::Blocked {
+            command: "rm -rf /".to_owned(),
+        };
+        assert_eq!(err.kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_sandbox_violation_is_permanent() {
+        let err = ToolError::SandboxViolation {
+            path: "/etc/shadow".to_owned(),
+        };
+        assert_eq!(err.kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_cancelled_is_permanent() {
+        assert_eq!(ToolError::Cancelled.kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_invalid_params_is_permanent() {
+        let err = ToolError::InvalidParams {
+            message: "bad arg".to_owned(),
+        };
+        assert_eq!(err.kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_confirmation_required_is_permanent() {
+        let err = ToolError::ConfirmationRequired {
+            command: "rm /tmp/x".to_owned(),
+        };
+        assert_eq!(err.kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_execution_timed_out_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_interrupted_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Interrupted, "interrupted");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_connection_reset_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_broken_pipe_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broken");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_would_block_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_connection_aborted_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "aborted");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn error_kind_execution_not_found_is_permanent() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_execution_permission_denied_is_permanent() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_execution_other_is_permanent() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "some other error");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_execution_already_exists_is_permanent() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "exists");
+        assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Permanent);
+    }
+
+    #[test]
+    fn error_kind_display() {
+        assert_eq!(ErrorKind::Transient.to_string(), "transient");
+        assert_eq!(ErrorKind::Permanent.to_string(), "permanent");
     }
 
     #[test]

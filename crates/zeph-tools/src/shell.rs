@@ -487,7 +487,7 @@ impl ToolExecutor for ShellExecutor {
         use crate::registry::{InvocationHint, ToolDef};
         vec![ToolDef {
             id: "bash".into(),
-            description: "Execute a shell command".into(),
+            description: "Execute a shell command and return stdout/stderr.\n\nParameters: command (string, required) - shell command to run\nReturns: stdout and stderr combined, prefixed with exit code\nErrors: Blocked if command matches security policy; Timeout after configured seconds; SandboxViolation if path outside allowed dirs\nExample: {\"command\": \"ls -la /tmp\"}".into(),
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::FencedBlock("bash"),
         }]

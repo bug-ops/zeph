@@ -13,10 +13,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Validate `deferred_apply_threshold < compaction_threshold` ordering at config load and in `--init` wizard. Both thresholds also enforce finite (0.0, 1.0) exclusive range. Wizard re-prompts on violation instead of silently accepting. `tui_remote` now calls `Config::validate()` after load (#1302)
+- Add `ErrorKind::{Transient, Permanent}` enum to `zeph-tools` and `ToolError::kind()` method for typed error classification. `Execution(io::Error)` is sub-classified by `io::ErrorKind`: transient variants (`TimedOut`, `WouldBlock`, `Interrupted`, `ConnectionReset`, `ConnectionAborted`, `BrokenPipe`) are retryable; `NotFound`, `PermissionDenied`, `AlreadyExists`, and all others are permanent (#1340)
+- Add retry logic with exponential backoff for transient tool errors in the native `tool_use` path. Default: 2 retries, 500ms base delay, 5s cap, ~12.5% jitter. Configurable via `[agent] max_tool_retries` (default 2, max 5). Backoff sleep uses `tokio::select!` for cancellation-aware waiting. Debug dumps include `dump_tool_error()` with error kind (#1340)
+- Add repeat-detection heuristic in `ToolOrchestrator`: tracks recent LLM-initiated tool calls in a sliding window (`VecDeque`); aborts with an error message when the same tool+args hash appears `>= tool_repeat_threshold` times within `2 * threshold` calls. Retry re-executions are excluded from the window. Configurable via `[agent] tool_repeat_threshold` (default 2, 0 to disable) (#1340)
+- Rewrite all 19 native and ACP `ToolDefinition` descriptions to contract format with `Parameters / Returns / Errors / Example` sections for improved tool selection accuracy, especially on smaller local models (#1342)
 
 ### Changed
 
+- Tool execution in native `tool_use` path is now sequential per call (previously parallel `join_all`). This enables per-call retry state without additional abstractions. Behavioral equivalence is preserved for the common case; parallel execution restoration is tracked in a follow-up issue (#1340)
+- Validate `deferred_apply_threshold < compaction_threshold` ordering at config load and in `--init` wizard. Both thresholds also enforce finite (0.0, 1.0) exclusive range. Wizard re-prompts on violation instead of silently accepting. `tui_remote` now calls `Config::validate()` after load (#1302)
 - Consolidate all project-level runtime artifacts under `.zeph/` directory. Default paths changed: `data/zeph.db` → `.zeph/data/zeph.db`, `skills/` → `.zeph/skills/`, `.local/debug` → `.zeph/debug`. Startup migration warning logs exact `mv` commands when old paths are detected. Explicit config paths are unaffected (#1353)
 
 ### Fixed

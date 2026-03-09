@@ -270,22 +270,19 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
         if self.can_read {
             defs.push(ToolDef {
                 id: "read_file".into(),
-                description: "Read a file from the IDE workspace. Preferred over bash cat/head/tail for reading files. Returns structured content with line numbers. Supports optional line offset and limit.".into(),
+                description: "Read a file from the IDE workspace with line numbers.\n\nParameters: path (string, required) - file path relative to workspace root; offset (integer, optional) - start line; limit (integer, optional) - max lines\nReturns: file content with line numbers, structured for IDE display\nErrors: file not found; path outside workspace; I/O failure\nExample: {\"path\": \"src/main.rs\", \"offset\": 0, \"limit\": 100}".into(),
                 schema: schemars::schema_for!(ReadFileParams),
                 invocation: InvocationHint::ToolCall,
             });
             defs.push(ToolDef {
                 id: "list_directory".into(),
-                description:
-                    "List files and directories at the given path. Preferred over bash ls.".into(),
+                description: "List files and directories at the given path in the IDE workspace.\n\nParameters: path (string, required) - directory path relative to workspace root\nReturns: sorted listing with type indicators\nErrors: path not found; path outside workspace\nExample: {\"path\": \"src/\"}".into(),
                 schema: schemars::schema_for!(ListDirectoryParams),
                 invocation: InvocationHint::ToolCall,
             });
             defs.push(ToolDef {
                 id: "find_path".into(),
-                description:
-                    "Find files matching a glob pattern in a directory. Preferred over bash find."
-                        .into(),
+                description: "Find files matching a glob pattern in the IDE workspace.\n\nParameters: pattern (string, required) - glob pattern\nReturns: matching file paths relative to workspace root\nErrors: path outside workspace\nExample: {\"pattern\": \"**/*.rs\"}".into(),
                 schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
             });
@@ -294,9 +291,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
         if self.can_write && self.permission_gate.is_some() {
             defs.push(ToolDef {
                 id: "write_file".into(),
-                description:
-                    "Write content to a file in the IDE workspace. Preferred over shell redirects."
-                        .into(),
+                description: "Create or overwrite a file in the IDE workspace.\n\nParameters: path (string, required) - file path; content (string, required) - file content\nReturns: confirmation with bytes written\nErrors: permission denied; path outside workspace; I/O failure\nExample: {\"path\": \"output.txt\", \"content\": \"Hello\"}".into(),
                 schema: schemars::schema_for!(WriteFileParams),
                 invocation: InvocationHint::ToolCall,
             });
@@ -795,7 +790,7 @@ mod tests {
         assert!(ids.contains(&"list_directory"));
         assert!(ids.contains(&"find_path"));
         assert!(!ids.contains(&"write_file"));
-        assert!(defs[0].description.contains("cat/head/tail"));
+        assert!(defs[0].description.contains("IDE workspace"));
 
         // REQ-P31-1: write_file not advertised without permission gate.
         let exec_write_no_gate = AcpFileExecutor {
@@ -828,7 +823,7 @@ mod tests {
         let defs = exec_write_with_gate.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "write_file");
-        assert!(defs[0].description.contains("shell redirects"));
+        assert!(defs[0].description.contains("IDE workspace"));
     }
 
     #[tokio::test]

@@ -245,6 +245,14 @@ fn default_auto_update_check() -> bool {
     true
 }
 
+fn default_max_tool_retries() -> usize {
+    2
+}
+
+fn default_tool_repeat_threshold() -> usize {
+    2
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -259,6 +267,14 @@ pub struct AgentConfig {
     /// (e.g. `CLAUDE.md` for Claude, `AGENTS.md` for `OpenAI`).
     #[serde(default = "default_instruction_auto_detect")]
     pub instruction_auto_detect: bool,
+    /// Maximum retry attempts for transient tool errors (0 to disable).
+    /// Retries are bounded per tool call and do not consume the outer `max_tool_iterations` budget. Capped at 5.
+    #[serde(default = "default_max_tool_retries")]
+    pub max_tool_retries: usize,
+    /// Number of identical tool+args calls within the recent window to trigger repeat-detection
+    /// abort (0 to disable). Window size is `2 * tool_repeat_threshold`.
+    #[serde(default = "default_tool_repeat_threshold")]
+    pub tool_repeat_threshold: usize,
 }
 
 fn default_instruction_auto_detect() -> bool {
@@ -1822,6 +1838,8 @@ impl Default for Config {
                 auto_update_check: default_auto_update_check(),
                 instruction_files: Vec::new(),
                 instruction_auto_detect: default_instruction_auto_detect(),
+                max_tool_retries: default_max_tool_retries(),
+                tool_repeat_threshold: default_tool_repeat_threshold(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,

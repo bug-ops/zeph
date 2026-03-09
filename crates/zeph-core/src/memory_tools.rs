@@ -56,13 +56,13 @@ impl ToolExecutor for MemoryToolExecutor {
         vec![
             ToolDef {
                 id: "memory_search".into(),
-                description: "Search long-term memory for relevant past messages, facts, and session summaries. Use when the user references past conversations or you need historical context.".into(),
+                description: "Search long-term memory for relevant past messages, facts, and session summaries. Use when the user references past conversations or you need historical context.\n\nParameters: query (string, required) - natural language search query; limit (integer, optional) - max results 1-20 (default: 5)\nReturns: ranked list of memory entries with similarity scores and timestamps\nErrors: Execution on database failure\nExample: {\"query\": \"user preference for output format\", \"limit\": 5}".into(),
                 schema: schemars::schema_for!(MemorySearchParams),
                 invocation: InvocationHint::ToolCall,
             },
             ToolDef {
                 id: "memory_save".into(),
-                description: "Save an important fact or note to long-term memory. Use sparingly for key decisions, user preferences, or critical context worth remembering across sessions.".into(),
+                description: "Save a fact or note to long-term memory for cross-session recall. Use sparingly for key decisions, user preferences, or critical context worth remembering across sessions.\n\nParameters: content (string, required) - concise, self-contained fact or note; role (string, optional) - message role label (default: \"assistant\")\nReturns: confirmation with saved entry ID\nErrors: Execution on database failure; InvalidParams if content is empty\nExample: {\"content\": \"User prefers JSON output over YAML\", \"role\": \"assistant\"}".into(),
                 schema: schemars::schema_for!(MemorySaveParams),
                 invocation: InvocationHint::ToolCall,
             },

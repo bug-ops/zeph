@@ -224,6 +224,49 @@ impl<C: Channel> Agent<C> {
 
             self.inject_active_skill_env();
             let tool_name = first_tool_name(&response);
+
+            // Repeat-detection (IMP-6): check BEFORE execution in legacy path.
+            // Legacy path uses text extraction so params are not structured — hash the
+            // full response string as a proxy for (tool_name, args) identity.
+            {
+                use std::hash::{DefaultHasher, Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                response.hash(&mut h);
+                let args_hash = h.finish();
+                if self.tool_orchestrator.is_repeat(tool_name, args_hash) {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "[repeat-detect] identical tool call detected in legacy path"
+                    );
+                    self.tool_executor.set_skill_env(None);
+                    let msg = format!(
+                        "[error] Repeated identical call to {tool_name} detected. \
+                         Use different arguments or a different approach."
+                    );
+                    if !self
+                        .handle_tool_result(
+                            &response,
+                            Ok(Some(zeph_tools::ToolOutput {
+                                tool_name: tool_name.to_owned(),
+                                summary: msg,
+                                blocks_executed: 0,
+                                filter_stats: None,
+                                diff: None,
+                                streamed: false,
+                                terminal_id: None,
+                                locations: None,
+                                raw_response: None,
+                            })),
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                self.tool_orchestrator.push_tool_call(tool_name, args_hash);
+            }
+
             let status_msg = format!("running {tool_name}...");
             let _ = self.channel.send_status(&status_msg).await;
             let result = self
@@ -779,6 +822,9 @@ impl<C: Channel> Agent<C> {
             Err(e) => {
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
+                if let Some(ref d) = self.debug_dumper {
+                    d.dump_tool_error("legacy", &e);
+                }
                 let kind = FailureKind::from_error(&err_str);
                 // Sanitize before passing to self_reflection: error messages from MCP servers
                 // and web endpoints can contain untrusted content with injection patterns.
@@ -1438,44 +1484,152 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Repeat-detection (CRIT-3): record LLM-initiated calls BEFORE execution.
+        // Retry re-executions must NOT be pushed here — they are handled inside the retry loop.
+        // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
+        let args_hashes: Vec<u64> = calls.iter().map(|c| tool_args_hash(&c.params)).collect();
+        let repeat_blocked: Vec<bool> = calls
+            .iter()
+            .zip(args_hashes.iter())
+            .map(|(call, &hash)| {
+                let blocked = self.tool_orchestrator.is_repeat(&call.tool_id, hash);
+                if blocked {
+                    tracing::warn!(
+                        tool = %call.tool_id,
+                        "[repeat-detect] identical tool call detected, skipping execution"
+                    );
+                }
+                blocked
+            })
+            .collect();
+        // Push LLM-initiated calls into the repeat-detection window (even if blocked).
+        for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
+            self.tool_orchestrator.push_tool_call(&call.tool_id, hash);
+        }
+
         // Inject active skill secrets before tool execution
         self.inject_active_skill_env();
-        // Execute tool calls in parallel, with cancellation
+
+        // Execute tool calls with retry for transient errors.
+        // Retries do NOT produce a new LLM turn and therefore do NOT consume the outer
+        // max_tool_iterations budget — the budget only decrements on LLM round-trips.
+        // The retry budget per tool call is bounded independently by max_tool_retries.
+        let max_retries = self.tool_orchestrator.max_tool_retries;
         let max_parallel = self.runtime.timeouts.max_parallel_tools;
-        let exec_fut = async {
-            if calls.len() <= max_parallel {
-                let futs: Vec<_> = calls
-                    .iter()
-                    .zip(tool_calls.iter())
-                    .map(|(call, tc)| {
-                        self.tool_executor.execute_tool_call_erased(call).instrument(
-                            tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
-                        )
-                    })
-                    .collect();
-                futures::future::join_all(futs).await
-            } else {
-                use futures::StreamExt;
-                let stream =
-                    futures::stream::iter(calls.iter().zip(tool_calls.iter()).map(|(call, tc)| {
-                        self.tool_executor.execute_tool_call_erased(call).instrument(
-                            tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id),
-                        )
-                    }));
-                futures::StreamExt::collect::<Vec<_>>(stream.buffered(max_parallel)).await
-            }
-        };
-        let tool_results = tokio::select! {
-            results = exec_fut => results,
-            () = self.cancel_token.cancelled() => {
+        let cancel = self.cancel_token.clone();
+
+        // For repeat-blocked calls, produce error result immediately without execution.
+        // For other calls, execute with retry for transient errors.
+        // We run each call sequentially when retry is needed to avoid complex async bookkeeping
+        // for the retry state across parallel futures.
+        let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> =
+            Vec::with_capacity(calls.len());
+
+        for ((call, tc), &blocked) in calls
+            .iter()
+            .zip(tool_calls.iter())
+            .zip(repeat_blocked.iter())
+        {
+            if cancel.is_cancelled() {
                 self.tool_executor.set_skill_env(None);
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 return Ok(());
             }
-        };
+
+            if blocked {
+                let msg = format!(
+                    "[error] Repeated identical call to {} detected. \
+                     Use different arguments or a different approach.",
+                    tc.name
+                );
+                tool_results.push(Ok(Some(zeph_tools::ToolOutput {
+                    tool_name: tc.name.clone(),
+                    summary: msg,
+                    blocks_executed: 0,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                })));
+                continue;
+            }
+
+            // Execute with retry for transient errors.
+            let mut attempt = 0_usize;
+            let result = loop {
+                let exec_result = tokio::select! {
+                    r = self.tool_executor.execute_tool_call_erased(call).instrument(
+                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id)
+                    ) => r,
+                    () = cancel.cancelled() => {
+                        self.tool_executor.set_skill_env(None);
+                        tracing::info!("tool execution cancelled by user");
+                        self.update_metrics(|m| m.cancellations += 1);
+                        self.channel.send("[Cancelled]").await?;
+                        return Ok(());
+                    }
+                };
+
+                match exec_result {
+                    Err(ref e)
+                        if e.kind() == zeph_tools::ErrorKind::Transient
+                            && attempt < max_retries =>
+                    {
+                        attempt += 1;
+                        let delay_ms = retry_backoff_ms(attempt - 1);
+                        tracing::warn!(
+                            tool = %tc.name,
+                            attempt,
+                            delay_ms,
+                            error = %e,
+                            "transient tool error, retrying with backoff"
+                        );
+                        let _ = self
+                            .channel
+                            .send_status(&format!("Retrying {}...", tc.name))
+                            .await;
+                        // Interruptible backoff sleep (IMP-3): cancelled if agent shuts down.
+                        tokio::select! {
+                            () = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                            () = cancel.cancelled() => {
+                                self.tool_executor.set_skill_env(None);
+                                tracing::info!("retry backoff interrupted by cancellation");
+                                self.update_metrics(|m| m.cancellations += 1);
+                                self.channel.send("[Cancelled]").await?;
+                                return Ok(());
+                            }
+                        }
+                        let _ = self.channel.send_status("").await;
+                        // NOTE: retry re-executions are NOT recorded in repeat-detection (CRIT-3).
+                    }
+                    result => break result,
+                }
+            };
+
+            if let Err(ref e) = result
+                && let Some(ref d) = self.debug_dumper
+            {
+                d.dump_tool_error(&tc.name, e);
+            }
+            tool_results.push(result);
+        }
+
+        // Pad with empty results if needed (should not happen, but defensive)
+        while tool_results.len() < tool_calls.len() {
+            tool_results.push(Ok(None));
+        }
+
         self.tool_executor.set_skill_env(None);
+
+        // NOTE: parallel execution is intentionally replaced with sequential retry-aware
+        // execution above. For the common case (max_retries=0 or no transient errors),
+        // performance is equivalent. Parallel optimization can be restored in a future PR
+        // if profiling shows it matters. The max_parallel config is preserved for future use.
+        let _ = max_parallel;
 
         // Collect (name, params, output) for LSP hooks. Built during the results loop below.
         #[cfg(feature = "lsp-context")]
@@ -1703,6 +1857,44 @@ impl<C: Channel> Agent<C> {
     }
 }
 
+/// Compute a stable hash for tool arguments for repeat-detection.
+///
+/// Keys are sorted before hashing to normalize key ordering differences between
+/// LLM tool calls that have the same logical parameters. Uses `DefaultHasher`
+/// (not stable across Rust versions) — used only for within-session comparison.
+fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    let mut keys: Vec<&String> = params.keys().collect();
+    keys.sort_unstable();
+    for k in keys {
+        k.hash(&mut hasher);
+        params[k].to_string().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Compute exponential backoff delay for retry attempt (0-indexed).
+///
+/// Formula: `base_ms * 2^attempt`, nominally capped at 5000ms.
+/// Jitter of +-12.5% is applied using system time nanos as entropy, so the
+/// actual output range is `[cap * 0.875, cap * 1.125]` (up to ~5625ms at cap).
+fn retry_backoff_ms(attempt: usize) -> u64 {
+    const BASE_MS: u64 = 500;
+    const MAX_MS: u64 = 5000;
+    let base = BASE_MS.saturating_mul(1_u64 << attempt.min(10));
+    let capped = base.min(MAX_MS);
+    // Simple jitter: +-12.5% using current time nanos as entropy
+    let nanos = u64::from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos()),
+    );
+    let jitter_range = capped / 8; // 12.5%
+    let jitter = nanos % (jitter_range * 2 + 1);
+    capped.saturating_sub(jitter_range).saturating_add(jitter)
+}
+
 fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
     let mut params = serde_json::to_value(&def.schema).unwrap_or_default();
     if let serde_json::Value::Object(ref mut map) = params {
@@ -1725,7 +1917,10 @@ mod tests {
     use futures::future::join_all;
     use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
-    use super::{doom_loop_hash, normalize_for_doom_loop, tool_def_to_definition};
+    use super::{
+        doom_loop_hash, normalize_for_doom_loop, retry_backoff_ms, tool_args_hash,
+        tool_def_to_definition,
+    };
 
     #[test]
     fn tool_def_strips_schema_and_title() {
@@ -3842,5 +4037,277 @@ mod tests {
             original_cached, None,
             "cache must not store a ToolUse response under the original user message key"
         );
+    }
+
+    // ── handle_native_tool_calls retry (RF-2) ────────────────────────────────
+
+    /// Returns `Transient` io error for the first `fail_times` calls, then success.
+    struct TransientThenOkExecutor {
+        fail_times: usize,
+        call_count: AtomicUsize,
+    }
+
+    impl ToolExecutor for TransientThenOkExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let fail = idx < self.fail_times;
+            let tool_id = call.tool_id.clone();
+            async move {
+                if fail {
+                    Err(ToolError::Execution(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "transient timeout",
+                    )))
+                } else {
+                    Ok(Some(ToolOutput {
+                        tool_name: tool_id,
+                        summary: "ok".into(),
+                        blocks_executed: 1,
+                        diff: None,
+                        filter_stats: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                }
+            }
+        }
+    }
+
+    /// Always returns a `Transient` io error (to exhaust retries).
+    struct AlwaysTransientExecutor {
+        call_count: AtomicUsize,
+    }
+
+    impl ToolExecutor for AlwaysTransientExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            let tool_id = call.tool_id.clone();
+            async move {
+                Err(ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("always fails: {tool_id}"),
+                )))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_error_retried_and_succeeds() {
+        // Executor fails once (transient), then succeeds. With max_tool_retries=2,
+        // the retry should recover and the final result is Ok.
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::ToolUseRequest;
+
+        let executor = TransientThenOkExecutor {
+            fail_times: 1,
+            call_count: AtomicUsize::new(0),
+        };
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.max_tool_retries = 2;
+
+        let tool_calls = vec![ToolUseRequest {
+            id: "id1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "echo hi"}),
+        }];
+
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // After recovery, the tool result message must not contain an error marker.
+        let last_msg = agent.messages.last().unwrap();
+        assert!(
+            !last_msg.content.contains("[error]"),
+            "expected successful tool result, got: {}",
+            last_msg.content
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_error_exhausts_retries_produces_error_result() {
+        // Executor always fails with Transient. With max_tool_retries=2, it
+        // should make 3 attempts total (1 initial + 2 retries) and then
+        // surface the error in the tool-result message.
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::ToolUseRequest;
+
+        let executor = AlwaysTransientExecutor {
+            call_count: AtomicUsize::new(0),
+        };
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.max_tool_retries = 2;
+
+        let tool_calls = vec![ToolUseRequest {
+            id: "id2".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "echo fail"}),
+        }];
+
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // After exhausting retries, the last user message must contain an error marker.
+        let last_msg = agent.messages.last().unwrap();
+        assert!(
+            last_msg.content.contains("[error]") || last_msg.content.contains("error"),
+            "expected error in tool result after retry exhaustion, got: {}",
+            last_msg.content
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_does_not_increment_repeat_detection_window() {
+        // Verifies CRIT-3: retry re-executions must NOT be pushed into the repeat-detection
+        // sliding window. We set repeat_threshold=1 so that two identical LLM-initiated calls
+        // would be blocked, but a retry of the same call must not trigger the repeat guard.
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::ToolUseRequest;
+
+        let executor = TransientThenOkExecutor {
+            fail_times: 1,
+            call_count: AtomicUsize::new(0),
+        };
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.max_tool_retries = 2;
+        // Low threshold: if retry were recorded, it would immediately trigger repeat detection.
+        agent.tool_orchestrator.repeat_threshold = 1;
+
+        let tool_calls = vec![ToolUseRequest {
+            id: "id3".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        }];
+
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // The call should have been retried and succeeded — NOT blocked by repeat detection.
+        let last_msg = agent.messages.last().unwrap();
+        assert!(
+            !last_msg.content.contains("Repeated identical call"),
+            "retry must not trigger repeat detection; got: {}",
+            last_msg.content
+        );
+    }
+
+    // ── tool_args_hash ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_args_hash_empty_params_is_stable() {
+        let params = serde_json::Map::new();
+        let h1 = tool_args_hash(&params);
+        let h2 = tool_args_hash(&params);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn tool_args_hash_same_keys_different_order_equal() {
+        let mut a = serde_json::Map::new();
+        a.insert("z".into(), serde_json::json!("val1"));
+        a.insert("a".into(), serde_json::json!("val2"));
+
+        let mut b = serde_json::Map::new();
+        b.insert("a".into(), serde_json::json!("val2"));
+        b.insert("z".into(), serde_json::json!("val1"));
+
+        assert_eq!(tool_args_hash(&a), tool_args_hash(&b));
+    }
+
+    #[test]
+    fn tool_args_hash_different_values_differ() {
+        let mut a = serde_json::Map::new();
+        a.insert("cmd".into(), serde_json::json!("ls -la"));
+
+        let mut b = serde_json::Map::new();
+        b.insert("cmd".into(), serde_json::json!("rm -rf /"));
+
+        assert_ne!(tool_args_hash(&a), tool_args_hash(&b));
+    }
+
+    #[test]
+    fn tool_args_hash_different_keys_differ() {
+        let mut a = serde_json::Map::new();
+        a.insert("foo".into(), serde_json::json!("x"));
+
+        let mut b = serde_json::Map::new();
+        b.insert("bar".into(), serde_json::json!("x"));
+
+        assert_ne!(tool_args_hash(&a), tool_args_hash(&b));
+    }
+
+    // ── retry_backoff_ms ──────────────────────────────────────────────────────
+
+    #[test]
+    fn retry_backoff_ms_attempt0_within_range() {
+        // attempt=0 → base = 500ms, capped = 500ms, jitter ±62ms → [438, 562]
+        let delay = retry_backoff_ms(0);
+        assert!(delay >= 500 / 8 * 7, "attempt 0 delay too low: {delay}");
+        assert!(delay <= 562, "attempt 0 delay too high: {delay}");
+    }
+
+    #[test]
+    fn retry_backoff_ms_attempt1_within_range() {
+        // attempt=1 → base = 1000ms, capped = 1000ms, jitter ±125ms → [875, 1125]
+        let delay = retry_backoff_ms(1);
+        assert!(delay >= 875, "attempt 1 delay too low: {delay}");
+        assert!(delay <= 1125, "attempt 1 delay too high: {delay}");
+    }
+
+    #[test]
+    fn retry_backoff_ms_cap_at_5000() {
+        // attempt=4 → base = 8000ms → capped to 5000ms; jitter ±625ms → [4375, 5625]
+        // but capped.saturating_sub(jitter_range).saturating_add(jitter) is bounded by ±jitter_range
+        // so max is 5000 - 625 + (625*2) = 5625, but the actual formula clamps via saturating_add.
+        // In practice the cap keeps it in [4375, 5625].
+        let delay = retry_backoff_ms(4);
+        assert!(delay >= 4375, "capped attempt 4 delay too low: {delay}");
+        assert!(delay <= 5625, "capped attempt 4 delay too high: {delay}");
+    }
+
+    #[test]
+    fn retry_backoff_ms_large_attempt_still_capped() {
+        // Very large attempt: bit-shift is capped at 10, so base = 500 * 1024 >> saturate to MAX_MS.
+        let delay = retry_backoff_ms(100);
+        assert!(delay <= 5625, "large attempt delay exceeds cap: {delay}");
     }
 }

@@ -9,6 +9,8 @@ max_tool_iterations = 10
 auto_update_check = true
 instruction_files = []
 instruction_auto_detect = true
+max_tool_retries = 2
+tool_repeat_threshold = 2
 
 [llm]
 provider = "ollama"
