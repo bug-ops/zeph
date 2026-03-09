@@ -722,13 +722,12 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
                 self.push_message(user_msg);
-                let outcome = if output.summary.contains("[error]")
-                    || output.summary.contains("[exit code")
-                {
-                    AnomalyOutcome::Error
-                } else {
-                    AnomalyOutcome::Success
-                };
+                let outcome =
+                    if output.summary.contains("[error]") || output.summary.contains("[stderr]") {
+                        AnomalyOutcome::Error
+                    } else {
+                        AnomalyOutcome::Success
+                    };
                 self.record_anomaly_outcome(outcome).await?;
                 Ok(true)
             }
@@ -2632,7 +2631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_tool_result_exit_code_in_output_triggers_failure_path() {
+    async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
         use super::super::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,
         };
@@ -2646,7 +2645,7 @@ mod tests {
 
         let output = ToolOutput {
             tool_name: "bash".into(),
-            summary: "[exit code 1] command failed".into(),
+            summary: "[error] spawn failed".into(),
             blocks_executed: 1,
             diff: None,
             filter_stats: None,
@@ -2662,6 +2661,41 @@ mod tests {
             .await
             .unwrap();
         // Returns true because the tool loop continues after recording failure
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_stderr_prefix_triggers_anomaly_error() {
+        use super::super::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_tools::executor::ToolOutput;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        // [stderr] prefix is produced by ShellExecutor when the child process writes to stderr.
+        // Prior to this fix, such output was silently classified as AnomalyOutcome::Success.
+        let output = ToolOutput {
+            tool_name: "bash".into(),
+            summary: "[stderr] warning: deprecated API used".into(),
+            blocks_executed: 1,
+            diff: None,
+            filter_stats: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        };
+        agent.learning_engine.mark_reflection_used();
+        let result = agent
+            .handle_tool_result("response", Ok(Some(output)))
+            .await
+            .unwrap();
+        // handle_tool_result returns true (tool loop continues) regardless of anomaly outcome
         assert!(result);
     }
 
