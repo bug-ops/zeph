@@ -787,19 +787,26 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent_setup::apply_whisper_stt(agent, config.llm.stt.as_ref(), &openai_base_url, api_key)
     };
 
+    let (metrics_tx, metrics_rx) =
+        tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+    metrics_tx.send_modify(|m| {
+        m.model_name.clone_from(&config.llm.model);
+    });
+    #[cfg(all(feature = "tui", feature = "scheduler"))]
+    let metrics_tx_for_sched = metrics_tx.clone();
+    let agent = agent.with_metrics(metrics_tx);
+    #[cfg(not(feature = "tui"))]
+    drop(metrics_rx);
+
     #[cfg(feature = "tui")]
     let tui_metrics_rx;
     #[cfg(feature = "tui")]
-    let agent = if tui_active {
-        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
-        tx.send_modify(|m| {
-            m.model_name.clone_from(&config.llm.model);
-        });
-        tui_metrics_rx = Some(rx);
+    if tui_active {
+        tui_metrics_rx = Some(metrics_rx);
 
         #[cfg(feature = "scheduler")]
         if let Some(store) = sched_store_for_tui.take() {
-            let tx_clone = tx.clone();
+            let tx_clone = metrics_tx_for_sched;
             let mut shutdown = shutdown_rx.clone();
             let mut refresh_rx = sched_refresh_rx.take();
             tokio::spawn(async move {
@@ -838,11 +845,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             });
         }
-
-        agent.with_metrics(tx)
     } else {
         tui_metrics_rx = None;
-        agent
+        drop(metrics_rx);
     };
 
     let mut agent = agent;

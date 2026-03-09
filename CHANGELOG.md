@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `/status` command now shows real API call count, token usage, and cost in CLI mode (non-TUI). `MetricsCollector` watch channel is always initialized in `runner.rs`; in CLI mode the receiver is dropped immediately, in TUI mode it flows to the TUI widget as before (#1415)
 - Register SIGTERM handler (`tokio::signal::unix::SignalKind::terminate()`) alongside the existing Ctrl-C handler in the daemon signal task. Both signals now trigger graceful shutdown, ensuring `remove_pid_file()` is always reached on `kill <pid>` (#1414)
 - Correct A2A agent card discovery endpoint from `/.well-known/agent-card.json` to `/.well-known/agent.json` per A2A spec (#1412)
 - Wire `GraphStore` in the production bootstrap path: `build_memory()` now calls `with_graph_store()` when `[memory.graph] enabled = true`, making all 5 `/graph` slash commands and graph-based BFS recall functional (#1410)
