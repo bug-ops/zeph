@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use crate::model_cache::RemoteModelInfo;
 use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
@@ -33,6 +34,8 @@ pub struct MockProvider {
     tool_responses: Arc<Mutex<VecDeque<ChatResponse>>>,
     /// Records how many times `chat_with_tools()` was called.
     pub tool_call_count: Arc<Mutex<u32>>,
+    /// Model list returned by `list_models_remote()`.
+    pub models: Vec<RemoteModelInfo>,
 }
 
 impl Default for MockProvider {
@@ -50,6 +53,7 @@ impl Default for MockProvider {
             tool_use: false,
             tool_responses: Arc::new(Mutex::new(VecDeque::new())),
             tool_call_count: Arc::new(Mutex::new(0)),
+            models: vec![],
         }
     }
 }
@@ -102,6 +106,13 @@ impl MockProvider {
     #[must_use]
     pub fn with_generation_overrides(self, _overrides: GenerationOverrides) -> Self {
         // No-op: mock provider ignores generation overrides.
+        self
+    }
+
+    /// Set the model list returned by `list_models_remote()`.
+    #[must_use]
+    pub fn with_models(mut self, models: Vec<RemoteModelInfo>) -> Self {
+        self.models = models;
         self
     }
 
