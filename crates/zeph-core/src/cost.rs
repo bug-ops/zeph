@@ -43,6 +43,7 @@ fn current_day() -> u32 {
 
 fn default_pricing() -> HashMap<String, ModelPricing> {
     let mut m = HashMap::new();
+    // Claude 4 (sonnet-4 / opus-4 base releases)
     m.insert(
         "claude-sonnet-4-20250514".into(),
         ModelPricing {
@@ -55,6 +56,51 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
         ModelPricing {
             prompt_cents_per_1k: 1.5,
             completion_cents_per_1k: 7.5,
+        },
+    );
+    // Claude 4.1 Opus ($15/$75 per 1M tokens)
+    m.insert(
+        "claude-opus-4-1-20250805".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 1.5,
+            completion_cents_per_1k: 7.5,
+        },
+    );
+    // Claude 4.5 family
+    m.insert(
+        "claude-haiku-4-5-20251001".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.1,
+            completion_cents_per_1k: 0.5,
+        },
+    );
+    m.insert(
+        "claude-sonnet-4-5-20250929".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.3,
+            completion_cents_per_1k: 1.5,
+        },
+    );
+    m.insert(
+        "claude-opus-4-5-20251101".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.5,
+            completion_cents_per_1k: 2.5,
+        },
+    );
+    // Claude 4.6 family
+    m.insert(
+        "claude-sonnet-4-6".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.3,
+            completion_cents_per_1k: 1.5,
+        },
+    );
+    m.insert(
+        "claude-opus-4-6".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.5,
+            completion_cents_per_1k: 2.5,
         },
     );
     m.insert(
@@ -98,10 +144,18 @@ impl CostTracker {
         if !self.enabled {
             return;
         }
-        let pricing = self.pricing.get(model).cloned().unwrap_or(ModelPricing {
-            prompt_cents_per_1k: 0.0,
-            completion_cents_per_1k: 0.0,
-        });
+        let pricing = if let Some(p) = self.pricing.get(model).cloned() {
+            p
+        } else {
+            tracing::warn!(
+                model,
+                "model not found in pricing table; cost recorded as zero"
+            );
+            ModelPricing {
+                prompt_cents_per_1k: 0.0,
+                completion_cents_per_1k: 0.0,
+            }
+        };
         #[allow(clippy::cast_precision_loss)]
         let cost = pricing.prompt_cents_per_1k * (prompt_tokens as f64) / 1000.0
             + pricing.completion_cents_per_1k * (completion_tokens as f64) / 1000.0;
@@ -207,6 +261,13 @@ mod tests {
         let tracker = CostTracker::new(true, 100.0);
         tracker.record_usage("totally-unknown-model", 5000, 5000);
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn known_claude_model_has_nonzero_cost() {
+        let tracker = CostTracker::new(true, 1000.0);
+        tracker.record_usage("claude-haiku-4-5-20251001", 1000, 1000);
+        assert!(tracker.current_spend() > 0.0);
     }
 
     #[test]
