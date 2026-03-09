@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Graph memory: `insert_edge` now deduplicates active edges on `(source_entity_id, target_entity_id, relation)`; re-extraction no longer creates duplicate rows, and confidence is updated to the higher value on repeat extractions (#1471)
 - `extract_fenced_blocks()` in `zeph-tools` now requires a word-boundary after the language tag: `` ```bashrc `` no longer matches when searching for `bash` (#1461)
 - Secret request prompt now truncates reason to 200 chars (UTF-8 safe) to prevent oversized confirmation dialogs (#1456)
 - Deduplicate secret prompts in orchestration tick loop: after a timeout or user denial, the `(handle_id, secret_key)` pair is recorded in a plan-scoped `HashSet`; subsequent re-requests from the same sub-agent for the same key are auto-denied without re-prompting the user (#1455)
