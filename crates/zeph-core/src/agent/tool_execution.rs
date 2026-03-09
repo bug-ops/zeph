@@ -1713,9 +1713,22 @@ impl<C: Channel> Agent<C> {
                 let kind = FailureKind::from_error(&output);
                 self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
                     .await;
+                // Sanitize before passing to self_reflection: tool output from native calls can
+                // contain untrusted content with injection patterns. Use ToolResult (ExternalUntrusted)
+                // as the appropriate source kind for native tool call output.
+                let sanitized_out = self
+                    .sanitizer
+                    .sanitize(&output, ContentSource::new(ContentSourceKind::ToolResult))
+                    .body;
                 if !self.learning_engine.was_reflection_used()
-                    && self.attempt_self_reflection(&output, &output).await?
+                    && self
+                        .attempt_self_reflection(&sanitized_out, &sanitized_out)
+                        .await?
                 {
+                    // FIXME(#1436): remaining tool calls in the batch are dropped on early return
+                    // (their results never enter message history). This is acceptable because
+                    // batches with failures are rare and self-reflection is rare; however, a
+                    // follow-up issue should address proper batch draining on early exit.
                     return Ok(());
                 }
             } else {
