@@ -122,6 +122,7 @@ max_hops = 2
 recall_limit = 10
 expired_edge_retention_days = 90
 max_entities = 0
+community_summary_max_prompt_bytes = 8192
 
 [tools]
 enabled = true

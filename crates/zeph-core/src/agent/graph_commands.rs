@@ -268,6 +268,8 @@ impl<C: Channel> Agent<C> {
                     community_refresh_interval: 0,
                     expired_edge_retention_days: graph_cfg.expired_edge_retention_days,
                     max_entities_cap: graph_cfg.max_entities,
+                    community_summary_max_prompt_bytes: graph_cfg
+                        .community_summary_max_prompt_bytes,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

@@ -1941,6 +1941,10 @@ fn default_graph_community_refresh_interval() -> usize {
     100
 }
 
+fn default_graph_community_summary_max_prompt_bytes() -> usize {
+    8192
+}
+
 fn default_graph_entity_similarity_threshold() -> f32 {
     0.85
 }
@@ -2002,6 +2006,9 @@ pub struct GraphConfig {
     /// Maximum entities to retain in the graph. 0 = unlimited.
     #[serde(default)]
     pub max_entities: usize,
+    /// Maximum prompt size in bytes for community summary generation. Default: 8192.
+    #[serde(default = "default_graph_community_summary_max_prompt_bytes")]
+    pub community_summary_max_prompt_bytes: usize,
 }
 
 impl Default for GraphConfig {
@@ -2020,6 +2027,7 @@ impl Default for GraphConfig {
             recall_limit: default_graph_recall_limit(),
             expired_edge_retention_days: default_graph_expired_edge_retention_days(),
             max_entities: 0,
+            community_summary_max_prompt_bytes: default_graph_community_summary_max_prompt_bytes(),
         }
     }
 }
@@ -2978,6 +2986,7 @@ eval_budget_tokens = 50000
         assert_eq!(cfg.recall_limit, 10);
         assert_eq!(cfg.expired_edge_retention_days, 90);
         assert_eq!(cfg.max_entities, 0);
+        assert_eq!(cfg.community_summary_max_prompt_bytes, 8192);
     }
 
     #[test]

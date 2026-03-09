@@ -267,6 +267,7 @@ impl<C: Channel> Agent<C> {
                 community_refresh_interval: cfg.community_refresh_interval,
                 expired_edge_retention_days: cfg.expired_edge_retention_days,
                 max_entities_cap: cfg.max_entities,
+                community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
             }
         };
 
