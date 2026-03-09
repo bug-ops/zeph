@@ -703,6 +703,11 @@ impl<C: Channel> Agent<C> {
         // parallel plans (e.g. 0, 2, 4), so we use a local counter instead.
         let mut spawn_counter: usize = 0;
 
+        // Tracks (handle_id, secret_key) pairs denied this plan execution to prevent
+        // re-prompting the user when a sub-agent re-requests the same secret after denial.
+        let mut denied_secrets: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
 
@@ -790,7 +795,8 @@ impl<C: Channel> Agent<C> {
             }
 
             // Drain all pending secret requests this tick (MED-2 fix).
-            self.process_pending_secret_requests().await;
+            self.process_pending_secret_requests(&mut denied_secrets)
+                .await;
 
             // Update TUI with current graph state.
             let snapshot = crate::metrics::TaskGraphSnapshot::from(scheduler.graph());
@@ -803,7 +809,8 @@ impl<C: Channel> Agent<C> {
 
         // Final drain: if the loop exited via Done on the first tick, secret
         // requests buffered before completion would otherwise be silently dropped.
-        self.process_pending_secret_requests().await;
+        self.process_pending_secret_requests(&mut std::collections::HashSet::new())
+            .await;
 
         Ok(final_status)
     }
@@ -812,7 +819,13 @@ impl<C: Channel> Agent<C> {
     ///
     /// SEC-P1-02: explicit user confirmation is required before granting any secret to a
     /// sub-agent. Denial is the default on timeout or channel error.
-    async fn process_pending_secret_requests(&mut self) {
+    ///
+    /// `denied` tracks `(handle_id, secret_key)` pairs already denied this plan execution.
+    /// Re-requests for a denied pair are auto-denied without prompting the user.
+    async fn process_pending_secret_requests(
+        &mut self,
+        denied: &mut std::collections::HashSet<(String, String)>,
+    ) {
         loop {
             let pending = self
                 .subagent_manager
@@ -821,6 +834,18 @@ impl<C: Channel> Agent<C> {
             let Some((req_handle_id, req)) = pending else {
                 break;
             };
+            let deny_key = (req_handle_id.clone(), req.secret_key.clone());
+            if denied.contains(&deny_key) {
+                tracing::debug!(
+                    handle_id = %req_handle_id,
+                    secret_key = %req.secret_key,
+                    "skipping duplicate secret prompt for already-denied key"
+                );
+                if let Some(mgr) = self.subagent_manager.as_mut() {
+                    let _ = mgr.deny_secret(&req_handle_id);
+                }
+                continue;
+            }
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
                 req.secret_key,
@@ -845,6 +870,7 @@ impl<C: Channel> Agent<C> {
                         let _ = mgr.deliver_secret(&req_handle_id, key);
                     }
                 } else {
+                    denied.insert(deny_key);
                     let _ = mgr.deny_secret(&req_handle_id);
                 }
             }
