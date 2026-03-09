@@ -366,12 +366,19 @@ pub(crate) async fn run_daemon(
     let pid_file = config.daemon.pid_file.clone();
     let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());
 
-    let shutdown_tx_ctrlc = shutdown_tx.clone();
+    let shutdown_tx_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("received Ctrl-C, initiating daemon shutdown");
-            let _ = shutdown_tx_ctrlc.send(true);
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received Ctrl-C, initiating daemon shutdown");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, initiating daemon shutdown");
+            }
         }
+        let _ = shutdown_tx_signal.send(true);
     });
 
     // Spawn a sentinel task for the supervisor to track; agent runs in current task.
