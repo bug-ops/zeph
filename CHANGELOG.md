@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `/model <id>` now validates the provided model name against the cached model list before switching. If the model is not found in a non-empty list, an error is returned with the list of available models. If the model list is unavailable (cold start or provider does not support listing), a warning is shown and the switch proceeds (#1417)
 - Correct A2A agent card discovery endpoint from `/.well-known/agent-card.json` to `/.well-known/agent.json` per A2A spec (#1412)
 - Wire `GraphStore` in the production bootstrap path: `build_memory()` now calls `with_graph_store()` when `[memory.graph] enabled = true`, making all 5 `/graph` slash commands and graph-based BFS recall functional (#1410)
 - Experiment engine `SearchSpace` default temperature range capped at `1.0` (was `2.0`); values above `1.0` are rejected by Claude and OpenAI APIs. `ParameterRange::quantize()` now rounds to 2 decimal places to eliminate floating-point accumulation artifacts (e.g. `0.30000000000000004`) (#1408)
