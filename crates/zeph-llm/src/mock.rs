@@ -6,7 +6,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
+};
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
@@ -95,6 +97,12 @@ impl MockProvider {
         let buf = Arc::new(Mutex::new(Vec::new()));
         self.recorded = Some(Arc::clone(&buf));
         (self, buf)
+    }
+
+    #[must_use]
+    pub fn with_generation_overrides(self, _overrides: GenerationOverrides) -> Self {
+        // No-op: mock provider ignores generation overrides.
+        self
     }
 
     /// Enable native `tool_use` support with a pre-configured sequence of `ChatResponse`

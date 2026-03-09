@@ -8,8 +8,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ThinkingBlock,
-    ToolDefinition, ToolUseRequest,
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
+    StatusTx, ThinkingBlock, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
@@ -356,6 +356,7 @@ pub struct ClaudeProvider {
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
+    generation_overrides: Option<GenerationOverrides>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -378,6 +379,7 @@ impl fmt::Debug for ClaudeProvider {
                     .ok()
                     .and_then(|g| g.as_ref().map(|(hash, _)| *hash)),
             )
+            .field("generation_overrides", &self.generation_overrides)
             .finish()
     }
 }
@@ -395,6 +397,7 @@ impl Clone for ClaudeProvider {
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
+            generation_overrides: self.generation_overrides.clone(),
         }
     }
 }
@@ -413,7 +416,14 @@ impl ClaudeProvider {
             last_cache: std::sync::Mutex::new(None),
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
+            generation_overrides: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
+        self.generation_overrides = Some(overrides);
+        self
     }
 
     #[must_use]
@@ -580,7 +590,7 @@ impl ClaudeProvider {
         Ok(models)
     }
 
-    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<u32>, Option<ThinkingEffort>) {
+    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<f64>, Option<ThinkingEffort>) {
         match &self.thinking {
             None => (None, None, None),
             Some(ThinkingConfig::Extended { budget_tokens }) => (
@@ -665,7 +675,14 @@ impl ClaudeProvider {
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
-        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
+        // Apply experiment generation overrides (temperature only; top_p/top_k not in Claude API).
+        // Overrides are skipped when thinking mode is active (thinking requires temperature=1.0).
+        if thinking_param.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
         // lgtm[rust/cleartext-logging]
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let auto_cache = if messages.len() > 1 {
@@ -875,7 +892,12 @@ impl LlmProvider for ClaudeProvider {
             input_schema: &tool.parameters,
         };
 
-        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
+        if thinking_param.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
@@ -967,7 +989,12 @@ impl LlmProvider for ClaudeProvider {
         let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
-        let (thinking_param, temperature, effort) = self.build_thinking_param();
+        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
+        if thinking_param.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let auto_cache = if messages.len() > 1 {
@@ -1236,7 +1263,7 @@ struct TypedToolRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<u32>,
+    temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }
@@ -1268,7 +1295,7 @@ struct ToolRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<u32>,
+    temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }
@@ -1672,7 +1699,7 @@ struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<u32>,
+    temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }
@@ -1691,7 +1718,7 @@ struct VisionRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<u32>,
+    temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }

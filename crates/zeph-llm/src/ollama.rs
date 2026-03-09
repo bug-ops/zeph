@@ -10,11 +10,12 @@ use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::images::Image as OllamaImage;
 use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
+use ollama_rs::models::ModelOptions;
 use tokio_stream::StreamExt;
 
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, ToolDefinition,
-    ToolUseRequest,
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
+    ToolDefinition, ToolUseRequest,
 };
 
 #[derive(Debug)]
@@ -30,6 +31,29 @@ pub struct OllamaProvider {
     context_window_size: Option<usize>,
     vision_model: Option<String>,
     tool_use: bool,
+    generation_overrides: Option<GenerationOverrides>,
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn apply_generation_overrides(
+    request: ChatMessageRequest,
+    overrides: &GenerationOverrides,
+) -> ChatMessageRequest {
+    let mut opts = ModelOptions::default();
+    if let Some(t) = overrides.temperature {
+        tracing::debug!(temperature = t, "applying generation override: temperature");
+        opts = opts.temperature(t as f32);
+    }
+    if let Some(tp) = overrides.top_p {
+        tracing::debug!(top_p = tp, "applying generation override: top_p");
+        opts = opts.top_p(tp as f32);
+    }
+    if let Some(tk) = overrides.top_k {
+        tracing::debug!(top_k = tk, "applying generation override: top_k");
+        opts = opts.top_k(tk as u32);
+    }
+    // frequency_penalty and presence_penalty are not supported by ollama-rs ModelOptions.
+    request.options(opts)
 }
 
 impl OllamaProvider {
@@ -43,7 +67,14 @@ impl OllamaProvider {
             context_window_size: None,
             vision_model: None,
             tool_use: false,
+            generation_overrides: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
+        self.generation_overrides = Some(overrides);
+        self
     }
 
     #[must_use]
@@ -172,7 +203,10 @@ impl LlmProvider for OllamaProvider {
         };
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
 
-        let request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
 
         let response = self
             .client
@@ -193,7 +227,10 @@ impl LlmProvider for OllamaProvider {
             &self.model
         };
         let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
-        let request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
 
         let stream = self
             .client
@@ -239,8 +276,11 @@ impl LlmProvider for OllamaProvider {
         let ollama_messages: Vec<ChatMessage> =
             messages.iter().map(convert_message_structured).collect();
 
-        let request =
+        let mut request =
             ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
 
         let response =
             self.client.send_chat_messages(request).await.map_err(|e| {
@@ -915,6 +955,27 @@ mod tests {
             ollama_rs::generation::chat::MessageRole::Assistant
         );
         assert_eq!(chat_msg.content, "response");
+    }
+
+    #[test]
+    fn with_generation_overrides_stores_overrides() {
+        let provider = OllamaProvider::new("http://127.0.0.1:11434", "m".into(), "e".into());
+        assert!(provider.generation_overrides.is_none());
+        let overrides = GenerationOverrides {
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+            top_k: Some(40),
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let patched = provider.with_generation_overrides(overrides);
+        let ov = patched
+            .generation_overrides
+            .as_ref()
+            .expect("overrides set");
+        assert_eq!(ov.temperature, Some(0.5));
+        assert_eq!(ov.top_p, Some(0.9));
+        assert_eq!(ov.top_k, Some(40));
     }
 
     #[tokio::test]

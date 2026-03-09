@@ -9,8 +9,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessagePart, Role, StatusTx, ToolDefinition,
-    ToolUseRequest,
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
+    StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::sse::openai_sse_to_stream;
 
@@ -24,6 +24,7 @@ pub struct OpenAiProvider {
     reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    generation_overrides: Option<GenerationOverrides>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -38,6 +39,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("reasoning_effort", &self.reasoning_effort)
             .field("status_tx", &self.status_tx.is_some())
             .field("last_cache", &self.last_cache.lock().ok())
+            .field("generation_overrides", &self.generation_overrides)
             .finish()
     }
 }
@@ -54,6 +56,7 @@ impl Clone for OpenAiProvider {
             reasoning_effort: self.reasoning_effort.clone(),
             status_tx: self.status_tx.clone(),
             last_cache: std::sync::Mutex::new(None),
+            generation_overrides: self.generation_overrides.clone(),
         }
     }
 }
@@ -81,7 +84,14 @@ impl OpenAiProvider {
             reasoning_effort,
             status_tx: None,
             last_cache: std::sync::Mutex::new(None),
+            generation_overrides: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
+        self.generation_overrides = Some(overrides);
+        self
     }
 
     #[must_use]
@@ -205,6 +215,18 @@ impl OpenAiProvider {
             .as_deref()
             .map(|effort| Reasoning { effort });
 
+        let (temperature, top_p, frequency_penalty, presence_penalty) =
+            if let Some(ref ov) = self.generation_overrides {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            } else {
+                (None, None, None, None)
+            };
+
         let response = if has_image_parts(messages) {
             let vision_messages = convert_messages_vision(messages);
             let body = VisionChatRequest {
@@ -213,6 +235,10 @@ impl OpenAiProvider {
                 max_tokens: self.max_tokens,
                 stream: false,
                 reasoning,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
             };
             self.client
                 .post(format!("{}/chat/completions", self.base_url))
@@ -229,6 +255,10 @@ impl OpenAiProvider {
                 max_tokens: self.max_tokens,
                 stream: false,
                 reasoning,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
             };
             self.client
                 .post(format!("{}/chat/completions", self.base_url))
@@ -277,12 +307,28 @@ impl OpenAiProvider {
             .as_deref()
             .map(|effort| Reasoning { effort });
 
+        let (temperature, top_p, frequency_penalty, presence_penalty) =
+            if let Some(ref ov) = self.generation_overrides {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            } else {
+                (None, None, None, None)
+            };
+
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
             max_tokens: self.max_tokens,
             stream: true,
             reasoning,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
         };
 
         let response = self
@@ -482,6 +528,7 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -505,12 +552,28 @@ impl LlmProvider for OpenAiProvider {
             })
             .collect();
 
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self
+            .generation_overrides
+            .as_ref()
+            .map(|ov| {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            })
+            .unwrap_or_default();
         let body = ToolChatRequest {
             model: &self.model,
             messages: &api_messages,
             max_tokens: self.max_tokens,
             tools: &api_tools,
             reasoning,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
         };
 
         let response = self
@@ -625,6 +688,14 @@ struct VisionChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
 }
 
 fn has_image_parts(messages: &[Message]) -> bool {
@@ -718,6 +789,14 @@ struct ChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -785,6 +864,14 @@ struct ToolChatRequest<'a> {
     tools: &'a [OpenAiTool<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1117,6 +1204,10 @@ mod tests {
             max_tokens: 1024,
             stream: false,
             reasoning: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"model\":\"gpt-5.2\""));
@@ -1135,6 +1226,10 @@ mod tests {
             max_tokens: 100,
             stream: true,
             reasoning: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
@@ -1149,6 +1244,10 @@ mod tests {
             max_tokens: 100,
             stream: false,
             reasoning: Some(Reasoning { effort: "medium" }),
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"reasoning\":{\"effort\":\"medium\"}"));
@@ -1971,5 +2070,34 @@ mod tests {
         }];
         let result = p.chat(&messages).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn with_generation_overrides_stores_overrides() {
+        let provider = OpenAiProvider::new(
+            "sk-test".into(),
+            "http://localhost".into(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        assert!(provider.generation_overrides.is_none());
+        let overrides = GenerationOverrides {
+            temperature: Some(0.7),
+            top_p: Some(0.95),
+            top_k: None,
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.2),
+        };
+        let patched = provider.with_generation_overrides(overrides);
+        let ov = patched
+            .generation_overrides
+            .as_ref()
+            .expect("overrides set");
+        assert_eq!(ov.temperature, Some(0.7));
+        assert_eq!(ov.top_p, Some(0.95));
+        assert_eq!(ov.frequency_penalty, Some(0.1));
+        assert_eq!(ov.presence_penalty, Some(0.2));
     }
 }
