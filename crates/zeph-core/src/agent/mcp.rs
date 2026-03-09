@@ -81,6 +81,7 @@ impl<C: Channel> Agent<C> {
             id: args[0].to_owned(),
             transport,
             timeout: std::time::Duration::from_secs(30),
+            trusted: false,
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;

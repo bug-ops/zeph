@@ -34,6 +34,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                         env,
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
+                    trusted: false,
                 })
             }
             acp::McpServer::Http(http) => Some(ServerEntry {
@@ -42,6 +43,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     url: http.url.clone(),
                 },
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
+                trusted: false,
             }),
             acp::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -52,6 +54,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                         url: sse.url.clone(),
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
+                    trusted: false,
                 })
             }
             _ => {

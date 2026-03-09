@@ -15,6 +15,9 @@ pub mod types;
 #[cfg(test)]
 mod testing;
 
+/// A2A protocol version implemented by this crate.
+pub const A2A_PROTOCOL_VERSION: &str = "0.2.1";
+
 pub use card::AgentCardBuilder;
 pub use client::{A2aClient, TaskEvent, TaskEventStream};
 pub use discovery::AgentRegistry;

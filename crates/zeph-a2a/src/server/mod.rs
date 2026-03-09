@@ -171,6 +171,7 @@ pub(crate) mod testing {
             description: "test".into(),
             url: "http://localhost:8080".into(),
             version: "0.1.0".into(),
+            protocol_version: crate::A2A_PROTOCOL_VERSION.to_owned(),
             provider: None,
             capabilities: AgentCapabilities::default(),
             default_input_modes: vec!["text/plain".into()],
