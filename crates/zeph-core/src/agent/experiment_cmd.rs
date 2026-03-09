@@ -203,15 +203,34 @@ impl<C: Channel> Agent<C> {
             .as_ref()
             .is_some_and(|t| !t.is_cancelled());
 
-        if running {
-            self.channel
-                .send("Experiment: running. Use /experiment stop to cancel.")
-                .await?;
+        let mut msg = if running {
+            String::from("Experiment: **running**. Use `/experiment stop` to cancel.")
         } else {
-            self.channel
-                .send("Experiment: idle. Use /experiment start [N] to begin.")
-                .await?;
+            String::from("Experiment: **idle**. Use `/experiment start [N]` to begin.")
+        };
+
+        if let Some(memory) = &self.memory_state.memory {
+            let rows = memory.sqlite().list_experiment_results(None, 1).await?;
+            if let Some(latest) = rows.first()
+                && let Some(summary) = memory
+                    .sqlite()
+                    .experiment_session_summary(&latest.session_id)
+                    .await?
+            {
+                let sid_len = summary.session_id.len().min(11);
+                let _ = write!(
+                    msg,
+                    "\nLast session: `{}` | {} experiments | {} accepted | \
+                     best delta: {:.3}",
+                    &summary.session_id[..sid_len],
+                    summary.total,
+                    summary.accepted_count,
+                    summary.best_delta,
+                );
+            }
         }
+
+        self.channel.send(&msg).await?;
         Ok(())
     }
 
