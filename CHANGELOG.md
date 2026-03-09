@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Wire `graph_config` into agent bootstrap: `runner.rs` and `daemon.rs` now call `with_graph_config(config.memory.graph.clone())` at construction time, matching the existing `with_document_config()` pattern. Previously `graph_config.enabled` was always `false` at startup (despite `[memory.graph] enabled = true` in config), causing `maybe_spawn_graph_extraction()` to return immediately and leaving graph extraction, entity resolution, and BFS recall as dead code in production (#1437)
 - Wire `DagScheduler` into `/plan confirm` flow — plan tasks now execute via the tick loop before aggregation (#1434)
 - `/plan list` now shows the pending plan summary and status label instead of always returning "No recent plans" (#1434)
 - `/plan retry` now resets stale `Running` tasks to `Ready` and clears `assigned_agent` before re-execution to prevent scheduler deadlock (#1434)

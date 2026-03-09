@@ -665,6 +665,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     let agent = agent.with_document_config(config.memory.documents.clone());
+    let agent = agent.with_graph_config(config.memory.graph.clone());
 
     let agent = {
         let mut mgr = zeph_core::subagent::SubAgentManager::new(config.agents.max_concurrent);
