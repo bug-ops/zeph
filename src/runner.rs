@@ -80,11 +80,11 @@ fn check_legacy_artifact_paths(config: &Config) {
 /// Priority: CLI flag > config file > built-in defaults.
 fn resolve_logging_config(
     config_logging: zeph_core::config::LoggingConfig,
-    cli_log_file: Option<&std::path::Path>,
+    cli_log_file: Option<&str>,
 ) -> zeph_core::config::LoggingConfig {
     let mut logging = config_logging;
     if let Some(p) = cli_log_file {
-        logging.file = p.to_string_lossy().into_owned();
+        p.clone_into(&mut logging.file);
     }
     logging
 }
@@ -991,7 +991,7 @@ mod tests {
     fn resolve_logging_config_cli_empty_str_disables_logging() {
         let mut base = zeph_core::config::LoggingConfig::default();
         base.file = "/var/log/zeph.log".into();
-        let result = resolve_logging_config(base, Some(std::path::Path::new("")));
+        let result = resolve_logging_config(base, Some(""));
         assert_eq!(result.file, "");
     }
 
@@ -999,7 +999,7 @@ mod tests {
     fn resolve_logging_config_cli_path_overrides_config() {
         let mut base = zeph_core::config::LoggingConfig::default();
         base.file = "/var/log/zeph.log".into();
-        let result = resolve_logging_config(base, Some(std::path::Path::new("/tmp/custom.log")));
+        let result = resolve_logging_config(base, Some("/tmp/custom.log"));
         assert_eq!(result.file, "/tmp/custom.log");
     }
 

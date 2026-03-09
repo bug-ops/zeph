@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `--log-file` now accepts bare flag (without value) to disable file logging, overriding config (#1378)
 - Response cache bypassed in native `tool_use` path: `process_response_native_tools()` never called `check_response_cache()` or `store_response_in_cache()`, so cache lookups and stores only worked in the legacy non-tool path. Add cache check before the tool loop and cache store after `ChatResponse::Text` responses (#1377)
 - `[memory.compression]` and `[memory.routing]` config sections silently ignored on startup; only applied after config hot-reload. Add `with_compression()` and `with_routing()` builder methods and wire them in agent construction (#1374)
 - Add partial index `idx_graph_edges_expired` on `graph_edges(expired_at) WHERE expired_at IS NOT NULL` (migration 027) to accelerate `delete_expired_edges` eviction query, which previously required a full table scan (#1264)
