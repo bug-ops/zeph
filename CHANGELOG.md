@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Validate `deferred_apply_threshold < compaction_threshold` ordering at config load and in `--init` wizard. Both thresholds also enforce finite (0.0, 1.0) exclusive range. Wizard re-prompts on violation instead of silently accepting. `tui_remote` now calls `Config::validate()` after load (#1302)
+
 ### Changed
 
 - Consolidate all project-level runtime artifacts under `.zeph/` directory. Default paths changed: `data/zeph.db` → `.zeph/data/zeph.db`, `skills/` → `.zeph/skills/`, `.local/debug` → `.zeph/debug`. Startup migration warning logs exact `mv` commands when old paths are detected. Explicit config paths are unaffected (#1353)

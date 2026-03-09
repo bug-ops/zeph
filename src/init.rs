@@ -444,20 +444,33 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
-    state.deferred_apply_threshold = Input::new()
-        .with_prompt(
-            "Apply deferred tool summaries when context usage exceeds this fraction (0.0-1.0, \
-             must be below compaction threshold 0.80)",
-        )
-        .default(0.70f32)
-        .validate_with(|v: &f32| {
-            if *v > 0.0 && *v < 1.0 {
-                Ok(())
-            } else {
-                Err("must be between 0.0 and 1.0 exclusive")
-            }
-        })
-        .interact_text()?;
+    // If compaction_threshold becomes wizard-configurable, replace with state.compaction_threshold.
+    let compaction_threshold = zeph_core::config::Config::default()
+        .memory
+        .compaction_threshold;
+    loop {
+        let val: f32 = Input::new()
+            .with_prompt(format!(
+                "Apply deferred tool summaries when context usage exceeds this fraction \
+                 (0.0-1.0, must be below compaction threshold {compaction_threshold})"
+            ))
+            .default(state.deferred_apply_threshold)
+            .validate_with(|v: &f32| {
+                if *v > 0.0 && *v < 1.0 {
+                    Ok(())
+                } else {
+                    Err("must be between 0.0 and 1.0 exclusive")
+                }
+            })
+            .interact_text()?;
+        if val < compaction_threshold {
+            state.deferred_apply_threshold = val;
+            break;
+        }
+        eprintln!(
+            "error: value must be less than compaction_threshold ({compaction_threshold}), got {val}",
+        );
+    }
 
     state.graph_memory_enabled = Confirm::new()
         .with_prompt("Enable knowledge graph memory? (experimental)")
@@ -663,13 +676,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.graph.extract_model.clone_from(m);
     }
     config.memory.deferred_apply_threshold = state.deferred_apply_threshold;
-    if config.memory.deferred_apply_threshold >= config.memory.compaction_threshold {
-        eprintln!(
-            "warning: deferred_apply_threshold ({}) is not less than compaction_threshold ({}); \
-             deferred summaries will fire after compaction, reducing cache savings",
-            config.memory.deferred_apply_threshold, config.memory.compaction_threshold,
-        );
-    }
 
     match state.channel {
         ChannelChoice::Cli => {}

@@ -111,6 +111,30 @@ impl Config {
                 )));
             }
         }
+        if !self.memory.compaction_threshold.is_finite()
+            || self.memory.compaction_threshold <= 0.0
+            || self.memory.compaction_threshold >= 1.0
+        {
+            return Err(ConfigError::Validation(format!(
+                "compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
+                self.memory.compaction_threshold
+            )));
+        }
+        if !self.memory.deferred_apply_threshold.is_finite()
+            || self.memory.deferred_apply_threshold <= 0.0
+            || self.memory.deferred_apply_threshold >= 1.0
+        {
+            return Err(ConfigError::Validation(format!(
+                "deferred_apply_threshold must be in (0.0, 1.0) exclusive, got {}",
+                self.memory.deferred_apply_threshold
+            )));
+        }
+        if self.memory.deferred_apply_threshold >= self.memory.compaction_threshold {
+            return Err(ConfigError::Validation(format!(
+                "deferred_apply_threshold ({}) must be less than compaction_threshold ({})",
+                self.memory.deferred_apply_threshold, self.memory.compaction_threshold,
+            )));
+        }
         self.experiments.validate()?;
         Ok(())
     }
