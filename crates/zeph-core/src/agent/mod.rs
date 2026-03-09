@@ -239,6 +239,10 @@ pub struct Agent<C: Channel> {
     /// URLs extracted from untrusted tool outputs that had injection flags.
     /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
     pub(super) flagged_urls: std::collections::HashSet<String>,
+    /// Tracks `(handle_id, secret_key)` pairs denied during the current plan execution
+    /// (IC-CRIT-05 / issue #1455). Prevents re-prompting the user for the same secret
+    /// within a single plan run. Cleared at the start of each new `handle_plan_confirm`.
+    denied_secrets: std::collections::HashSet<(String, String)>,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
     /// Graph waiting for `/plan confirm` before execution starts.
@@ -444,6 +448,7 @@ impl<C: Channel> Agent<C> {
                 crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
             ),
             flagged_urls: std::collections::HashSet::new(),
+            denied_secrets: std::collections::HashSet::new(),
             pending_image_parts: Vec::new(),
             pending_graph: None,
             debug_dumper: None,
@@ -659,6 +664,10 @@ impl<C: Channel> Agent<C> {
             ))
             .await?;
 
+        // Clear per-plan denial set so stale denials from a previous run don't carry over
+        // into this execution (IC-CRIT-05 / issue #1455).
+        self.denied_secrets.clear();
+
         let final_status = self.run_scheduler_loop(&mut scheduler, task_count).await?;
 
         let completed_graph = scheduler.into_graph();
@@ -808,6 +817,10 @@ impl<C: Channel> Agent<C> {
     ///
     /// SEC-P1-02: explicit user confirmation is required before granting any secret to a
     /// sub-agent. Denial is the default on timeout or channel error.
+    ///
+    /// IC-CRIT-05 / issue #1455: secrets denied in this plan execution are tracked in
+    /// `self.denied_secrets` and silently re-denied on subsequent sub-agent requests,
+    /// preventing duplicate prompts after a 120 s timeout.
     async fn process_pending_secret_requests(&mut self) {
         loop {
             let pending = self
@@ -817,6 +830,18 @@ impl<C: Channel> Agent<C> {
             let Some((req_handle_id, req)) = pending else {
                 break;
             };
+
+            // IC-CRIT-05: skip prompting if this (agent, key) pair was already denied.
+            if self
+                .denied_secrets
+                .contains(&(req_handle_id.clone(), req.secret_key.clone()))
+            {
+                if let Some(mgr) = self.subagent_manager.as_mut() {
+                    let _ = mgr.deny_secret(&req_handle_id);
+                }
+                continue;
+            }
+
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
                 req.secret_key,
@@ -841,6 +866,8 @@ impl<C: Channel> Agent<C> {
                         let _ = mgr.deliver_secret(&req_handle_id, key);
                     }
                 } else {
+                    self.denied_secrets
+                        .insert((req_handle_id.clone(), req.secret_key.clone()));
                     let _ = mgr.deny_secret(&req_handle_id);
                 }
             }
