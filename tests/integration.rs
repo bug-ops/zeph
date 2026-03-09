@@ -3462,7 +3462,7 @@ mod self_learning {
         let provider = mock("improved test stuff");
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let channel = MockChannel::new(
-            vec!["/feedback test-skill \"needs improvement\""],
+            vec!["/feedback test-skill \"bad output, that's wrong\""],
             outputs.clone(),
         );
         let (memory, cid) = make_memory_file(&provider, db_str).await;

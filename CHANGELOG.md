@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- AgentRouter inline fallback: when no sub-agents are configured, `DagScheduler` now emits `SchedulerAction::RunInline` instead of immediately marking the task as `Failed`. The main agent provider executes the task prompt directly, allowing single-agent setups to use `/plan` without any sub-agent definitions (#1463)
+- `/plan status` now reflects actual graph state: messages are matched per `GraphStatus` variant (`Created`, `Running`, `Paused`, `Failed`, `Completed`, `Canceled`) instead of always showing "awaiting confirmation" (#1463)
+- `/feedback` command now correctly classifies feedback sentiment: positive or neutral feedback is stored as `user_approval` outcome type instead of always using `user_rejection`, preventing self-learning confidence inversion for praised skills
+- `generate_improved_skill()` is now skipped for positive feedback, avoiding unnecessary LLM calls and incorrect skill rewrites when a skill is working correctly
+- `skill_metrics()` now excludes `user_approval`/`user_rejection` outcomes from execution-based success rate calculations, preventing explicit user feedback from polluting Wilson score metrics
+- `extract_fenced_blocks()` in `zeph-tools` now requires a word-boundary after the language tag: `` ```bashrc `` no longer matches when searching for `bash` (#1461)
 - Secret request prompt now truncates reason to 200 chars (UTF-8 safe) to prevent oversized confirmation dialogs (#1456)
 - Deduplicate secret prompts in orchestration tick loop: after a timeout or user denial, the `(handle_id, secret_key)` pair is recorded in a plan-scoped `HashSet`; subsequent re-requests from the same sub-agent for the same key are auto-denied without re-prompting the user (#1455)
 - Completion token count in metrics now uses API-reported `output_tokens` from OpenAI, Ollama, and Compatible providers instead of the `response.len() / 4` byte-length heuristic. Streaming paths retain the heuristic as a fallback when the provider returns no usage data. `chat_typed()` now stores usage so `eval_budget_tokens` enforcement reflects real token counts in structured-output calls ([#1449](https://github.com/bug-ops/zeph/issues/1449))
