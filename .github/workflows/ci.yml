@@ -201,7 +201,7 @@ jobs:
 
   docker-build-and-scan:
     name: Docker Build and Security Scan
-    needs: [build-tests]
+    needs: [lint-fmt, lint-clippy, build-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
