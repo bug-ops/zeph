@@ -20,7 +20,7 @@ fn assert_custom_secret(custom: &HashMap<String, crate::vault::Secret>, key: &st
 
 use super::*;
 
-const ENV_KEYS: [&str; 50] = [
+const ENV_KEYS: [&str; 52] = [
     "ZEPH_LLM_PROVIDER",
     "ZEPH_LLM_BASE_URL",
     "ZEPH_LLM_MODEL",
@@ -71,6 +71,8 @@ const ENV_KEYS: [&str; 50] = [
     "ZEPH_STT_PROVIDER",
     "ZEPH_STT_MODEL",
     "ZEPH_AUTO_UPDATE_CHECK",
+    "ZEPH_LOG_FILE",
+    "ZEPH_LOG_LEVEL",
 ];
 
 fn clear_env() {
@@ -2657,4 +2659,146 @@ fn compression_reactive_strategy_always_passes_validate() {
         "default strategy should be Reactive"
     );
     assert!(config.validate().is_ok());
+}
+
+#[test]
+fn logging_config_defaults() {
+    let config = Config::default();
+    assert_eq!(config.logging.file, ".zeph/logs/zeph.log");
+    assert_eq!(config.logging.level, "info");
+    assert_eq!(config.logging.rotation, LogRotation::Daily);
+    assert_eq!(config.logging.max_files, 7);
+}
+
+#[test]
+#[serial]
+fn logging_config_toml_deserialization() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    std::io::Write::write_all(
+        &mut f,
+        br#"
+[agent]
+name = "Test"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/test.db"
+history_limit = 50
+
+[logging]
+file = "/tmp/zeph-test.log"
+level = "debug"
+rotation = "never"
+max_files = 3
+"#,
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.logging.file, "/tmp/zeph-test.log");
+    assert_eq!(config.logging.level, "debug");
+    assert_eq!(config.logging.rotation, LogRotation::Never);
+    assert_eq!(config.logging.max_files, 3);
+}
+
+#[test]
+#[serial]
+fn logging_config_empty_file_disables_file_logging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    std::io::Write::write_all(
+        &mut f,
+        br#"
+[agent]
+name = "Test"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/test.db"
+history_limit = 50
+
+[logging]
+file = ""
+"#,
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    assert!(config.logging.file.is_empty());
+}
+
+#[test]
+#[serial]
+fn env_override_zeph_log_file() {
+    clear_env();
+    let mut config = Config::default();
+    unsafe { std::env::set_var("ZEPH_LOG_FILE", "/var/log/zeph.log") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_LOG_FILE") };
+    assert_eq!(config.logging.file, "/var/log/zeph.log");
+}
+
+#[test]
+#[serial]
+fn env_override_zeph_log_level() {
+    clear_env();
+    let mut config = Config::default();
+    unsafe { std::env::set_var("ZEPH_LOG_LEVEL", "warn") };
+    config.apply_env_overrides();
+    unsafe { std::env::remove_var("ZEPH_LOG_LEVEL") };
+    assert_eq!(config.logging.level, "warn");
+}
+
+#[test]
+fn logging_rotation_serde_roundtrip() {
+    let daily: LogRotation = toml::from_str("rotation = \"daily\"")
+        .map(|t: toml::Table| {
+            t["rotation"]
+                .clone()
+                .try_into::<LogRotation>()
+                .expect("deserialize daily")
+        })
+        .expect("parse toml");
+    assert_eq!(daily, LogRotation::Daily);
+
+    let hourly: LogRotation = toml::from_str("rotation = \"hourly\"")
+        .map(|t: toml::Table| {
+            t["rotation"]
+                .clone()
+                .try_into::<LogRotation>()
+                .expect("deserialize hourly")
+        })
+        .expect("parse toml");
+    assert_eq!(hourly, LogRotation::Hourly);
+
+    let never: LogRotation = toml::from_str("rotation = \"never\"")
+        .map(|t: toml::Table| {
+            t["rotation"]
+                .clone()
+                .try_into::<LogRotation>()
+                .expect("deserialize never")
+        })
+        .expect("parse toml");
+    assert_eq!(never, LogRotation::Never);
 }

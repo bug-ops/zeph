@@ -97,6 +97,11 @@ pub(crate) struct WizardState {
     pub(crate) experiments_eval_model: Option<String>,
     pub(crate) experiments_schedule_enabled: bool,
     pub(crate) experiments_schedule_cron: String,
+    // Logging
+    pub(crate) log_file: String,
+    pub(crate) log_level: String,
+    pub(crate) log_rotation: String,
+    pub(crate) log_max_files: usize,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -126,6 +131,10 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
         deferred_apply_threshold: 0.70,
+        log_file: zeph_core::config::DEFAULT_LOG_FILE.into(),
+        log_level: "info".into(),
+        log_rotation: "daily".into(),
+        log_max_files: 7,
         ..WizardState::default()
     };
 
@@ -144,6 +153,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_router(&mut state)?;
     step_learning(&mut state)?;
     step_debug(&mut state)?;
+    step_logging(&mut state)?;
     step_experiments(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -735,6 +745,15 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.debug.enabled = state.debug_dump_enabled;
 
+    config.logging.file.clone_from(&state.log_file);
+    config.logging.level.clone_from(&state.log_level);
+    config.logging.rotation = match state.log_rotation.as_str() {
+        "hourly" => zeph_core::config::LogRotation::Hourly,
+        "never" => zeph_core::config::LogRotation::Never,
+        _ => zeph_core::config::LogRotation::Daily,
+    };
+    config.logging.max_files = state.log_max_files;
+
     #[cfg(feature = "lsp-context")]
     if state.lsp_context_enabled {
         config.lsp.enabled = true;
@@ -1239,6 +1258,55 @@ fn step_debug(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_logging(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Logging ==\n");
+    println!("File logging writes structured logs to disk, separate from stderr output.");
+    println!("Leave the path empty to disable file logging.\n");
+
+    let log_file: String = Input::new()
+        .with_prompt("Log file path (empty to disable)")
+        .default(state.log_file.clone())
+        .allow_empty(true)
+        .interact_text()?;
+    state.log_file = log_file;
+
+    if !state.log_file.is_empty() {
+        const VALID_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace", "off"];
+        let log_level: String = Input::new()
+            .with_prompt(format!("File log level [{}]", VALID_LEVELS.join("|")))
+            .default(state.log_level.clone())
+            .validate_with(|input: &String| {
+                if VALID_LEVELS.contains(&input.to_lowercase().as_str()) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "invalid level '{input}'; choose one of: {}",
+                        VALID_LEVELS.join(", ")
+                    ))
+                }
+            })
+            .interact_text()?;
+        state.log_level = log_level;
+
+        let rotation_idx = Select::new()
+            .with_prompt("Log rotation")
+            .items(["daily", "hourly", "never"])
+            .default(0)
+            .interact()?;
+        state.log_rotation = ["daily", "hourly", "never"][rotation_idx].into();
+
+        if state.log_rotation != "never" {
+            let max_files: String = Input::new()
+                .with_prompt("Max rotated files to keep")
+                .default(state.log_max_files.to_string())
+                .interact_text()?;
+            state.log_max_files = max_files.parse().unwrap_or(7);
+        }
+    }
+    println!();
+    Ok(())
+}
+
 fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Experiments ==\n");
     println!("Autonomous self-experimentation: the agent varies its own parameters,");
@@ -1720,5 +1788,78 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(!config.experiments.enabled);
+    }
+
+    // --- build_config logging mapping ---
+
+    #[test]
+    fn build_config_logging_defaults() {
+        // WizardState::default() derives Default so string fields are empty.
+        // The wizard initialises them to sensible values at runtime; here we test
+        // that build_config maps state fields verbatim into config.logging.
+        let state = WizardState {
+            log_file: zeph_core::config::DEFAULT_LOG_FILE.into(),
+            log_level: "info".into(),
+            log_rotation: "daily".into(),
+            log_max_files: 7,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.logging.file,
+            zeph_core::config::DEFAULT_LOG_FILE,
+            "default log file path"
+        );
+        assert_eq!(config.logging.level, "info");
+        assert_eq!(
+            config.logging.rotation,
+            zeph_core::config::LogRotation::Daily
+        );
+        assert_eq!(config.logging.max_files, 7);
+    }
+
+    #[test]
+    fn build_config_logging_custom_values() {
+        let state = WizardState {
+            log_file: "/tmp/custom.log".into(),
+            log_level: "debug".into(),
+            log_rotation: "hourly".into(),
+            log_max_files: 14,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.logging.file, "/tmp/custom.log");
+        assert_eq!(config.logging.level, "debug");
+        assert_eq!(
+            config.logging.rotation,
+            zeph_core::config::LogRotation::Hourly
+        );
+        assert_eq!(config.logging.max_files, 14);
+    }
+
+    #[test]
+    fn build_config_logging_disabled_empty_file() {
+        let state = WizardState {
+            log_file: String::new(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            config.logging.file.is_empty(),
+            "empty log_file should disable file logging"
+        );
+    }
+
+    #[test]
+    fn build_config_logging_rotation_never() {
+        let state = WizardState {
+            log_rotation: "never".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.logging.rotation,
+            zeph_core::config::LogRotation::Never
+        );
     }
 }

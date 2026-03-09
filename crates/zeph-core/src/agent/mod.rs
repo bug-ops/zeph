@@ -13,6 +13,7 @@ mod graph_commands;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
+mod log_commands;
 #[cfg(feature = "lsp-context")]
 mod lsp_commands;
 mod mcp;
@@ -186,6 +187,7 @@ pub struct Agent<C: Channel> {
     pub(super) judge_detector: Option<feedback_detector::JudgeDetector>,
     pub(super) judge_provider: Option<AnyProvider>,
     config_path: Option<PathBuf>,
+    pub(super) logging_config: crate::config::LoggingConfig,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
@@ -375,6 +377,7 @@ impl<C: Channel> Agent<C> {
             judge_detector: None,
             judge_provider: None,
             config_path: None,
+            logging_config: crate::config::LoggingConfig::default(),
             config_reload_rx: None,
             shutdown: rx,
             metrics_tx: None,
@@ -1322,6 +1325,11 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "lsp-context")]
         if trimmed == "/lsp" {
             self.handle_lsp_status_command().await?;
+            return Ok(());
+        }
+
+        if trimmed == "/log" {
+            self.handle_log_command().await?;
             return Ok(());
         }
 

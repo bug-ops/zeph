@@ -1066,6 +1066,9 @@ impl App {
                 self.push_system_message("Checking LSP context injection status...".to_owned());
                 let _ = self.user_input_tx.try_send("/lsp".to_owned());
             }
+            TuiCommand::ViewLog => {
+                let _ = self.user_input_tx.try_send("/log".to_owned());
+            }
         }
     }
 

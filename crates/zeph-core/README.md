@@ -41,6 +41,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` that exposes the `load_skill` tool to the LLM; accepts a skill name, looks it up in the shared `Arc<RwLock<SkillRegistry>>`, and returns the full SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); skill name is capped at 128 characters; unknown names return a human-readable error message rather than a hard error |
 | `scheduler_executor` | `SchedulerExecutor` — `ToolExecutor` that exposes three LLM-callable tools: `schedule_periodic` (add a recurring cron task), `schedule_deferred` (add a one-shot task at a specific ISO 8601 UTC time), and `cancel_task` (remove a task by name); communicates with the scheduler via `mpsc::Sender<SchedulerMessage>` and validates input lengths and cron expressions before forwarding; only present when the `scheduler` feature is enabled |
 | `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true` config, or `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths and before `maybe_summarize_tool_output` |
+| `agent::log_commands` | `/log` slash command handler — displays current `LoggingConfig` (file path, level, rotation, max files) and tails the last 20 lines from the active log file |
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
@@ -156,6 +157,26 @@ Key `DebugConfig` fields (TOML section `[debug]`):
 
 > [!TIP]
 > Use `--debug-dump` without a path to use `output_dir` from config. Use `--debug-dump /tmp/mydir` to override for one session. The `/debug-dump [path]` slash command enables it mid-session without restarting.
+
+Key `LoggingConfig` fields (TOML section `[logging]`):
+
+| Field | Type | Default | Env override | Description |
+|-------|------|---------|--------------|-------------|
+| `file` | string | `".zeph/logs/zeph.log"` | `ZEPH_LOG_FILE` | Path to the log file. Empty string disables file logging |
+| `level` | string | `"info"` | `ZEPH_LOG_LEVEL` | Log level for the file sink (does not affect stderr / `RUST_LOG`) |
+| `rotation` | `"daily"` / `"hourly"` / `"never"` | `"daily"` | — | Log file rotation strategy |
+| `max_files` | usize | `7` | — | Maximum number of rotated log files to retain |
+
+```toml
+[logging]
+file = ".zeph/logs/zeph.log"
+level = "info"
+rotation = "daily"
+max_files = 7
+```
+
+> [!NOTE]
+> Use `--log-file <PATH>` at the CLI to override the log file path for one session. The file-level filter is independent of `RUST_LOG` — stderr output and file output can use different levels simultaneously. The `/log` slash command shows the active config and tails recent entries.
 
 ## Skill commands
 

@@ -20,6 +20,7 @@
 - [load_skill Tool](concepts/load-skill-tool.md)
 - [Scheduler](concepts/scheduler.md)
 - [Task Orchestration](concepts/task-orchestration.md)
+- [Logging](concepts/logging.md)
 - [Experiments](concepts/experiments.md)
 
 # Guides

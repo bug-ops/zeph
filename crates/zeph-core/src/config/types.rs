@@ -21,6 +21,57 @@ use crate::vault::Secret;
 pub const DEFAULT_SQLITE_PATH: &str = ".zeph/data/zeph.db";
 pub const DEFAULT_SKILLS_DIR: &str = ".zeph/skills";
 pub const DEFAULT_DEBUG_DIR: &str = ".zeph/debug";
+pub const DEFAULT_LOG_FILE: &str = ".zeph/logs/zeph.log";
+
+fn default_log_file() -> String {
+    DEFAULT_LOG_FILE.to_owned()
+}
+
+fn default_log_level() -> String {
+    "info".to_owned()
+}
+
+fn default_log_max_files() -> usize {
+    7
+}
+
+/// Log file rotation strategy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogRotation {
+    #[default]
+    Daily,
+    Hourly,
+    Never,
+}
+
+/// Configuration for file-based logging.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    /// Path to the log file. Empty string disables file logging.
+    #[serde(default = "default_log_file")]
+    pub file: String,
+    /// Log level for the file sink (does not affect stderr/`RUST_LOG`).
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// Rotation strategy: daily, hourly, or never.
+    pub rotation: LogRotation,
+    /// Maximum number of rotated log files to retain.
+    #[serde(default = "default_log_max_files")]
+    pub max_files: usize,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            file: default_log_file(),
+            level: default_log_level(),
+            rotation: LogRotation::default(),
+            max_files: default_log_max_files(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -70,6 +121,8 @@ pub struct Config {
     pub experiments: ExperimentConfig,
     #[serde(default)]
     pub debug: DebugConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
     #[cfg(feature = "lsp-context")]
     #[serde(default)]
     pub lsp: LspConfig,
@@ -1851,6 +1904,7 @@ impl Default for Config {
             orchestration: OrchestrationConfig::default(),
             experiments: ExperimentConfig::default(),
             debug: DebugConfig::default(),
+            logging: LoggingConfig::default(),
             #[cfg(feature = "lsp-context")]
             lsp: LspConfig::default(),
             secrets: ResolvedSecrets::default(),

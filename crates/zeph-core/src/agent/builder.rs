@@ -220,6 +220,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_logging_config(mut self, logging: crate::config::LoggingConfig) -> Self {
+        self.logging_config = logging;
+        self
+    }
+
+    #[must_use]
     pub fn with_available_secrets(
         mut self,
         secrets: impl IntoIterator<Item = (String, crate::vault::Secret)>,

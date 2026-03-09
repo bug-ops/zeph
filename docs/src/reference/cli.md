@@ -226,6 +226,20 @@ Manage experiment sessions. Requires the `experiments` feature. See [Experiments
 > /experiment best
 ```
 
+### `/log`
+
+Display the current file logging configuration and recent log entries.
+
+| Usage | Description |
+|-------|-------------|
+| `/log` | Show log file path, level, rotation, max files, and the last 20 lines |
+
+```bash
+> /log
+```
+
+See [Logging](../concepts/logging.md) for configuration details.
+
 ### `/debug-dump`
 
 Enable debug dump mid-session without restarting.
@@ -257,6 +271,7 @@ See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read 
 | `--lsp-context` | Enable automatic LSP context injection for this session, overriding `agent.lsp.enabled`. Injects diagnostics after file writes and hover info on reads. Requires mcpls MCP server and `lsp-context` feature. See [LSP Code Intelligence](../guides/lsp.md#lsp-context-injection) |
 | `--experiment-run` | Run a single experiment session and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |
 | `--experiment-report` | Print past experiment results summary and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |
+| `--log-file <PATH>` | Override the log file path for this session. Set to empty string (`""`) to disable file logging. See [Logging](../concepts/logging.md) |
 | `--debug-dump [PATH]` | Write LLM requests/responses and raw tool output to files. Omit `PATH` to use `debug.output_dir` from config (default: `.zeph/debug`). See [Debug Dump](../advanced/debug-dump.md) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |

@@ -66,6 +66,8 @@ pub enum TuiCommand {
     // LSP context injection
     #[cfg(feature = "lsp-context")]
     LspStatus,
+    // Log file
+    ViewLog,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -414,6 +416,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::LspStatus,
         },
+        CommandEntry {
+            id: "log:status",
+            label: "Show log file path and recent entries (/log)",
+            category: "log",
+            shortcut: None,
+            command: TuiCommand::ViewLog,
+        },
     ];
     EXTRA
 }
@@ -490,12 +499,12 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 24 base (14 + 5 plan + 5 graph) + 5 experiment = 29
+        // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status = 30
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 30);
+        assert_eq!(extra_command_registry().len(), 31);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 29);
+        assert_eq!(extra_command_registry().len(), 30);
     }
 
     #[test]
@@ -506,6 +515,7 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "gateway:status"));
         assert!(all.iter().any(|e| e.id == "scheduler:list"));
         assert!(all.iter().any(|e| e.id == "security:events"));
+        assert!(all.iter().any(|e| e.id == "log:status"));
     }
 
     #[test]
