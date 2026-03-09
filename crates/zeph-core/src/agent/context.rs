@@ -2013,6 +2013,10 @@ impl<C: Channel> Agent<C> {
             .collect();
         let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta.iter().collect();
         let all_meta = all_meta_refs;
+        // Tracks only skills that were genuinely scored by the embedding matcher.
+        // Stays empty when falling back to the full skill set (no matcher, embed failure).
+        let mut skills_to_record: Vec<String> = Vec::new();
+
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
@@ -2078,15 +2082,25 @@ impl<C: Channel> Agent<C> {
                 // remains functional rather than running with an empty skill set.
                 tracing::warn!("skill matcher returned no results, falling back to all skills");
                 (0..all_meta.len()).collect()
-            } else if scored.len() >= 2
-                && (scored[0].score - scored[1].score) < self.skill_state.disambiguation_threshold
-            {
-                match self.disambiguate_skills(query, &all_meta, &scored).await {
-                    Some(reordered) => reordered,
-                    None => scored.iter().map(|s| s.index).collect(),
-                }
             } else {
-                scored.iter().map(|s| s.index).collect()
+                // Capture the names of skills that had real embedding scores for
+                // usage stats — before disambiguation may reorder indices.
+                skills_to_record = scored
+                    .iter()
+                    .filter_map(|s| all_meta.get(s.index).map(|m| m.name.clone()))
+                    .collect();
+
+                if scored.len() >= 2
+                    && (scored[0].score - scored[1].score)
+                        < self.skill_state.disambiguation_threshold
+                {
+                    match self.disambiguate_skills(query, &all_meta, &scored).await {
+                        Some(reordered) => reordered,
+                        None => scored.iter().map(|s| s.index).collect(),
+                    }
+                } else {
+                    scored.iter().map(|s| s.index).collect()
+                }
             };
             let _ = self.channel.send_status("").await;
             indices
@@ -2135,15 +2149,10 @@ impl<C: Channel> Agent<C> {
             m.total_skills = total;
         });
 
-        if !self.skill_state.active_skill_names.is_empty()
+        if !skills_to_record.is_empty()
             && let Some(memory) = &self.memory_state.memory
         {
-            let names: Vec<&str> = self
-                .skill_state
-                .active_skill_names
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let names: Vec<&str> = skills_to_record.iter().map(String::as_str).collect();
             if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
                 tracing::warn!("failed to record skill usage: {e:#}");
             }
