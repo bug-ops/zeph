@@ -408,6 +408,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.prune_protect_tokens,
     )
     .with_deferred_apply_threshold(config.memory.deferred_apply_threshold)
+    .with_compression(config.memory.compression.clone())
+    .with_routing(config.memory.routing.clone())
     .with_shutdown(shutdown_rx.clone())
     .with_security(config.security.clone(), config.timeouts)
     .with_redact_credentials(config.memory.redact_credentials)

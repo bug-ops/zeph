@@ -10,7 +10,9 @@ use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
 use crate::channel::Channel;
-use crate::config::{LearningConfig, SecurityConfig, TimeoutConfig};
+use crate::config::{
+    CompressionConfig, LearningConfig, RoutingConfig, SecurityConfig, TimeoutConfig,
+};
 use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
 use crate::cost::CostTracker;
@@ -392,6 +394,18 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_compression(mut self, compression: CompressionConfig) -> Self {
+        self.context_manager.compression = compression;
+        self
+    }
+
+    #[must_use]
+    pub fn with_routing(mut self, routing: RoutingConfig) -> Self {
+        self.context_manager.routing = routing;
+        self
+    }
+
+    #[must_use]
     pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
         self.runtime.model_name = name.into();
         self
@@ -542,6 +556,73 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
+    use crate::config::{CompressionStrategy, RoutingStrategy};
+
+    fn make_agent() -> Agent<MockChannel> {
+        Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+    }
+
+    #[test]
+    fn with_compression_sets_proactive_strategy() {
+        let compression = CompressionConfig {
+            strategy: CompressionStrategy::Proactive {
+                threshold_tokens: 50_000,
+                max_summary_tokens: 2_000,
+            },
+            model: String::new(),
+        };
+        let agent = make_agent().with_compression(compression);
+        assert!(
+            matches!(
+                agent.context_manager.compression.strategy,
+                CompressionStrategy::Proactive {
+                    threshold_tokens: 50_000,
+                    max_summary_tokens: 2_000,
+                }
+            ),
+            "expected Proactive strategy after with_compression"
+        );
+    }
+
+    #[test]
+    fn with_routing_sets_routing_config() {
+        let routing = RoutingConfig {
+            strategy: RoutingStrategy::Heuristic,
+        };
+        let agent = make_agent().with_routing(routing);
+        assert_eq!(
+            agent.context_manager.routing.strategy,
+            RoutingStrategy::Heuristic,
+            "routing strategy must be set by with_routing"
+        );
+    }
+
+    #[test]
+    fn default_compression_is_reactive() {
+        let agent = make_agent();
+        assert_eq!(
+            agent.context_manager.compression.strategy,
+            CompressionStrategy::Reactive,
+            "default compression strategy must be Reactive"
+        );
+    }
+
+    #[test]
+    fn default_routing_is_heuristic() {
+        let agent = make_agent();
+        assert_eq!(
+            agent.context_manager.routing.strategy,
+            RoutingStrategy::Heuristic,
+            "default routing strategy must be Heuristic"
+        );
+    }
 
     #[test]
     fn with_cancel_signal_replaces_internal_signal() {
