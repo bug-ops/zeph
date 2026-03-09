@@ -953,6 +953,11 @@ impl LlmProvider for ClaudeProvider {
 
         let resp: ToolApiResponse = serde_json::from_str(&text)?;
 
+        if let Some(ref usage) = resp.usage {
+            log_cache_usage(usage);
+            self.store_cache_usage(usage);
+        }
+
         for block in resp.content {
             if let AnthropicContentBlock::ToolUse { input, .. } = block {
                 return serde_json::from_value::<T>(input)
@@ -3827,5 +3832,21 @@ mod tests {
             ClaudeProvider::new("k".into(), "m".into(), 256).with_cache_user_messages(false);
         let cloned = provider.clone();
         assert!(!cloned.cache_user_messages);
+    }
+
+    #[test]
+    fn store_cache_usage_updates_last_usage() {
+        let provider = ClaudeProvider::new("k".into(), "m".into(), 256);
+        assert!(provider.last_usage().is_none());
+
+        let usage = ApiUsage {
+            input_tokens: 42,
+            output_tokens: 17,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        };
+        provider.store_cache_usage(&usage);
+
+        assert_eq!(provider.last_usage(), Some((42, 17)));
     }
 }

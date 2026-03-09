@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Store token usage in `chat_typed` so `eval_budget_tokens` is enforced with Claude provider (#1426)
+
 ## [0.14.2] - 2026-03-09
 
 ### Fixed
