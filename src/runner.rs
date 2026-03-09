@@ -327,6 +327,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
+    let _eviction_handle = {
+        let eviction_cancel = zeph_memory::CancellationToken::new();
+        let eviction_cancel_clone = eviction_cancel.clone();
+        let mut shutdown_for_eviction = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_eviction.changed().await;
+            eviction_cancel_clone.cancel();
+        });
+        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+        zeph_memory::start_eviction_loop(
+            sqlite_store,
+            &config.memory.eviction,
+            std::sync::Arc::new(zeph_memory::EbbinghausPolicy::default()),
+            eviction_cancel,
+        )
+    };
+
     let skill_paths = app.skill_paths();
 
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
