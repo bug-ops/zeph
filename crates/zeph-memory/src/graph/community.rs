@@ -43,6 +43,22 @@ pub struct GraphEvictionStats {
     pub capped_entities_deleted: usize,
 }
 
+/// Truncate `prompt` to at most `max_bytes` at a UTF-8 boundary, appending `"..."`
+/// if truncation occurred.
+///
+/// If `max_bytes` is 0, returns an empty string immediately (disables community summaries).
+/// Otherwise clamps the boundary to the nearest valid UTF-8 char boundary and appends `"..."`.
+fn truncate_prompt(prompt: String, max_bytes: usize) -> String {
+    if max_bytes == 0 {
+        return String::new();
+    }
+    if prompt.len() <= max_bytes {
+        return prompt;
+    }
+    let boundary = prompt.floor_char_boundary(max_bytes);
+    format!("{}...", &prompt[..boundary])
+}
+
 /// Run label propagation on the full entity graph, generate community summaries via LLM,
 /// and upsert results to `SQLite`.
 ///
@@ -55,6 +71,7 @@ pub struct GraphEvictionStats {
 pub async fn detect_communities(
     store: &GraphStore,
     provider: &AnyProvider,
+    community_summary_max_prompt_bytes: usize,
 ) -> Result<usize, MemoryError> {
     let entities = store.all_entities().await?;
     if entities.len() < 2 {
@@ -177,7 +194,13 @@ pub async fn detect_communities(
 
         // Generate LLM summary sequentially to avoid rate-limit issues.
         // TODO: consider FuturesUnordered with concurrency=3 if latency becomes a concern.
-        let summary = match generate_community_summary(provider, &entity_names, &intra_facts).await
+        let summary = match generate_community_summary(
+            provider,
+            &entity_names,
+            &intra_facts,
+            community_summary_max_prompt_bytes,
+        )
+        .await
         {
             Ok(text) => text,
             Err(e) => {
@@ -307,6 +330,7 @@ async fn generate_community_summary(
     provider: &AnyProvider,
     entity_names: &[String],
     edge_facts: &[String],
+    max_prompt_bytes: usize,
 ) -> Result<String, MemoryError> {
     let entities_str = entity_names.join(", ");
     // Cap facts at 20 to bound prompt size; data is already scrubbed upstream.
@@ -317,12 +341,27 @@ async fn generate_community_summary(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let prompt = format!(
+    let raw_prompt = format!(
         "Summarize the following group of related entities and their relationships \
          into a single paragraph (2-3 sentences). Focus on the theme that connects \
          them and the key relationships.\n\nEntities: {entities_str}\n\
          Relationships:\n{facts_str}\n\nSummary:"
     );
+
+    let original_bytes = raw_prompt.len();
+    let truncated = raw_prompt.len() > max_prompt_bytes;
+    let prompt = truncate_prompt(raw_prompt, max_prompt_bytes);
+    if prompt.is_empty() {
+        return Ok(String::new());
+    }
+    if truncated {
+        tracing::warn!(
+            entity_count = entity_names.len(),
+            original_bytes,
+            truncated_bytes = prompt.len(),
+            "community summary prompt truncated"
+        );
+    }
 
     let messages = [Message::from_legacy(Role::User, prompt)];
     let response: String = provider.chat(&messages).await.map_err(MemoryError::Llm)?;
@@ -348,7 +387,9 @@ mod tests {
     async fn test_detect_communities_empty_graph() {
         let store = setup().await;
         let provider = mock_provider();
-        let count = detect_communities(&store, &provider).await.unwrap();
+        let count = detect_communities(&store, &provider, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -360,7 +401,9 @@ mod tests {
             .upsert_entity("Solo", "Solo", EntityType::Concept, None)
             .await
             .unwrap();
-        let count = detect_communities(&store, &provider).await.unwrap();
+        let count = detect_communities(&store, &provider, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "single isolated entity must not form a community");
     }
 
@@ -396,7 +439,9 @@ mod tests {
             .await
             .unwrap();
 
-        let count = detect_communities(&store, &provider).await.unwrap();
+        let count = detect_communities(&store, &provider, usize::MAX)
+            .await
+            .unwrap();
         // Isolated entity has no edges — must NOT be persisted as a community.
         assert_eq!(count, 1, "only the 3-entity cluster should be detected");
 
@@ -437,7 +482,9 @@ mod tests {
             cluster_ids.push(ids);
         }
 
-        let count = detect_communities(&store, &provider).await.unwrap();
+        let count = detect_communities(&store, &provider, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(count, 4, "expected 4 communities, one per cluster");
 
         let communities = store.all_communities().await.unwrap();
@@ -474,7 +521,9 @@ mod tests {
                 .unwrap();
         }
 
-        let count = detect_communities(&store, &provider).await.unwrap();
+        let count = detect_communities(&store, &provider, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "zero-edge graph must produce no communities");
         assert_eq!(store.community_count().await.unwrap(), 0);
     }
@@ -624,6 +673,48 @@ mod tests {
     fn test_scrub_content_clean_string_unchanged() {
         let input = "Hello, World! 123 — normal text.";
         assert_eq!(scrub_content(input), input);
+    }
+
+    #[test]
+    fn test_truncate_prompt_within_limit() {
+        let result = truncate_prompt("short".into(), 100);
+        assert_eq!(result, "short");
+    }
+
+    #[test]
+    fn test_truncate_prompt_zero_max_bytes() {
+        let result = truncate_prompt("hello".into(), 0);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_prompt_long_facts() {
+        let facts: Vec<String> = (0..20)
+            .map(|i| format!("fact_{i}_{}", "x".repeat(20)))
+            .collect();
+        let prompt = facts.join("\n");
+        let result = truncate_prompt(prompt, 200);
+        assert!(
+            result.ends_with("..."),
+            "truncated prompt must end with '...'"
+        );
+        // byte length must be at most max_bytes + 3 (the "..." suffix)
+        assert!(result.len() <= 203);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_prompt_utf8_boundary() {
+        // Each '🔥' is 4 bytes; 100 emojis = 400 bytes.
+        let prompt = "🔥".repeat(100);
+        let result = truncate_prompt(prompt, 10);
+        assert!(
+            result.ends_with("..."),
+            "truncated prompt must end with '...'"
+        );
+        // floor_char_boundary(10) for 4-byte chars lands at 8 (2 full emojis = 8 bytes)
+        assert_eq!(result.len(), 8 + 3, "2 emojis (8 bytes) + '...' (3 bytes)");
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
     }
 
     #[tokio::test]

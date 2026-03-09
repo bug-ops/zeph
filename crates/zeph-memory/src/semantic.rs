@@ -1451,8 +1451,14 @@ impl SemanticMemory {
                     let provider2 = provider;
                     let retention_days = config.expired_edge_retention_days;
                     let max_cap = config.max_entities_cap;
+                    let max_prompt_bytes = config.community_summary_max_prompt_bytes;
                     tokio::spawn(async move {
-                        match crate::graph::community::detect_communities(&store2, &provider2).await
+                        match crate::graph::community::detect_communities(
+                            &store2,
+                            &provider2,
+                            max_prompt_bytes,
+                        )
+                        .await
                         {
                             Ok(count) => {
                                 tracing::info!(communities = count, "community detection complete");
@@ -1500,6 +1506,7 @@ pub struct GraphExtractionConfig {
     pub community_refresh_interval: usize,
     pub expired_edge_retention_days: u32,
     pub max_entities_cap: usize,
+    pub community_summary_max_prompt_bytes: usize,
 }
 
 /// Stats returned from a completed extraction.
