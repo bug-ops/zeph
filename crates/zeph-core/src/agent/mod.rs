@@ -2313,19 +2313,25 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
 
+        let outcome_type = if self.feedback_detector.detect(feedback, &[]).is_some() {
+            "user_rejection"
+        } else {
+            "user_approval"
+        };
+
         memory
             .sqlite()
             .record_skill_outcome(
                 skill_name,
                 None,
                 self.memory_state.conversation_id,
-                "user_rejection",
+                outcome_type,
                 Some(feedback),
                 None,
             )
             .await?;
 
-        if self.is_learning_enabled() {
+        if self.is_learning_enabled() && outcome_type == "user_rejection" {
             self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
                 .await
                 .ok();
@@ -2977,6 +2983,8 @@ pub(super) mod agent_tests {
     use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
     pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};
     pub(crate) use crate::metrics::MetricsSnapshot;
+    #[allow(unused_imports)]
+    pub(crate) use sqlx::prelude::*;
     use std::sync::{Arc, Mutex};
     pub(crate) use tokio::sync::{Notify, mpsc, watch};
     pub(crate) use zeph_llm::any::AnyProvider;
@@ -4943,6 +4951,118 @@ pub(super) mod agent_tests {
             agent.messages.iter().all(|m| m.role != Role::Assistant),
             "bare /image must not produce an assistant message; messages: {:?}",
             agent.messages
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_positive_records_user_approval() {
+        let provider = mock_provider(vec![]);
+        let memory =
+            SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
+                .await
+                .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory = std::sync::Arc::new(memory);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory.clone(),
+            cid,
+            50,
+            5,
+            50,
+        );
+
+        agent
+            .handle_feedback("git great job, works perfectly")
+            .await
+            .unwrap();
+
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT outcome FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")
+                .fetch_optional(memory.sqlite().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            row.map(|r| r.0).as_deref(),
+            Some("user_approval"),
+            "positive feedback must be recorded as user_approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_negative_records_user_rejection() {
+        let provider = mock_provider(vec![]);
+        let memory =
+            SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
+                .await
+                .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory = std::sync::Arc::new(memory);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory.clone(),
+            cid,
+            50,
+            5,
+            50,
+        );
+
+        agent
+            .handle_feedback("git that was wrong, bad output")
+            .await
+            .unwrap();
+
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT outcome FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")
+                .fetch_optional(memory.sqlite().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            row.map(|r| r.0).as_deref(),
+            Some("user_rejection"),
+            "negative feedback must be recorded as user_rejection"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_neutral_records_user_approval() {
+        let provider = mock_provider(vec![]);
+        let memory =
+            SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
+                .await
+                .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory = std::sync::Arc::new(memory);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory.clone(),
+            cid,
+            50,
+            5,
+            50,
+        );
+
+        // Ambiguous/neutral feedback — FeedbackDetector returns None → user_approval
+        agent.handle_feedback("git ok").await.unwrap();
+
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT outcome FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")
+                .fetch_optional(memory.sqlite().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            row.map(|r| r.0).as_deref(),
+            Some("user_approval"),
+            "neutral/ambiguous feedback must be recorded as user_approval"
         );
     }
 }

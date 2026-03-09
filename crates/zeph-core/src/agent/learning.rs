@@ -1734,11 +1734,14 @@ mod tests {
         );
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
-        let metrics = mem.sqlite().skill_metrics("test-skill").await.unwrap();
-        assert!(metrics.is_some(), "outcome should be recorded in DB");
-        let m = metrics.unwrap();
-        assert_eq!(m.total, 1);
-        assert_eq!(m.successes, 0);
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT outcome FROM skill_outcomes WHERE skill_name = 'test-skill' LIMIT 1",
+        )
+        .fetch_optional(mem.sqlite().pool())
+        .await
+        .unwrap();
+        assert!(row.is_some(), "outcome should be recorded in DB");
+        assert_eq!(row.unwrap().0, "user_rejection");
     }
 
     #[tokio::test]
