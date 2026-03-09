@@ -294,7 +294,7 @@ impl ShellExecutor {
             let is_timeout = out.contains("[error] command timed out");
             let result = if is_timeout {
                 AuditResult::Timeout
-            } else if out.contains("[error]") {
+            } else if out.contains("[error]") || out.contains("[stderr]") {
                 AuditResult::Error {
                     message: out.clone(),
                 }
@@ -1025,6 +1025,27 @@ mod tests {
         assert!(
             !content.contains("\"type\":\"error\""),
             "timeout must not be logged as error: {content}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn stderr_output_logged_as_audit_error() {
+        use crate::audit::AuditLogger;
+        use crate::config::AuditConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let audit_config = AuditConfig {
+            enabled: true,
+            destination: log_path.display().to_string(),
+        };
+        let logger = AuditLogger::from_config(&audit_config).await.unwrap();
+        let executor = ShellExecutor::new(&default_config()).with_audit(logger);
+        let _ = executor.execute("```bash\necho err >&2\n```").await;
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"type\":\"error\""),
+            "expected AuditResult::Error for [stderr] output, got: {content}"
         );
     }
 
