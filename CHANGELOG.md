@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Experiment engine now applies generation parameter variations (temperature, top_p, etc.) to the subject provider before evaluation, fixing all-zero delta scores (#1407). `AnyProvider::with_generation_overrides` clones and patches the provider; each variation is scored with its specific parameters rather than the unmodified baseline provider. `GenerationOverrides` moved to `zeph_llm::provider` and re-exported from `zeph_core::experiments::snapshot` for backwards compatibility.
+
 ### Performance
 
 - Parallelize LLM summarization calls across communities in `detect_communities` using `tokio::task::JoinSet` bounded by `Arc<Semaphore>`. New `GraphConfig.community_summary_concurrency` field (default: 4) controls the concurrency limit; `concurrency=1` provides sequential fallback (#1260)
