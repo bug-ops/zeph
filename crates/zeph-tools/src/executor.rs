@@ -395,11 +395,25 @@ pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
     let mut blocks = Vec::new();
     let mut rest = text;
 
-    while let Some(start) = rest.find(&marker) {
+    let mut search_from = 0;
+    while let Some(rel) = rest[search_from..].find(&marker) {
+        let start = search_from + rel;
         let after = &rest[start + marker_len..];
+        // Word-boundary check: the character immediately after the marker must be
+        // whitespace, end-of-string, or a non-word character (not alphanumeric / _ / -).
+        // This prevents "```bash" from matching "```bashrc".
+        let boundary_ok = after
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-');
+        if !boundary_ok {
+            search_from = start + marker_len;
+            continue;
+        }
         if let Some(end) = after.find("```") {
             blocks.push(after[..end].trim());
             rest = &after[end + 3..];
+            search_from = 0;
         } else {
             break;
         }
@@ -882,5 +896,21 @@ mod tests {
 
         ToolExecutor::set_effective_trust(&exec, crate::TrustLevel::Blocked);
         assert_eq!(inner.0.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn extract_fenced_blocks_no_prefix_match() {
+        // ```bashrc must NOT match when searching for "bash"
+        assert!(extract_fenced_blocks("```bashrc\nfoo\n```", "bash").is_empty());
+        // exact match
+        assert_eq!(
+            extract_fenced_blocks("```bash\nfoo\n```", "bash"),
+            vec!["foo"]
+        );
+        // trailing space is fine
+        assert_eq!(
+            extract_fenced_blocks("```bash \nfoo\n```", "bash"),
+            vec!["foo"]
+        );
     }
 }
