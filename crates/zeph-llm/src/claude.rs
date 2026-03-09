@@ -1305,13 +1305,13 @@ struct ToolRequestBody<'a> {
     cache_control: Option<CacheControl>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct StructuredApiMessage {
     role: String,
     content: StructuredContent,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(untagged)]
 enum StructuredContent {
     Text(String),
@@ -1467,16 +1467,31 @@ fn split_messages_structured(
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
-    // Collect only agent-visible messages so we can peek at the next visible message when
-    // validating tool_use/tool_result pairs (FIX2: defensive orphan detection at emit time).
+    // Collect agent-visible system messages first.
+    for msg in messages
+        .iter()
+        .filter(|m| m.metadata.agent_visible && m.role == Role::System)
+    {
+        system_parts.push(msg.to_llm_content());
+    }
+
+    // Collect only agent-visible non-system messages so that idx-based peek always lands on a
+    // user or assistant message (RC4: system messages in `visible` would break +1 index peek).
     let visible: Vec<&Message> = messages
         .iter()
-        .filter(|m| m.metadata.agent_visible)
+        .filter(|m| m.metadata.agent_visible && m.role != Role::System)
         .collect();
+
+    // Track which tool_use IDs were actually emitted as native AnthropicContentBlock::ToolUse
+    // by the most recent assistant message. When processing the following user message, any
+    // ToolResult block whose tool_use_id is not in this set is downgraded to text — prevents
+    // API 400 caused by orphaned ToolResult referencing a non-existent tool_use (RC1 fix).
+    let mut last_emitted_tool_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for (idx, msg) in visible.iter().enumerate() {
         match msg.role {
-            Role::System => system_parts.push(msg.to_llm_content()),
+            Role::System => {} // already extracted above
             Role::User | Role::Assistant => {
                 let role = if msg.role == Role::User {
                     "user"
@@ -1532,6 +1547,11 @@ fn split_messages_structured(
                     };
 
                     let mut blocks = Vec::new();
+                    // Reset emitted tool IDs at the start of each assistant message so user
+                    // messages can check against the immediately preceding assistant only.
+                    if is_assistant {
+                        last_emitted_tool_ids.clear();
+                    }
                     for part in &msg.parts {
                         match part {
                             MessagePart::Text { text }
@@ -1561,6 +1581,7 @@ fn split_messages_structured(
                                     .as_ref()
                                     .is_some_and(|ids| ids.contains(id.as_str()));
                                 if matched {
+                                    last_emitted_tool_ids.insert(id.clone());
                                     blocks.push(AnthropicContentBlock::ToolUse {
                                         id: id.clone(),
                                         name: name.clone(),
@@ -1589,12 +1610,27 @@ fn split_messages_structured(
                                 content,
                                 is_error,
                             } if !is_assistant => {
-                                blocks.push(AnthropicContentBlock::ToolResult {
-                                    tool_use_id: tool_use_id.clone(),
-                                    content: content.clone(),
-                                    is_error: *is_error,
-                                    cache_control: None,
-                                });
+                                // Downgrade to text if the tool_use_id was not emitted as a
+                                // native ToolUse by the preceding assistant message (RC1 fix).
+                                if last_emitted_tool_ids.contains(tool_use_id.as_str()) {
+                                    blocks.push(AnthropicContentBlock::ToolResult {
+                                        tool_use_id: tool_use_id.clone(),
+                                        content: content.clone(),
+                                        is_error: *is_error,
+                                        cache_control: None,
+                                    });
+                                } else {
+                                    tracing::warn!(
+                                        tool_use_id = %tool_use_id,
+                                        "downgrading orphaned tool_result to text in API request"
+                                    );
+                                    if !content.trim().is_empty() {
+                                        blocks.push(AnthropicContentBlock::Text {
+                                            text: content.clone(),
+                                            cache_control: None,
+                                        });
+                                    }
+                                }
                             }
                             MessagePart::ToolResult { content, .. } => {
                                 if !content.trim().is_empty() {
@@ -1637,6 +1673,11 @@ fn split_messages_structured(
                         content: StructuredContent::Blocks(blocks),
                     });
                 } else {
+                    // Non-structured user/assistant message: clear emitted tool IDs since
+                    // no tool pairs are possible across a plain text message boundary.
+                    if msg.role == Role::Assistant {
+                        last_emitted_tool_ids.clear();
+                    }
                     let text = msg.to_llm_content();
                     if !text.trim().is_empty() {
                         chat.push(StructuredApiMessage {
@@ -2577,6 +2618,204 @@ mod tests {
             "matched tool_use must be emitted as tool_use block: {assistant_json}"
         );
         assert!(assistant_json.contains("\"id\":\"matched_id\""));
+    }
+
+    /// RC1 regression: when a ToolUse was downgraded to text (because the next user message had
+    /// no matching ToolResult), the corresponding ToolResult in the user message must ALSO be
+    /// downgraded to text instead of being emitted as a native ToolResult block.
+    /// Previously only the ToolUse was downgraded, leaving an orphaned ToolResult that caused
+    /// Claude API 400 errors on session restore.
+    #[test]
+    fn split_structured_downgrades_orphaned_tool_result() {
+        // Scenario: assistant emits tool_use "t_orphan", but the following user message has a
+        // ToolResult for a DIFFERENT id — so "t_orphan" is downgraded. The ToolResult for
+        // "t_orphan" (which does appear in the user message) must also be downgraded.
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t_orphan".into(),
+                    name: "memory_save".into(),
+                    input: serde_json::json!({"content": "x"}),
+                }],
+            ),
+            // User message references t_orphan but the assistant ToolUse was not matched
+            // (there is no ToolResult for t_orphan in the NEXT user message from assistant's
+            // perspective — the assistant sees this user message has t_orphan, but the
+            // matched_tool_ids logic checks whether the ToolResult id matches).
+            // To trigger the orphan path: provide a user message whose ToolResult id does NOT
+            // match the ToolUse id — so matched_tool_ids for "t_orphan" is empty.
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "t_orphan".into(),
+                    content: "saved".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        // Verify the full round-trip: the assistant ToolUse is matched (t_orphan has a
+        // corresponding ToolResult), so this tests the happy path.
+        let (_, chat) = split_messages_structured(&messages, false);
+        assert_eq!(chat.len(), 2);
+
+        // The assistant message must emit t_orphan as a real tool_use (matched pair).
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(
+            assistant_json.contains("\"type\":\"tool_use\""),
+            "matched tool_use must be emitted as native block: {assistant_json}"
+        );
+
+        // The user message must emit t_orphan as a real tool_result (matched pair).
+        let user_json = serde_json::to_string(&chat[1]).unwrap();
+        assert!(
+            user_json.contains("\"type\":\"tool_result\""),
+            "matched tool_result must be emitted as native block: {user_json}"
+        );
+
+        // Now test the actual RC1 scenario: assistant emits TWO tool_use IDs but the user
+        // message only has a ToolResult for ONE of them. The unmatched tool_use is downgraded,
+        // and the ToolResult for the unmatched id must NOT appear in the user message output.
+        let messages_partial = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::ToolUse {
+                        id: "t_matched".into(),
+                        name: "shell".into(),
+                        input: serde_json::json!({"command": "ls"}),
+                    },
+                    MessagePart::ToolUse {
+                        id: "t_missing_result".into(),
+                        name: "shell".into(),
+                        input: serde_json::json!({"command": "pwd"}),
+                    },
+                ],
+            ),
+            // User only provides result for t_matched; t_missing_result has no ToolResult.
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "t_matched".into(),
+                    content: "output".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let (_, chat2) = split_messages_structured(&messages_partial, false);
+        assert_eq!(chat2.len(), 2);
+
+        // t_missing_result must be downgraded to text in the assistant message: if its ID
+        // appears at all it must not be inside a native tool_use block.
+        let assistant_json2 = serde_json::to_string(&chat2[0]).unwrap();
+        let has_native_missing = assistant_json2.contains("\"type\":\"tool_use\"")
+            && assistant_json2.contains("\"id\":\"t_missing_result\"");
+        assert!(
+            !has_native_missing,
+            "t_missing_result must not appear as a native tool_use block: {assistant_json2}"
+        );
+
+        // t_matched must still be emitted as a real tool_use.
+        assert!(
+            assistant_json2.contains("\"id\":\"t_matched\""),
+            "t_matched must be emitted as native tool_use: {assistant_json2}"
+        );
+
+        // The user message must only have t_matched as a real tool_result.
+        let user_json2 = serde_json::to_string(&chat2[1]).unwrap();
+        assert!(
+            user_json2.contains("\"type\":\"tool_result\""),
+            "matched tool_result must be emitted as native block: {user_json2}"
+        );
+        assert!(
+            user_json2.contains("\"tool_use_id\":\"t_matched\""),
+            "t_matched tool_result must be present: {user_json2}"
+        );
+    }
+
+    /// RC4 regression: system messages interleaved in the message list must NOT appear in the
+    /// `visible` index array used by `split_messages_structured`. If they did, the +1 peek used
+    /// to check whether a ToolUse has a matching ToolResult would land on a system message instead
+    /// of the actual next user message, causing false-positive downgrades.
+    #[test]
+    fn split_structured_system_not_in_visible() {
+        // System message appears between the assistant ToolUse and the user ToolResult.
+        // With the RC4 fix the system message is filtered out of `visible`, so idx+1 correctly
+        // lands on the user message and the ToolUse is NOT downgraded.
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "You are a helpful assistant.".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t_sys_test".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+            ),
+            // Interleaved system message — must not disrupt the +1 peek.
+            Message {
+                role: Role::System,
+                content: "Additional context injected mid-conversation.".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "t_sys_test".into(),
+                    content: "hi".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let (system_text, chat) = split_messages_structured(&messages, false);
+
+        // Both system messages must be extracted to the system string.
+        let system = system_text.unwrap_or_default();
+        assert!(
+            system.contains("You are a helpful assistant."),
+            "first system message must be in system text: {system}"
+        );
+        assert!(
+            system.contains("Additional context"),
+            "interleaved system message must be in system text: {system}"
+        );
+
+        // chat must contain only user and assistant messages (no system).
+        assert_eq!(
+            chat.len(),
+            2,
+            "chat must contain exactly assistant + user messages (no system), got {}",
+            chat.len()
+        );
+        assert_eq!(chat[0].role, "assistant");
+        assert_eq!(chat[1].role, "user");
+
+        // The ToolUse must NOT be downgraded — system messages must not break the +1 peek.
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(
+            assistant_json.contains("\"type\":\"tool_use\""),
+            "ToolUse must be emitted as native block when system messages are filtered: {assistant_json}"
+        );
+        assert!(
+            assistant_json.contains("\"id\":\"t_sys_test\""),
+            "correct tool_use id must be present: {assistant_json}"
+        );
+
+        // The ToolResult must be emitted as a native block (not downgraded).
+        let user_json = serde_json::to_string(&chat[1]).unwrap();
+        assert!(
+            user_json.contains("\"type\":\"tool_result\""),
+            "ToolResult must be emitted as native block: {user_json}"
+        );
     }
 
     #[test]

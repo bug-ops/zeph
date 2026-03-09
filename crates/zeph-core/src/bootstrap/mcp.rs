@@ -24,6 +24,7 @@ pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
                 id: s.id.clone(),
                 transport,
                 timeout: std::time::Duration::from_secs(s.timeout),
+                trusted: true,
             }
         })
         .collect();
