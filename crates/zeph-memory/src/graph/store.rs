@@ -309,11 +309,16 @@ impl GraphStore {
 
     // ── Edges ─────────────────────────────────────────────────────────────────
 
-    /// Insert a new edge between two entities.
+    /// Insert a new edge between two entities, or update the existing active edge.
+    ///
+    /// An active edge is identified by `(source_entity_id, target_entity_id, relation)` with
+    /// `valid_to IS NULL`. If such an edge already exists, its `confidence` is updated to the
+    /// maximum of the stored and incoming values, and the existing id is returned. This prevents
+    /// duplicate edges from repeated extraction of the same context messages.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database insert fails.
+    /// Returns an error if the database query fails.
     pub async fn insert_edge(
         &self,
         source_entity_id: i64,
@@ -324,6 +329,31 @@ impl GraphStore {
         episode_id: Option<MessageId>,
     ) -> Result<i64, MemoryError> {
         let confidence = confidence.clamp(0.0, 1.0);
+
+        let existing: Option<(i64, f64)> = sqlx::query_as(
+            "SELECT id, confidence FROM graph_edges
+             WHERE source_entity_id = ?1
+               AND target_entity_id = ?2
+               AND relation = ?3
+               AND valid_to IS NULL
+             LIMIT 1",
+        )
+        .bind(source_entity_id)
+        .bind(target_entity_id)
+        .bind(relation)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((existing_id, stored_conf)) = existing {
+            let updated_conf = f64::from(confidence).max(stored_conf);
+            sqlx::query("UPDATE graph_edges SET confidence = ?1 WHERE id = ?2")
+                .bind(updated_conf)
+                .bind(existing_id)
+                .execute(&self.pool)
+                .await?;
+            return Ok(existing_id);
+        }
+
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, episode_id)
@@ -927,14 +957,34 @@ impl GraphStore {
 
     // ── Backfill helpers ──────────────────────────────────────────────────────
 
-    /// Find an entity by name only (no type filter). Uses FTS5 prefix search with alias fallback.
+    /// Find an entity by name only (no type filter).
     ///
-    /// This is a convenience wrapper around `find_entities_fuzzy` returning the best match.
+    /// Uses a two-phase lookup to ensure exact name matches are always prioritised:
+    /// 1. Exact case-insensitive match on `name` or `canonical_name`.
+    /// 2. If no exact match found, falls back to FTS5 prefix search (see `find_entities_fuzzy`).
+    ///
+    /// This prevents FTS5 from returning a different entity whose *summary* mentions the
+    /// searched name (e.g. searching "Alice" returning "Google" because Google's summary
+    /// contains "Alice").
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     pub async fn find_entity_by_name(&self, name: &str) -> Result<Vec<Entity>, MemoryError> {
+        let rows: Vec<EntityRow> = sqlx::query_as(
+            "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+             FROM graph_entities
+             WHERE name = ?1 COLLATE NOCASE OR canonical_name = ?1 COLLATE NOCASE
+             LIMIT 5",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if !rows.is_empty() {
+            return rows.into_iter().map(entity_from_row).collect();
+        }
+
         self.find_entities_fuzzy(name, 5).await
     }
 
@@ -1237,6 +1287,80 @@ mod tests {
             .await
             .unwrap();
         assert!(eid > 0);
+    }
+
+    #[tokio::test]
+    async fn insert_edge_deduplicates_active_edge() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("Google", "Google", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        let id1 = gs
+            .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.7, None)
+            .await
+            .unwrap();
+
+        // Re-inserting the same (source, target, relation) must return the same id.
+        let id2 = gs
+            .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.9, None)
+            .await
+            .unwrap();
+        assert_eq!(id1, id2, "duplicate active edge must not be created");
+
+        // Confidence should be updated to the higher value.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
+                .fetch_one(&gs.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "only one active edge must exist");
+
+        let conf: f64 = sqlx::query_scalar("SELECT confidence FROM graph_edges WHERE id = ?1")
+            .bind(id1)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+        // Use 1e-6 tolerance: 0.9_f32 → f64 conversion is ~0.8999999761581421.
+        assert!(
+            (conf - f64::from(0.9_f32)).abs() < 1e-6,
+            "confidence must be updated to max, got {conf}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_edge_different_relations_are_distinct() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("Acme", "Acme", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        let id1 = gs
+            .insert_edge(src, tgt, "founded", "Bob founded Acme", 0.8, None)
+            .await
+            .unwrap();
+        let id2 = gs
+            .insert_edge(src, tgt, "chairs", "Bob chairs Acme", 0.8, None)
+            .await
+            .unwrap();
+        assert_ne!(id1, id2, "different relations must produce distinct edges");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
+                .fetch_one(&gs.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
@@ -2284,6 +2408,89 @@ mod tests {
         assert!(results.is_empty(), "only parens should return no results");
         let results = gs.find_entities_fuzzy("\"\"\"", 10).await.unwrap();
         assert!(results.is_empty(), "only quotes should return no results");
+    }
+
+    // ── find_entity_by_name tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_entity_by_name_exact_wins_over_summary_mention() {
+        // Regression test for: /graph facts Alice returns Google because Google's
+        // summary mentions "Alice".
+        let gs = setup().await;
+        gs.upsert_entity(
+            "Alice",
+            "Alice",
+            EntityType::Person,
+            Some("A person named Alice"),
+        )
+        .await
+        .unwrap();
+        // Google's summary mentions "Alice" — without the fix, FTS5 could rank this first.
+        gs.upsert_entity(
+            "Google",
+            "Google",
+            EntityType::Organization,
+            Some("Company where Charlie, Alice, and Bob have worked"),
+        )
+        .await
+        .unwrap();
+
+        let results = gs.find_entity_by_name("Alice").await.unwrap();
+        assert!(!results.is_empty(), "must find at least one entity");
+        assert_eq!(
+            results[0].name, "Alice",
+            "exact name match must come first, not entity with 'Alice' in summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_case_insensitive_exact() {
+        let gs = setup().await;
+        gs.upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        let results = gs.find_entity_by_name("bob").await.unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].name, "Bob");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_falls_back_to_fuzzy_when_no_exact_match() {
+        let gs = setup().await;
+        gs.upsert_entity("Charlie", "Charlie", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // "Char" is not an exact match for "Charlie" → FTS5 prefix fallback should find it.
+        let results = gs.find_entity_by_name("Char").await.unwrap();
+        assert!(!results.is_empty(), "prefix search must find Charlie");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_returns_empty_for_unknown() {
+        let gs = setup().await;
+        let results = gs.find_entity_by_name("NonExistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_name_matches_canonical_name() {
+        // Verify the exact-match phase checks canonical_name, not only name.
+        let gs = setup().await;
+        // upsert_entity sets canonical_name = second arg
+        gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // Searching by canonical_name "Dave" must return the entity even though
+        // the display name is "Dave (Engineer)".
+        let results = gs.find_entity_by_name("Dave").await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "canonical_name match must return entity"
+        );
+        assert_eq!(results[0].canonical_name, "Dave");
     }
 
     async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {
