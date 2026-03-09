@@ -1058,6 +1058,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Handle `/model`, `/model <id>`, and `/model refresh` commands.
+    #[allow(clippy::too_many_lines)]
     async fn handle_model_command(&mut self, trimmed: &str) {
         let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
 
@@ -1128,6 +1129,37 @@ impl<C: Channel> Agent<C> {
 
         // `/model <id>` — switch model
         let model_id = arg;
+
+        // Validate model_id against the known model list before switching.
+        // Try disk cache first; fall back to a remote fetch if the cache is stale.
+        let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
+        let known_models: Option<Vec<zeph_llm::model_cache::RemoteModelInfo>> = if cache.is_stale()
+        {
+            match self.provider.list_models_remote().await {
+                Ok(m) if !m.is_empty() => Some(m),
+                _ => None,
+            }
+        } else {
+            cache.load().unwrap_or(None)
+        };
+        if let Some(models) = known_models {
+            if !models.iter().any(|m| m.id == model_id) {
+                let mut lines = vec![format!("Unknown model '{model_id}'. Available models:")];
+                for m in &models {
+                    lines.push(format!("  • {} ({})", m.display_name, m.id));
+                }
+                let _ = self.channel.send(&lines.join("\n")).await;
+                return;
+            }
+        } else {
+            let _ = self
+                .channel
+                .send(
+                    "Model list unavailable, switching anyway — verify your model name is correct.",
+                )
+                .await;
+        }
+
         match self.set_model(model_id) {
             Ok(()) => {
                 let _ = self
@@ -2538,6 +2570,13 @@ pub(super) mod agent_tests {
 
     pub(crate) fn mock_provider_failing() -> AnyProvider {
         AnyProvider::Mock(MockProvider::failing())
+    }
+
+    pub(crate) fn mock_provider_with_models(
+        responses: Vec<String>,
+        models: Vec<zeph_llm::model_cache::RemoteModelInfo>,
+    ) -> AnyProvider {
+        AnyProvider::Mock(MockProvider::with_responses(responses).with_models(models))
     }
 
     pub(crate) struct MockChannel {
@@ -4119,6 +4158,112 @@ pub(super) mod agent_tests {
         assert!(
             messages.iter().any(|m| m.contains("Fetched")),
             "expected fetch confirmation, got: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_valid_model_accepted() {
+        // Ensure cache is stale so the handler falls back to list_models_remote().
+        zeph_llm::model_cache::ModelCache::for_slug("mock").invalidate();
+
+        let models = vec![
+            zeph_llm::model_cache::RemoteModelInfo {
+                id: "llama3:8b".to_string(),
+                display_name: "Llama 3 8B".to_string(),
+                context_window: Some(8192),
+                created_at: None,
+            },
+            zeph_llm::model_cache::RemoteModelInfo {
+                id: "qwen3:8b".to_string(),
+                display_name: "Qwen3 8B".to_string(),
+                context_window: Some(32768),
+                created_at: None,
+            },
+        ];
+        let provider = mock_provider_with_models(vec![], models);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.handle_model_command("/model llama3:8b").await;
+
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Switched to model: llama3:8b")),
+            "expected switch confirmation, got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("Unknown model")),
+            "unexpected rejection for valid model, got: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_invalid_model_rejected() {
+        // Ensure cache is stale so the handler falls back to list_models_remote().
+        zeph_llm::model_cache::ModelCache::for_slug("mock").invalidate();
+
+        let models = vec![zeph_llm::model_cache::RemoteModelInfo {
+            id: "qwen3:8b".to_string(),
+            display_name: "Qwen3 8B".to_string(),
+            context_window: None,
+            created_at: None,
+        }];
+        let provider = mock_provider_with_models(vec![], models);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.handle_model_command("/model nonexistent-model").await;
+
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Unknown model") && m.contains("nonexistent-model")),
+            "expected rejection with model name, got: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("qwen3:8b")),
+            "expected available models list, got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("Switched to model")),
+            "should not switch to invalid model, got: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_empty_model_list_warns_and_proceeds() {
+        // Ensure cache is stale so the handler falls back to list_models_remote().
+        // MockProvider returns empty vec → warning shown, switch proceeds.
+        zeph_llm::model_cache::ModelCache::for_slug("mock").invalidate();
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.handle_model_command("/model unknown-model").await;
+
+        let messages = sent.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("unavailable")),
+            "expected warning about unavailable model list, got: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Switched to model: unknown-model")),
+            "expected switch to proceed despite missing model list, got: {messages:?}"
         );
     }
 
