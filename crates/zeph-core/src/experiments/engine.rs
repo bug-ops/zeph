@@ -146,7 +146,8 @@ impl ExperimentEngine {
     /// The loop:
     /// 1. Evaluates the baseline once to obtain `initial_baseline_score`.
     /// 2. Generates variations via the [`VariationGenerator`].
-    /// 3. Evaluates each variation against `subject`.
+    /// 3. Evaluates each variation with a clone of `subject` patched with generation overrides
+    ///    derived from the candidate `ConfigSnapshot` via `AnyProvider::with_generation_overrides`.
     /// 4. Accepts the variation if `delta >= config.min_improvement`.
     /// 5. On acceptance, updates the progressive baseline (greedy hill-climbing).
     ///    **Known limitation (S1):** single-sample acceptance has no statistical
@@ -155,22 +156,6 @@ impl ExperimentEngine {
     ///    per-case variance before promoting a variation.
     /// 6. Optionally persists results to `SQLite` when `memory` is `Some`.
     /// 7. Breaks on: max experiments, wall-time, search exhaustion, or cancellation.
-    ///
-    /// # Parameter recording mode (S2)
-    ///
-    /// The `subject` provider is the **same** for all variations. `GenerationOverrides`
-    /// derived from each candidate `ConfigSnapshot` are **not** injected into the
-    /// subject before evaluation. This means every variation is scored with identical
-    /// inference parameters; acceptance/rejection is driven entirely by LLM
-    /// non-determinism rather than genuine parameter differences.
-    ///
-    /// This engine operates in **parameter recording mode** for Phase 4 MVP:
-    /// it records which parameter values correlate with higher scores, but cannot
-    /// causally attribute score changes to parameter changes.
-    ///
-    /// TODO (Phase 5): implement `AnyProvider::with_generation_overrides(GenerationOverrides)`
-    /// that clones and patches the provider's generation config, then pass the patched
-    /// provider to `self.evaluator.evaluate()` instead of `&self.subject`.
     ///
     /// # Errors
     ///
@@ -224,6 +209,7 @@ impl ExperimentEngine {
     /// # Errors
     ///
     /// Returns [`EvalError`] if any LLM call or `SQLite` persist fails.
+    #[allow(clippy::too_many_lines)]
     async fn run_loop(
         &mut self,
         start: Instant,
@@ -233,11 +219,8 @@ impl ExperimentEngine {
         let wall_limit = std::time::Duration::from_secs(self.config.max_wall_time_secs);
         let mut results: Vec<ExperimentResult> = Vec::new();
         let mut visited: HashSet<Variation> = HashSet::new();
-        let mut best_score = initial_baseline_score;
-        let mut counter: i64 = 0;
-        // Bug #2: cap consecutive NaN results to prevent unbounded loop when the
-        // evaluator consistently returns NaN (e.g., judge always fails).
-        let mut consecutive_nan: u32 = 0;
+        let (mut best_score, mut counter, mut consecutive_nan) =
+            (initial_baseline_score, 0i64, 0u32);
 
         'main: loop {
             if results.len() >= self.config.max_experiments as usize {
@@ -254,17 +237,17 @@ impl ExperimentEngine {
             };
             visited.insert(variation.clone());
             let candidate_snapshot = best_snapshot.apply(&variation);
-
+            let patched = (*self.subject)
+                .clone()
+                .with_generation_overrides(candidate_snapshot.to_generation_overrides());
             let candidate_report = tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => {
                     tracing::info!(session_id = %self.session_id, "experiment cancelled");
                     break 'main;
                 }
-                report = self.evaluator.evaluate(&self.subject) => report?,
+                report = self.evaluator.evaluate(&patched) => report?,
             };
-
-            // S4: skip degenerate partial reports with NaN mean.
             if candidate_report.mean_score.is_nan() {
                 consecutive_nan += 1;
                 tracing::warn!(
@@ -279,7 +262,6 @@ impl ExperimentEngine {
                 continue;
             }
             consecutive_nan = 0;
-
             let candidate_score = candidate_report.mean_score;
             let delta = candidate_score - best_score;
             let accepted = delta >= self.config.min_improvement;
@@ -296,8 +278,6 @@ impl ExperimentEngine {
                 )
                 .await?;
             counter += 1;
-
-            // Bug #1: record pre-acceptance baseline so delta is meaningful in-memory.
             let pre_accept_baseline = best_score;
             self.log_outcome(&variation, delta, accepted, best_score);
             if accepted {
