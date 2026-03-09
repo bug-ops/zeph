@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `/image` command crash when file does not exist: CLI channel now prints a user-facing error and continues instead of propagating `ChannelError::Io` and exiting (#1391)
+- `/image` command silently ignoring valid files: image is now held in `pending_attachments` and attached to the next outgoing message, so the follow-up prompt sees the image (#1391)
+- `agent/mod.rs` `/image` handler stored loaded image parts in a local Vec that was immediately dropped; parts are now held in `Agent::pending_image_parts` and merged into the next `process_user_message` call (#1391)
 - `--log-file` now accepts bare flag (without value) to disable file logging, overriding config (#1378)
 - Response cache bypassed in native `tool_use` path: `process_response_native_tools()` never called `check_response_cache()` or `store_response_in_cache()`, so cache lookups and stores only worked in the legacy non-tool path. Add cache check before the tool loop and cache store after `ChatResponse::Text` responses (#1377)
 - `[memory.compression]` and `[memory.routing]` config sections silently ignored on startup; only applied after config hot-reload. Add `with_compression()` and `with_routing()` builder methods and wire them in agent construction (#1374)

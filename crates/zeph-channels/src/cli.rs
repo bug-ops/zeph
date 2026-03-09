@@ -57,6 +57,7 @@ impl std::fmt::Debug for InputHistory {
 pub struct CliChannel {
     accumulated: String,
     history: Option<InputHistory>,
+    pending_attachments: Vec<Attachment>,
 }
 
 impl CliChannel {
@@ -65,6 +66,7 @@ impl CliChannel {
         Self {
             accumulated: String::new(),
             history: None,
+            pending_attachments: Vec::new(),
         }
     }
 
@@ -77,6 +79,7 @@ impl CliChannel {
         Self {
             accumulated: String::new(),
             history: Some(InputHistory::new(entries, Box::new(persist_fn))),
+            pending_attachments: Vec::new(),
         }
     }
 }
@@ -89,17 +92,16 @@ impl Default for CliChannel {
 
 impl Channel for CliChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        let entries: Vec<String> = self
-            .history
-            .as_ref()
-            .map(|h| h.entries().iter().cloned().collect())
-            .unwrap_or_default();
-
         let is_tty = std::io::stdin().is_terminal();
 
-        let line = loop {
+        loop {
+            let entries: Vec<String> = self
+                .history
+                .as_ref()
+                .map(|h| h.entries().iter().cloned().collect())
+                .unwrap_or_default();
+
             let result = if is_tty {
-                let entries = entries.clone();
                 tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries))
                     .await
                     .map_err(|e| ChannelError::Other(e.to_string()))?
@@ -116,7 +118,7 @@ impl Channel for CliChannel {
                 .map_err(ChannelError::Io)?
             };
 
-            match result {
+            let line = match result {
                 ReadLineResult::Interrupted | ReadLineResult::Eof => return Ok(None),
                 ReadLineResult::Line(l) => {
                     let trimmed = l.trim();
@@ -135,49 +137,53 @@ impl Channel for CliChannel {
                         }
                         continue;
                     }
-                    break l;
+                    l
                 }
+            };
+
+            let trimmed = line.trim();
+
+            if let Some(h) = &mut self.history {
+                h.add(trimmed);
             }
-        };
 
-        let trimmed = line.trim();
+            self.accumulated.clear();
 
-        if let Some(h) = &mut self.history {
-            h.add(trimmed);
-        }
-
-        self.accumulated.clear();
-
-        if let Some(path) = trimmed.strip_prefix("/image").map(str::trim) {
-            if path.is_empty() {
-                println!("Usage: /image <path>");
-                return Ok(Some(ChannelMessage {
-                    text: String::new(),
-                    attachments: vec![],
-                }));
+            if let Some(path) = trimmed.strip_prefix("/image").map(str::trim) {
+                if path.is_empty() {
+                    println!("Zeph: Usage: /image <path>");
+                    continue;
+                }
+                let path_owned = path.to_owned();
+                match tokio::fs::read(&path_owned).await {
+                    Err(e) => {
+                        println!("Zeph: File not found: {path_owned}: {e}");
+                    }
+                    Ok(data) => {
+                        let filename = std::path::Path::new(&path_owned)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(str::to_owned);
+                        let size = data.len();
+                        self.pending_attachments.push(Attachment {
+                            kind: AttachmentKind::Image,
+                            data,
+                            filename,
+                        });
+                        println!(
+                            "Zeph: Image attached: {path_owned} ({size} bytes). Send your message."
+                        );
+                    }
+                }
+                continue;
             }
-            let path_owned = path.to_owned();
-            let data = tokio::fs::read(&path_owned)
-                .await
-                .map_err(ChannelError::Io)?;
-            let filename = std::path::Path::new(&path_owned)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(str::to_owned);
+
+            let attachments = std::mem::take(&mut self.pending_attachments);
             return Ok(Some(ChannelMessage {
-                text: String::new(),
-                attachments: vec![Attachment {
-                    kind: AttachmentKind::Image,
-                    data,
-                    filename,
-                }],
+                text: trimmed.to_string(),
+                attachments,
             }));
         }
-
-        Ok(Some(ChannelMessage {
-            text: trimmed.to_string(),
-            attachments: vec![],
-        }))
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
@@ -268,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_command_valid_file_creates_attachment() {
+    async fn image_command_valid_file_stores_in_pending() {
         use std::io::Write;
 
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
@@ -277,36 +283,39 @@ mod tests {
         tmp.flush().unwrap();
 
         let path = tmp.path().to_str().unwrap().to_owned();
-        let filename = tmp.path().file_name().unwrap().to_str().unwrap().to_owned();
 
-        let trimmed = format!("/image {path}");
-        let arg = trimmed.strip_prefix("/image").map(str::trim).unwrap();
-        assert!(!arg.is_empty());
-
-        let data = tokio::fs::read(arg).await.unwrap();
-        let parsed_filename = std::path::Path::new(arg)
+        // Simulate the internal logic: a valid file should be pushed to pending_attachments
+        let data = tokio::fs::read(&path).await.unwrap();
+        let filename = std::path::Path::new(&path)
             .file_name()
             .and_then(|n| n.to_str())
             .map(str::to_owned);
 
-        assert_eq!(data, image_bytes);
-        assert_eq!(parsed_filename, Some(filename));
-
-        let attachment = Attachment {
+        let mut ch = CliChannel::new();
+        ch.pending_attachments.push(Attachment {
             kind: AttachmentKind::Image,
-            data,
-            filename: parsed_filename,
-        };
-        assert_eq!(attachment.kind, AttachmentKind::Image);
-        assert_eq!(attachment.data, image_bytes);
+            data: data.clone(),
+            filename,
+        });
+
+        assert_eq!(ch.pending_attachments.len(), 1);
+        assert_eq!(ch.pending_attachments[0].data, image_bytes);
+        assert_eq!(ch.pending_attachments[0].kind, AttachmentKind::Image);
+
+        // mem::take clears pending and returns attachments to attach to next message
+        let taken = std::mem::take(&mut ch.pending_attachments);
+        assert!(ch.pending_attachments.is_empty());
+        assert_eq!(taken.len(), 1);
     }
 
     #[tokio::test]
-    async fn image_command_missing_file_returns_io_error() {
+    async fn image_command_missing_file_is_handled_gracefully() {
+        // Missing file should produce an I/O error that is caught and not propagated
         let result = tokio::fs::read("/nonexistent/path/image.png").await;
         assert!(result.is_err());
-        let err = ChannelError::Io(result.unwrap_err());
-        assert!(matches!(err, ChannelError::Io(_)));
+        // The new behaviour wraps the error in a user-facing message instead of ChannelError::Io
+        // Verify the error kind is what we expect
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -321,6 +330,18 @@ mod tests {
             .map(str::trim)
             .unwrap_or("");
         assert!(arg_space.is_empty());
+    }
+
+    #[test]
+    fn cli_channel_new_has_empty_pending_attachments() {
+        let ch = CliChannel::new();
+        assert!(ch.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn cli_channel_with_history_has_empty_pending_attachments() {
+        let ch = CliChannel::with_history(vec![], |_| {});
+        assert!(ch.pending_attachments.is_empty());
     }
 
     #[test]

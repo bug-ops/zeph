@@ -238,6 +238,8 @@ pub struct Agent<C: Channel> {
     /// URLs extracted from untrusted tool outputs that had injection flags.
     /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
     pub(super) flagged_urls: std::collections::HashSet<String>,
+    /// Image parts staged by `/image` commands, attached to the next user message.
+    pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
     /// Active debug dumper. When `Some`, every LLM request/response and raw tool output
@@ -440,6 +442,7 @@ impl<C: Channel> Agent<C> {
                 crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
             ),
             flagged_urls: std::collections::HashSet::new(),
+            pending_image_parts: Vec::new(),
             pending_graph: None,
             debug_dumper: None,
             dump_format: crate::debug_dump::DumpFormat::default(),
@@ -1315,9 +1318,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if let Some(path) = trimmed.strip_prefix("/image ") {
-            return self
-                .handle_image_command(path.trim(), &mut image_parts.into_iter().collect())
-                .await;
+            return self.handle_image_command(path.trim()).await;
         }
 
         if trimmed == "/plan" || trimmed.starts_with("/plan ") {
@@ -1596,6 +1597,10 @@ impl<C: Channel> Agent<C> {
 
         self.learning_engine.reset_reflection();
 
+        let mut all_image_parts = std::mem::take(&mut self.pending_image_parts);
+        all_image_parts.extend(image_parts);
+        let image_parts = all_image_parts;
+
         let user_msg = if !image_parts.is_empty() && self.provider.supports_vision() {
             let mut parts = vec![zeph_llm::provider::MessagePart::Text { text: text.clone() }];
             parts.extend(image_parts);
@@ -1630,11 +1635,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    async fn handle_image_command(
-        &mut self,
-        path: &str,
-        extra_parts: &mut Vec<zeph_llm::provider::MessagePart>,
-    ) -> Result<(), error::AgentError> {
+    async fn handle_image_command(&mut self, path: &str) -> Result<(), error::AgentError> {
         use std::path::Component;
         use zeph_llm::provider::{ImageData, MessagePart};
 
@@ -1668,7 +1669,8 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
         let mime_type = detect_image_mime(Some(path)).to_string();
-        extra_parts.push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
+        self.pending_image_parts
+            .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
         self.channel
             .send(&format!("Image loaded: {path}. Send your message."))
             .await?;
@@ -3758,12 +3760,9 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let mut parts = Vec::new();
-        let result = agent
-            .handle_image_command("../../etc/passwd", &mut parts)
-            .await;
+        let result = agent.handle_image_command("../../etc/passwd").await;
         assert!(result.is_ok());
-        assert!(parts.is_empty());
+        assert!(agent.pending_image_parts.is_empty());
         // Channel should have received an error message
         let sent = agent.channel.sent_messages();
         assert!(sent.iter().any(|m| m.contains("traversal")));
@@ -3777,12 +3776,9 @@ pub(super) mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let mut parts = Vec::new();
-        let result = agent
-            .handle_image_command("/nonexistent/image.png", &mut parts)
-            .await;
+        let result = agent.handle_image_command("/nonexistent/image.png").await;
         assert!(result.is_ok());
-        assert!(parts.is_empty());
+        assert!(agent.pending_image_parts.is_empty());
         let sent = agent.channel.sent_messages();
         assert!(sent.iter().any(|m| m.contains("Cannot read image")));
     }
@@ -3802,11 +3798,10 @@ pub(super) mod agent_tests {
         tmp.write_all(&data).unwrap();
         let path = tmp.path().to_str().unwrap().to_owned();
 
-        let mut parts = Vec::new();
-        let result = agent.handle_image_command(&path, &mut parts).await;
+        let result = agent.handle_image_command(&path).await;
         assert!(result.is_ok());
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
+        assert_eq!(agent.pending_image_parts.len(), 1);
+        match &agent.pending_image_parts[0] {
             zeph_llm::provider::MessagePart::Image(img) => {
                 assert_eq!(img.data, data);
                 assert_eq!(img.mime_type, "image/jpeg");
