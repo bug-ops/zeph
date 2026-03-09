@@ -618,7 +618,10 @@ mod tests {
                 .fetch_one(&store.pool)
                 .await
                 .unwrap();
-        assert_eq!(count, 0, "summaries must not be copied to forked conversation");
+        assert_eq!(
+            count, 0,
+            "summaries must not be copied to forked conversation"
+        );
     }
 
     #[tokio::test]

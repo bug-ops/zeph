@@ -1041,4 +1041,37 @@ mod tests {
         assert!(names.contains(&"branching.md".to_owned()));
         assert!(names.contains(&"SKILL.md".to_owned()));
     }
+
+    #[tokio::test]
+    async fn broadcast_to_mpsc_forwards_items() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<u32>(16);
+        let cancel = zeph_memory::CancellationToken::new();
+        let mut rx = broadcast_to_mpsc(brx, cancel.clone());
+
+        btx.send(1).unwrap();
+        btx.send(2).unwrap();
+        drop(btx); // Close broadcast — adapter exits on Closed.
+
+        assert_eq!(rx.recv().await, Some(1));
+        assert_eq!(rx.recv().await, Some(2));
+        // After broadcast closes the adapter task exits and mpsc is also closed.
+        assert_eq!(rx.recv().await, None);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_mpsc_cancellation_stops_task() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<u32>(16);
+        let cancel = zeph_memory::CancellationToken::new();
+        let mut rx = broadcast_to_mpsc(brx, cancel.clone());
+
+        cancel.cancel();
+        // Give the spawned task a chance to exit.
+        tokio::task::yield_now().await;
+
+        // After cancellation the adapter task exits, closing the mpsc sender.
+        // Sending on broadcast should succeed (no one listening) but recv returns None.
+        drop(btx);
+        assert_eq!(rx.recv().await, None);
+    }
 }

@@ -4467,6 +4467,43 @@ mod tests {
             .await;
     }
 
+    #[cfg(feature = "unstable-session-fork")]
+    #[tokio::test]
+    async fn fork_session_creates_new_session_from_existing() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (agent, _rx) = make_agent();
+                use acp::Agent as _;
+
+                // Create source session.
+                let src = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+
+                // Fork it.
+                let fork_result = agent
+                    .fork_session(acp::ForkSessionRequest::new(
+                        src.session_id.clone(),
+                        std::path::PathBuf::from("."),
+                    ))
+                    .await;
+                assert!(
+                    fork_result.is_ok(),
+                    "fork_session should succeed for existing session"
+                );
+
+                let fork_resp = fork_result.unwrap();
+                // Forked session must have a distinct ID.
+                assert_ne!(
+                    fork_resp.session_id, src.session_id,
+                    "forked session must have a distinct session_id"
+                );
+            })
+            .await;
+    }
+
     #[cfg(feature = "unstable-session-resume")]
     #[tokio::test]
     async fn resume_session_returns_ok_for_active() {
