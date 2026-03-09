@@ -1,4 +1,4 @@
-name: CI (Windows)
+name: CI (non-Linux)
 
 on:
   workflow_dispatch:
@@ -16,10 +16,14 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  build-tests-windows:
-    name: Build Tests (windows-latest)
-    runs-on: windows-latest
+  build-tests:
+    name: Build Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -38,15 +42,19 @@ jobs:
       - name: Upload test archive
         uses: actions/upload-artifact@v6
         with:
-          name: nextest-archive-windows-latest
+          name: nextest-archive-${{ matrix.os }}
           path: nextest-archive.tar.zst
           retention-days: 1
 
-  test-windows:
-    name: Test (windows-latest)
-    needs: [build-tests-windows]
-    runs-on: windows-latest
+  test:
+    name: Test (${{ matrix.os }})
+    needs: [build-tests]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -55,6 +63,6 @@ jobs:
       - name: Download test archive
         uses: actions/download-artifact@v7
         with:
-          name: nextest-archive-windows-latest
+          name: nextest-archive-${{ matrix.os }}
       - name: Run tests
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
