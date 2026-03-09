@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Secret requests from sub-agents are now always processed before the plan scheduler terminates, even when the sole task completes on the first tick (instant completion). Previously, `process_pending_secret_requests()` was skipped when `Done` was emitted before the first `wait_event()` (#1454)
 - Anomaly detector now classifies `[stderr]` tool output as `AnomalyOutcome::Error`. Previously the condition checked for dead-code pattern `[exit code` (never emitted by `ShellExecutor`), causing all shell stderr output to be silently classified as `Success` (#1453)
 - Shell audit logger (`ShellExecutor`) now classifies `[stderr]` output as `AuditResult::Error`, matching the anomaly detector fix (#1453)
 - Add `protocolVersion` field to A2A agent card (`/.well-known/agent.json`); value is set to `A2A_PROTOCOL_VERSION` constant (`"0.2.1"`) and emitted by the default `AgentCardBuilder` (#1442)
