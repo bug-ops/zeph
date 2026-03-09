@@ -1002,10 +1002,20 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    fn last_user_content(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zeph_llm::provider::Role::User)
+            .map(|m| m.content.as_str())
+    }
+
     async fn check_response_cache(&mut self) -> Result<Option<String>, super::error::AgentError> {
         if let Some(ref cache) = self.response_cache {
-            let key =
-                zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
+            let Some(content) = self.last_user_content() else {
+                return Ok(None);
+            };
+            let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
             if let Ok(Some(cached)) = cache.get(&key).await {
                 tracing::debug!("response cache hit");
                 // M4: scan cached responses before sending to channel.
@@ -1020,8 +1030,10 @@ impl<C: Channel> Agent<C> {
 
     async fn store_response_in_cache(&self, response: &str) {
         if let Some(ref cache) = self.response_cache {
-            let key =
-                zeph_memory::ResponseCache::compute_key(&self.messages, &self.runtime.model_name);
+            let Some(content) = self.last_user_content() else {
+                return;
+            };
+            let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
             if let Err(e) = cache.put(&key, response, &self.runtime.model_name).await {
                 tracing::warn!("failed to store response in cache: {e:#}");
             }
@@ -2588,8 +2600,9 @@ mod tests {
         let store = SqliteStore::new(":memory:").await.unwrap();
         let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
 
-        // Build the key for the current agent messages.
-        let key = ResponseCache::compute_key(&agent.messages, &agent.runtime.model_name);
+        // Pre-populate cache for the user message we're about to add.
+        let user_content = "what is 2+2?";
+        let key = ResponseCache::compute_key(user_content, &agent.runtime.model_name);
         cache
             .put(&key, "cached response", "test-model")
             .await
@@ -2597,19 +2610,12 @@ mod tests {
 
         agent.response_cache = Some(cache);
 
-        // push a user message so the conversation is non-empty
         agent.messages.push(Message {
             role: Role::User,
-            content: "what is 2+2?".into(),
+            content: user_content.into(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-
-        // Recompute key after adding user message
-        let key2 = ResponseCache::compute_key(&agent.messages, &agent.runtime.model_name);
-        if let Some(ref c) = agent.response_cache {
-            c.put(&key2, "cached response", "test-model").await.unwrap();
-        }
 
         let result = agent.call_llm_with_timeout().await.unwrap();
         assert_eq!(result.as_deref(), Some("cached response"));
@@ -2674,6 +2680,92 @@ mod tests {
             sent.iter().any(|s| s == "provider response"),
             "second call (cache hit) must have sent the response via send()"
         );
+    }
+
+    #[tokio::test]
+    async fn cache_key_stable_across_growing_history() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        let provider = mock_provider_streaming(vec!["turn2 response".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+
+        // Simulate turn 1: store a cached response for user message "hello".
+        let user_msg = "hello";
+        let key = ResponseCache::compute_key(user_msg, &agent.runtime.model_name);
+        cache
+            .put(&key, "cached hello response", "test-model")
+            .await
+            .unwrap();
+        agent.response_cache = Some(cache);
+
+        // Add history from turn 1: system context + prior exchange.
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "cached hello response".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Turn 2: same user message "hello" but history has grown.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: user_msg.into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Must hit cache despite history growth — key is based on last user message only.
+        let result = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(
+            result.as_deref(),
+            Some("cached hello response"),
+            "cache must hit for same user message regardless of preceding history"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_skipped_when_no_user_message() {
+        use super::super::agent_tests::*;
+        use std::sync::Arc;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+
+        let provider = mock_provider_streaming(vec!["llm response".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+        agent.response_cache = Some(cache);
+
+        // Only system/assistant messages, no user message.
+        agent.messages.push(Message {
+            role: Role::System,
+            content: "you are helpful".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Should skip cache (no user message) and call LLM.
+        let result = agent.call_llm_with_timeout().await.unwrap();
+        assert_eq!(result.as_deref(), Some("llm response"));
     }
 
     mod retry_tests {
