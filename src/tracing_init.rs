@@ -17,10 +17,9 @@ pub(crate) fn init_file_logger() {
     }
 }
 
-#[cfg(all(not(feature = "tui"), feature = "otel"))]
+#[cfg(feature = "otel")]
 use zeph_core::config::Config;
 
-#[cfg(not(feature = "tui"))]
 pub(crate) fn init_subscriber(config_path: &std::path::Path) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -67,7 +66,7 @@ pub(crate) fn init_subscriber(config_path: &std::path::Path) {
         .init();
 }
 
-#[cfg(all(feature = "otel", not(feature = "tui")))]
+#[cfg(feature = "otel")]
 fn setup_otel_tracer(endpoint: &str) -> anyhow::Result<opentelemetry_sdk::trace::SdkTracer> {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_otlp::WithExportConfig;

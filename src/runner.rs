@@ -12,7 +12,6 @@ use crate::cli::Cli;
 use crate::scheduler::bootstrap_scheduler;
 #[cfg(any(feature = "acp", feature = "acp-http", feature = "tui"))]
 use crate::tracing_init::init_file_logger;
-#[cfg(not(feature = "tui"))]
 use crate::tracing_init::init_subscriber;
 use crate::tui_bridge::forward_status_to_stderr;
 #[cfg(feature = "tui")]
@@ -20,7 +19,6 @@ use crate::tui_bridge::{TuiRunParams, run_tui_agent};
 
 use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
-#[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::warmup_provider;
@@ -91,11 +89,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Some(Command::Skill { command: skill_cmd }) => {
-            tracing_subscriber::fmt::init();
+            init_subscriber(&resolve_config_path(cli.config.as_deref()));
             return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Memory { command: mem_cmd }) => {
-            tracing_subscriber::fmt::init();
+            init_subscriber(&resolve_config_path(cli.config.as_deref()));
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Router {
@@ -109,7 +107,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             chunk_overlap,
             collection,
         }) => {
-            tracing_subscriber::fmt::init();
+            init_subscriber(&resolve_config_path(cli.config.as_deref()));
             return crate::commands::ingest::handle_ingest(
                 path,
                 chunk_size,
@@ -121,13 +119,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {
-            tracing_subscriber::fmt::init();
+            init_subscriber(&resolve_config_path(cli.config.as_deref()));
             return handle_sessions_command(sess_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Agents {
             command: agents_cmd,
         }) => {
-            tracing_subscriber::fmt::init();
+            init_subscriber(&resolve_config_path(cli.config.as_deref()));
             return handle_agents_command(agents_cmd, cli.config.as_deref()).await;
         }
         None => {}
@@ -135,7 +133,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "a2a")]
     if cli.daemon {
-        tracing_subscriber::fmt::init();
+        init_subscriber(&resolve_config_path(cli.config.as_deref()));
         return Box::pin(run_daemon(
             cli.config.as_deref(),
             cli.vault.as_deref(),
@@ -189,7 +187,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     if tui_active {
         init_file_logger();
     } else {
-        tracing_subscriber::fmt::init();
+        init_subscriber(&resolve_config_path(cli.config.as_deref()));
     }
     #[cfg(not(feature = "tui"))]
     init_subscriber(&resolve_config_path(cli.config.as_deref()));
