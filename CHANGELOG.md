@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Experiment engine `SearchSpace` default temperature range capped at `1.0` (was `2.0`); values above `1.0` are rejected by Claude and OpenAI APIs. `ParameterRange::quantize()` now rounds to 2 decimal places to eliminate floating-point accumulation artifacts (e.g. `0.30000000000000004`) (#1408)
 - Sub-agent transcript sweep no longer logs a spurious `transcript sweep failed` warning on first run when the transcript directory does not exist yet; the directory is now created automatically (#1397)
 
 ### Performance
