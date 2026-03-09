@@ -375,7 +375,11 @@ pub(crate) async fn run_daemon(
     });
 
     // Spawn a sentinel task for the supervisor to track; agent runs in current task.
-    let sentinel = tokio::spawn(async { Ok(()) });
+    let mut sentinel_rx = shutdown_rx.clone();
+    let sentinel = tokio::spawn(async move {
+        let _ = sentinel_rx.changed().await;
+        Ok(())
+    });
     supervisor.add_component(ComponentHandle::new("agent-sentinel", sentinel));
 
     tokio::select! {
