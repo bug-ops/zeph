@@ -21,24 +21,37 @@ const MAX_CONCURRENT_HOVER_CALLS: usize = 3;
 
 /// Matches Rust top-level definition lines: `fn`, `struct`, `enum`, `trait`, `impl`, `type`.
 static SYMBOL_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?m)^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|type)\s+\w",
-    )
-    .expect("valid regex")
+    Regex::new(r"^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|type)\s+\w")
+        .expect("valid regex")
 });
 
 /// Extract (`line_number`, `character_offset`) pairs for symbol definitions.
 /// Lines and characters are 0-indexed (LSP convention).
+///
+/// Handles both raw source content and `cat -n` formatted output (` N\t` prefix)
+/// emitted by the native `read` tool.
 fn extract_symbol_positions(content: &str, max_symbols: usize) -> Vec<(u64, u64)> {
     let mut positions = Vec::new();
-    for m in SYMBOL_LINE_RE.find_iter(content) {
+    for (raw_idx, raw_line) in content.lines().enumerate() {
         if positions.len() >= max_symbols {
             break;
         }
-        let line = content[..m.start()].chars().filter(|c| *c == '\n').count() as u64;
-        let line_start = content[..m.start()].rfind('\n').map_or(0, |p| p + 1);
-        let character = (m.start() - line_start) as u64;
-        positions.push((line, character));
+        // Detect and strip `cat -n` prefix: optional spaces, 1+ digits, one tab.
+        // The number is 1-based; convert to 0-based for LSP.
+        let (lsp_line, source_line) = if let Some(tab) = raw_line.find('\t') {
+            let prefix = raw_line[..tab].trim();
+            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+                let one_based: u64 = prefix.parse().unwrap_or(0);
+                (one_based.saturating_sub(1), &raw_line[tab + 1..])
+            } else {
+                (raw_idx as u64, raw_line)
+            }
+        } else {
+            (raw_idx as u64, raw_line)
+        };
+        if let Some(m) = SYMBOL_LINE_RE.find(source_line) {
+            positions.push((lsp_line, m.start() as u64));
+        }
     }
     positions
 }
@@ -159,5 +172,66 @@ mod tests {
     fn no_symbols_empty_file() {
         let positions = extract_symbol_positions("", 10);
         assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn handles_cat_n_prefix() {
+        // Simulate output from the native `read` tool (cat -n format, 1-based lines).
+        let src = "   1\t// comment\n   2\tuse std::fmt;\n  30\tpub struct Foo {\n  31\t    x: u32,\n  32\t}\n  40\tpub fn bar() {}";
+        let positions = extract_symbol_positions(src, 10);
+        assert_eq!(positions.len(), 2);
+        // `pub struct Foo` is on cat-n line 30 → LSP line 29
+        assert_eq!(positions[0].0, 29);
+        // `pub fn bar` is on cat-n line 40 → LSP line 39
+        assert_eq!(positions[1].0, 39);
+    }
+
+    #[test]
+    fn cat_n_character_offset_starts_at_zero() {
+        let src = "   1\tpub fn top() {}";
+        let positions = extract_symbol_positions(src, 10);
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].0, 0); // LSP line 0
+        assert_eq!(positions[0].1, 0); // character 0
+    }
+
+    #[test]
+    fn non_digit_tab_prefix_no_symbol_match() {
+        // Non-digit prefix before tab: treated as raw source. Symbol regex anchored at `^`
+        // won't match if the raw line doesn't start with a Rust keyword, so no position extracted.
+        let src = "  abc\tpub fn foo() {}";
+        let positions = extract_symbol_positions(src, 10);
+        // The line is not stripped, so SYMBOL_LINE_RE sees "  abc\tpub fn foo() {}" and
+        // anchored ^ matches the indented `abc` prefix — no `pub fn` at start → no match.
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn empty_prefix_before_tab_no_symbol_match() {
+        // Line starting with a tab: empty prefix → not cat-n, treated as raw source.
+        // Raw line "\tpub fn foo() {}" does not start with a Rust keyword at ^.
+        let src = "\tpub fn foo() {}";
+        let positions = extract_symbol_positions(src, 10);
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn max_symbols_zero_returns_empty() {
+        let src = "pub fn a() {}\npub fn b() {}";
+        let positions = extract_symbol_positions(src, 0);
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn mixed_cat_n_and_raw_lines_not_supported() {
+        // A file with inconsistent format: first line has cat-n prefix, second is raw.
+        // The function processes each line independently, so each line is handled by its own prefix check.
+        let src = "   5\tpub struct Baz;\npub fn raw() {}";
+        let positions = extract_symbol_positions(src, 10);
+        assert_eq!(positions.len(), 2);
+        // First line: cat-n line 5 → LSP line 4
+        assert_eq!(positions[0].0, 4);
+        // Second line: no tab → raw_idx 1 → LSP line 1
+        assert_eq!(positions[1].0, 1);
     }
 }
