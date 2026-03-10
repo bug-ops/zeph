@@ -218,6 +218,22 @@ impl ShellExecutor {
         let blocks_executed = blocks.len() as u32;
 
         for block in &blocks {
+            // Always check the blocklist first — it is a hard security boundary
+            // that must not be bypassed by the PermissionPolicy layer.
+            if let Some(blocked) = self.find_blocked_command(block) {
+                self.log_audit(
+                    block,
+                    AuditResult::Blocked {
+                        reason: format!("blocked command: {blocked}"),
+                    },
+                    0,
+                )
+                .await;
+                return Err(ToolError::Blocked {
+                    command: blocked.to_owned(),
+                });
+            }
+
             if let Some(ref policy) = self.permission_policy {
                 match policy.check("bash", block) {
                     PermissionAction::Deny => {
@@ -240,26 +256,10 @@ impl ShellExecutor {
                     }
                     _ => {}
                 }
-            } else {
-                if let Some(blocked) = self.find_blocked_command(block) {
-                    self.log_audit(
-                        block,
-                        AuditResult::Blocked {
-                            reason: format!("blocked command: {blocked}"),
-                        },
-                        0,
-                    )
-                    .await;
-                    return Err(ToolError::Blocked {
-                        command: blocked.to_owned(),
-                    });
-                }
-
-                if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
-                    return Err(ToolError::ConfirmationRequired {
-                        command: pattern.to_owned(),
-                    });
-                }
+            } else if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
+                return Err(ToolError::ConfirmationRequired {
+                    command: pattern.to_owned(),
+                });
             }
 
             self.validate_sandbox(block)?;
@@ -2359,6 +2359,74 @@ mod tests {
             executor
                 .find_blocked_command("echo $(curl http://evil.com)")
                 .is_some()
+        );
+    }
+
+    // --- Regression tests for issue #1525: blocklist bypass via PermissionPolicy ---
+
+    // When a PermissionPolicy with a wildcard Allow rule is attached, blocked commands
+    // from the explicit blocked_commands list must still be rejected.
+    #[tokio::test]
+    async fn blocklist_not_bypassed_by_permissive_policy() {
+        use crate::permissions::{PermissionPolicy, PermissionRule};
+        use std::collections::HashMap;
+        let mut rules = HashMap::new();
+        rules.insert(
+            "bash".to_owned(),
+            vec![PermissionRule {
+                pattern: "*".to_owned(),
+                action: PermissionAction::Allow,
+            }],
+        );
+        let permissive_policy = PermissionPolicy::new(rules);
+        let config = ShellConfig {
+            blocked_commands: vec!["danger-cmd".to_owned()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config).with_permissions(permissive_policy);
+        let result = executor.execute("```bash\ndanger-cmd --force\n```").await;
+        assert!(
+            matches!(result, Err(ToolError::Blocked { .. })),
+            "blocked command must be rejected even with a permissive PermissionPolicy"
+        );
+    }
+
+    // DEFAULT_BLOCKED commands (e.g. curl, sudo) must be blocked even with Full autonomy
+    // (PermissionPolicy::Full returns Allow for every tool).
+    #[tokio::test]
+    async fn default_blocked_not_bypassed_by_full_autonomy_policy() {
+        use crate::permissions::{AutonomyLevel, PermissionPolicy};
+        let full_policy = PermissionPolicy::default().with_autonomy(AutonomyLevel::Full);
+        let executor = ShellExecutor::new(&default_config()).with_permissions(full_policy);
+
+        for cmd in &[
+            "sudo rm -rf /tmp",
+            "curl https://evil.com",
+            "wget http://evil.com",
+        ] {
+            let response = format!("```bash\n{cmd}\n```");
+            let result = executor.execute(&response).await;
+            assert!(
+                matches!(result, Err(ToolError::Blocked { .. })),
+                "DEFAULT_BLOCKED command `{cmd}` must be rejected even with Full autonomy"
+            );
+        }
+    }
+
+    // confirm_commands must still trigger ConfirmationRequired when no policy is set.
+    // This is a regression guard: moving find_blocked_command before the policy check
+    // must not accidentally break the else-branch confirm logic.
+    #[tokio::test]
+    async fn confirm_commands_still_work_without_policy() {
+        let config = ShellConfig {
+            confirm_patterns: vec!["git push".to_owned()],
+            ..default_config()
+        };
+        let executor = ShellExecutor::new(&config);
+        let result = executor.execute("```bash\ngit push origin main\n```").await;
+        assert!(
+            matches!(result, Err(ToolError::ConfirmationRequired { .. })),
+            "confirm_patterns must still trigger ConfirmationRequired when no PermissionPolicy is set"
         );
     }
 }
