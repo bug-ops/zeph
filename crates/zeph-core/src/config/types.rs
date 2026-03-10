@@ -2219,6 +2219,9 @@ pub struct OrchestrationConfig {
     /// Maximum tokens budget for aggregation LLM calls. Default: 4096.
     #[serde(default = "default_aggregator_max_tokens")]
     pub aggregator_max_tokens: u32,
+    /// Backoff duration in ms before retrying deferred tasks (default: 250ms).
+    #[serde(default = "default_deferral_backoff_ms")]
+    pub deferral_backoff_ms: u64,
 }
 
 fn default_planner_max_tokens() -> u32 {
@@ -2227,6 +2230,10 @@ fn default_planner_max_tokens() -> u32 {
 
 fn default_aggregator_max_tokens() -> u32 {
     4096
+}
+
+fn default_deferral_backoff_ms() -> u64 {
+    250
 }
 
 impl Default for OrchestrationConfig {
@@ -2243,6 +2250,7 @@ impl Default for OrchestrationConfig {
             dependency_context_budget: 16384,
             confirm_before_execute: true,
             aggregator_max_tokens: default_aggregator_max_tokens(),
+            deferral_backoff_ms: default_deferral_backoff_ms(),
         }
     }
 }

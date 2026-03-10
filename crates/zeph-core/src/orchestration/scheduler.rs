@@ -113,6 +113,8 @@ pub struct DagScheduler {
     buffered_events: VecDeque<TaskEvent>,
     /// Sanitizer for dependency output injected into task prompts (SEC-ORCH-01).
     sanitizer: ContentSanitizer,
+    /// Backoff duration before retrying deferred tasks when all ready tasks hit the concurrency limit.
+    deferral_backoff: Duration,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -180,6 +182,7 @@ impl DagScheduler {
             dependency_context_budget: config.dependency_context_budget,
             buffered_events: VecDeque::new(),
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+            deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
         })
     }
 
@@ -256,6 +259,7 @@ impl DagScheduler {
             dependency_context_budget: config.dependency_context_budget,
             buffered_events: VecDeque::new(),
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+            deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
         })
     }
 
@@ -406,6 +410,7 @@ impl DagScheduler {
     /// periodic timeout checking can occur.
     pub async fn wait_event(&mut self) {
         if self.running.is_empty() {
+            tokio::time::sleep(self.deferral_backoff).await;
             return;
         }
 
@@ -479,7 +484,7 @@ impl DagScheduler {
         // Transient condition: the SubAgentManager rejected the spawn because all
         // concurrency slots are occupied. Revert to Ready so the next tick retries.
         if error.contains("concurrency limit") {
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id,
                 "concurrency limit reached, deferring task to next tick"
             );
@@ -848,6 +853,7 @@ mod tests {
             dependency_context_budget: 16384,
             confirm_before_execute: true,
             aggregator_max_tokens: 4096,
+            deferral_backoff_ms: 250,
         }
     }
 
@@ -1606,5 +1612,38 @@ mod tests {
             DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
                 .unwrap();
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    // --- deferral_backoff regression test ---
+
+    #[tokio::test]
+    async fn test_wait_event_sleeps_deferral_backoff_when_running_empty() {
+        // Regression for issue #1519: wait_event must sleep deferral_backoff when
+        // running is empty, preventing a busy spin-loop.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = crate::config::OrchestrationConfig {
+            deferral_backoff_ms: 50,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // Do not start any tasks — running map stays empty.
+        assert!(scheduler.running.is_empty());
+
+        let start = tokio::time::Instant::now();
+        scheduler.wait_event().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() >= 50,
+            "wait_event must sleep at least deferral_backoff (50ms) when running is empty, but only slept {}ms",
+            elapsed.as_millis()
+        );
     }
 }

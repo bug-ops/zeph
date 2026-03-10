@@ -51,6 +51,7 @@ mod orchestration_integration {
             dependency_context_budget: 16384,
             confirm_before_execute: false,
             aggregator_max_tokens: 1024,
+            deferral_backoff_ms: 250,
         }
     }
 
