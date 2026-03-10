@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replace 11-parameter `Channel::send_tool_output` signature with `ToolOutputEvent` struct; replace 4-parameter `send_tool_start` with `ToolStartEvent` struct (ARCH-02)
 - Extract `SecurityState` struct (sanitizer, quarantine_summarizer, exfiltration_guard, flagged_urls) and `DebugState` struct (debug_dumper, dump_format, anomaly_detector, logging_config) from `Agent` struct; access via `agent.security.*` and `agent.debug_state.*` (ARCH-01)
 - Expand `AgentError` with `Shutdown`, `ContextExhausted`, `ToolTimeout`, `SchemaValidation` variants; change `Agent::run` return type from `anyhow::Result<()>` to `Result<(), AgentError>` (ARCH-10)
-- Add `AgentTestHarness` struct with `minimal()` and `with_responses()` constructors to the test module for cleaner agent unit tests (ARCH-08)
+- Add `AgentTestHarness` builder struct with `new()`, `with_responses()`, `with_registry()`, `with_tool_outputs()`, and `build()` to the test module for cleaner agent unit tests (ARCH-08)
 
 ## [0.14.3] - 2026-03-10
 

@@ -175,6 +175,7 @@ pub(super) struct RuntimeConfig {
     pub(super) redact_credentials: bool,
 }
 
+/// Groups security-related subsystems (sanitizer, quarantine, exfiltration guard).
 pub(super) struct SecurityState {
     pub(super) sanitizer: ContentSanitizer,
     pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
@@ -182,6 +183,7 @@ pub(super) struct SecurityState {
     pub(super) flagged_urls: std::collections::HashSet<String>,
 }
 
+/// Groups debug/diagnostics subsystems (dumper, anomaly detector, logging config).
 pub(super) struct DebugState {
     pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
     pub(super) dump_format: crate::debug_dump::DumpFormat,
@@ -3112,12 +3114,12 @@ pub(super) mod agent_tests {
     use zeph_tools::executor::{ToolError, ToolOutput};
 
     /// Minimal test harness: an Agent wired with a `MockChannel` and `MockToolExecutor`.
-    /// Use `AgentTestHarness::minimal()` to get a ready-to-use agent for unit tests.
-    pub(crate) struct AgentTestHarness {
+    /// Use `QuickTestAgent::minimal()` to get a ready-to-use agent for unit tests.
+    pub(crate) struct QuickTestAgent {
         pub(crate) agent: Agent<MockChannel>,
     }
 
-    impl AgentTestHarness {
+    impl QuickTestAgent {
         /// Create a minimal agent with a single mock response and no tools.
         pub(crate) fn minimal(response: &str) -> Self {
             let provider = mock_provider(vec![response.to_owned()]);
@@ -5214,6 +5216,27 @@ pub(super) mod agent_tests {
             Some("user_approval"),
             "neutral/ambiguous feedback must be recorded as user_approval"
         );
+    }
+
+    // --- QuickTestAgent ---
+
+    #[test]
+    fn agent_test_harness_minimal_constructs_agent() {
+        let harness = QuickTestAgent::minimal("hello from mock");
+        assert!(!harness.agent.messages.is_empty());
+        assert_eq!(harness.agent.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn agent_test_harness_with_responses_constructs_agent() {
+        let harness = QuickTestAgent::with_responses(vec!["first".into(), "second".into()]);
+        assert!(!harness.agent.messages.is_empty());
+    }
+
+    #[test]
+    fn agent_test_harness_sent_messages_initially_empty() {
+        let harness = QuickTestAgent::minimal("response");
+        assert!(harness.sent_messages().is_empty());
     }
 }
 

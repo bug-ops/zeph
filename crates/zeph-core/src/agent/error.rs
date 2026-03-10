@@ -73,4 +73,30 @@ mod tests {
         let e = AgentError::Other("something went wrong".into());
         assert!(!e.is_context_length_error());
     }
+
+    #[test]
+    fn shutdown_variant_display() {
+        let e = AgentError::Shutdown;
+        assert_eq!(e.to_string(), "agent shut down");
+    }
+
+    #[test]
+    fn context_exhausted_variant_display() {
+        let e = AgentError::ContextExhausted("no space left".into());
+        assert!(e.to_string().contains("no space left"));
+    }
+
+    #[test]
+    fn tool_timeout_variant_display() {
+        let e = AgentError::ToolTimeout {
+            tool_name: "bash".into(),
+        };
+        assert!(e.to_string().contains("bash"));
+    }
+
+    #[test]
+    fn schema_validation_variant_display() {
+        let e = AgentError::SchemaValidation("missing field".into());
+        assert!(e.to_string().contains("missing field"));
+    }
 }
