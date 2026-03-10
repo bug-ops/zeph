@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `McpLspProvider` was sending `"uri"` as the parameter key to all mcpls tool calls, but mcpls 0.3.4 expects `"file_path"`. All six methods (`hover`, `definition`, `references`, `diagnostics`, `document_symbols`, `code_actions`) are fixed. `code_actions` additionally now sends flat `start_line`/`start_character`/`end_line`/`end_character` fields instead of a nested `range` object, matching the mcpls `get_code_actions` schema. Fixes #1533.
 - `--init` wizard generated unsupported `--workspace-root` flag for mcpls. The wizard now writes `.zeph/mcpls.toml` (with workspace roots, language extensions, and rust-analyzer LSP server config) and passes `--config .zeph/mcpls.toml` to mcpls instead. Fixes broken LSP setup for all users who configured mcpls via `zeph init`. (#1534)
 - Shell command blocklist (`blocked_commands`, `DEFAULT_BLOCKED`, `allow_network = false`) was silently skipped whenever a `PermissionPolicy` was attached to `ShellExecutor` (i.e., in all normal operation with `autonomy_level` set). `find_blocked_command()` now runs unconditionally before the policy check, making it a hard security boundary that cannot be bypassed by any autonomy level or permission policy configuration.
 
