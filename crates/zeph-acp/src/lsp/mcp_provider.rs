@@ -107,7 +107,7 @@ impl LspProvider for McpLspProvider {
         line: u32,
         character: u32,
     ) -> Result<LspHoverResult, AcpError> {
-        let args = serde_json::json!({ "uri": uri, "line": line, "character": character });
+        let args = serde_json::json!({ "file_path": uri, "line": line, "character": character });
         self.call_tool("get_hover", args).await.and_then(|v| {
             serde_json::from_value(v).map_err(|e| AcpError::ClientError(e.to_string()))
         })
@@ -119,7 +119,7 @@ impl LspProvider for McpLspProvider {
         line: u32,
         character: u32,
     ) -> Result<Vec<LspLocation>, AcpError> {
-        let args = serde_json::json!({ "uri": uri, "line": line, "character": character });
+        let args = serde_json::json!({ "file_path": uri, "line": line, "character": character });
         self.call_tool("get_definition", args).await.and_then(|v| {
             serde_json::from_value(v).map_err(|e| AcpError::ClientError(e.to_string()))
         })
@@ -133,7 +133,7 @@ impl LspProvider for McpLspProvider {
         include_declaration: bool,
     ) -> Result<Vec<LspLocation>, AcpError> {
         let args = serde_json::json!({
-            "uri": uri,
+            "file_path": uri,
             "line": line,
             "character": character,
             "include_declaration": include_declaration,
@@ -147,14 +147,14 @@ impl LspProvider for McpLspProvider {
     }
 
     async fn diagnostics(&self, uri: &str) -> Result<Vec<LspDiagnostic>, AcpError> {
-        let args = serde_json::json!({ "uri": uri });
+        let args = serde_json::json!({ "file_path": uri });
         self.call_tool("get_diagnostics", args).await.and_then(|v| {
             serde_json::from_value(v).map_err(|e| AcpError::ClientError(e.to_string()))
         })
     }
 
     async fn document_symbols(&self, uri: &str) -> Result<Vec<LspDocumentSymbol>, AcpError> {
-        let args = serde_json::json!({ "uri": uri });
+        let args = serde_json::json!({ "file_path": uri });
         self.call_tool("get_document_symbols", args)
             .await
             .and_then(|v| {
@@ -178,12 +178,14 @@ impl LspProvider for McpLspProvider {
         &self,
         uri: &str,
         range: &LspRange,
-        diagnostics: &[LspDiagnostic],
+        _diagnostics: &[LspDiagnostic],
     ) -> Result<Vec<LspCodeAction>, AcpError> {
         let args = serde_json::json!({
-            "uri": uri,
-            "range": range,
-            "diagnostics": diagnostics,
+            "file_path": uri,
+            "start_line": range.start.line,
+            "start_character": range.start.character,
+            "end_line": range.end.line,
+            "end_character": range.end.character,
         });
         let value = self.call_tool("get_code_actions", args).await?;
         let actions: Vec<LspCodeAction> =
