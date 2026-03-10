@@ -467,13 +467,26 @@ impl DagScheduler {
 
     /// Handle a failed spawn attempt.
     ///
-    /// Reverts the task from Running to Failed and propagates failure.
+    /// If the error is a transient concurrency-limit rejection, reverts the task from
+    /// Running back to `Ready` so the next [`tick`] can retry the spawn when a slot opens.
+    /// Otherwise, marks the task as `Failed` and propagates failure.
     /// Returns any cancel actions needed.
     ///
     /// # Errors (via returned actions)
     ///
     /// Propagates failure per the task's effective `FailureStrategy`.
     pub fn record_spawn_failure(&mut self, task_id: TaskId, error: &str) -> Vec<SchedulerAction> {
+        // Transient condition: the SubAgentManager rejected the spawn because all
+        // concurrency slots are occupied. Revert to Ready so the next tick retries.
+        if error.contains("concurrency limit") {
+            tracing::info!(
+                task_id = %task_id,
+                "concurrency limit reached, deferring task to next tick"
+            );
+            self.graph.tasks[task_id.index()].status = TaskStatus::Ready;
+            return Vec::new();
+        }
+
         // SEC-ORCH-04: truncate error to avoid logging sensitive internal details.
         let error_excerpt: String = error.chars().take(512).collect();
         tracing::warn!(
@@ -1255,6 +1268,44 @@ mod tests {
                 .iter()
                 .any(|a| matches!(a, SchedulerAction::Done { .. }))
         );
+    }
+
+    #[test]
+    fn test_record_spawn_failure_concurrency_limit_reverts_to_ready() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+
+        // Simulate tick() optimistically marking the task Running before spawn.
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        // Concurrency limit hit — transient, should not fail the task.
+        let actions = scheduler.record_spawn_failure(TaskId(0), "concurrency limit 4 reached");
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "task must revert to Ready so the next tick can retry"
+        );
+        assert_eq!(
+            scheduler.graph.status,
+            GraphStatus::Running,
+            "graph must stay Running, not transition to Failed"
+        );
+        assert!(
+            actions.is_empty(),
+            "no cancel or done actions expected for a transient deferral"
+        );
+    }
+
+    #[test]
+    fn test_record_spawn_failure_concurrency_limit_variant_spawn_for_task() {
+        // spawn_for_task() uses a slightly different format string — verify both are handled.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        let actions = scheduler.record_spawn_failure(TaskId(0), "concurrency limit reached");
+        assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Ready);
+        assert!(actions.is_empty());
     }
 
     #[test]
