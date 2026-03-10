@@ -97,7 +97,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .map(|c| c.logging)
         .unwrap_or_default();
     let logging_config = resolve_logging_config(base_logging, cli.log_file.as_deref());
-    let _tracing_guard = init_tracing(&logging_config);
+    #[cfg(feature = "tui")]
+    let tui_mode = cli.tui;
+    #[cfg(not(feature = "tui"))]
+    let tui_mode = false;
+    let _tracing_guard = init_tracing(&logging_config, tui_mode);
 
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),

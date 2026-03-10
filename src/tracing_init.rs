@@ -37,12 +37,22 @@ fn resolve_log_path(
 /// The CLI override and env vars must already be applied to `logging` before calling.
 /// The returned `WorkerGuard` **must** be held for the entire process lifetime;
 /// dropping it flushes the async file writer.
-pub(crate) fn init_tracing(logging: &LoggingConfig) -> Option<WorkerGuard> {
+/// When `tui_mode` is true the stderr layer is omitted because ratatui owns
+/// stdout (alternate screen) and any text written to stderr bleeds through
+/// raw-mode, corrupting the TUI rendering.  Logs still go to the file layer
+/// when a log file is configured.
+pub(crate) fn init_tracing(logging: &LoggingConfig, tui_mode: bool) -> Option<WorkerGuard> {
     let stderr_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_filter(stderr_filter);
+    let stderr_layer = if tui_mode {
+        None
+    } else {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(stderr_filter),
+        )
+    };
 
     let effective_path = if logging.file.is_empty() {
         None
@@ -63,7 +73,9 @@ pub(crate) fn init_tracing(logging: &LoggingConfig) -> Option<WorkerGuard> {
             .map_or_else(|| "log".to_owned(), |s| s.to_string_lossy().into_owned());
 
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("zeph: log directory creation failed, file logging disabled: {e}");
+            if !tui_mode {
+                eprintln!("zeph: log directory creation failed, file logging disabled: {e}");
+            }
             tracing_subscriber::registry().with(stderr_layer).init();
             return None;
         }
@@ -84,7 +96,9 @@ pub(crate) fn init_tracing(logging: &LoggingConfig) -> Option<WorkerGuard> {
         let appender = match appender_result {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("zeph: log file appender init failed, file logging disabled: {e}");
+                if !tui_mode {
+                    eprintln!("zeph: log file appender init failed, file logging disabled: {e}");
+                }
                 tracing_subscriber::registry().with(stderr_layer).init();
                 return None;
             }
