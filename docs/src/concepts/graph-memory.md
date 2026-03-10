@@ -58,6 +58,8 @@ Directed relationships between entities. Each edge carries:
 
 When a fact changes (e.g., user switches from vim to neovim), the old edge is invalidated (`valid_to` and `expired_at` set) and a new edge is created. Both are preserved for temporal queries.
 
+Active edges are deduplicated on `(source_entity_id, target_entity_id, relation)`. When the same relation is re-extracted, the existing row is updated with the higher confidence value instead of creating a duplicate row. This prevents repeated extractions from inflating edge counts over long conversations.
+
 ### Communities
 
 Groups of related entities with an LLM-generated summary. Community detection runs periodically via label propagation (Phase 5).
@@ -127,8 +129,9 @@ Every `community_refresh_interval` messages (default: 100), a background task ru
 2. Construct an undirected petgraph graph in memory
 3. Run label propagation for up to 50 iterations until convergence: each node adopts the most frequent label among its neighbors, with ties broken by smallest label value
 4. Discard groups with fewer than 2 entities
-5. Generate an LLM summary (2-3 sentences) for each qualifying group
-6. Persist communities to the `graph_communities` SQLite table, replacing any previous results
+5. Compute a BLAKE3 fingerprint (sorted entity IDs + intra-community edge IDs) for each community. Communities whose membership has not changed since the last detection run skip LLM summarization entirely — a second consecutive run on an unchanged graph triggers zero LLM calls.
+6. Generate LLM summaries (2-3 sentences) in parallel for communities whose fingerprint changed, bounded by `community_summary_concurrency` (default: 4) concurrent calls
+7. Persist communities to the `graph_communities` SQLite table
 
 ### Incremental Assignment
 
@@ -204,6 +207,7 @@ entity_similarity_threshold = 0.85
 entity_ambiguous_threshold = 0.70
 use_embedding_resolution = false  # Enable embedding-based entity dedup
 community_refresh_interval = 100  # Messages between community recalculation
+community_summary_concurrency = 4 # Parallel LLM calls for community summaries (1 = sequential)
 expired_edge_retention_days = 90  # Days to retain expired (superseded) edges
 max_entities = 0                  # Entity cap (0 = unlimited)
 ```
@@ -228,7 +232,7 @@ All `/graph` commands are available in the interactive session (CLI and TUI):
 |---------|-------------|
 | `/graph` | Show graph statistics: entity, edge, and community counts |
 | `/graph entities` | List all known entities with type and last-seen date (capped at 50) |
-| `/graph facts <name>` | Show all facts (edges) connected to a named entity (fuzzy match) |
+| `/graph facts <name>` | Show all facts (edges) connected to a named entity. Uses exact case-insensitive match on `name`/`canonical_name` first; falls back to FTS5 prefix search only when no exact match is found. |
 | `/graph communities` | List detected communities with names and summaries |
 | `/graph backfill [--limit N]` | Extract graph data from existing conversation messages |
 
@@ -242,6 +246,8 @@ status message before results so you always know what is happening.
 ```sh
 zeph --graph-memory
 ```
+
+> **Note:** The `[memory.graph]` config section must be present in `config.toml` for graph extraction, entity resolution, and BFS recall to activate at startup. Setting `enabled = true` without providing the section leaves graph config at its default state (disabled). Use `zeph --init` to generate the full config structure.
 
 ## Configuration Wizard
 

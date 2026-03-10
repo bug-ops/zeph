@@ -76,6 +76,15 @@ Routes define provider preference order. If the first provider fails, the next o
 coding = ["local", "cloud"]  # try local first, fallback to cloud
 ```
 
+## Capability Delegation
+
+`SubProvider` and `ModelOrchestrator` fully delegate capability queries to the underlying provider:
+
+- `context_window()` — returns the actual context window size from the sub-provider. This is required for correct `auto_budget`, semantic recall sizing, and graph recall budget allocation when using the orchestrator.
+- `supports_vision()` — returns `true` only when the active sub-provider supports image inputs.
+- `supports_structured_output()` — returns the sub-provider's actual value.
+- `last_usage()` and `last_cache_usage()` — delegate to the last-used provider. Token metrics are accurate even when the orchestrator routes across multiple providers within a session.
+
 ## Interactive Setup
 
 Run `zeph init` and select **Orchestrator** as the LLM provider. The wizard prompts for:

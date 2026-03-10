@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-03-10
+
+See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.
+
+## [0.14.2] - 2026-03-09
+
+See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.
+
+## [0.14.1] - 2026-03-07
+
+See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.
+
+## [0.14.0] - 2026-03-06
+
+See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.
+
 ## [0.12.5] - 2026-03-02
 
 See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.

@@ -106,11 +106,14 @@ The sanitizer is applied at every untrusted boundary:
 | Web scrape output | `ExternalUntrusted` | `handle_tool_result()` |
 | MCP tool responses | `ExternalUntrusted` | `handle_tool_result()` |
 | A2A messages | `ExternalUntrusted` | `handle_tool_result()` |
+| Native tool-use results (Claude provider) | `LocalUntrusted` or `ExternalUntrusted` | `handle_native_tool_calls()` — routes through `sanitize_tool_output()` before placing output in `ToolResult` parts |
 | Semantic memory recall | `ExternalUntrusted` | `prepare_context()` |
 | Cross-session memory | `ExternalUntrusted` | `prepare_context()` |
 | User corrections recall | `ExternalUntrusted` | `prepare_context()` |
 | Document RAG results | `ExternalUntrusted` | `prepare_context()` |
 | Session summaries | `ExternalUntrusted` | `prepare_context()` |
+
+The injection flag derived from `sanitize_tool_output()` is correctly passed to `persist_message` for all tool paths. This ensures `guard_memory_writes` and `validate_tool_call()` are enforced for pure text injections (those that do not contain a URL) in both the legacy and native tool-use paths.
 
 > **Memory poisoning** is an especially subtle attack vector: an adversary can plant injection payloads in web content that gets stored in memory, to be recalled in future sessions long after the original interaction.
 

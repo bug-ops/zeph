@@ -67,9 +67,10 @@ Zeph inspects each user turn for implicit corrections without requiring an expli
 
 **Detection signals:**
 
-1. **Explicit rejection** (confidence 0.85) — phrases like "no", "wrong", "that didn't work", "bad answer".
-2. **Alternative request** (confidence 0.70) — "instead use…", "try a different approach", "can you do it differently".
-3. **Repetition** (confidence 0.75) — Jaccard token overlap > 0.8 against the last 3 user messages.
+1. **Explicit rejection** (confidence 0.85) — phrases like "no", "wrong", "that's wrong", "that didn't work", "bad answer", "that's incorrect".
+2. **Self-correction** — user corrects themselves (e.g., "I was wrong, the capital is Canberra"). Self-corrections are stored for analytics but do not penalize active skills.
+3. **Alternative request** (confidence 0.70) — "instead use…", "try a different approach", "can you do it differently".
+4. **Repetition** (confidence 0.75) — Jaccard token overlap > 0.8 against the last 3 user messages.
 
 ### Judge Detector (LLM-backed)
 
@@ -234,6 +235,10 @@ judge_adaptive_low = 0.5  # Regex confidence floor for judge bypass (default: 0.
 judge_adaptive_high = 0.8 # Regex confidence ceiling for judge bypass (default: 0.8)
 ```
 
+## Feedback Command
+
+The `/feedback` command records explicit user feedback about the agent's most recent response. Positive or neutral feedback stores a `user_approval` outcome; negative feedback stores `user_rejection`. Approval and rejection outcomes are excluded from Wilson score calculations — they are tracked for analytics only and do not dilute execution-based success rate metrics. Positive feedback also skips `generate_improved_skill()` to avoid unnecessary LLM calls when a skill is working correctly.
+
 ## Chat Commands
 
 | Command | Description |
@@ -244,7 +249,7 @@ judge_adaptive_high = 0.8 # Regex confidence ceiling for judge bypass (default: 
 | `/skill approve <id>` | Approve a pending version |
 | `/skill reset <name>` | Revert to original version |
 | `/skill reject <name> <reason>` | Record user rejection and trigger improvement |
-| `/feedback` | Provide explicit quality feedback |
+| `/feedback` | Provide explicit quality feedback (positive or negative) |
 
 ## Storage
 

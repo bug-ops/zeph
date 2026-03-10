@@ -18,6 +18,10 @@ ZEPH_A2A_ENABLED=true ZEPH_A2A_AUTH_TOKEN=secret ./target/release/zeph
 
 > Set `ZEPH_A2A_AUTH_TOKEN` to secure the server with bearer token authentication. The agent card endpoint remains public per A2A spec.
 
+### Agent Card
+
+The `/.well-known/agent.json` response includes a `protocolVersion` field set to `"0.2.1"`. This allows discovery clients to verify compatibility before sending requests.
+
 ## Configuration
 
 ```toml

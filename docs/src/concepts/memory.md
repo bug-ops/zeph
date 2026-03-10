@@ -66,6 +66,10 @@ recall_limit = 5
 
 See [Set Up Semantic Memory](../guides/semantic-memory.md) for the full setup guide.
 
+## Cross-Session History Restore
+
+When a session is resumed, Zeph restores previous message history from SQLite. The restore pipeline applies `sanitize_tool_pairs()` to ensure every `ToolUse` message has a matching `ToolResult`. Orphaned `ToolUse` or `ToolResult` parts at session boundaries — caused by session interruptions or compaction boundary splits — are detected and stripped before the history reaches the LLM. This prevents Claude API 400 errors that occur when the API receives unmatched tool call pairs.
+
 ## Context Engineering
 
 Token counts throughout the context pipeline are computed by `TokenCounter` — a shared BPE tokenizer (`cl100k_base`) with a DashMap cache. This replaced the previous `chars / 4` heuristic and provides accurate budget allocation, especially for non-ASCII content and tool schemas. See [Token Efficiency — Token Counting](../architecture/token-efficiency.md#token-counting) for implementation details.

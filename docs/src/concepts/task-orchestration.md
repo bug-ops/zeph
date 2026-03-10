@@ -130,10 +130,15 @@ Once a `TaskGraph` is validated and persisted, the **DAG scheduler** drives exec
 | Action | Description |
 |--------|-------------|
 | `Spawn` | Spawn a sub-agent for a ready task (includes task ID, agent definition name, and prompt) |
+| `RunInline` | Execute the task prompt directly on the main agent provider when no sub-agents are configured |
 | `Cancel` | Cancel a running sub-agent (on graph abort or skip propagation) |
 | `Done` | Graph reached a terminal or paused state |
 
 The scheduler never holds a mutable reference to `SubAgentManager` — it produces actions for the caller to execute (command pattern). This keeps the scheduler testable in isolation and avoids borrow conflicts.
+
+#### Concurrency Backoff
+
+When all ready tasks are deferred because `max_parallel` concurrency slots are full, `wait_event()` applies a 250ms backoff instead of spinning. This prevents CPU spin-loops under sustained high concurrency. When a concurrency-limit spawn failure is detected (the sub-agent manager rejects a spawn), the affected task is reverted to `Ready` instead of being marked `Failed`, preventing spurious failure cascades.
 
 #### Event Channel
 
@@ -160,6 +165,10 @@ The `AgentRouter` trait selects which sub-agent definition to use for a given ta
 3. **First available** — unconditional fallback to the first agent in the list.
 
 For reliable routing, set `agent_hint` on each task node during planning. The keyword matching step is a best-effort fallback, not authoritative routing.
+
+#### Inline Execution (Single-Agent Setup)
+
+When no sub-agents are configured, the scheduler emits `RunInline` instead of marking tasks as `Failed`. The main agent provider executes the task prompt directly. This means `/plan` works in single-agent setups without requiring any `[agents]` configuration.
 
 ### SubAgentManager Integration
 
@@ -245,7 +254,7 @@ Use `/plan resume` (or `/plan resume <id>` for a specific graph) to continue exe
 
 Use `/plan retry` (or `/plan retry <id>` for a specific graph) to re-attempt all tasks that did not complete successfully:
 
-- Tasks in `Failed` status are reset to `Ready`.
+- Tasks in `Failed` status are reset to `Ready`; their `assigned_agent` field is cleared to prevent scheduler deadlock on a stale assignment.
 - Tasks in `Skipped` status are reset to `Pending` so they can be re-evaluated once their dependencies succeed.
 - Tasks that already `Completed` are not re-run.
 
@@ -292,6 +301,7 @@ aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call 
 - **No hot-reload of orchestration config:** Changes to the `[orchestration]` section of `config.toml` require a restart to take effect.
 - **`planner_model` and `planner_max_tokens` are reserved:** These config fields are parsed and stored but not yet applied at runtime. `LlmPlanner` uses whatever provider it receives at construction time regardless of `planner_model`.
 - **Residual prompt injection risk:** Task descriptions and cross-task context are wrapped in `ContentSanitizer` spotlight tags to mitigate prompt injection, but the risk is not fully eliminated — treat orchestrated task outputs with appropriate caution.
+- **Single-agent inline execution:** When no sub-agents are defined, tasks run inline on the main provider in sequence (no parallelism). Configure `[agents]` entries and `max_parallel > 1` for concurrent execution.
 
 ## Related
 

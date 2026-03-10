@@ -50,3 +50,7 @@ max_daily_cents = 500   # Daily spending limit in cents (USD)
 Budget resets at UTC midnight. When `max_daily_cents` is reached, LLM calls are blocked until the next reset.
 
 Current spend is exposed as `cost_spent_cents` in `MetricsSnapshot` and visible in the TUI dashboard.
+
+### Token Counting
+
+Completion token counts use the `output_tokens` field from the API response (OpenAI, Ollama, and Compatible providers). Streaming paths retain a byte-length heuristic (`response.len() / 4`) as a fallback when the provider returns no usage data. Structured-output calls (`chat_typed`) also record usage so `eval_budget_tokens` enforcement reflects real token counts.

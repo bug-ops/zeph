@@ -18,7 +18,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.5",
+  "version": "0.14.3",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
@@ -1198,6 +1198,10 @@ rm = "deny"
 - **ResourceLink cwd boundary** — `file://` resource links are canonicalized and must reside within the session working directory; symlink escapes are rejected
 
 ## Troubleshooting
+
+**Log lines appear in the editor's response stream (stdio transport)**
+
+In stdio transport mode, Zeph writes WARN/ERROR tracing output explicitly to stderr so it does not pollute the NDJSON stream on stdout. If your editor shows garbled text or JSON parse errors, verify you are running a recent build. Older builds wrote log lines to stdout, breaking NDJSON parsing in Zed, VS Code, and Helix.
 
 **Zeph binary not found by the editor**
 
