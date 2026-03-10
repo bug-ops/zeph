@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Split `agent/tool_execution.rs` (5426 lines) into `tool_execution/mod.rs`, `tool_execution/legacy.rs`, `tool_execution/native.rs` for improved navigability (ARCH-06)
+- Split `agent/context.rs` (5590 lines) into `context/mod.rs`, `context/assembly.rs`, `context/summarization.rs` for improved navigability (ARCH-07)
+
 ## [0.14.3] - 2026-03-10
 
 ### Fixed
