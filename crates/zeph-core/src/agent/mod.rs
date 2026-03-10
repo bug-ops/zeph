@@ -3111,6 +3111,41 @@ pub(super) mod agent_tests {
     pub(crate) use zeph_tools::executor::ToolExecutor;
     use zeph_tools::executor::{ToolError, ToolOutput};
 
+    /// Minimal test harness: an Agent wired with a `MockChannel` and `MockToolExecutor`.
+    /// Use `AgentTestHarness::minimal()` to get a ready-to-use agent for unit tests.
+    pub(crate) struct AgentTestHarness {
+        pub(crate) agent: Agent<MockChannel>,
+    }
+
+    impl AgentTestHarness {
+        /// Create a minimal agent with a single mock response and no tools.
+        pub(crate) fn minimal(response: &str) -> Self {
+            let provider = mock_provider(vec![response.to_owned()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            Self {
+                agent: Agent::new(provider, channel, registry, None, 5, executor),
+            }
+        }
+
+        /// Create a minimal agent with multiple mock responses and no tools.
+        pub(crate) fn with_responses(responses: Vec<String>) -> Self {
+            let provider = mock_provider(responses);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            Self {
+                agent: Agent::new(provider, channel, registry, None, 5, executor),
+            }
+        }
+
+        /// Return the messages sent to the channel so far.
+        pub(crate) fn sent_messages(&self) -> Vec<String> {
+            self.agent.channel.sent_messages()
+        }
+    }
+
     pub(crate) fn mock_provider(responses: Vec<String>) -> AnyProvider {
         AnyProvider::Mock(MockProvider::with_responses(responses))
     }
