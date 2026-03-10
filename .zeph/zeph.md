@@ -2,29 +2,63 @@
 
 ## Project
 
-Zeph — lightweight Rust AI agent with hybrid inference (Ollama / Claude / OpenAI / HuggingFace via candle), skills-first architecture, semantic memory with Qdrant, MCP client, A2A protocol support, multi-model orchestration, self-learning skill evolution, TUI dashboard, and multi-channel I/O (CLI + Telegram + TUI).
+Zeph — Rust AI agent with hybrid inference (Ollama / Claude / OpenAI / HuggingFace via candle),
+skills-first architecture, semantic + graph memory with Qdrant/SQLite, MCP client, A2A/ACP protocol
+support, multi-model orchestration with Thompson Sampling, self-learning skill evolution, TUI
+dashboard, untrusted content isolation, and multi-channel I/O (CLI + Telegram + TUI).
+
+Current version: **v0.14.3**. MSRV: **1.88** (Edition 2024, resolver 3).
 
 ## Architecture
 
-Cargo workspace (Edition 2024, resolver 3):
+Cargo workspace with 14 crates:
 
 ```
 zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution
 ├── zeph-core       — agent loop, config, channel trait, context builder, metrics, vault, redact
 ├── zeph-llm        — LlmProvider trait, Ollama + Claude + OpenAI + Candle backends, orchestrator
 ├── zeph-skills     — SKILL.md parser, registry, embedding matcher, hot-reload, self-learning
-├── zeph-memory     — SQLite + Qdrant, SemanticMemory orchestrator, summarization
+├── zeph-memory     — SQLite + Qdrant, SemanticMemory orchestrator, graph memory, summarization
 ├── zeph-channels   — Telegram adapter (teloxide) with streaming, CLI channel
 ├── zeph-tools      — ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor, audit
 ├── zeph-tui        — ratatui-based TUI dashboard with real-time metrics (feature-gated)
-├── zeph-mcp        — MCP client via rmcp, multi-server lifecycle, Qdrant tool registry (optional)
-├── zeph-a2a        — A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
-├── zeph-index      — AST-based code indexing, semantic retrieval, repo map generation (optional)
-├── zeph-gateway    — HTTP gateway for webhook ingestion with bearer auth (optional)
-└── zeph-scheduler  — cron-based periodic task scheduler with SQLite persistence (optional)
+├── zeph-mcp        — MCP client via rmcp, multi-server lifecycle, Qdrant tool registry
+├── zeph-a2a        — A2A protocol client + server, agent discovery, JSON-RPC 2.0
+├── zeph-acp        — Agent Client Protocol: stdio/HTTP+SSE/WebSocket, IDE integration (Zed, VS Code, Helix)
+├── zeph-index      — AST-based code indexing, semantic retrieval, repo map generation
+├── zeph-gateway    — HTTP gateway for webhook ingestion with bearer auth
+└── zeph-scheduler  — cron-based periodic task scheduler with SQLite persistence
 ```
 
-`zeph-core` orchestrates all leaf crates. Optional (feature-gated): `zeph-a2a`, `zeph-mcp`, `zeph-tui`, `zeph-index`, `zeph-gateway`, `zeph-scheduler`. Check `[features]` in root `Cargo.toml` for the current default and optional feature set.
+`zeph-core` orchestrates all leaf crates. Optional (feature-gated): `zeph-a2a`, `zeph-mcp`,
+`zeph-tui`, `zeph-index`, `zeph-gateway`, `zeph-scheduler`, `zeph-acp`. Always-on: `openai`,
+`compatible`, `orchestrator`, `router`, `self-learning`, `qdrant`, `vault-age`, `mcp`.
+Check `[features]` in root `Cargo.toml` for the full feature set.
+
+## Key Subsystems
+
+- **Orchestration**: DAG-based task graphs, tick-based `DagScheduler`, `LlmPlanner` (structured
+  output goal decomposition), `LlmAggregator` (per-task token budget), `AgentRouter` (rule-based
+  3-step fallback + inline execution for single-agent setups). `/plan` CLI commands.
+- **Graph memory**: SQLite schema (entities/edges/communities), LLM-powered fire-and-forget
+  extraction, `EntityResolver` (embedding-based + LLM disambiguation), BFS traversal, FTS5 search,
+  label propagation community detection, edge deduplication. Feature flag: `graph-memory`.
+- **Untrusted content isolation**: `ContentSanitizer` pipeline (17 injection patterns), source
+  boundaries, `QuarantinedSummarizer` (Dual LLM), `ExfiltrationGuard` (image pixel-tracking,
+  tool URL validation, memory write suppression). TUI security panel + SEC status bar.
+- **ACP**: stdio/HTTP+SSE/WebSocket transports, multi-session with LRU eviction, LSP diagnostics
+  injection, model switching, tool call lifecycle, session fork/resume, MCP passthrough.
+  Works in Zed, Helix, VS Code. Feature flag: `acp`.
+- **Self-learning**: `FeedbackDetector` (regex + Jaccard + self-correction signal), Wilson score
+  re-ranking, BM25+RRF hybrid search, provider EMA routing, 4-tier trust model, Bayesian re-ranking.
+  Positive feedback skips skill rewrite. Always-on via `self-learning` feature.
+- **Thompson Sampling router**: Beta-distribution exploration/exploitation for model selection,
+  EMA latency routing.
+- **Context engineering**: deferred tool-pair summaries (pre-computed eagerly, applied lazily at
+  70% context), pruning at 80%, LLM compaction on overflow. `--debug-dump [PATH]` writes numbered
+  LLM request/response/tool-output files.
+- **Sub-agents**: scoped tools, skills, zero-trust secret delegation, `permission_mode`,
+  persistent memory scopes, JSONL transcript storage, lifecycle hooks.
 
 ## Build & Test
 
@@ -32,9 +66,9 @@ zeph (binary) — bootstrap, AnyChannel dispatch, vault resolution
 cargo build                                                                    # build workspace
 cargo +nightly fmt --check                                                     # check formatting
 cargo clippy --workspace --features full -- -D warnings                        # lint (zero warnings)
-cargo nextest run --config-file .github/nextest.toml --workspace --features full --lib --bins  # unit tests
+cargo nextest run --config-file .github/nextest.toml --workspace --features full --lib --bins
 cargo nextest run --config-file .github/nextest.toml -p zeph-core              # single crate
-cargo nextest run --config-file .github/nextest.toml -p zeph-core -E 'test(name)'             # single test
+cargo nextest run --config-file .github/nextest.toml -p zeph-core -E 'test(name)'
 cargo nextest run --config-file .github/nextest.toml -- --ignored              # integration (requires Qdrant)
 cargo run                                                                      # CLI mode
 cargo run -- --tui                                                             # TUI dashboard
@@ -42,6 +76,32 @@ cargo run -- --config path/to/config.toml                                      #
 ```
 
 Always use `--features full` for local checks to match CI exactly.
+
+## Snapshot Tests
+
+- Snapshots live in `src/snapshots/` directories alongside the module
+- CI runs `cargo insta test --workspace --features full --check --lib --bins`
+- Accept locally: `INSTA_UPDATE=always cargo nextest run ... && cargo insta accept`
+- Commit updated `.snap` files together with the code change that caused them
+
+## File Layout
+
+```
+.zeph/
+  skills/        — SKILL.md files loaded at startup (default skills directory)
+  data/          — SQLite databases, audit logs, tool output
+  debug/         — LLM request/response dump files (--debug-dump)
+  agents/        — sub-agent definition files
+  zeph.md        — this file (always loaded into system prompt)
+config/
+  default.toml   — config reference with all keys and defaults
+src/             — binary entry point
+crates/          — workspace member crates
+docs/src/        — mdBook documentation
+```
+
+Skills are loaded from `.zeph/skills/` by default. The watcher monitors this directory for
+hot-reload (500 ms debounce). Override via `[skills] directory = "path"` in config.
 
 ## Specifications
 
@@ -55,96 +115,71 @@ Always use `--features full` for local checks to match CI exactly.
 
 ### Language & Toolchain
 
-- Rust Edition 2024: native async traits, no `async-trait` crate. Check MSRV in root `Cargo.toml`
+- Rust Edition 2024: native async traits, no `async-trait` crate
 - Formatting: `cargo +nightly fmt`, edition 2024, `max_width = 100`
-- Async runtime: `tokio` with `#[tokio::main]` for entry point, `#[tokio::test]` for tests
-- Use `Pin<Box<dyn Future<...> + Send + '_>>` when trait object safety requires dynamic dispatch
+- Async runtime: `tokio` with `#[tokio::main]` / `#[tokio::test]`
+- Use `Pin<Box<dyn Future<...> + Send + '_>>` for trait object safety
 
 ### Lints & Error Handling
 
 - Workspace-level `clippy::all` + `clippy::pedantic` as warnings
-- `unsafe_code = "deny"` — never use unsafe code
-- `unwrap_used` and `expect_used` are warned — use `?` operator with proper error propagation
-- All crates: `thiserror` for typed error enums. `anyhow` only in `main.rs`
-- Document errors: add `# Errors` section in doc comments for fallible public functions
+- `unsafe_code = "deny"` — never use unsafe
+- `unwrap_used` / `expect_used` warned — use `?` for error propagation
+- `thiserror` in library crates, `anyhow` only in `main.rs`
+- Fallible public functions: add `# Errors` doc section
 
 ### Code Style
 
-- Builder methods: return `self`, annotate with `#[must_use]`
-- Constructor generics: accept `impl Into<String>` for string parameters
-- Feature-gated modules: `#[cfg(feature = "name")]` on `pub mod` declarations in `lib.rs`
-- Re-export public API at crate root via `pub use` in `lib.rs`
+- Builder methods: `#[must_use]`, return `self`
+- Constructor generics: `impl Into<String>` for string params
+- Feature-gated modules: `#[cfg(feature = "name")]` on `pub mod` in `lib.rs`
 - Structured logging via `tracing` crate (not `log`)
-- Type aliases for complex pinned types: `type ChatStream = Pin<Box<dyn Stream<...> + Send>>`
-- After adding new `.rs` files, run `./.github/scripts/add-spdx-headers.sh` to add SPDX headers
+- After adding new `.rs` files: run `./.github/scripts/add-spdx-headers.sh`
+- TUI: log must NOT go to stdout — in TUI mode `init_tracing()` suppresses the stderr layer
 
 ### Code Quality
 
-- All documentation, comments, and plans must be written in English
-- Do not add redundant comments — only explain cyclomatically and/or cognitively complex blocks
-- Follow DRY: check for existing implementations before creating new functionality, study existing patterns and reuse them
-- Before v1.0.0: implement only the minimum necessary functionality. Avoid excessive code, additional abstractions, and premature optimization
-- Before v1.0.0: do not worry about backward compatibility — write clean code, remove obsolete constructs without deprecation warnings. Document all breaking changes in CHANGELOG.md
+- Documentation, comments, plans in English only
+- No redundant comments — only explain complex blocks
+- DRY: check existing implementations before creating new ones
+- Before v1.0.0: minimum necessary functionality, no premature abstractions
+- Before v1.0.0: no backward compatibility — remove obsolete code, document breaking changes in CHANGELOG.md
 
 ## Dependency Management
 
-- Versions defined only in root `[workspace.dependencies]` (no features at workspace level)
-- Crates inherit via `workspace = true` and specify features locally in their own `Cargo.toml`
-- All dependencies sorted alphabetically
-- TLS: `rustls` everywhere — never introduce `openssl-sys` dependency
-- Supply chain: `deny.toml` enforces license allowlist and advisory database checks
-- Workspace lints inherited via `[lints] workspace = true` in each crate
-- In Rust projects: avoid `serde_yaml` (deprecated), `serde_yml` (RUSTSEC-2025-0068, archived), prefer `serde_norway` if runtime YAML parsing is required
-
-## Testing
-
-### Structure
-
-- Unit tests: inline `#[cfg(test)] mod tests` blocks at the end of each module
-- Integration tests: `tests/` directories in crates that need external services
-- Mock types (e.g., `MockProvider`, `MockChannel`) inside `#[cfg(test)]` blocks — implement the real trait, not a mocking framework
-- Use `tempfile` for filesystem fixtures, `testcontainers` for Qdrant integration tests
-- Tests that touch the filesystem must use per-test unique paths to avoid races
-
-### Snapshot Tests (insta)
-
-- Snapshots live in `src/snapshots/` directories alongside the module
-- CI runs `cargo insta test --workspace --features full --check --lib --bins`
-- Accept locally: `cargo insta test --workspace --features full --lib --bins && cargo insta accept`
-- Commit updated `.snap` files together with the code change that caused them
-
-### CI Pipeline
-
-- `cla` -> `lint-fmt` -> `lint-clippy` -> `snapshots` -> `build-tests` -> `test` (matrix: ubuntu, macos, windows) -> `doc-test` -> `integration` -> `coverage` -> `docker-build-and-scan`
-- Gate job `ci-status` requires all checks to pass
-- Coverage via `cargo-llvm-cov` uploaded to codecov
+- Versions defined only in root `[workspace.dependencies]`
+- Crates inherit via `workspace = true`, specify features locally
+- Dependencies sorted alphabetically
+- TLS: `rustls` everywhere — never introduce `openssl-sys`
+- `deny.toml` enforces license allowlist and advisory database
+- Avoid `serde_yaml` / `serde_yml` (RUSTSEC-2025-0068) — use `serde_norway` for YAML
 
 ## Development Rules
 
-- When adding new functionality, always provide all applicable integration points:
-  1. `config.toml` section for configuration
-  2. CLI subcommand or argument for management
-  3. TUI command palette entry or `/` input command
-  4. Interactive configuration wizard (`--init`) update for new options, feature flags, or CLI arguments
+When adding new functionality, always provide all applicable integration points:
+1. `config.toml` section for configuration
+2. CLI subcommand or argument for management
+3. TUI command palette entry or `/` input command
+4. Interactive configuration wizard (`--init`) update
 
-- Any background or implicit TUI operation (LLM inference, skill loading, memory search, tool execution, MCP connection, etc.) **must** be accompanied by a visible system status indicator with a spinner. Status messages must be short and descriptive (e.g., `Searching memory...`, `Executing tool: shell`, `Connecting to MCP server...`).
+Any background TUI operation **must** show a visible spinner with a short status message
+(e.g., `Searching memory...`, `Executing tool: shell`, `Connecting to MCP server...`).
 
 ## Documentation
 
-- Any code change affecting user-facing behavior, configuration, or architecture must be reflected in `docs/src/` pages
-- Update `docs/src/SUMMARY.md` when adding new pages
-- Config: TOML (`config/default.toml`) with env var overrides (`ZEPH_*` prefix)
-- When adding or changing env vars / config keys, update both `config/default.toml` and `skills/setup-guide/SKILL.md`
-- SKILL.md files (YAML frontmatter + markdown body) in `skills/` directory, injected into system prompt at startup
-- Module-level: `//!` doc comments in `lib.rs` describing crate purpose
-- Public functions: `///` with `# Errors` section for fallible functions
+- User-facing changes → update `docs/src/` pages (use `/mdbook-tech-writer` skill)
+- New pages → update `docs/src/SUMMARY.md`
+- Config changes → update `config/default.toml` and `.zeph/skills/setup-guide/SKILL.md`
+- Module-level: `//!` doc comments in `lib.rs`
+- Public functions: `///` with `# Errors` for fallible functions
 
-## Git & Branching
+## Git & Release
 
-- Branch naming: features `feat/m{N}/{feature-slug}`, bug fixes `fix/{short-slug}`, hotfixes `hotfix/{short-slug}`
-- Commit messages and PRs: never mention co-authored or AI tools, never use emoji, keep concise and professional
-- Before every commit, push, or PR: run fmt, clippy, and tests with `--features full`
-- Before pushing to a feature branch: sync with main via `git fetch origin main && git merge origin/main`, resolve all conflicts, ensure build and tests pass
-- Update `CHANGELOG.md` at the end of each implementation phase (per PR). Use `[Unreleased]` section if version is not yet assigned
-- Update `docs/src/` pages if user-facing behavior changed
-- Update root `README.md` and affected `crates/*/README.md` if project-level features or crate APIs changed
+- Branch naming: `feat/m{N}/{slug}`, `fix/{slug}`, `hotfix/{slug}`
+- Commits and PRs: no AI mention, no emoji, concise and professional
+- Before every commit: fmt + clippy + nextest with `--features full`
+- Before pushing feature branch: `git fetch origin main && git merge origin/main`
+- End each PR with CHANGELOG.md update (`[Unreleased]` section)
+- **Before release PR**: update tests badge count in `README.md`
+  (`[![Tests](https://img.shields.io/badge/tests-XXXX-brightgreen)]`)
+  Get count: `cargo nextest run ... 2>&1 | grep "tests run"`
