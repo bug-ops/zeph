@@ -273,7 +273,10 @@ impl ModelOrchestrator {
     ) -> Result<String, LlmError> {
         if let Some(provider) = self.providers.get(name) {
             match provider.chat(messages).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    *self.last_used_provider.lock().unwrap() = Some(name.to_owned());
+                    return Ok(response);
+                }
                 Err(e) => {
                     tracing::warn!(
                         name,
@@ -306,7 +309,10 @@ impl ModelOrchestrator {
     ) -> Result<crate::provider::ChatResponse, LlmError> {
         if let Some(provider) = self.providers.get(name) {
             match provider.chat_with_tools(messages, tools).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    *self.last_used_provider.lock().unwrap() = Some(name.to_owned());
+                    return Ok(response);
+                }
                 Err(e) => {
                     tracing::warn!(
                         name,
@@ -324,7 +330,9 @@ impl ModelOrchestrator {
             .providers
             .get(&self.default_provider)
             .ok_or(LlmError::NoProviders)?;
-        provider.chat_with_tools(messages, tools).await
+        let response = provider.chat_with_tools(messages, tools).await?;
+        *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
+        Ok(response)
     }
 
     async fn stream_with_fallback(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -453,7 +461,9 @@ impl LlmProvider for ModelOrchestrator {
             provider_supports_tool_use = provider.supports_tool_use(),
             "orchestrator delegating chat_with_tools"
         );
-        provider.chat_with_tools(messages, tools).await
+        let response = provider.chat_with_tools(messages, tools).await?;
+        *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
+        Ok(response)
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
@@ -1353,5 +1363,108 @@ mod tests {
             "expected success via fallback after named provider failure, got: {result:?}"
         );
         assert_eq!(result.unwrap(), "fallback response");
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_updates_last_used_provider() {
+        // chat_with_tools must record default_provider in last_used_provider.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"tool ok"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let orch = ModelOrchestrator::new(
+            HashMap::new(),
+            providers,
+            "default".into(),
+            "default".into(),
+        )
+        .unwrap();
+
+        let result = LlmProvider::chat_with_tools(&orch, &user_msg("hi"), &[]).await;
+        assert!(result.is_ok(), "expected success, got: {result:?}");
+        assert_eq!(orch.last_used_provider_name(), "default");
+    }
+
+    #[tokio::test]
+    async fn chat_for_named_updates_last_used_provider() {
+        // A successful chat_for_named must record the named provider in last_used_provider.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"named ok"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "named".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let orch = ModelOrchestrator::new(
+            HashMap::new(),
+            providers,
+            "default".into(),
+            "default".into(),
+        )
+        .unwrap();
+
+        let result = orch.chat_for_named("named", &user_msg("hi")).await;
+        assert!(result.is_ok(), "expected success, got: {result:?}");
+        assert_eq!(orch.last_used_provider_name(), "named");
+    }
+
+    #[tokio::test]
+    async fn chat_for_named_with_tools_updates_last_used_provider() {
+        // A successful chat_for_named_with_tools must record the named provider in
+        // last_used_provider.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"named tools ok"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "default".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "named".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let orch = ModelOrchestrator::new(
+            HashMap::new(),
+            providers,
+            "default".into(),
+            "default".into(),
+        )
+        .unwrap();
+
+        let result = orch
+            .chat_for_named_with_tools("named", &user_msg("hi"), &[])
+            .await;
+        assert!(result.is_ok(), "expected success, got: {result:?}");
+        assert_eq!(orch.last_used_provider_name(), "named");
     }
 }
