@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph migrate-config [--config PATH] [--in-place] [--diff]` command: reads an existing user config, adds all missing parameters as commented-out blocks with descriptions from the canonical reference, and reformats the file by grouping and sorting keys within each section. Existing values are never modified. Running the command twice produces identical output (idempotent). The `--init` wizard now shows a tip about this command.
+
 ### Changed
 
 - Split `agent/tool_execution.rs` (5426 lines) into `tool_execution/mod.rs`, `tool_execution/legacy.rs`, `tool_execution/native.rs` for improved navigability (ARCH-06)
