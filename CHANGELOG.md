@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `DagScheduler::record_spawn_failure` now detects transient concurrency-limit rejections (error contains `"concurrency limit"`) and reverts the task to `TaskStatus::Ready` instead of marking it `Failed`. This prevents spurious graph failure cascades when `SubAgentManager` refuses a spawn because all concurrency slots are occupied by other agents (#1513)
 - ACP stdio transport: tracing subscriber now explicitly writes to stderr via `.with_writer(std::io::stderr)`, preventing WARN/ERROR log lines from polluting stdout and breaking NDJSON parsing in IDE clients (Zed, VS Code, Helix) (#1503)
 - `persist_message` now receives the correct `has_injection_flags` value derived from `sanitize_tool_output` injection pattern detection, not just URL extraction. Pure text injections (without URLs) now correctly activate `guard_memory_writes` in both legacy and native tool paths (#1491)
 - `handle_native_tool_calls()` now routes tool output through `sanitize_tool_output()` before placing it in `MessagePart::ToolResult`. Previously, the native tool-use path (Claude provider) bypassed `ContentSanitizer` entirely: injection detection, exfiltration URL extraction, quarantine summarizer, and security metrics were all silently skipped. `flagged_urls` was never populated, so `validate_tool_call()` and memory-write guarding (`persist_message`) were also effectively disabled for this path (#1490)
