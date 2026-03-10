@@ -65,7 +65,7 @@ impl<C: Channel> Agent<C> {
     /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.
     #[must_use]
     pub fn with_debug_dumper(mut self, dumper: crate::debug_dump::DebugDumper) -> Self {
-        self.debug_dumper = Some(dumper);
+        self.debug_state.debug_dumper = Some(dumper);
         self
     }
 
@@ -184,7 +184,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
-        self.anomaly_detector = Some(detector);
+        self.debug_state.anomaly_detector = Some(detector);
         self
     }
 
@@ -246,7 +246,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_logging_config(mut self, logging: crate::config::LoggingConfig) -> Self {
-        self.logging_config = logging;
+        self.debug_state.logging_config = logging;
         self
     }
 
@@ -330,8 +330,9 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
-        self.sanitizer = crate::sanitizer::ContentSanitizer::new(&security.content_isolation);
-        self.exfiltration_guard = crate::sanitizer::exfiltration::ExfiltrationGuard::new(
+        self.security.sanitizer =
+            crate::sanitizer::ContentSanitizer::new(&security.content_isolation);
+        self.security.exfiltration_guard = crate::sanitizer::exfiltration::ExfiltrationGuard::new(
             security.exfiltration_guard.clone(),
         );
         self.runtime.security = security;
@@ -368,7 +369,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         qs: crate::sanitizer::quarantine::QuarantinedSummarizer,
     ) -> Self {
-        self.quarantine_summarizer = Some(qs);
+        self.security.quarantine_summarizer = Some(qs);
         self
     }
 

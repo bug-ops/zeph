@@ -21,6 +21,31 @@ pub enum ChannelError {
     Other(String),
 }
 
+/// All fields that describe a tool-start event sent to a channel.
+#[derive(Debug)]
+pub struct ToolStartEvent<'a> {
+    pub tool_name: &'a str,
+    pub tool_call_id: &'a str,
+    pub params: Option<serde_json::Value>,
+    pub parent_tool_use_id: Option<String>,
+}
+
+/// All fields that describe a completed tool-output event sent to a channel.
+#[derive(Debug)]
+pub struct ToolOutputEvent<'a> {
+    pub tool_name: &'a str,
+    pub body: &'a str,
+    pub diff: Option<crate::DiffData>,
+    pub filter_stats: Option<String>,
+    pub kept_lines: Option<Vec<usize>>,
+    pub locations: Option<Vec<String>>,
+    pub tool_call_id: &'a str,
+    pub is_error: bool,
+    pub parent_tool_use_id: Option<String>,
+    pub raw_response: Option<serde_json::Value>,
+    pub started_at: Option<std::time::Instant>,
+}
+
 /// Kind of binary attachment on an incoming message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
@@ -171,10 +196,7 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn send_tool_start(
         &mut self,
-        _tool_name: &str,
-        _tool_call_id: &str,
-        _params: Option<serde_json::Value>,
-        _parent_tool_use_id: Option<String>,
+        _event: ToolStartEvent<'_>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -189,22 +211,11 @@ pub trait Channel: Send {
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
-    #[allow(clippy::too_many_arguments)]
     fn send_tool_output(
         &mut self,
-        tool_name: &str,
-        body: &str,
-        _diff: Option<crate::DiffData>,
-        _filter_stats: Option<String>,
-        _kept_lines: Option<Vec<usize>>,
-        _locations: Option<Vec<String>>,
-        _tool_call_id: &str,
-        _is_error: bool,
-        _parent_tool_use_id: Option<String>,
-        _raw_response: Option<serde_json::Value>,
-        _started_at: Option<std::time::Instant>,
+        event: ToolOutputEvent<'_>,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        let formatted = crate::agent::format_tool_output(tool_name, body);
+        let formatted = crate::agent::format_tool_output(event.tool_name, event.body);
         async move { self.send(&formatted).await }
     }
 
@@ -391,54 +402,34 @@ impl Channel for LoopbackChannel {
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    async fn send_tool_start(
-        &mut self,
-        tool_name: &str,
-        tool_call_id: &str,
-        params: Option<serde_json::Value>,
-        parent_tool_use_id: Option<String>,
-    ) -> Result<(), ChannelError> {
+    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolStart {
-                tool_name: tool_name.to_owned(),
-                tool_call_id: tool_call_id.to_owned(),
-                params,
-                parent_tool_use_id,
+                tool_name: event.tool_name.to_owned(),
+                tool_call_id: event.tool_call_id.to_owned(),
+                params: event.params,
+                parent_tool_use_id: event.parent_tool_use_id,
                 started_at: std::time::Instant::now(),
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn send_tool_output(
-        &mut self,
-        tool_name: &str,
-        body: &str,
-        diff: Option<crate::DiffData>,
-        filter_stats: Option<String>,
-        kept_lines: Option<Vec<usize>>,
-        locations: Option<Vec<String>>,
-        tool_call_id: &str,
-        is_error: bool,
-        parent_tool_use_id: Option<String>,
-        raw_response: Option<serde_json::Value>,
-        started_at: Option<std::time::Instant>,
-    ) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::ToolOutput {
-                tool_name: tool_name.to_owned(),
-                display: body.to_owned(),
-                diff,
-                filter_stats,
-                kept_lines,
-                locations,
-                tool_call_id: tool_call_id.to_owned(),
-                is_error,
+                tool_name: event.tool_name.to_owned(),
+                display: event.body.to_owned(),
+                diff: event.diff,
+                filter_stats: event.filter_stats,
+                kept_lines: event.kept_lines,
+                locations: event.locations,
+                tool_call_id: event.tool_call_id.to_owned(),
+                is_error: event.is_error,
                 terminal_id: None,
-                parent_tool_use_id,
-                raw_response,
-                started_at,
+                parent_tool_use_id: event.parent_tool_use_id,
+                raw_response: event.raw_response,
+                started_at: event.started_at,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -684,9 +675,19 @@ mod tests {
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_tool_output(
-                "bash", "exit 0", None, None, None, None, "", false, None, None, None,
-            )
+            .send_tool_output(ToolOutputEvent {
+                tool_name: "bash",
+                body: "exit 0",
+                diff: None,
+                filter_stats: None,
+                kept_lines: None,
+                locations: None,
+                tool_call_id: "",
+                is_error: false,
+                parent_tool_use_id: None,
+                raw_response: None,
+                started_at: None,
+            })
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -825,5 +826,90 @@ mod tests {
             }
             _ => panic!("expected Plan event"),
         }
+    }
+
+    #[tokio::test]
+    async fn loopback_send_tool_start_produces_tool_start_event() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel
+            .send_tool_start(ToolStartEvent {
+                tool_name: "shell",
+                tool_call_id: "tc-001",
+                params: Some(serde_json::json!({"command": "ls"})),
+                parent_tool_use_id: None,
+            })
+            .await
+            .unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        match event {
+            LoopbackEvent::ToolStart {
+                tool_name,
+                tool_call_id,
+                params,
+                parent_tool_use_id,
+                ..
+            } => {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(tool_call_id, "tc-001");
+                assert!(params.is_some());
+                assert!(parent_tool_use_id.is_none());
+            }
+            _ => panic!("expected ToolStart event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_send_tool_start_with_parent_id() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel
+            .send_tool_start(ToolStartEvent {
+                tool_name: "web",
+                tool_call_id: "tc-002",
+                params: None,
+                parent_tool_use_id: Some("parent-123".into()),
+            })
+            .await
+            .unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        assert!(matches!(
+            event,
+            LoopbackEvent::ToolStart { parent_tool_use_id: Some(ref id), .. } if id == "parent-123"
+        ));
+    }
+
+    #[tokio::test]
+    async fn loopback_send_tool_start_error_when_output_closed() {
+        let (mut channel, handle) = LoopbackChannel::pair(8);
+        drop(handle);
+        let result = channel
+            .send_tool_start(ToolStartEvent {
+                tool_name: "shell",
+                tool_call_id: "tc-003",
+                params: None,
+                parent_tool_use_id: None,
+            })
+            .await;
+        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+    }
+
+    #[tokio::test]
+    async fn default_send_tool_output_formats_message() {
+        let mut ch = StubChannel;
+        // Default impl calls self.send() which is a no-op in StubChannel — just verify it doesn't panic.
+        ch.send_tool_output(ToolOutputEvent {
+            tool_name: "bash",
+            body: "hello",
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "id",
+            is_error: false,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        })
+        .await
+        .unwrap();
     }
 }

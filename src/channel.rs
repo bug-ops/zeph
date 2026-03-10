@@ -9,7 +9,7 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
 #[cfg(feature = "tui")]
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent};
 use zeph_core::config::Config;
 #[cfg(feature = "tui")]
 use zeph_tui::TuiChannel;
@@ -75,36 +75,8 @@ impl Channel for AppChannel {
     async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_diff, diff)
     }
-    #[allow(clippy::too_many_arguments)]
-    async fn send_tool_output(
-        &mut self,
-        tool_name: &str,
-        display: &str,
-        diff: Option<zeph_core::DiffData>,
-        filter_stats: Option<String>,
-        kept_lines: Option<Vec<usize>>,
-        locations: Option<Vec<String>>,
-        tool_call_id: &str,
-        is_error: bool,
-        parent_tool_use_id: Option<String>,
-        raw_response: Option<serde_json::Value>,
-        started_at: Option<std::time::Instant>,
-    ) -> Result<(), ChannelError> {
-        dispatch_app_channel!(
-            self,
-            send_tool_output,
-            tool_name,
-            display,
-            diff,
-            filter_stats,
-            kept_lines,
-            locations,
-            tool_call_id,
-            is_error,
-            parent_tool_use_id,
-            raw_response,
-            started_at
-        )
+    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_tool_output, event)
     }
 }
 

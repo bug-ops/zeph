@@ -21,6 +21,22 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Agent received a shutdown signal and exited the run loop cleanly.
+    #[error("agent shut down")]
+    Shutdown,
+
+    /// The context window was exhausted and could not be compacted further.
+    #[error("context exhausted: {0}")]
+    ContextExhausted(String),
+
+    /// A tool call exceeded its configured timeout.
+    #[error("tool timed out: {tool_name}")]
+    ToolTimeout { tool_name: String },
+
+    /// Structured output did not conform to the expected JSON schema.
+    #[error("schema validation failed: {0}")]
+    SchemaValidation(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -56,5 +72,31 @@ mod tests {
     fn agent_error_non_llm_variant_not_detected() {
         let e = AgentError::Other("something went wrong".into());
         assert!(!e.is_context_length_error());
+    }
+
+    #[test]
+    fn shutdown_variant_display() {
+        let e = AgentError::Shutdown;
+        assert_eq!(e.to_string(), "agent shut down");
+    }
+
+    #[test]
+    fn context_exhausted_variant_display() {
+        let e = AgentError::ContextExhausted("no space left".into());
+        assert!(e.to_string().contains("no space left"));
+    }
+
+    #[test]
+    fn tool_timeout_variant_display() {
+        let e = AgentError::ToolTimeout {
+            tool_name: "bash".into(),
+        };
+        assert!(e.to_string().contains("bash"));
+    }
+
+    #[test]
+    fn schema_validation_variant_display() {
+        let e = AgentError::SchemaValidation("missing field".into());
+        assert!(e.to_string().contains("missing field"));
     }
 }
