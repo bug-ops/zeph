@@ -12,3 +12,4 @@ data/
 **/.zeph/subagents/
 docs/book/
 *.log
+zeph.log
