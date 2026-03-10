@@ -177,6 +177,18 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AgentsCommand,
     },
+    /// Add missing config parameters as commented-out entries, preserving existing values
+    MigrateConfig {
+        /// Path to config file (default: `config/default.toml` or `ZEPH_CONFIG`)
+        #[arg(long, value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+        /// Write the migrated config back to the source file (atomic rename, preserves permissions)
+        #[arg(long)]
+        in_place: bool,
+        /// Show a unified diff instead of the full output
+        #[arg(long)]
+        diff: bool,
+    },
 }
 
 #[derive(Subcommand)]

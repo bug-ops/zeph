@@ -1504,6 +1504,8 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
     }
     println!("  2. Run: zeph --config {}", path.display());
     println!("  3. Or with TUI: zeph --tui --config {}", path.display());
+    println!();
+    println!("Tip: run `zeph migrate-config --diff` later to check for new config options.");
 }
 
 #[cfg(test)]

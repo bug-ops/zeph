@@ -147,6 +147,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }) => {
             return handle_agents_command(agents_cmd, cli.config.as_deref()).await;
         }
+        Some(Command::MigrateConfig {
+            config: migrate_config_path,
+            in_place,
+            diff,
+        }) => {
+            let resolved =
+                resolve_config_path(migrate_config_path.as_deref().or(cli.config.as_deref()));
+            return crate::commands::migrate::handle_migrate_config(&resolved, in_place, diff);
+        }
         None => {}
     }
 

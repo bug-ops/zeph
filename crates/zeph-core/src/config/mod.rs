@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod env;
+pub mod migrate;
 mod types;
 
 #[cfg(test)]

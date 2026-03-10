@@ -526,6 +526,110 @@ format = "json"
 # Show role prefix labels ([user], [zeph], etc.) in chat messages
 show_source_labels = false
 
+[acp]
+# Enable ACP server (Agent Client Protocol — IDE embedding via Zed, Helix, VS Code)
+enabled = false
+# Agent name advertised to IDE clients
+agent_name = "zeph"
+# Transport mode: "stdio" (default, for IDE embedding), "http", or "both"
+transport = "stdio"
+# Bind address for the HTTP transport
+http_bind = "127.0.0.1:9800"
+# Maximum number of concurrent ACP sessions (LRU eviction when exceeded)
+max_sessions = 4
+# Session idle timeout in seconds before eviction
+session_idle_timeout_secs = 1800
+# Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
+discovery_enabled = true
+# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
+available_models = []
+
+[acp.lsp]
+# Enable LSP code intelligence extension when IDE advertises lsp capability
+enabled = true
+# Fetch diagnostics automatically when lsp/didSave notification is received
+auto_diagnostics_on_save = true
+# Maximum diagnostics to accept per file
+max_diagnostics_per_file = 20
+# Maximum files in diagnostics cache (LRU eviction)
+max_diagnostic_files = 5
+# Maximum reference locations returned
+max_references = 100
+# Maximum workspace symbol search results
+max_workspace_symbols = 50
+# Timeout in seconds for LSP extension method calls
+request_timeout_secs = 10
+
+[agents]
+# Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
+enabled = false
+# Maximum number of sub-agents that can run concurrently
+max_concurrent = 1
+# Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)
+allow_bypass_permissions = false
+# Enable writing JSONL transcripts for sub-agent sessions (required for /agent resume)
+transcript_enabled = true
+# Maximum number of transcript files to retain (0 = unlimited)
+transcript_max_files = 50
+
+[orchestration]
+# Enable the orchestration subsystem (/plan commands and task graph execution)
+enabled = false
+# Maximum number of tasks in a single plan graph
+max_tasks = 20
+# Maximum number of tasks that can run in parallel
+max_parallel = 4
+# Default failure strategy: "abort", "retry", "skip", or "ask"
+default_failure_strategy = "abort"
+# Default number of retries for the retry failure strategy
+default_max_retries = 3
+# Task execution timeout in seconds (0 = no timeout)
+task_timeout_secs = 300
+# Maximum tokens budget for planner LLM responses
+planner_max_tokens = 4096
+# Total character budget for cross-task dependency context injection
+dependency_context_budget = 16384
+# Show a confirmation prompt before executing a plan
+confirm_before_execute = true
+# Maximum tokens budget for aggregation LLM calls
+aggregator_max_tokens = 4096
+# Backoff in ms before retrying deferred tasks
+deferral_backoff_ms = 250
+
+[experiments]
+# Enable the autonomous self-experimentation engine
+enabled = false
+# Maximum number of experiments to run in a single session
+max_experiments = 20
+# Maximum wall-clock time per experiment session in seconds
+max_wall_time_secs = 3600
+# Minimum relative improvement (%) required to keep an experiment result
+min_improvement = 0.5
+# Token budget for evaluation LLM calls
+eval_budget_tokens = 100000
+# Automatically apply improvements without confirmation
+auto_apply = false
+
+[experiments.schedule]
+# Enable scheduled automatic experiment runs
+enabled = false
+# Cron expression for scheduled runs (default: 3am daily)
+cron = "0 3 * * *"
+# Maximum experiments per scheduled run
+max_experiments_per_run = 20
+# Wall-time cap for a single scheduled session in seconds
+max_wall_time_secs = 1800
+
+[logging]
+# Log file path (empty string disables file logging)
+file = ".zeph/logs/zeph.log"
+# Log level for the file sink: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Rotation strategy: "daily", "hourly", or "never"
+rotation = "daily"
+# Maximum number of rotated log files to retain
+max_files = 7
+
 # Knowledge graph memory
 # Extracts entities and relations from conversations into a persistent graph.
 # WARNING: entity names and facts are stored verbatim without PII redaction.

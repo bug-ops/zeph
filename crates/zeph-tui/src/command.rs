@@ -68,6 +68,8 @@ pub enum TuiCommand {
     LspStatus,
     // Log file
     ViewLog,
+    // Config migration
+    MigrateConfig,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -423,6 +425,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::ViewLog,
         },
+        CommandEntry {
+            id: "config:migrate",
+            label: "Show config migration diff (missing parameters)",
+            category: "config",
+            shortcut: None,
+            command: TuiCommand::MigrateConfig,
+        },
     ];
     EXTRA
 }
@@ -499,12 +508,12 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status = 30
+        // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate = 31
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 31);
+        assert_eq!(extra_command_registry().len(), 32);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 30);
+        assert_eq!(extra_command_registry().len(), 31);
     }
 
     #[test]

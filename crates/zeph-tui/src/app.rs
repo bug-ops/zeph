@@ -1069,6 +1069,13 @@ impl App {
             TuiCommand::ViewLog => {
                 let _ = self.user_input_tx.try_send("/log".to_owned());
             }
+            TuiCommand::MigrateConfig => {
+                self.push_system_message(
+                    "To preview missing config parameters, run:\n  zeph migrate-config --diff\n\
+                     To apply changes in-place:\n  zeph migrate-config --in-place"
+                        .to_owned(),
+                );
+            }
         }
     }
 
