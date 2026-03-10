@@ -23,18 +23,7 @@ impl SqliteVectorStore {
     }
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
+use crate::math::cosine_similarity;
 
 fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorFilter) -> bool {
     for cond in &filter.must {
@@ -443,24 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn cosine_similarity_orthogonal() {
-        assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]), 0.0);
-    }
-
-    #[test]
-    fn cosine_similarity_identical() {
-        let v = vec![3.0, 4.0];
-        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_similarity_zero_vector() {
-        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
-    }
-
-    #[test]
-    fn cosine_similarity_length_mismatch() {
-        assert_eq!(cosine_similarity(&[1.0], &[1.0, 0.0]), 0.0);
+    fn cosine_similarity_import_wired() {
+        // Smoke test: verifies the re-export binding is intact. Edge-case coverage is in math.rs.
+        assert!(!cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).is_nan());
     }
 
     #[tokio::test]

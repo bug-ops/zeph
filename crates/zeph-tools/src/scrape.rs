@@ -12,6 +12,7 @@ use url::Url;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ScrapeConfig;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
+use crate::net::is_private_ip;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FetchParams {
@@ -403,44 +404,6 @@ fn validate_url(raw: &str) -> Result<Url, ToolError> {
     }
 
     Ok(parsed)
-}
-
-pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() {
-                return true;
-            }
-            let seg = v6.segments();
-            // fe80::/10 — link-local
-            if seg[0] & 0xffc0 == 0xfe80 {
-                return true;
-            }
-            // fc00::/7 — unique local
-            if seg[0] & 0xfe00 == 0xfc00 {
-                return true;
-            }
-            // ::ffff:x.x.x.x — IPv4-mapped, check inner IPv4
-            if seg[0..6] == [0, 0, 0, 0, 0, 0xffff] {
-                let v4 = v6
-                    .to_ipv4_mapped()
-                    .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
-                return v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast();
-            }
-            false
-        }
-    }
 }
 
 fn is_private_host(host: &url::Host<&str>) -> bool {

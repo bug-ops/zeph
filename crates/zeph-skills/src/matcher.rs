@@ -176,30 +176,7 @@ impl SkillMatcherBackend {
     }
 }
 
-#[inline]
-#[must_use]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0_f32;
-    let mut norm_a = 0.0_f32;
-    let mut norm_b = 0.0_f32;
-
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        return 0.0;
-    }
-
-    dot / denom
-}
+pub use zeph_memory::cosine_similarity;
 
 #[cfg(test)]
 mod tests {

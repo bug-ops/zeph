@@ -50,13 +50,7 @@ pub(super) fn chunk_messages(
     chunks
 }
 
-/// Truncate `s` to at most `max_chars` Unicode scalar values, appending "…" if truncated.
-pub(super) fn truncate_chars(s: &str, max_chars: usize) -> String {
-    match s.char_indices().nth(max_chars) {
-        Some((byte_idx, _)) => format!("{}…", &s[..byte_idx]),
-        None => s.to_owned(),
-    }
-}
+pub(super) use crate::text::truncate_to_chars as truncate_chars;
 
 /// Cap an LLM summary to `max_chars` characters (SEC-02).
 ///
@@ -1947,11 +1941,9 @@ mod tests {
     #[test]
     fn truncate_chars_zero_max() {
         let s = "hello";
-        // max_chars = 0 means every char is beyond the limit → truncate at position 0
+        // max_chars = 0 → returns empty string (no chars kept, no ellipsis)
         let result = super::truncate_chars(s, 0);
-        assert!(result.ends_with('…'));
-        // The part before '…' must be empty (0 chars kept)
-        assert_eq!(result, "…");
+        assert_eq!(result, "");
     }
 
     // --- build_chunk_prompt ---

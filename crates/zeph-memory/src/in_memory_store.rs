@@ -47,15 +47,7 @@ impl std::fmt::Debug for InMemoryVectorStore {
     }
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
+use crate::math::cosine_similarity;
 
 fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorFilter) -> bool {
     for cond in &filter.must {
@@ -391,10 +383,9 @@ mod tests {
     }
 
     #[test]
-    fn cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        assert!((cosine_similarity(&a, &b)).abs() < f32::EPSILON);
+    fn cosine_similarity_import_wired() {
+        // Smoke test: verifies the re-export binding is intact. Edge-case coverage is in math.rs.
+        assert!(!cosine_similarity(&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]).is_nan());
     }
 
     #[tokio::test]

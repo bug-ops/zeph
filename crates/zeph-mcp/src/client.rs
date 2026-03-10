@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::borrow::Cow;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +12,8 @@ use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use tokio::process::Command;
 use url::Url;
+
+use zeph_tools::is_private_ip;
 
 use crate::error::McpError;
 use crate::tool::McpTool;
@@ -196,27 +197,6 @@ impl McpClient {
     }
 }
 
-fn is_private_ip(addr: IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(ip) => {
-            ip.is_loopback()              // 127.0.0.0/8
-                || ip.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-                || ip.is_link_local()     // 169.254.0.0/16
-                || ip.is_unspecified()    // 0.0.0.0
-                || ip.is_broadcast() // 255.255.255.255
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()               // ::1
-                || ip.is_unspecified()     // ::
-                || ip.to_ipv4_mapped().is_some_and(|v4| {
-                    v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                })                         // ::ffff:127.0.0.1 etc.
-                || (ip.segments()[0] & 0xfe00) == 0xfc00   // fc00::/7 unique local
-                || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
-        }
-    }
-}
-
 async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
         url: url.into(),
@@ -252,6 +232,8 @@ async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
     use super::*;
 
     #[tokio::test]
