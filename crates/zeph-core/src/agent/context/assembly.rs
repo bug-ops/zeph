@@ -681,6 +681,7 @@ impl<C: Channel> Agent<C> {
             // embedded in comments, docstrings, or string literals (ContentSourceKind::ToolResult
             // / LocalUntrusted — local repo, not external).
             let sanitized = self
+                .security
                 .sanitizer
                 .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
             self.update_metrics(|m| m.sanitizer_runs += 1);
@@ -740,7 +741,7 @@ impl<C: Channel> Agent<C> {
     /// sanitization in zeph-memory or at other call sites.
     async fn sanitize_memory_message(&self, mut msg: Message) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval);
-        let sanitized = self.sanitizer.sanitize(&msg.content, source);
+        let sanitized = self.security.sanitizer.sanitize(&msg.content, source);
         self.update_metrics(|m| m.sanitizer_runs += 1);
         if !sanitized.injection_flags.is_empty() {
             tracing::warn!(
@@ -772,11 +773,11 @@ impl<C: Channel> Agent<C> {
         }
 
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
-        if self.sanitizer.is_enabled()
-            && let Some(ref qs) = self.quarantine_summarizer
+        if self.security.sanitizer.is_enabled()
+            && let Some(ref qs) = self.security.quarantine_summarizer
             && qs.should_quarantine(ContentSourceKind::MemoryRetrieval)
         {
-            match qs.extract_facts(&sanitized, &self.sanitizer).await {
+            match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
                     self.push_security_event(

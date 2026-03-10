@@ -212,9 +212,10 @@ impl<C: Channel> Agent<C> {
         let start = std::time::Instant::now();
 
         let dump_id = self
+            .debug_state
             .debug_dumper
             .as_ref()
-            .map(|d| d.dump_request(&self.messages));
+            .map(|d: &crate::debug_dump::DebugDumper| d.dump_request(&self.messages));
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let chat_fut = tokio::time::timeout(
@@ -284,7 +285,7 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
-        if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+        if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
             let dump_text = match &result {
                 ChatResponse::Text(t) => t.clone(),
                 ChatResponse::ToolUse {
@@ -420,10 +421,10 @@ impl<C: Channel> Agent<C> {
         // Validate tool call arguments against URLs seen in flagged untrusted content (flag-only).
         for tc in tool_calls {
             let args_json = tc.input.to_string();
-            let url_events = self.exfiltration_guard.validate_tool_call(
+            let url_events = self.security.exfiltration_guard.validate_tool_call(
                 &tc.name,
                 &args_json,
-                &self.flagged_urls,
+                &self.security.flagged_urls,
             );
             if !url_events.is_empty() {
                 tracing::warn!(
@@ -578,7 +579,7 @@ impl<C: Channel> Agent<C> {
             };
 
             if let Err(ref e) = result
-                && let Some(ref d) = self.debug_dumper
+                && let Some(ref d) = self.debug_state.debug_dumper
             {
                 d.dump_tool_error(&tc.name, e);
             }
@@ -685,6 +686,7 @@ impl<C: Channel> Agent<C> {
                 // contain untrusted content with injection patterns. Use ToolResult (ExternalUntrusted)
                 // as the appropriate source kind for native tool call output.
                 let sanitized_out = self
+                    .security
                     .sanitizer
                     .sanitize(&output, ContentSource::new(ContentSourceKind::ToolResult))
                     .body;
@@ -812,7 +814,8 @@ impl<C: Channel> Agent<C> {
         // covers URL-based exfiltration. Both are OR-combined for conservative guarding.
         // Individual per-tool granularity would require separate persist_message calls per
         // result, which would change message history structure.
-        let tool_results_have_flags = has_any_injection_flags || !self.flagged_urls.is_empty();
+        let tool_results_have_flags =
+            has_any_injection_flags || !self.security.flagged_urls.is_empty();
         self.persist_message(
             Role::User,
             &user_msg.content,
@@ -830,7 +833,7 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "lsp-context")]
         if self.lsp_hooks.is_some() {
             let tc_arc = std::sync::Arc::clone(&self.token_counter);
-            let sanitizer = self.sanitizer.clone();
+            let sanitizer = self.security.sanitizer.clone();
             for (name, input, output) in lsp_tool_calls {
                 if let Some(ref mut lsp) = self.lsp_hooks {
                     lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)

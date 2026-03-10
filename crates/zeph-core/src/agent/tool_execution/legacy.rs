@@ -19,7 +19,7 @@ impl<C: Channel> Agent<C> {
         // cross-turn attack chains evade detection, but this is acceptable for MVP since
         // the guard is flag-only (no blocking). Accumulating across turns causes false
         // positives for legitimately reused URLs.
-        self.flagged_urls.clear();
+        self.security.flagged_urls.clear();
 
         if self.provider.supports_tool_use() {
             tracing::debug!(
@@ -221,9 +221,10 @@ impl<C: Channel> Agent<C> {
         let prompt_estimate = self.cached_prompt_tokens;
 
         let dump_id = self
+            .debug_state
             .debug_dumper
             .as_ref()
-            .map(|d| d.dump_request(&self.messages));
+            .map(|d: &crate::debug_dump::DebugDumper| d.dump_request(&self.messages));
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
@@ -269,7 +270,7 @@ impl<C: Channel> Agent<C> {
                 });
                 self.record_cost(final_prompt, cost_completion);
                 let raw = r?;
-                if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+                if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
                     d.dump_response(id, &raw);
                 }
                 // Redact secrets from the full accumulated response before it is persisted to
@@ -318,7 +319,7 @@ impl<C: Channel> Agent<C> {
                     self.record_cost(final_prompt, final_completion);
                     // S2: scan for markdown image exfiltration in non-streaming path.
                     let cleaned = self.scan_output_and_warn(&resp);
-                    if let (Some(d), Some(id)) = (self.debug_dumper.as_ref(), dump_id) {
+                    if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
                         d.dump_response(id, &cleaned);
                     }
                     let display = self.maybe_redact(&cleaned);
@@ -436,7 +437,7 @@ impl<C: Channel> Agent<C> {
                         parent_tool_use_id: self.parent_tool_use_id.clone(),
                     })
                     .await?;
-                if let Some(ref d) = self.debug_dumper {
+                if let Some(ref d) = self.debug_state.debug_dumper {
                     d.dump_tool_output(&output.tool_name, &output.summary);
                 }
                 let processed = self.maybe_summarize_tool_output(&output.summary).await;
@@ -486,7 +487,7 @@ impl<C: Channel> Agent<C> {
                     Role::User,
                     &formatted_output,
                     &user_msg.parts,
-                    has_injection_flags || !self.flagged_urls.is_empty(),
+                    has_injection_flags || !self.security.flagged_urls.is_empty(),
                 )
                 .await;
                 self.push_message(user_msg);
@@ -528,7 +529,7 @@ impl<C: Channel> Agent<C> {
                                 parent_tool_use_id: self.parent_tool_use_id.clone(),
                             })
                             .await?;
-                        if let Some(ref d) = self.debug_dumper {
+                        if let Some(ref d) = self.debug_state.debug_dumper {
                             d.dump_tool_output(&out.tool_name, &out.summary);
                         }
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
@@ -564,7 +565,7 @@ impl<C: Channel> Agent<C> {
                             Role::User,
                             &formatted,
                             &confirmed_msg.parts,
-                            has_injection_flags || !self.flagged_urls.is_empty(),
+                            has_injection_flags || !self.security.flagged_urls.is_empty(),
                         )
                         .await;
                         self.push_message(confirmed_msg);
@@ -591,7 +592,7 @@ impl<C: Channel> Agent<C> {
             Err(e) => {
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
-                if let Some(ref d) = self.debug_dumper {
+                if let Some(ref d) = self.debug_state.debug_dumper {
                     d.dump_tool_error("legacy", &e);
                 }
                 let kind = FailureKind::from_error(&err_str);
@@ -601,6 +602,7 @@ impl<C: Channel> Agent<C> {
                 // not available in this error branch, and over-spotlighting local errors is
                 // harmless while under-spotlighting external errors is a risk.
                 let sanitized_err = self
+                    .security
                     .sanitizer
                     .sanitize(&err_str, ContentSource::new(ContentSourceKind::McpResponse))
                     .body;

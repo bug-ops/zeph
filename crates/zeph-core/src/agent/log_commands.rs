@@ -16,7 +16,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if the channel send fails.
     pub async fn handle_log_command(&mut self) -> Result<(), AgentError> {
-        let logging = self.logging_config.clone();
+        let logging = self.debug_state.logging_config.clone();
 
         let mut out = String::new();
         format_logging_status(&logging, &mut out);

@@ -346,6 +346,7 @@ impl<C: Channel> Agent<C> {
         // When has_injection_flags=true, skip embedding to prevent poisoned content from
         // polluting Qdrant semantic search results.
         let guard_event = self
+            .security
             .exfiltration_guard
             .should_guard_memory_write(has_injection_flags);
         if let Some(ref event) = guard_event {

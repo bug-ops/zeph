@@ -216,7 +216,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         outcome: AnomalyOutcome,
     ) -> Result<(), super::error::AgentError> {
-        let Some(ref mut det) = self.anomaly_detector else {
+        let Some(ref mut det) = self.debug_state.anomaly_detector else {
             return Ok(());
         };
         match outcome {
@@ -252,7 +252,7 @@ impl<C: Channel> Agent<C> {
             ContentSourceKind::ToolResult
         };
         let source = ContentSource::new(kind).with_identifier(tool_name);
-        let sanitized = self.sanitizer.sanitize(body, source);
+        let sanitized = self.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         if has_injection_flags {
             tracing::warn!(
@@ -278,7 +278,7 @@ impl<C: Channel> Agent<C> {
             // Using sanitized.body ensures only URLs the LLM actually sees are tracked,
             // avoiding false-positive SuspiciousToolUrl warnings for truncated/stripped content.
             let urls = crate::sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
-            self.flagged_urls.extend(urls);
+            self.security.flagged_urls.extend(urls);
         }
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
@@ -291,11 +291,11 @@ impl<C: Channel> Agent<C> {
         self.update_metrics(|m| m.sanitizer_runs += 1);
 
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
-        if self.sanitizer.is_enabled()
-            && let Some(ref qs) = self.quarantine_summarizer
+        if self.security.sanitizer.is_enabled()
+            && let Some(ref qs) = self.security.quarantine_summarizer
             && qs.should_quarantine(kind)
         {
-            match qs.extract_facts(&sanitized, &self.sanitizer).await {
+            match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
                     self.push_security_event(
@@ -333,7 +333,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn scan_output_and_warn(&mut self, text: &str) -> String {
-        let (cleaned, events) = self.exfiltration_guard.scan_output(text);
+        let (cleaned, events) = self.security.exfiltration_guard.scan_output(text);
         if !events.is_empty() {
             tracing::warn!(
                 count = events.len(),
@@ -2105,7 +2105,7 @@ mod tests {
                 flag_injection_patterns: false,
                 ..Default::default()
             };
-            agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+            agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
             let (result, _) = agent.sanitize_tool_output($body, $tool).await;
             assert!(
                 result.contains("<external-data"),
@@ -2139,7 +2139,7 @@ mod tests {
                 flag_injection_patterns: false,
                 ..Default::default()
             };
-            agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+            agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
             let (result, _) = agent.sanitize_tool_output($body, $tool).await;
             assert!(
                 result.contains("<tool-output"),
@@ -2206,7 +2206,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        agent.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+        agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
         let body = "raw mcp output";
         let (result, _) = agent.sanitize_tool_output(body, "gh:create_issue").await;
         assert_eq!(
@@ -2274,7 +2274,7 @@ mod tests {
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_quarantine_summarizer(qs);
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             spotlight_untrusted: true,
             flag_injection_patterns: false,
@@ -2331,7 +2331,7 @@ mod tests {
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_quarantine_summarizer(qs);
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             spotlight_untrusted: true,
             flag_injection_patterns: false,
@@ -2388,7 +2388,7 @@ mod tests {
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_quarantine_summarizer(qs);
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             spotlight_untrusted: true,
             flag_injection_patterns: false,
@@ -2434,7 +2434,7 @@ mod tests {
 
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx);
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             flag_injection_patterns: true,
             spotlight_untrusted: false,
@@ -2482,7 +2482,7 @@ mod tests {
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx);
         // 1-byte limit forces truncation
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             max_content_size: 1,
             flag_injection_patterns: false,
@@ -2531,13 +2531,13 @@ mod tests {
                 .with_metrics(tx);
 
         // Enable injection pattern detection (default) and memory write guarding (default).
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             flag_injection_patterns: true,
             spotlight_untrusted: false,
             ..Default::default()
         });
-        agent.exfiltration_guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+        agent.security.exfiltration_guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
             guard_memory_writes: true,
             ..Default::default()
         });
@@ -2711,7 +2711,7 @@ mod tests {
 
         // Disable sanitizer so ToolResult content passed to the cache key is raw (no spotlight
         // wrapping), keeping this test focused on cache-store logic rather than sanitization.
-        agent.sanitizer =
+        agent.security.sanitizer =
             crate::sanitizer::ContentSanitizer::new(&crate::sanitizer::ContentIsolationConfig {
                 enabled: false,
                 ..Default::default()
@@ -3258,7 +3258,7 @@ mod tests {
 
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx);
-        agent.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
             enabled: true,
             flag_injection_patterns: true,
             spotlight_untrusted: false,

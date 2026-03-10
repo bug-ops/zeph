@@ -175,6 +175,20 @@ pub(super) struct RuntimeConfig {
     pub(super) redact_credentials: bool,
 }
 
+pub(super) struct SecurityState {
+    pub(super) sanitizer: ContentSanitizer,
+    pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
+    pub(super) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
+    pub(super) flagged_urls: std::collections::HashSet<String>,
+}
+
+pub(super) struct DebugState {
+    pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
+    pub(super) dump_format: crate::debug_dump::DumpFormat,
+    pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
+    pub(super) logging_config: crate::config::LoggingConfig,
+}
+
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
@@ -189,7 +203,6 @@ pub struct Agent<C: Channel> {
     pub(super) judge_detector: Option<feedback_detector::JudgeDetector>,
     pub(super) judge_provider: Option<AnyProvider>,
     config_path: Option<PathBuf>,
-    pub(super) logging_config: crate::config::LoggingConfig,
     config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     shutdown: watch::Receiver<bool>,
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
@@ -225,30 +238,17 @@ pub struct Agent<C: Channel> {
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
     /// a subagent hierarchy.
     pub(crate) parent_tool_use_id: Option<String>,
-    pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
+    pub(super) debug_state: DebugState,
     /// Instruction blocks loaded at startup from provider-specific and explicit files.
     pub(super) instruction_blocks: Vec<InstructionBlock>,
     pub(super) instruction_reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
     pub(super) instruction_reload_state: Option<InstructionReloadState>,
-    /// Sanitizes untrusted content before it enters the LLM message history.
-    pub(super) sanitizer: ContentSanitizer,
-    /// Optional quarantine summarizer for routing high-risk content through an isolated LLM.
-    pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
-    /// Guards LLM output and tool calls against data exfiltration.
-    pub(super) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
-    /// URLs extracted from untrusted tool outputs that had injection flags.
-    /// Cleared at the start of each `process_response` call (per-turn strategy — see S3).
-    pub(super) flagged_urls: std::collections::HashSet<String>,
+    pub(super) security: SecurityState,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
-    /// Active debug dumper. When `Some`, every LLM request/response and raw tool output
-    /// is written to files in the dump directory. Enabled via `--debug-dump` CLI flag or
-    /// `[debug]` config section.
-    pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
-    /// Format used when creating a dumper via the `/debug-dump` slash command.
-    pub(super) dump_format: crate::debug_dump::DumpFormat,
+
     /// LSP context injection hooks. Fires after native tool execution, injects
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
     #[cfg(feature = "lsp-context")]
@@ -382,7 +382,12 @@ impl<C: Channel> Agent<C> {
             judge_detector: None,
             judge_provider: None,
             config_path: None,
-            logging_config: crate::config::LoggingConfig::default(),
+            debug_state: DebugState {
+                debug_dumper: None,
+                dump_format: crate::debug_dump::DumpFormat::default(),
+                anomaly_detector: None,
+                logging_config: crate::config::LoggingConfig::default(),
+            },
             config_reload_rx: None,
             shutdown: rx,
             metrics_tx: None,
@@ -434,20 +439,22 @@ impl<C: Channel> Agent<C> {
             experiment_notify_tx: exp_notify_tx,
             response_cache: None,
             parent_tool_use_id: None,
-            anomaly_detector: None,
             instruction_blocks: Vec::new(),
             instruction_reload_rx: None,
             instruction_reload_state: None,
-            sanitizer: ContentSanitizer::new(&crate::sanitizer::ContentIsolationConfig::default()),
-            quarantine_summarizer: None,
-            exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard::new(
-                crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
-            ),
-            flagged_urls: std::collections::HashSet::new(),
+            security: SecurityState {
+                sanitizer: ContentSanitizer::new(
+                    &crate::sanitizer::ContentIsolationConfig::default(),
+                ),
+                quarantine_summarizer: None,
+                exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard::new(
+                    crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
+                ),
+                flagged_urls: std::collections::HashSet::new(),
+            },
             pending_image_parts: Vec::new(),
             pending_graph: None,
-            debug_dumper: None,
-            dump_format: crate::debug_dump::DumpFormat::default(),
+
             #[cfg(feature = "lsp-context")]
             lsp_hooks: None,
             #[cfg(feature = "experiments")]
@@ -1709,7 +1716,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_debug_dump_command(&mut self, trimmed: &str) {
         let arg = trimmed.strip_prefix("/debug-dump").map_or("", str::trim);
         if arg.is_empty() {
-            match &self.debug_dumper {
+            match &self.debug_state.debug_dumper {
                 Some(d) => {
                     let _ = self
                         .channel
@@ -1729,10 +1736,10 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let dir = std::path::PathBuf::from(arg);
-        match crate::debug_dump::DebugDumper::new(&dir, self.dump_format) {
+        match crate::debug_dump::DebugDumper::new(&dir, self.debug_state.dump_format) {
             Ok(dumper) => {
                 let path = dumper.dir().display().to_string();
-                self.debug_dumper = Some(dumper);
+                self.debug_state.debug_dumper = Some(dumper);
                 let _ = self
                     .channel
                     .send(&format!("Debug dump enabled: {path}"))
