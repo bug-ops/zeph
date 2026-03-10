@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent};
 
 use crate::cli::CliChannel;
 #[cfg(feature = "discord")]
@@ -93,36 +93,8 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_diff, diff)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn send_tool_output(
-        &mut self,
-        tool_name: &str,
-        display: &str,
-        diff: Option<zeph_core::DiffData>,
-        filter_stats: Option<String>,
-        kept_lines: Option<Vec<usize>>,
-        locations: Option<Vec<String>>,
-        tool_call_id: &str,
-        is_error: bool,
-        parent_tool_use_id: Option<String>,
-        raw_response: Option<serde_json::Value>,
-        started_at: Option<std::time::Instant>,
-    ) -> Result<(), ChannelError> {
-        dispatch_channel!(
-            self,
-            send_tool_output,
-            tool_name,
-            display,
-            diff,
-            filter_stats,
-            kept_lines,
-            locations,
-            tool_call_id,
-            is_error,
-            parent_tool_use_id,
-            raw_response,
-            started_at
-        )
+    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+        dispatch_channel!(self, send_tool_output, event)
     }
 }
 

@@ -7,7 +7,7 @@ use zeph_llm::provider::{
 
 use super::super::Agent;
 use super::{retry_backoff_ms, tool_args_hash, tool_def_to_definition};
-use crate::channel::{Channel, StopHint};
+use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
 use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
@@ -408,12 +408,12 @@ impl<C: Channel> Agent<C> {
         for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
             let raw_params = tc.input.clone();
             self.channel
-                .send_tool_start(
-                    &tc.name,
+                .send_tool_start(ToolStartEvent {
+                    tool_name: &tc.name,
                     tool_call_id,
-                    Some(raw_params),
-                    self.parent_tool_use_id.clone(),
-                )
+                    params: Some(raw_params),
+                    parent_tool_use_id: self.parent_tool_use_id.clone(),
+                })
                 .await?;
         }
 
@@ -770,19 +770,19 @@ impl<C: Channel> Agent<C> {
             };
             let body_display = self.maybe_redact(&body);
             self.channel
-                .send_tool_output(
-                    &tc.name,
-                    &body_display,
+                .send_tool_output(ToolOutputEvent {
+                    tool_name: &tc.name,
+                    body: &body_display,
                     diff,
-                    inline_stats,
+                    filter_stats: inline_stats,
                     kept_lines,
                     locations,
                     tool_call_id,
                     is_error,
-                    self.parent_tool_use_id.clone(),
-                    None,
-                    Some(*started_at),
-                )
+                    parent_tool_use_id: self.parent_tool_use_id.clone(),
+                    raw_response: None,
+                    started_at: Some(*started_at),
+                })
                 .await?;
 
             // Sanitize tool output before inserting into LLM message history (Bug #1490 fix).

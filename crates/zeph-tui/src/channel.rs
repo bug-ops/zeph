@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent};
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
@@ -121,35 +121,21 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn send_tool_output(
-        &mut self,
-        tool_name: &str,
-        display: &str,
-        diff: Option<zeph_core::DiffData>,
-        filter_stats: Option<String>,
-        kept_lines: Option<Vec<usize>>,
-        _locations: Option<Vec<String>>,
-        _tool_call_id: &str,
-        is_error: bool,
-        _parent_tool_use_id: Option<String>,
-        _raw_response: Option<serde_json::Value>,
-        _started_at: Option<std::time::Instant>,
-    ) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
         tracing::debug!(
-            %tool_name,
-            has_diff = diff.is_some(),
+            tool_name = %event.tool_name,
+            has_diff = event.diff.is_some(),
             "TuiChannel::send_tool_output called"
         );
         self.agent_event_tx
             .send(AgentEvent::ToolOutput {
-                tool_name: tool_name.to_owned(),
-                command: display.to_owned(),
-                output: display.to_owned(),
-                success: !is_error,
-                diff,
-                filter_stats,
-                kept_lines,
+                tool_name: event.tool_name.to_owned(),
+                command: event.body.to_owned(),
+                output: event.body.to_owned(),
+                success: !event.is_error,
+                diff: event.diff,
+                filter_stats: event.filter_stats,
+                kept_lines: event.kept_lines,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
@@ -358,25 +344,26 @@ mod tests {
 
     #[tokio::test]
     async fn send_tool_output_bundles_diff_atomically() {
+        use zeph_core::channel::ToolOutputEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         let diff = zeph_core::DiffData {
             file_path: "src/main.rs".into(),
             old_content: "old".into(),
             new_content: "new".into(),
         };
-        ch.send_tool_output(
-            "bash",
-            "[tool output: bash]\n```\nok\n```",
-            Some(diff),
-            None,
-            None,
-            None,
-            "",
-            false,
-            None,
-            None,
-            None,
-        )
+        ch.send_tool_output(ToolOutputEvent {
+            tool_name: "bash",
+            body: "[tool output: bash]\n```\nok\n```",
+            diff: Some(diff),
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "",
+            is_error: false,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        })
         .await
         .unwrap();
 
@@ -389,20 +376,21 @@ mod tests {
 
     #[tokio::test]
     async fn send_tool_output_without_diff_sends_tool_event() {
+        use zeph_core::channel::ToolOutputEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
-        ch.send_tool_output(
-            "read",
-            "[tool output: read]\n```\ncontent\n```",
-            None,
-            None,
-            None,
-            None,
-            "",
-            false,
-            None,
-            None,
-            None,
-        )
+        ch.send_tool_output(ToolOutputEvent {
+            tool_name: "read",
+            body: "[tool output: read]\n```\ncontent\n```",
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "",
+            is_error: false,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        })
         .await
         .unwrap();
 

@@ -6,7 +6,7 @@ use zeph_tools::executor::{ToolError, ToolOutput};
 
 use super::super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 use super::{AnomalyOutcome, doom_loop_hash, first_tool_name};
-use crate::channel::Channel;
+use crate::channel::{Channel, ToolOutputEvent, ToolStartEvent};
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tokio_stream::StreamExt;
 use tracing::Instrument;
@@ -429,12 +429,12 @@ impl<C: Channel> Agent<C> {
                 let tool_call_id = uuid::Uuid::new_v4().to_string();
                 let tool_started_at = std::time::Instant::now();
                 self.channel
-                    .send_tool_start(
-                        &output.tool_name,
-                        &tool_call_id,
-                        None,
-                        self.parent_tool_use_id.clone(),
-                    )
+                    .send_tool_start(ToolStartEvent {
+                        tool_name: &output.tool_name,
+                        tool_call_id: &tool_call_id,
+                        params: None,
+                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                    })
                     .await?;
                 if let Some(ref d) = self.debug_dumper {
                     d.dump_tool_output(&output.tool_name, &output.summary);
@@ -452,19 +452,19 @@ impl<C: Channel> Agent<C> {
                 });
                 let formatted_output = format_tool_output(&output.tool_name, &body);
                 self.channel
-                    .send_tool_output(
-                        &output.tool_name,
-                        &self.maybe_redact(&body),
-                        None,
-                        filter_stats_inline,
-                        None,
-                        output.locations,
-                        &tool_call_id,
-                        false,
-                        self.parent_tool_use_id.clone(),
-                        output.raw_response.map(|r| self.redact_json(r)),
-                        Some(tool_started_at),
-                    )
+                    .send_tool_output(ToolOutputEvent {
+                        tool_name: &output.tool_name,
+                        body: &self.maybe_redact(&body),
+                        diff: None,
+                        filter_stats: filter_stats_inline,
+                        kept_lines: None,
+                        locations: output.locations,
+                        tool_call_id: &tool_call_id,
+                        is_error: false,
+                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                        raw_response: output.raw_response.map(|r| self.redact_json(r)),
+                        started_at: Some(tool_started_at),
+                    })
                     .await?;
 
                 let (llm_body, has_injection_flags) = self
@@ -521,12 +521,12 @@ impl<C: Channel> Agent<C> {
                         let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
                         let confirmed_started_at = std::time::Instant::now();
                         self.channel
-                            .send_tool_start(
-                                &out.tool_name,
-                                &confirmed_tool_call_id,
-                                None,
-                                self.parent_tool_use_id.clone(),
-                            )
+                            .send_tool_start(ToolStartEvent {
+                                tool_name: &out.tool_name,
+                                tool_call_id: &confirmed_tool_call_id,
+                                params: None,
+                                parent_tool_use_id: self.parent_tool_use_id.clone(),
+                            })
                             .await?;
                         if let Some(ref d) = self.debug_dumper {
                             d.dump_tool_output(&out.tool_name, &out.summary);
@@ -534,19 +534,19 @@ impl<C: Channel> Agent<C> {
                         let processed = self.maybe_summarize_tool_output(&out.summary).await;
                         let formatted = format_tool_output(&out.tool_name, &processed);
                         self.channel
-                            .send_tool_output(
-                                &out.tool_name,
-                                &self.maybe_redact(&processed),
-                                None,
-                                None,
-                                None,
-                                out.locations,
-                                &confirmed_tool_call_id,
-                                false,
-                                self.parent_tool_use_id.clone(),
-                                out.raw_response.map(|r| self.redact_json(r)),
-                                Some(confirmed_started_at),
-                            )
+                            .send_tool_output(ToolOutputEvent {
+                                tool_name: &out.tool_name,
+                                body: &self.maybe_redact(&processed),
+                                diff: None,
+                                filter_stats: None,
+                                kept_lines: None,
+                                locations: out.locations,
+                                tool_call_id: &confirmed_tool_call_id,
+                                is_error: false,
+                                parent_tool_use_id: self.parent_tool_use_id.clone(),
+                                raw_response: out.raw_response.map(|r| self.redact_json(r)),
+                                started_at: Some(confirmed_started_at),
+                            })
                             .await?;
                         let (llm_body, has_injection_flags) =
                             self.sanitize_tool_output(&processed, &out.tool_name).await;
