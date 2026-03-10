@@ -766,22 +766,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
 
     if state.mcpls_enabled {
-        let roots = if state.mcpls_workspace_roots.is_empty() {
-            vec![".".to_owned()]
-        } else {
-            state.mcpls_workspace_roots.clone()
-        };
-        // Build args: one "--workspace-root <path>" pair per root.
-        let args = roots
-            .iter()
-            .flat_map(|r| ["--workspace-root".to_owned(), r.clone()])
-            .collect();
-        // LSP servers need warmup time — use 60s timeout rather than the MCP default of 30s.
-        // Language server selection is not passed as args: mcpls auto-detects from project files.
+        // mcpls 0.3.4 does not support --workspace-root; pass a config file instead.
+        // Workspace roots and language server settings are written to .zeph/mcpls.toml
+        // by write_mcpls_config() in step_review_and_write().
         config.mcp.servers.push(McpServerConfig {
             id: "mcpls".to_owned(),
             command: Some("mcpls".to_owned()),
-            args,
+            args: vec!["--config".to_owned(), ".zeph/mcpls.toml".to_owned()],
             env: std::collections::HashMap::new(),
             url: None,
             timeout: 60,
@@ -1099,6 +1090,56 @@ fn mcpls_in_path() -> bool {
         .any(|p| p.is_file())
 }
 
+/// Writes `.zeph/mcpls.toml` next to `config_path` so that `mcpls --config .zeph/mcpls.toml`
+/// starts with the configured workspace roots and language server definitions.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created or the file cannot be written.
+fn write_mcpls_config(state: &WizardState, config_path: &std::path::Path) -> anyhow::Result<()> {
+    let base = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let zeph_dir = base.join(".zeph");
+    std::fs::create_dir_all(&zeph_dir)?;
+
+    let roots = if state.mcpls_workspace_roots.is_empty() {
+        vec![".".to_owned()]
+    } else {
+        state.mcpls_workspace_roots.clone()
+    };
+
+    let roots_toml = roots
+        .iter()
+        .map(|r| format!("\"{}\"", r.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Include explicit language_extensions to work around mcpls serde default Vec bug
+    // where [workspace] with only `roots` results in an empty extension map.
+    let content = format!(
+        r#"[workspace]
+roots = [{roots_toml}]
+
+[[workspace.language_extensions]]
+language_id = "rust"
+extensions = ["rs"]
+
+[[lsp_servers]]
+language_id = "rust"
+command = "rust-analyzer"
+args = []
+file_patterns = ["**/*.rs"]
+"#
+    );
+
+    let mcpls_path = zeph_dir.join("mcpls.toml");
+    std::fs::write(&mcpls_path, content)?;
+    println!("mcpls config written to {}", mcpls_path.display());
+
+    Ok(())
+}
+
 fn step_lsp_context(state: &mut WizardState) -> anyhow::Result<()> {
     if !state.mcpls_enabled {
         // LSP context injection requires mcpls to be configured.
@@ -1383,6 +1424,10 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     }
     std::fs::write(&path, &toml_str)?;
     println!("Config written to {}", path.display());
+
+    if state.mcpls_enabled {
+        write_mcpls_config(state, &path)?;
+    }
 
     print_secrets_instructions(state);
     print_next_steps(state, &path);
@@ -1727,15 +1772,7 @@ mod tests {
         let server = &config.mcp.servers[0];
         assert_eq!(server.id, "mcpls");
         assert_eq!(server.command.as_deref(), Some("mcpls"));
-        assert_eq!(
-            server.args,
-            vec![
-                "--workspace-root",
-                "./crate-a",
-                "--workspace-root",
-                "./crate-b"
-            ]
-        );
+        assert_eq!(server.args, vec!["--config", ".zeph/mcpls.toml"]);
         assert_eq!(server.timeout, 60);
         // mcpls uses command+args, not an HTTP URL.
         assert!(server.url.is_none());
@@ -1754,7 +1791,7 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(config.mcp.servers.len(), 1);
         let server = &config.mcp.servers[0];
-        assert_eq!(server.args, vec!["--workspace-root", "."]);
+        assert_eq!(server.args, vec!["--config", ".zeph/mcpls.toml"]);
     }
 
     #[test]
