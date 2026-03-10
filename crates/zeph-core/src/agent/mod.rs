@@ -815,9 +815,9 @@ impl<C: Channel> Agent<C> {
                         let handle_id = format!("__inline_{task_id}__");
                         scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
 
-                        let msg = Message::from_legacy(Role::User, prompt);
                         let event_tx = scheduler.event_sender();
-                        let outcome = match self.provider.chat(&[msg]).await {
+                        let max_iter = self.tool_orchestrator.max_iterations;
+                        let outcome = match self.run_inline_tool_loop(&prompt, max_iter).await {
                             Ok(output) => crate::orchestration::TaskOutcome::Completed {
                                 output,
                                 artifacts: vec![],
@@ -864,6 +864,110 @@ impl<C: Channel> Agent<C> {
             .await;
 
         Ok(final_status)
+    }
+
+    /// Run a tool-aware LLM loop for an inline scheduled task.
+    ///
+    /// Unlike [`process_response_native_tools`], this is intentionally stripped of all
+    /// interactive-session machinery (channel sends, doom-loop detection, summarization,
+    /// learning engine, sanitizer, metrics). Inline tasks are short-lived orchestration
+    /// sub-tasks that run synchronously inside the scheduler tick loop.
+    async fn run_inline_tool_loop(
+        &self,
+        prompt: &str,
+        max_iterations: usize,
+    ) -> Result<String, zeph_llm::LlmError> {
+        use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role, ToolDefinition};
+        use zeph_tools::executor::ToolCall;
+
+        let tool_defs: Vec<ToolDefinition> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .iter()
+            .map(tool_execution::tool_def_to_definition)
+            .collect();
+
+        tracing::debug!(
+            prompt_len = prompt.len(),
+            max_iterations,
+            tool_count = tool_defs.len(),
+            "inline tool loop: starting"
+        );
+
+        let mut messages: Vec<Message> = vec![Message::from_legacy(Role::User, prompt)];
+        let mut last_text = String::new();
+
+        for iteration in 0..max_iterations {
+            let response = self.provider.chat_with_tools(&messages, &tool_defs).await?;
+
+            match response {
+                ChatResponse::Text(text) => {
+                    tracing::debug!(iteration, "inline tool loop: text response, returning");
+                    return Ok(text);
+                }
+                ChatResponse::ToolUse {
+                    text, tool_calls, ..
+                } => {
+                    tracing::debug!(
+                        iteration,
+                        tools = ?tool_calls.iter().map(|tc| &tc.name).collect::<Vec<_>>(),
+                        "inline tool loop: tool use"
+                    );
+
+                    if let Some(ref t) = text {
+                        last_text.clone_from(t);
+                    }
+
+                    // Build assistant message with optional leading text + tool use parts.
+                    let mut parts: Vec<MessagePart> = Vec::new();
+                    if let Some(ref t) = text
+                        && !t.is_empty()
+                    {
+                        parts.push(MessagePart::Text { text: t.clone() });
+                    }
+                    for tc in &tool_calls {
+                        parts.push(MessagePart::ToolUse {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: tc.input.clone(),
+                        });
+                    }
+                    messages.push(Message::from_parts(Role::Assistant, parts));
+
+                    // Execute each tool call and collect results.
+                    let mut result_parts: Vec<MessagePart> = Vec::new();
+                    for tc in &tool_calls {
+                        let call = ToolCall {
+                            tool_id: tc.name.clone(),
+                            params: match &tc.input {
+                                serde_json::Value::Object(map) => map.clone(),
+                                _ => serde_json::Map::new(),
+                            },
+                        };
+                        let output = match self.tool_executor.execute_tool_call_erased(&call).await
+                        {
+                            Ok(Some(out)) => out.summary,
+                            Ok(None) => "(no output)".to_owned(),
+                            Err(e) => format!("[error] {e}"),
+                        };
+                        let is_error = output.starts_with("[error]");
+                        result_parts.push(MessagePart::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: output,
+                            is_error,
+                        });
+                    }
+                    messages.push(Message::from_parts(Role::User, result_parts));
+                }
+            }
+        }
+
+        tracing::debug!(
+            max_iterations,
+            last_text_empty = last_text.is_empty(),
+            "inline tool loop: iteration limit reached"
+        );
+        Ok(last_text)
     }
 
     /// Bridge pending secret requests from sub-agents to the user (non-blocking, time-bounded).
@@ -5899,5 +6003,215 @@ mod secret_reason_truncation {
         let key_in_prompt = after_quote.split("'. Allow?").next().unwrap();
         assert_eq!(key_in_prompt.chars().count(), 100);
         assert!(!key_in_prompt.ends_with('\u{2026}'));
+    }
+}
+
+#[cfg(test)]
+mod inline_tool_loop_tests {
+    use std::sync::Mutex;
+
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+    use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+    use super::Agent;
+    use super::agent_tests::{MockChannel, create_test_registry};
+
+    /// A `ToolExecutor` that responds to `execute_tool_call` with a fixed output sequence.
+    struct CallableToolExecutor {
+        outputs: Mutex<Vec<Result<Option<ToolOutput>, ToolError>>>,
+    }
+
+    impl CallableToolExecutor {
+        fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
+            Self {
+                outputs: Mutex::new(outputs),
+            }
+        }
+
+        fn fixed_output(summary: &str) -> Self {
+            Self::new(vec![Ok(Some(ToolOutput {
+                tool_name: "test_tool".into(),
+                summary: summary.to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+            }))])
+        }
+
+        fn failing() -> Self {
+            Self::new(vec![Err(ToolError::InvalidParams {
+                message: "tool failed".into(),
+            })])
+        }
+    }
+
+    impl ToolExecutor for CallableToolExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            let mut outputs = self.outputs.lock().unwrap();
+            if outputs.is_empty() {
+                Ok(None)
+            } else {
+                outputs.remove(0)
+            }
+        }
+    }
+
+    fn tool_use_response(tool_id: &str, tool_name: &str) -> ChatResponse {
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![ToolUseRequest {
+                id: tool_id.to_owned(),
+                name: tool_name.to_owned(),
+                input: serde_json::json!({"arg": "val"}),
+            }],
+            thinking_blocks: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn text_only_response_returns_immediately() {
+        let (mock, _counter) =
+            MockProvider::default().with_tool_use(vec![ChatResponse::Text("the answer".into())]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::new(vec![]);
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run_inline_tool_loop("what is 2+2?", 10).await;
+
+        assert_eq!(result.unwrap(), "the answer");
+    }
+
+    #[tokio::test]
+    async fn single_tool_iteration_returns_final_text() {
+        let (mock, counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-1", "test_tool"),
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::fixed_output("tool result");
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run_inline_tool_loop("run a tool", 10).await;
+
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(*counter.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn loop_terminates_at_max_iterations() {
+        // Provider always returns ToolUse — loop must stop after max_iterations.
+        let responses: Vec<ChatResponse> = (0..25)
+            .map(|i| tool_use_response(&format!("call-{i}"), "test_tool"))
+            .collect();
+        let (mock, counter) = MockProvider::default().with_tool_use(responses);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::fixed_output("ok");
+
+        let max_iter = 5usize;
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run_inline_tool_loop("loop forever", max_iter).await;
+
+        // Must return Ok (not panic or hang) and have called the provider exactly max_iter times.
+        assert!(result.is_ok());
+        assert_eq!(*counter.lock().unwrap(), max_iter as u32);
+    }
+
+    #[tokio::test]
+    async fn tool_error_produces_is_error_result_and_loop_continues() {
+        // First call: ToolUse with a failing executor → ToolResult with is_error=true.
+        // Second call: Text → loop ends.
+        // We verify the loop continues (doesn't abort) and returns the final text.
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-err", "test_tool"),
+            ChatResponse::Text("recovered".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::failing();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run_inline_tool_loop("trigger error", 10).await;
+
+        assert_eq!(result.unwrap(), "recovered");
+    }
+
+    #[tokio::test]
+    async fn multiple_tool_iterations_before_text() {
+        // Two ToolUse rounds, then Text. Verifies the loop handles chained tool calls.
+        let (mock, counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-1", "test_tool"),
+            tool_use_response("call-2", "test_tool"),
+            ChatResponse::Text("all done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        // Need two successful outputs for the two tool calls.
+        let executor = CallableToolExecutor::new(vec![
+            Ok(Some(ToolOutput {
+                tool_name: "test_tool".into(),
+                summary: "result-1".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+            })),
+            Ok(Some(ToolOutput {
+                tool_name: "test_tool".into(),
+                summary: "result-2".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+            })),
+        ]);
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent
+            .run_inline_tool_loop("two tools then answer", 10)
+            .await;
+
+        assert_eq!(result.unwrap(), "all done");
+        assert_eq!(*counter.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn provider_error_is_propagated() {
+        // MockProvider::failing() makes chat_with_tools return Err via the fallback chat() path.
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::failing());
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::new(vec![]);
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run_inline_tool_loop("this will fail", 10).await;
+
+        assert!(result.is_err());
     }
 }

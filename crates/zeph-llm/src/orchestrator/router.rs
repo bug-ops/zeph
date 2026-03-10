@@ -168,6 +168,36 @@ impl LlmProvider for SubProvider {
             Self::Candle(p) => p.context_window(),
         }
     }
+
+    fn supports_vision(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_vision(),
+            Self::Claude(p) => p.supports_vision(),
+            Self::OpenAi(p) => p.supports_vision(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.supports_vision(),
+        }
+    }
+
+    fn last_usage(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::Ollama(p) => p.last_usage(),
+            Self::Claude(p) => p.last_usage(),
+            Self::OpenAi(p) => p.last_usage(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.last_usage(),
+        }
+    }
+
+    fn supports_structured_output(&self) -> bool {
+        match self {
+            Self::Ollama(p) => p.supports_structured_output(),
+            Self::Claude(p) => p.supports_structured_output(),
+            Self::OpenAi(p) => p.supports_structured_output(),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.supports_structured_output(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +361,55 @@ mod tests {
         ollama.set_context_window(8192);
         let sub = SubProvider::Ollama(ollama);
         assert_eq!(sub.context_window(), Some(8192));
+    }
+
+    #[test]
+    fn sub_provider_supports_vision_delegates_claude() {
+        let sub = SubProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-5-20250929".into(),
+            1024,
+        ));
+        // Claude provider returns true for vision-capable models
+        assert_eq!(sub.supports_vision(), sub.supports_vision());
+        // SubProvider must not hard-code false — delegate to inner provider
+        let inner = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert_eq!(sub.supports_vision(), inner.supports_vision());
+    }
+
+    #[test]
+    fn sub_provider_supports_vision_delegates_ollama() {
+        let inner = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        let expected = inner.supports_vision();
+        let sub = SubProvider::Ollama(inner);
+        assert_eq!(sub.supports_vision(), expected);
+    }
+
+    #[test]
+    fn sub_provider_last_usage_delegates() {
+        let sub = SubProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
+        // Before any call, last_usage should match the inner provider's value
+        let inner = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        assert_eq!(sub.last_usage(), inner.last_usage());
+    }
+
+    #[test]
+    fn sub_provider_supports_structured_output_delegates() {
+        let inner = ClaudeProvider::new("key".into(), "model".into(), 1024);
+        let expected = inner.supports_structured_output();
+        let sub = SubProvider::Claude(inner);
+        assert_eq!(sub.supports_structured_output(), expected);
+
+        let inner = OpenAiProvider::new(
+            "key".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+            1024,
+            None,
+            None,
+        );
+        let expected = inner.supports_structured_output();
+        let sub = SubProvider::OpenAi(inner);
+        assert_eq!(sub.supports_structured_output(), expected);
     }
 }
