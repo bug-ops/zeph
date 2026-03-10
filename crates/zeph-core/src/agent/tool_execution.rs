@@ -1682,8 +1682,9 @@ impl<C: Channel> Agent<C> {
         let mut result_parts: Vec<MessagePart> = Vec::new();
         // Accumulates injection flags across all tools in the batch (Bug #1490 fix).
         let mut has_any_injection_flags = false;
-        for (((tc, tool_result), tool_call_id), started_at) in tool_calls
+        for ((((idx, tc), tool_result), tool_call_id), started_at) in tool_calls
             .iter()
+            .enumerate()
             .zip(tool_results)
             .zip(tool_call_ids.iter())
             .zip(tool_started_ats.iter())
@@ -1768,10 +1769,30 @@ impl<C: Channel> Agent<C> {
                         .attempt_self_reflection(&sanitized_out, &sanitized_out)
                         .await?
                 {
-                    // FIXME(#1436): remaining tool calls in the batch are dropped on early return
-                    // (their results never enter message history). This is acceptable because
-                    // batches with failures are rare and self-reflection is rare; however, a
-                    // follow-up issue should address proper batch draining on early exit.
+                    // Push ToolResult for the current (failing) tool and synthetic results
+                    // for any remaining unexecuted tools so every ToolUse in the assistant
+                    // message has a matching ToolResult. Without this the conversation history
+                    // contains orphaned ToolUse blocks that cause Claude API 400 errors on the
+                    // next request (issue #1512).
+                    result_parts.push(MessagePart::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: sanitized_out.clone(),
+                        is_error: true,
+                    });
+                    for remaining_tc in tool_calls.iter().skip(idx + 1) {
+                        result_parts.push(MessagePart::ToolResult {
+                            tool_use_id: remaining_tc.id.clone(),
+                            content: "[skipped: prior tool failed]".to_owned(),
+                            is_error: true,
+                        });
+                    }
+                    let user_msg = Message::from_parts(Role::User, result_parts);
+                    // has_injection_flags=false is safe here: `sanitized_out` already passed
+                    // through ContentSanitizer above (line ~1763), and "[skipped: prior tool
+                    // failed]" is a hardcoded constant with no external content.
+                    self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
+                        .await;
+                    self.push_message(user_msg);
                     return Ok(());
                 }
             } else {
@@ -4801,6 +4822,343 @@ mod tests {
         assert!(
             !last.parts.is_empty(),
             "result parts must not be empty even when no active skills"
+        );
+    }
+
+    // R-NTP-7: self-reflection early return must not leave orphaned ToolUse blocks.
+    //
+    // Regression test for issue #1512: when a tool fails and attempt_self_reflection()
+    // returns true, the function previously returned without pushing ToolResult messages
+    // for any tool in the batch, leaving orphaned ToolUse blocks in the history that
+    // caused Claude API 400 errors on subsequent requests.
+    //
+    // This test exercises a batch of 3 tool calls where the first tool returns an error,
+    // reflection succeeds, and the early-return path is triggered. It verifies that every
+    // ToolUse ID in the assistant message has a matching ToolResult in the following
+    // User message.
+    //
+    // NOTE: The TempDir must be kept alive for the duration of the test. SkillRegistry uses
+    // lazy body loading: bodies are read from disk on first get_skill() call. If TempDir is
+    // dropped before get_skill() is called inside attempt_self_reflection(), the file is gone
+    // and get_skill() returns Err, causing attempt_self_reflection() to short-circuit with
+    // Ok(false), which prevents the early-return path from triggering.
+    #[tokio::test]
+    async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
+        use super::super::agent_tests::{MockChannel, mock_provider};
+        use crate::config::LearningConfig;
+        use zeph_llm::provider::MessagePart;
+
+        let executor = FixedOutputExecutor {
+            summary: "[error] command failed".into(),
+            is_err: false,
+        };
+        // Provider returns a text response for the reflection LLM call so that
+        // attempt_self_reflection() sees messages.len() increase and returns true.
+        let provider = mock_provider(vec!["reflection response".into()]);
+        let channel = MockChannel::new(vec![]);
+
+        // Build registry keeping TempDir alive so lazy body loading succeeds.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+        )
+        .unwrap();
+        let registry = zeph_skills::registry::SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                enabled: true,
+                ..LearningConfig::default()
+            });
+        // Activate the test-skill so attempt_self_reflection can look it up in the registry.
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![
+            make_tool_use_request("id-batch-1", "bash"),
+            make_tool_use_request("id-batch-2", "bash"),
+            make_tool_use_request("id-batch-3", "bash"),
+        ];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // Collect all ToolUse IDs from assistant messages and all ToolResult
+        // tool_use_ids from user messages.
+        let mut tool_use_ids: Vec<String> = Vec::new();
+        let mut tool_result_ids: Vec<String> = Vec::new();
+        for msg in &agent.messages {
+            for part in &msg.parts {
+                match part {
+                    MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
+                    MessagePart::ToolResult { tool_use_id, .. } => {
+                        tool_result_ids.push(tool_use_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Every ToolUse ID must have a matching ToolResult — no orphans.
+        assert_eq!(
+            tool_use_ids.len(),
+            3,
+            "expected 3 ToolUse parts in history; got: {tool_use_ids:?}"
+        );
+        for id in &tool_use_ids {
+            assert!(
+                tool_result_ids.contains(id),
+                "ToolUse id={id} has no matching ToolResult — orphaned block detected"
+            );
+        }
+        // Verify the first result is marked is_error and remaining two are [skipped].
+        let result_parts: Vec<_> = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| {
+                if let MessagePart::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } = p
+                {
+                    Some((tool_use_id.clone(), content.clone(), *is_error))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(result_parts.len(), 3, "expected exactly 3 ToolResult parts");
+        let (_, first_content, first_is_error) = &result_parts[0];
+        assert!(
+            *first_is_error,
+            "failing tool ToolResult must have is_error=true"
+        );
+        assert!(
+            !first_content.contains("[skipped"),
+            "failing tool content must not be [skipped], got: {first_content}"
+        );
+        for (id, content, is_error) in &result_parts[1..] {
+            assert!(
+                *is_error,
+                "skipped tool id={id} ToolResult must have is_error=true"
+            );
+            assert!(
+                content.contains("[skipped"),
+                "skipped tool id={id} content must contain [skipped], got: {content}"
+            );
+        }
+    }
+
+    // R-NTP-8: single tool that fails with self-reflection — must produce exactly one ToolResult.
+    //
+    // Regression test for #1512: N=1 case where early return previously left one orphaned ToolUse.
+    // TempDir must outlive the test for the same reason as R-NTP-7 (lazy skill body loading).
+    #[tokio::test]
+    async fn self_reflection_single_tool_failure_produces_one_tool_result() {
+        use super::super::agent_tests::{MockChannel, mock_provider};
+        use crate::config::LearningConfig;
+        use zeph_llm::provider::MessagePart;
+
+        let executor = FixedOutputExecutor {
+            summary: "[error] single tool error".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec!["reflection response".into()]);
+        let channel = MockChannel::new(vec![]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+        )
+        .unwrap();
+        let registry = zeph_skills::registry::SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                enabled: true,
+                ..LearningConfig::default()
+            });
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![make_tool_use_request("id-single-1", "bash")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let mut tool_use_ids: Vec<String> = Vec::new();
+        let mut tool_results: Vec<(String, bool)> = Vec::new();
+        for msg in &agent.messages {
+            for part in &msg.parts {
+                match part {
+                    MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        ..
+                    } => tool_results.push((tool_use_id.clone(), *is_error)),
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(
+            tool_use_ids.len(),
+            1,
+            "expected 1 ToolUse; got: {tool_use_ids:?}"
+        );
+        assert_eq!(
+            tool_results.len(),
+            1,
+            "expected 1 ToolResult; got: {tool_results:?}"
+        );
+        let (result_id, result_is_error) = &tool_results[0];
+        assert_eq!(
+            result_id, &tool_use_ids[0],
+            "ToolResult tool_use_id must match the single ToolUse id"
+        );
+        assert!(
+            *result_is_error,
+            "single failing tool ToolResult must have is_error=true"
+        );
+    }
+
+    // R-NTP-9: batch of 3 tools where 2nd fails and triggers self_reflection.
+    //
+    // First tool succeeds and its ToolResult is already in result_parts before the early return.
+    // Second tool fails → reflection fires → early return must append ToolResult for 2nd (is_error)
+    // and a synthetic [skipped] ToolResult for the 3rd. Total: 3 ToolResults for 3 ToolUses.
+    #[tokio::test]
+    async fn self_reflection_middle_tool_failure_no_orphans() {
+        use std::sync::{Arc, Mutex};
+
+        use super::super::agent_tests::{MockChannel, mock_provider};
+        use crate::config::LearningConfig;
+        use zeph_llm::provider::MessagePart;
+
+        // Executor that returns success for the first call and error for subsequent calls.
+        struct FirstSuccessExecutor {
+            call_count: Arc<Mutex<usize>>,
+        }
+
+        impl ToolExecutor for FirstSuccessExecutor {
+            fn execute(
+                &self,
+                _response: &str,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                std::future::ready(Ok(None))
+            }
+
+            fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                let tool_id = call.tool_id.clone();
+                let call_count = Arc::clone(&self.call_count);
+                async move {
+                    let mut count = call_count.lock().unwrap();
+                    let n = *count;
+                    *count += 1;
+                    drop(count);
+                    let summary = if n == 0 {
+                        "success output".to_owned()
+                    } else {
+                        "[error] tool failed".to_owned()
+                    };
+                    Ok(Some(ToolOutput {
+                        tool_name: tool_id,
+                        summary,
+                        blocks_executed: 1,
+                        diff: None,
+                        filter_stats: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                }
+            }
+        }
+
+        let executor = FirstSuccessExecutor {
+            call_count: Arc::new(Mutex::new(0)),
+        };
+        let provider = mock_provider(vec!["reflection response".into()]);
+        let channel = MockChannel::new(vec![]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+        )
+        .unwrap();
+        let registry = zeph_skills::registry::SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                enabled: true,
+                ..LearningConfig::default()
+            });
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".into());
+
+        let tool_calls = vec![
+            make_tool_use_request("id-mid-1", "bash"),
+            make_tool_use_request("id-mid-2", "bash"),
+            make_tool_use_request("id-mid-3", "bash"),
+        ];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let mut tool_use_ids: Vec<String> = Vec::new();
+        let mut tool_result_ids: Vec<String> = Vec::new();
+        for msg in &agent.messages {
+            for part in &msg.parts {
+                match part {
+                    MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
+                    MessagePart::ToolResult { tool_use_id, .. } => {
+                        tool_result_ids.push(tool_use_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(
+            tool_use_ids.len(),
+            3,
+            "expected 3 ToolUse parts; got: {tool_use_ids:?}"
+        );
+        for id in &tool_use_ids {
+            assert!(
+                tool_result_ids.contains(id),
+                "ToolUse id={id} has no matching ToolResult — orphaned block detected"
+            );
+        }
+        assert_eq!(
+            tool_result_ids.len(),
+            3,
+            "expected exactly 3 ToolResult parts; got: {tool_result_ids:?}"
         );
     }
 }
