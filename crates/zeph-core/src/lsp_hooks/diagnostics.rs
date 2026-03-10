@@ -66,7 +66,7 @@ pub(super) async fn fetch_diagnostics(
     sanitizer: &ContentSanitizer,
 ) -> Option<LspNote> {
     let timeout = std::time::Duration::from_secs(config.call_timeout_secs);
-    let args = serde_json::json!({ "path": file_path });
+    let args = serde_json::json!({ "file_path": file_path });
 
     let call_result = match tokio::time::timeout(
         timeout,

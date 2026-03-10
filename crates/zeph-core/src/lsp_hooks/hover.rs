@@ -79,7 +79,7 @@ pub(super) async fn fetch_hover(
     let mut entries: Vec<String> =
         futures::stream::iter(positions.iter().map(|(line, character)| {
             let args = serde_json::json!({
-                "path": file_path,
+                "file_path": file_path,
                 "line": line,
                 "character": character,
             });
