@@ -2430,8 +2430,8 @@ impl<C: Channel> Agent<C> {
                 None,
                 self.memory_state.conversation_id,
                 outcome_type,
-                Some(feedback),
                 None,
+                Some(feedback),
             )
             .await?;
 
