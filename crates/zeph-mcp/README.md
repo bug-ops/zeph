@@ -14,7 +14,7 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 ## Key Modules
 
 - **client** — low-level MCP transport and session handling
-- **manager** — `McpManager`, `McpTransport`, `ServerEntry` for multi-server lifecycle; command allowlist validation (npx, uvx, node, python3, docker, mcpls, etc.), env var blocklist (LD_PRELOAD, DYLD_*, NODE_OPTIONS, etc.), and path separator rejection
+- **manager** — `McpManager`, `McpTransport`, `ServerEntry` for multi-server lifecycle; command allowlist validation (npx, uvx, node, python3, docker, mcpls, etc.), env var blocklist (LD_PRELOAD, DYLD_*, NODE_OPTIONS, etc.), and path separator rejection; statically configured servers (from `[[mcp.servers]]`) bypass SSRF validation to allow connections to `localhost` and private IPs — dynamically added servers retain full SSRF protection
 - **executor** — `McpToolExecutor` bridging MCP tools into the `ToolExecutor` trait
 - **registry** — `McpToolRegistry` for tool lookup and optional Qdrant-backed search
 - **tool** — `McpTool` wrapper with schema and metadata

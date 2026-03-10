@@ -15,7 +15,7 @@ Implements the Agent-to-Agent (A2A) protocol over JSON-RPC 2.0, enabling Zeph to
 
 - **client** — `A2aClient` for sending tasks and messages to remote agents
 - **server** — `A2aServer` exposing an A2A-compliant endpoint with `ProcessorEvent` streaming via `mpsc::Sender` (requires `server` feature)
-- **card** — `AgentCardBuilder` for constructing agent capability cards
+- **card** — `AgentCardBuilder` for constructing agent capability cards; includes `protocolVersion` field set to `A2A_PROTOCOL_VERSION` constant (`"0.2.1"`) in the default card served at `/.well-known/agent.json`
 - **discovery** — `AgentRegistry` for agent lookup and registration
 - **jsonrpc** — JSON-RPC 2.0 request/response types
 - **types** — shared protocol types (Task, Message, Artifact, etc.)

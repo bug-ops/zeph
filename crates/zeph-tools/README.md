@@ -55,7 +55,7 @@ The `ShellExecutor` enforces two layers of protection:
 2. **Confirmation patterns** (`confirm_patterns`) — substring scan that triggers `ConfirmationRequired` before execution. Defaults include `$(`, `` ` ``, `<(`, `>(`, `<<<`, and `eval `.
 
 > [!WARNING]
-> `find_blocked_command` does **not** detect commands hidden inside process substitution (`<(...)` / `>(...)`), here-strings (`<<<`), `eval`/`bash -c` string arguments, or variable expansion (`$cmd`). These constructs are caught by `confirm_patterns` instead, which requests user confirmation but does not block execution outright. For high-security deployments, complement this filter with OS-level sandboxing.
+> `find_blocked_command` does **not** detect commands hidden inside `eval`/`bash -c` string arguments or variable expansion (`$cmd`). Backtick substitution (`` `cmd` ``), `$(cmd)`, and process substitution (`<(...)` / `>(...)`) are now detected by the blocklist tokenizer; they are also covered by `confirm_patterns` as a second layer. For high-security deployments, complement this filter with OS-level sandboxing.
 
 ## Installation
 
