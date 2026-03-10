@@ -21,6 +21,22 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Agent received a shutdown signal and exited the run loop cleanly.
+    #[error("agent shut down")]
+    Shutdown,
+
+    /// The context window was exhausted and could not be compacted further.
+    #[error("context exhausted: {0}")]
+    ContextExhausted(String),
+
+    /// A tool call exceeded its configured timeout.
+    #[error("tool timed out: {tool_name}")]
+    ToolTimeout { tool_name: String },
+
+    /// Structured output did not conform to the expected JSON schema.
+    #[error("schema validation failed: {0}")]
+    SchemaValidation(String),
+
     #[error("{0}")]
     Other(String),
 }

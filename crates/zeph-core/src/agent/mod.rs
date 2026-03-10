@@ -1377,7 +1377,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if channel I/O or LLM communication fails.
     #[allow(clippy::too_many_lines)]
-    pub async fn run(&mut self) -> anyhow::Result<()> {
+    pub async fn run(&mut self) -> Result<(), error::AgentError> {
         if let Some(mut rx) = self.warmup_ready.take()
             && !*rx.borrow()
         {

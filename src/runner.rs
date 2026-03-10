@@ -886,7 +886,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     tokio::spawn(forward_status_to_stderr(status_rx));
     let result = Box::pin(agent.run()).await;
     agent.shutdown().await;
-    result
+    Ok(result?)
 }
 
 /// Print experiment results from `SQLite` and exit. Does not require an LLM provider.
