@@ -33,6 +33,7 @@
 - [IDE Integration](guides/ide-integration.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
 - [Enable Self-Learning Skills](guides/self-learning.md)
+- [Migrate Config](guides/migrate-config.md)
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)
 

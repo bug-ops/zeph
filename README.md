@@ -21,8 +21,9 @@ Zeph is a Rust AI agent built around one principle: **every token in the context
 
 ```bash
 curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh
-zeph init   # interactive setup wizard
-zeph        # start the agent
+zeph init                                            # interactive setup wizard
+zeph migrate-config --config config.toml --diff      # check for new options after upgrade
+zeph                                                 # start the agent
 ```
 
 > [!TIP]
@@ -50,6 +51,7 @@ zeph        # start the agent
 | **Benchmark & evaluation** | TOML benchmark datasets with LLM-as-Judge scoring. Run any subject model against a `BenchmarkSet`, score responses in parallel via a separate judge model with structured JSON output (`JudgeOutput` schema), and collect aggregate `EvalReport` metrics (mean score, p50/p95 latency, per-case token tracking). Budget enforcement via atomic token counter, semaphore-based concurrency, and XML boundary tags for subject response isolation. Enabled by the `experiments` feature flag (included in `full`). |
 | **Daemon & scheduler** | HTTP webhook gateway with bearer auth. Cron-based periodic tasks and one-shot deferred tasks with SQLite persistence — add, update, or cancel tasks at runtime via natural language using the built-in `scheduler` skill. Experiment sessions can run on a cron schedule via `TaskKind::Experiment`, combining `scheduler` and `experiments` feature flags. Background mode. [→ Daemon](https://bug-ops.github.io/zeph/advanced/daemon.html) |
 | **Self-experimentation** | Autonomous LLM config experimentation engine (inspired by [autoresearch](https://github.com/karpathy/autoresearch)). Parameter variation engine with pluggable strategies (grid sweep, random sampling, neighborhood search) explores temperature, top-p, top-k, frequency/presence penalty one parameter at a time, evaluates each variant via LLM-as-judge scoring, and keeps improvements that pass a configurable threshold. `SearchSpace` defines per-parameter ranges and step sizes; `ConfigSnapshot` captures the full LLM config for reproducible rollback. Scheduled runs via cron with `ExperimentSchedule` config. CLI flags: `--experiment-run` (run a single experiment session and exit), `--experiment-report` (print results summary and exit). TUI `/experiment` commands: `start`, `stop`, `status`, `report`, `best`. Interactive setup via `zeph init` wizard. Enabled by the `experiments` feature flag (opt-in, included in `full`). |
+| **Config migration** | `zeph migrate-config [--config PATH] [--in-place] [--diff]` — upgrades an existing config file after a version bump. Missing sections are appended as commented-out blocks with documentation; existing values are never touched. Output is idempotent and can be previewed with `--diff` before applying. [→ Migrate Config](https://bug-ops.github.io/zeph/guides/migrate-config.html) |
 | **Single binary** | ~15 MB, no runtime dependencies, ~50 ms startup, ~20 MB idle memory. |
 
 ```text

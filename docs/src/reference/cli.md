@@ -18,6 +18,7 @@ zeph [OPTIONS] [COMMAND]
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 | `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
+| `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
 
 When no subcommand is given, Zeph starts the agent loop.
 
@@ -147,6 +148,29 @@ zeph vault get ZEPH_CLAUDE_API_KEY
 zeph vault rm ZEPH_TELEGRAM_TOKEN
 ```
 
+### `zeph migrate-config`
+
+Update an existing config file with all parameters added since it was last generated. Missing sections are appended as commented-out blocks with documentation. Existing values are never modified.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config <PATH>` | `-c` | Path to the config file (defaults to standard search path) |
+| `--in-place` | | Write result back to the same file atomically |
+| `--diff` | | Print a unified diff to stdout instead of the full file |
+
+```bash
+# Preview what would be added
+zeph migrate-config --config config.toml --diff
+
+# Apply in place
+zeph migrate-config --config config.toml --in-place
+
+# Print migrated config to stdout
+zeph migrate-config --config config.toml
+```
+
+See [Migrate Config](../guides/migrate-config.md) for a full walkthrough.
+
 ### `zeph router`
 
 Inspect or reset the Thompson Sampling router state file.
@@ -239,6 +263,22 @@ Display the current file logging configuration and recent log entries.
 ```
 
 See [Logging](../concepts/logging.md) for configuration details.
+
+### `/migrate-config`
+
+Show a diff of config changes that `migrate-config` would apply. Opens the command palette entry `config:migrate`.
+
+| Usage | Description |
+|-------|-------------|
+| `/migrate-config` | Display the migration diff as a system message |
+
+```bash
+> /migrate-config
+```
+
+To apply changes, use the CLI: `zeph migrate-config --config <path> --in-place`.
+
+See [Migrate Config](../guides/migrate-config.md) for details.
 
 ### `/debug-dump`
 
