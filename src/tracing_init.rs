@@ -40,7 +40,9 @@ fn resolve_log_path(
 pub(crate) fn init_tracing(logging: &LoggingConfig) -> Option<WorkerGuard> {
     let stderr_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let stderr_layer = tracing_subscriber::fmt::layer().with_filter(stderr_filter);
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_filter);
 
     let effective_path = if logging.file.is_empty() {
         None
