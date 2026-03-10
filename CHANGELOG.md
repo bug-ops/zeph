@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Consolidate `is_private_ip` (SSRF IP check) into `zeph-tools::net::is_private_ip` (canonical superset with CGNAT `100.64.0.0/10`); update `zeph-mcp`, `zeph-acp`, `zeph-tools/scrape` to use it; upgrade A2A's own copy with CGNAT range (DEDUP-01)
+- Consolidate `cosine_similarity` into `zeph-memory::math::cosine_similarity` (single-pass loop, length guard); update all callers in `zeph-memory` and `zeph-skills` (DEDUP-02)
+- Add `text::truncate_chars(&str, usize) -> &str` to `zeph-core::text`; replace `context/mod.rs::truncate_chars` with a re-export of the canonical version (DEDUP-03)
+- Split all four `#[cfg(test)]` blocks from `agent/mod.rs` (~3190 lines) into `agent/tests.rs`; reduce `agent/mod.rs` from 6282 to ~3096 lines (SPLIT-01)
+- Split `zeph-acp/agent.rs` into `agent/mod.rs` (2137 lines), `agent/helpers.rs` (547 lines helpers), `agent/tests.rs` (3396 lines tests); reduce main impl file from 6097 to 2137 lines (SPLIT-02)
+- Update insta snapshot `config_default_snapshot` to reflect removal of deprecated `[lsp]` config section
 - Split `agent/tool_execution.rs` (5426 lines) into `tool_execution/mod.rs`, `tool_execution/legacy.rs`, `tool_execution/native.rs` for improved navigability (ARCH-06)
 - Split `agent/context.rs` (5590 lines) into `context/mod.rs`, `context/assembly.rs`, `context/summarization.rs` for improved navigability (ARCH-07)
 - Replace 11-parameter `Channel::send_tool_output` signature with `ToolOutputEvent` struct; replace 4-parameter `send_tool_start` with `ToolStartEvent` struct (ARCH-02)

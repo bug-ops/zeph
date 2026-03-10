@@ -13,6 +13,7 @@ use crate::config::OrchestrationConfig;
 use crate::sanitizer::{
     ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind,
 };
+use crate::text::truncate_chars;
 
 /// Collects results from completed tasks and produces a final synthesis.
 #[allow(async_fn_in_trait)]
@@ -134,17 +135,6 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
                 Ok(build_fallback(graph, &self.sanitizer, per_task))
             }
         }
-    }
-}
-
-/// Truncate `s` to at most `max_chars` Unicode scalar values.
-fn truncate_chars(s: &str, max_chars: usize) -> &str {
-    if max_chars == 0 {
-        return "";
-    }
-    match s.char_indices().nth(max_chars) {
-        Some((byte_idx, _)) => &s[..byte_idx],
-        None => s,
     }
 }
 
