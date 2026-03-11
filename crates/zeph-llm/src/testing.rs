@@ -8,13 +8,14 @@
 //! HTTP calls made by [`ClaudeProvider`], [`OpenAiProvider`], or the
 //! compatible-endpoint provider.
 
+use std::fmt::Write as _;
 use wiremock::ResponseTemplate;
 
 // ---------------------------------------------------------------------------
 // OpenAI-compatible response shapes
 // ---------------------------------------------------------------------------
 
-/// Non-streaming OpenAI chat completion response.
+/// Non-streaming `OpenAI` chat completion response.
 ///
 /// Compatible with `OpenAiProvider` and `CompatibleProvider`.
 #[must_use]
@@ -40,7 +41,7 @@ pub fn openai_chat_response(content: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(body)
 }
 
-/// OpenAI 429 rate-limit response.
+/// `OpenAI` 429 rate-limit response.
 #[must_use]
 pub fn openai_rate_limit_response() -> ResponseTemplate {
     let body = serde_json::json!({
@@ -53,7 +54,7 @@ pub fn openai_rate_limit_response() -> ResponseTemplate {
     ResponseTemplate::new(429).set_body_json(body)
 }
 
-/// OpenAI 401 auth-error response.
+/// `OpenAI` 401 auth-error response.
 #[must_use]
 pub fn openai_auth_error_response() -> ResponseTemplate {
     let body = serde_json::json!({
@@ -66,7 +67,7 @@ pub fn openai_auth_error_response() -> ResponseTemplate {
     ResponseTemplate::new(401).set_body_json(body)
 }
 
-/// OpenAI 500 server-error response.
+/// `OpenAI` 500 server-error response.
 #[must_use]
 pub fn openai_server_error_response() -> ResponseTemplate {
     ResponseTemplate::new(500).set_body_string("Internal Server Error")
@@ -88,7 +89,7 @@ pub fn openai_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
                 "finish_reason": null
             }]
         });
-        body.push_str(&format!("data: {}\n\n", event));
+        let _ = write!(body, "data: {event}\n\n");
     }
     let stop_event = serde_json::json!({
         "id": "chatcmpl-test",
@@ -99,7 +100,7 @@ pub fn openai_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
             "finish_reason": "stop"
         }]
     });
-    body.push_str(&format!("data: {stop_event}\n\n"));
+    let _ = write!(body, "data: {stop_event}\n\n");
     body.push_str("data: [DONE]\n\n");
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
@@ -162,9 +163,10 @@ pub fn claude_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
 
     for chunk in chunks {
         let escaped = chunk.replace('\\', "\\\\").replace('"', "\\\"");
-        body.push_str(&format!(
+        let _ = write!(
+            body,
             "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{escaped}\"}}}}\n\n"
-        ));
+        );
     }
 
     body.push_str(
@@ -199,8 +201,8 @@ pub fn ollama_chat_response(content: &str) -> ResponseTemplate {
             "content": content
         },
         "done": true,
-        "total_duration": 1000000,
-        "load_duration": 100000,
+        "total_duration": 1_000_000,
+        "load_duration": 100_000,
         "prompt_eval_count": 10,
         "eval_count": 5
     });

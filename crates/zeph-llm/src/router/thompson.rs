@@ -238,8 +238,8 @@ mod tests {
         let mut state = ThompsonState::default();
         state.update("p", true);
         let dist = &state.distributions["p"];
-        assert_eq!(dist.alpha, 2.0);
-        assert_eq!(dist.beta, 1.0);
+        assert!((dist.alpha - 2.0).abs() < f64::EPSILON);
+        assert!((dist.beta - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -247,8 +247,8 @@ mod tests {
         let mut state = ThompsonState::default();
         state.update("p", false);
         let dist = &state.distributions["p"];
-        assert_eq!(dist.alpha, 1.0);
-        assert_eq!(dist.beta, 2.0);
+        assert!((dist.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((dist.beta - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -273,9 +273,9 @@ mod tests {
         state.save(&path).unwrap();
 
         let loaded = ThompsonState::load(&path);
-        assert_eq!(loaded.distributions["provider_a"].alpha, 3.0);
-        assert_eq!(loaded.distributions["provider_a"].beta, 1.0);
-        assert_eq!(loaded.distributions["provider_b"].beta, 2.0);
+        assert!((loaded.distributions["provider_a"].alpha - 3.0).abs() < f64::EPSILON);
+        assert!((loaded.distributions["provider_a"].beta - 1.0).abs() < f64::EPSILON);
+        assert!((loaded.distributions["provider_b"].beta - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -317,19 +317,19 @@ mod tests {
         state.update("a_provider", false);
         state.update("m_provider", true);
 
-        let stats = state.provider_stats();
-        assert_eq!(stats.len(), 3);
-        assert_eq!(stats[0].0, "a_provider");
-        assert_eq!(stats[1].0, "m_provider");
-        assert_eq!(stats[2].0, "z_provider");
+        let provider_stats = state.provider_stats();
+        assert_eq!(provider_stats.len(), 3);
+        assert_eq!(provider_stats[0].0, "a_provider");
+        assert_eq!(provider_stats[1].0, "m_provider");
+        assert_eq!(provider_stats[2].0, "z_provider");
     }
 
     /// Statistical correctness test: a provider with high alpha should be selected
     /// disproportionately more often than one with high beta.
     ///
-    /// After recording 50 successes for provider_a and 50 failures for provider_b,
+    /// After recording 50 successes for `provider_a` and 50 failures for `provider_b`,
     /// the Beta(51,1) vs Beta(1,51) difference is dramatic. Over 1000 trials,
-    /// provider_a should be selected at least 90% of the time.
+    /// `provider_a` should be selected at least 90% of the time.
     #[test]
     fn high_alpha_provider_selected_disproportionately() {
         let mut state = ThompsonState::default();
@@ -349,7 +349,10 @@ mod tests {
 
         // With Beta(51, 1) vs Beta(1, 51), provider_a wins >>99% of trials.
         // We use a conservative threshold of 90% to avoid flakiness.
-        let ratio = a_wins as f64 / trials as f64;
+        let Ok(wins) = u32::try_from(a_wins) else {
+            panic!("a_wins overflowed u32");
+        };
+        let ratio = f64::from(wins) / 1000.0;
         assert!(
             ratio > 0.90,
             "provider_a should be selected >90% of the time, got {ratio:.2}"

@@ -570,7 +570,7 @@ mod tests {
             .upsert_entity("C", "C", EntityType::Concept, None)
             .await
             .unwrap();
-        let _iso = store
+        let iso = store
             .upsert_entity("Isolated", "Isolated", EntityType::Concept, None)
             .await
             .unwrap();
@@ -593,7 +593,7 @@ mod tests {
         let communities = store.all_communities().await.unwrap();
         assert_eq!(communities.len(), 1);
         assert!(
-            !communities[0].entity_ids.contains(&_iso),
+            !communities[0].entity_ids.contains(&iso),
             "isolated entity must not be in any community"
         );
     }
@@ -795,7 +795,7 @@ mod tests {
     fn test_scrub_content_bidi_overrides() {
         // U+202A LEFT-TO-RIGHT EMBEDDING, U+202E RIGHT-TO-LEFT OVERRIDE,
         // U+2066 LEFT-TO-RIGHT ISOLATE, U+2069 POP DIRECTIONAL ISOLATE.
-        let input = format!("safe\u{202A}inject\u{202E}end\u{2066}iso\u{2069}done");
+        let input = "safe\u{202A}inject\u{202E}end\u{2066}iso\u{2069}done".to_string();
         assert_eq!(scrub_content(&input), "safeinjectendisodone");
     }
 
@@ -803,14 +803,14 @@ mod tests {
     fn test_scrub_content_zero_width() {
         // U+200B ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER,
         // U+200F RIGHT-TO-LEFT MARK.
-        let input = format!("a\u{200B}b\u{200C}c\u{200D}d\u{200F}e");
+        let input = "a\u{200B}b\u{200C}c\u{200D}d\u{200F}e".to_string();
         assert_eq!(scrub_content(&input), "abcde");
     }
 
     #[test]
     fn test_scrub_content_bom() {
         // U+FEFF BYTE ORDER MARK must be stripped.
-        let input = format!("\u{FEFF}hello");
+        let input = "\u{FEFF}hello".to_string();
         assert_eq!(scrub_content(&input), "hello");
     }
 
@@ -909,7 +909,7 @@ mod tests {
         );
     }
 
-    /// #1262: Second detect_communities call with no graph changes must produce 0 LLM calls.
+    /// #1262: Second `detect_communities` call with no graph changes must produce 0 LLM calls.
     #[tokio::test]
     async fn test_incremental_detection_no_changes_skips_llm() {
         let store = setup().await;
@@ -1069,7 +1069,7 @@ mod tests {
     /// Domain separator test: entity/edge sequences with same raw bytes must not collide.
     ///
     /// Without domain separators, entities=[1,2] edges=[3] would hash identically to
-    /// entities=[1] edges=[2,3] (same concatenated le_bytes). With separators they differ.
+    /// entities=[1] edges=[2,3] (same concatenated `le_bytes`). With separators they differ.
     #[test]
     fn test_compute_fingerprint_domain_separation() {
         let fp_a = compute_partition_fingerprint(&[1, 2], &[3]);

@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn attr_missing_returns_empty() {
-        let html = r#"<a>No href</a>"#;
+        let html = r"<a>No href</a>";
         let result =
             parse_and_extract(html, "a", &ExtractMode::Attr("href".to_owned()), 10).unwrap();
         assert!(result.starts_with("No results for selector:"));
@@ -944,7 +944,7 @@ mod tests {
     // 127.0.0.1, and tests call `fetch_html` directly (bypassing `validate_url`) to avoid
     // the SSRF guard that would otherwise block loopback connections.
 
-    /// Helper: returns executor + (server_url, server_addr) from a running wiremock mock server.
+    /// Helper: returns executor + (`server_url`, `server_addr`) from a running wiremock mock server.
     /// The server address is passed to `fetch_html` via `resolve_to_addrs` so the client
     /// connects to the mock instead of doing a real DNS lookup.
     async fn mock_server_executor() -> (WebScrapeExecutor, wiremock::MockServer) {
@@ -957,7 +957,7 @@ mod tests {
         (executor, server)
     }
 
-    /// Parses the mock server's URI into (host_str, socket_addr) for use with `build_client`.
+    /// Parses the mock server's URI into (`host_str`, `socket_addr`) for use with `build_client`.
     fn server_host_and_addr(server: &wiremock::MockServer) -> (String, Vec<std::net::SocketAddr>) {
         let uri = server.uri();
         let url = Url::parse(&uri).unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
 
     // --- fetch_html redirect logic: constant and validation unit tests ---
 
-    /// MAX_REDIRECTS is 3; the 4th redirect attempt must be rejected.
+    /// `MAX_REDIRECTS` is 3; the 4th redirect attempt must be rejected.
     /// Verify the boundary is correct by inspecting the constant value.
     #[test]
     fn max_redirects_constant_is_three() {
@@ -1340,7 +1340,7 @@ mod tests {
     }
 
     /// Verifies that a Location-less redirect would produce an error string containing the
-    /// expected message, matching the error path in fetch_html.
+    /// expected message, matching the error path in `fetch_html`.
     #[test]
     fn redirect_no_location_error_message() {
         let err = std::io::Error::other("redirect with no Location");
@@ -1412,9 +1412,8 @@ mod tests {
         let next = base.join(location).unwrap();
         let err = validate_url(next.as_str()).unwrap_err();
         assert!(matches!(err, ToolError::Blocked { .. }));
-        let cmd = match err {
-            ToolError::Blocked { command } => command,
-            _ => panic!("expected Blocked"),
+        let ToolError::Blocked { command: cmd } = err else {
+            panic!("expected Blocked");
         };
         assert!(
             cmd.contains("private") || cmd.contains("scheme"),
@@ -1432,7 +1431,7 @@ mod tests {
         assert!(matches!(err, ToolError::Blocked { .. }));
     }
 
-    /// Verifies that a chain of 3 valid public redirects passes validate_url at every hop.
+    /// Verifies that a chain of 3 valid public redirects passes `validate_url` at every hop.
     #[test]
     fn redirect_chain_three_hops_all_public() {
         let hops = [
@@ -1447,8 +1446,8 @@ mod tests {
 
     // --- SSRF redirect chain defense ---
 
-    /// Verifies that a redirect Location pointing to a private IP is rejected by validate_url
-    /// before any connection attempt — simulating the validation step inside fetch_html.
+    /// Verifies that a redirect Location pointing to a private IP is rejected by `validate_url`
+    /// before any connection attempt — simulating the validation step inside `fetch_html`.
     #[test]
     fn redirect_to_private_ip_rejected_by_validate_url() {
         // These would appear as Location headers in a redirect response.
@@ -1714,7 +1713,7 @@ mod tests {
 
     // --- audit logging ---
 
-    /// Helper: build an AuditLogger writing to a temp file, and return the logger + path.
+    /// Helper: build an `AuditLogger` writing to a temp file, and return the logger + path.
     async fn make_file_audit_logger(
         dir: &tempfile::TempDir,
     ) -> (

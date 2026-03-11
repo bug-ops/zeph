@@ -491,6 +491,7 @@ mod tests {
     use crate::ollama::OllamaProvider;
     use crate::provider::MessageMetadata;
     use crate::provider::Role;
+    use tokio::io::AsyncReadExt;
 
     fn user_msg(content: &str) -> Vec<Message> {
         vec![Message {
@@ -541,7 +542,6 @@ mod tests {
                     }
                     // Consume body
                     let mut body = vec![0u8; content_length];
-                    use tokio::io::AsyncReadExt;
                     buf_reader.read_exact(&mut body).await.unwrap_or(0);
 
                     let resp = format!(
@@ -897,7 +897,7 @@ mod tests {
         let orch = ModelOrchestrator::new(routes, providers, "bad".into(), "bad".into()).unwrap();
 
         let result = orch.chat_stream(&user_msg("hello")).await;
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 
     #[tokio::test]

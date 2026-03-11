@@ -205,7 +205,7 @@ mod tests {
     fn posterior_weight_clamp_at_zero() {
         // very few successes, many failures — should clamp to 0.0, not negative
         let w = posterior_weight(0, 1000);
-        assert_eq!(w, 0.0);
+        assert!(w.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         for s in [0u32, 1, 5, 50, 100] {
             for f in [0u32, 1, 5, 50, 100] {
                 let w = posterior_weight(s, f);
-                assert!(w >= 0.0 && w <= 1.0, "out of [0,1] at s={s} f={f}: {w}");
+                assert!((0.0..=1.0).contains(&w), "out of [0,1] at s={s} f={f}: {w}");
             }
         }
     }

@@ -2541,9 +2541,9 @@ mod tests {
         assert!(user_json.contains("\"tool_use_id\":\"t1\""));
     }
 
-    /// FIX2 regression: an assistant message with a ToolUse part that has NO matching ToolResult
-    /// in the next user message must emit a text block instead of a tool_use block, preventing
-    /// Claude API 400 errors caused by unmatched tool_use/tool_result pairs.
+    /// FIX2 regression: an assistant message with a `ToolUse` part that has NO matching
+    /// `ToolResult` in the next user message must emit a text block instead of a `tool_use`
+    /// block, preventing Claude API 400 errors caused by unmatched `tool_use/tool_result` pairs.
     #[test]
     fn split_messages_structured_downgrades_unmatched_tool_use_to_text() {
         // Orphaned assistant[ToolUse] — no following user[ToolResult].
@@ -2586,8 +2586,8 @@ mod tests {
         );
     }
 
-    /// FIX2 regression: a matched tool_use/tool_result pair must still emit a real tool_use block
-    /// — the defensive check must not break valid exchanges.
+    /// FIX2 regression: a matched `tool_use/tool_result` pair must still emit a real
+    /// `tool_use` block. The defensive check must not break valid exchanges.
     #[test]
     fn split_messages_structured_preserves_matched_tool_use_block() {
         let messages = vec![
@@ -2620,10 +2620,10 @@ mod tests {
         assert!(assistant_json.contains("\"id\":\"matched_id\""));
     }
 
-    /// RC1 regression: when a ToolUse was downgraded to text (because the next user message had
-    /// no matching ToolResult), the corresponding ToolResult in the user message must ALSO be
-    /// downgraded to text instead of being emitted as a native ToolResult block.
-    /// Previously only the ToolUse was downgraded, leaving an orphaned ToolResult that caused
+    /// RC1 regression: when a `ToolUse` was downgraded to text (because the next user message had
+    /// no matching `ToolResult`), the corresponding `ToolResult` in the user message must ALSO be
+    /// downgraded to text instead of being emitted as a native `ToolResult` block.
+    /// Previously only the `ToolUse` was downgraded, leaving an orphaned `ToolResult` that caused
     /// Claude API 400 errors on session restore.
     #[test]
     fn split_structured_downgrades_orphaned_tool_result() {
@@ -2737,8 +2737,8 @@ mod tests {
 
     /// RC4 regression: system messages interleaved in the message list must NOT appear in the
     /// `visible` index array used by `split_messages_structured`. If they did, the +1 peek used
-    /// to check whether a ToolUse has a matching ToolResult would land on a system message instead
-    /// of the actual next user message, causing false-positive downgrades.
+    /// to check whether a `ToolUse` has a matching `ToolResult` would land on a system message
+    /// instead of the actual next user message, causing false-positive downgrades.
     #[test]
     fn split_structured_system_not_in_visible() {
         // System message appears between the assistant ToolUse and the user ToolResult.
@@ -2877,7 +2877,7 @@ mod tests {
                     _ => panic!("expected Image block second"),
                 }
             }
-            _ => panic!("expected Blocks content"),
+            StructuredContent::Text(_) => panic!("expected Blocks content"),
         }
     }
 
@@ -2938,7 +2938,7 @@ mod tests {
     }
 
     /// Spawn a minimal HTTP server that captures request bodies and returns fixed JSON responses.
-    /// Returns (port, captured_bodies_receiver, join_handle).
+    /// Returns `(port, captured_bodies_receiver, join_handle)`.
     async fn spawn_capture_server(
         responses: Vec<String>,
     ) -> (

@@ -322,7 +322,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().join("assets");
         std::fs::create_dir(&assets).unwrap();
-        std::fs::write(assets.join("logo.png"), &[0u8; 4]).unwrap();
+        std::fs::write(assets.join("logo.png"), [0u8; 4]).unwrap();
 
         let skills = vec![make_skill_with_dir(
             "test",

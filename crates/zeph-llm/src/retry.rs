@@ -76,13 +76,13 @@ mod tests {
     #[test]
     fn retry_delay_exponential_backoff() {
         // Without a response, we can't test header parsing, but verify the math
-        assert_eq!(BASE_BACKOFF_SECS << 0, 1);
+        assert_eq!(BASE_BACKOFF_SECS, 1);
         assert_eq!(BASE_BACKOFF_SECS << 1, 2);
         assert_eq!(BASE_BACKOFF_SECS << 2, 4);
     }
 
     /// Spawn a minimal HTTP server that returns a fixed response for each connection.
-    /// Returns (port, join_handle).
+    /// Returns `(port, join_handle)`.
     async fn spawn_mock_server(responses: Vec<&'static str>) -> (u16, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::TcpListener;

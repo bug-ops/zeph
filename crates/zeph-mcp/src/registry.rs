@@ -264,7 +264,7 @@ mod tests {
         };
         let dbg = format!("{stats:?}");
         assert!(dbg.contains("added"));
-        assert!(dbg.contains("1"));
+        assert!(dbg.contains('1'));
     }
 
     fn make_registry(url: &str) -> McpToolRegistry {

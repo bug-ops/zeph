@@ -688,7 +688,7 @@ mod tests {
         // Insert raw invalid bytes directly into vector_points table
         // 3 bytes cannot be cast to f32 (needs multiples of 4)
         let corrupt_blob: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
-        let payload_json = r#"{}"#;
+        let payload_json = r"{}";
         sqlx::query(
             "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?)",
         )

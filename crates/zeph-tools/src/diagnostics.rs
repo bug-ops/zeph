@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn diagnostics_params_path_optional() {
-        let p: DiagnosticsParams = serde_json::from_str(r#"{}"#).unwrap();
+        let p: DiagnosticsParams = serde_json::from_str(r"{}").unwrap();
         assert!(p.path.is_none());
         assert_eq!(p.level, DiagnosticsLevel::Check);
     }

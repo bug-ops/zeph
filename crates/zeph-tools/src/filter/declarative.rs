@@ -1282,7 +1282,7 @@ mod tests {
     fn strip_noise_removes_matching_lines() {
         let f = strip_noise_filter(&[r"^noise:", r"^\s*$"]);
         let raw = "noise: ignore this\nkeep this\nnoise: also ignore\nkeep too";
-        let result = f.filter("cmd", raw, 0);
+        let result = f.filter("cmd", &raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Full);
         assert!(result.output.contains("keep this"));
         assert!(result.output.contains("keep too"));
@@ -1293,7 +1293,7 @@ mod tests {
     fn strip_noise_returns_fallback_when_nothing_removed() {
         let f = strip_noise_filter(&[r"^NOMATCH"]);
         let raw = "line one\nline two";
-        let result = f.filter("cmd", raw, 0);
+        let result = f.filter("cmd", &raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
         assert!(result.output.contains("line one"));
     }
@@ -1591,7 +1591,7 @@ index ghi..jkl 100644
         // Build a diff with more than 5 lines
         let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n".to_owned();
         for i in 0..10 {
-            raw.push_str(&format!("+line {i}\n"));
+            let _ = write!(raw, "+line {i}\n");
         }
         let result = f.filter("git diff", &raw, 0);
         assert!(result.output.contains("truncated from"));
@@ -1940,8 +1940,10 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("filters.toml"), toml).unwrap();
 
-        let mut config = FilterConfig::default();
-        config.filters_path = Some(dir.path().to_path_buf());
+        let config = FilterConfig {
+            filters_path: Some(dir.path().to_path_buf()),
+            ..FilterConfig::default()
+        };
 
         let registry = OutputFilterRegistry::default_filters(&config);
         let raw = "npm warn deprecated pkg\nnpm notice created tarball\nDone installing";
@@ -2059,7 +2061,7 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
         // 10 noise lines + 3 kept → kept.len()=3 < long_output_threshold=2? No, 3>2, so truncation
         let mut raw = String::new();
         for i in 0..10 {
-            raw.push_str(&format!("NOISE line {i}\n"));
+            let _ = write!(raw, "NOISE line {i}\n");
         }
         raw.push_str("kept 1\nkept 2\nkept 3\n");
         // Must not panic

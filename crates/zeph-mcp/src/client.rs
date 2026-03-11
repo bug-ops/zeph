@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn is_private_ip_blocks_loopback() {
         use std::net::Ipv4Addr;
-        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 
     #[test]

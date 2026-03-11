@@ -102,7 +102,7 @@ mod tests {
 
         let assets = dir.path().join("assets");
         std::fs::create_dir(&assets).unwrap();
-        std::fs::write(assets.join("logo.png"), &[0u8; 4]).unwrap();
+        std::fs::write(assets.join("logo.png"), [0u8; 4]).unwrap();
 
         let resources = discover_resources(dir.path());
         assert_eq!(resources.scripts.len(), 1);

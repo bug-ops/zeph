@@ -24,7 +24,8 @@ fn qdrant_image() -> GenericImage {
 
 fn fake_embed_fn() -> Box<dyn Fn(&str) -> zeph_llm::provider::EmbedFuture + Send + Sync> {
     Box::new(|text: &str| {
-        let len = text.len() as f32;
+        let len = u16::try_from(text.len()).unwrap_or(u16::MAX);
+        let len = f32::from(len);
         Box::pin(async move { Ok(vec![len / 1000.0, 0.1, 0.2, 0.3]) })
     })
 }

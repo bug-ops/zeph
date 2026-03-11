@@ -6,7 +6,7 @@
 use wiremock::ResponseTemplate;
 
 pub fn agent_card_response(name: &str, base_url: &str) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "name": name,
         "description": "test agent",
         "url": base_url,
@@ -20,7 +20,7 @@ pub fn agent_card_response(name: &str, base_url: &str) -> ResponseTemplate {
 }
 
 pub fn task_rpc_response(task_id: &str, state: &str) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "jsonrpc": "2.0",
         "id": "req-1",
         "result": {
@@ -34,7 +34,7 @@ pub fn task_rpc_response(task_id: &str, state: &str) -> ResponseTemplate {
 }
 
 pub fn task_rpc_error_response(code: i32, message: &str) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "jsonrpc": "2.0",
         "id": "req-1",
         "error": {

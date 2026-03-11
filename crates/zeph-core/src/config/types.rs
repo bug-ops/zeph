@@ -2666,12 +2666,12 @@ mod tests {
 
     #[test]
     fn experiment_config_serde_roundtrip() {
-        let toml_str = r#"
+        let toml_str = r"
 enabled = true
 max_experiments = 10
 min_improvement = 1.0
 eval_budget_tokens = 50000
-"#;
+";
         let cfg: ExperimentConfig = toml::from_str(toml_str).expect("parse");
         assert!(cfg.enabled);
         assert_eq!(cfg.max_experiments, 10);
@@ -2826,7 +2826,7 @@ eval_budget_tokens = 50000
     #[test]
     fn subagent_config_partial_section_uses_field_defaults() {
         // Only max_concurrent provided — other fields use Default.
-        let toml = r#"max_concurrent = 3"#;
+        let toml = r"max_concurrent = 3";
         let cfg: SubAgentConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.max_concurrent, 3);
         assert!(!cfg.enabled);

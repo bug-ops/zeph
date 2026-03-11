@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 
-    /// PERF-SC-04 regression: a task with no next_run must not fire.
+    /// PERF-SC-04 regression: a task with no `next_run` must not fire.
     #[tokio::test]
     async fn tick_does_not_fire_without_next_run() {
         let pool = test_pool().await;
@@ -460,7 +460,7 @@ mod tests {
         );
     }
 
-    /// After init(), every periodic task must have a non-null next_run.
+    /// After `init()`, every periodic task must have a non-null `next_run`.
     #[tokio::test]
     async fn init_always_sets_next_run() {
         let pool = test_pool().await;
@@ -490,7 +490,7 @@ mod tests {
         );
     }
 
-    /// A task whose next_run is in the future must not fire.
+    /// A task whose `next_run` is in the future must not fire.
     #[tokio::test]
     async fn task_does_not_fire_before_next_run() {
         let pool = test_pool().await;
@@ -533,7 +533,7 @@ mod tests {
         );
     }
 
-    /// After a task fires, next_run is advanced to the following occurrence.
+    /// After a task fires, `next_run` is advanced to the following occurrence.
     #[tokio::test]
     async fn next_run_advances_after_execution() {
         let pool = test_pool().await;
@@ -609,7 +609,7 @@ mod tests {
             .expect("task should complete");
     }
 
-    /// One-shot task fires when run_at is in the past.
+    /// One-shot task fires when `run_at` is in the past.
     #[tokio::test]
     async fn oneshot_fires_at_run_at() {
         let pool = test_pool().await;
@@ -643,7 +643,7 @@ mod tests {
         );
     }
 
-    /// One-shot task must NOT fire when run_at is in the future.
+    /// One-shot task must NOT fire when `run_at` is in the future.
     #[tokio::test]
     async fn oneshot_does_not_fire_before_run_at() {
         let pool = test_pool().await;

@@ -1845,11 +1845,12 @@ mod tests {
             confirm_patterns: vec![],
             allow_network: false,
         };
+        use crate::executor::ToolExecutor;
+
         let executor = ShellExecutor::new(&config);
         let mut env = std::collections::HashMap::new();
         env.insert("MY_SKILL_SECRET".to_owned(), "injected-value".to_owned());
         executor.set_skill_env(Some(env));
-        use crate::executor::ToolExecutor;
         let result = executor
             .execute("```bash\necho $MY_SKILL_SECRET\n```")
             .await

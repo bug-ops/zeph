@@ -254,10 +254,10 @@ mod tests {
 
     #[test]
     fn empty_blocked_commands() {
-        let toml_str = r#"
+        let toml_str = r"
             [shell]
             timeout = 30
-        "#;
+        ";
 
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert!(config.enabled);
@@ -283,9 +283,9 @@ mod tests {
 
     #[test]
     fn tools_summarize_output_parsing() {
-        let toml_str = r#"
+        let toml_str = r"
             summarize_output = true
-        "#;
+        ";
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert!(config.summarize_output);
     }
@@ -325,11 +325,11 @@ mod tests {
 
     #[test]
     fn deserialize_scrape_config() {
-        let toml_str = r#"
+        let toml_str = r"
             [scrape]
             timeout = 30
             max_body_bytes = 2097152
-        "#;
+        ";
 
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.scrape.timeout, 30);
@@ -462,10 +462,10 @@ mod tests {
 
     #[test]
     fn deserialize_overflow_config_partial_uses_defaults() {
-        let toml_str = r#"
+        let toml_str = r"
             [overflow]
             threshold = 75000
-        "#;
+        ";
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.overflow.threshold, 75_000);
         assert_eq!(config.overflow.retention_days, 7);

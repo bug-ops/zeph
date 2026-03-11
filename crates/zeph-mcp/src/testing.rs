@@ -19,6 +19,9 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::tool::McpTool;
 
+type MockResponses = Arc<Mutex<HashMap<String, Vec<Result<String, String>>>>>;
+type RecordedCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
 /// Configurable MCP tool executor for unit tests.
 ///
 /// Pre-loads a set of [`McpTool`] definitions and maps tool IDs to canned
@@ -27,9 +30,9 @@ use crate::tool::McpTool;
 pub struct MockMcpServer {
     tools: Vec<McpTool>,
     /// Map: `"server_id:tool_name"` → queue of responses to return in order.
-    responses: Arc<Mutex<HashMap<String, Vec<Result<String, String>>>>>,
+    responses: MockResponses,
     /// Records every tool call received.
-    pub recorded_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    pub recorded_calls: RecordedCalls,
 }
 
 impl MockMcpServer {
@@ -64,6 +67,10 @@ impl MockMcpServer {
     /// if exhausted, subsequent calls return an error.
     ///
     /// `tool_id` must be in `"server_id:tool_name"` format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mock response mutex is poisoned.
     #[must_use]
     pub fn with_response(self, tool_id: impl Into<String>, response: impl Into<String>) -> Self {
         self.responses
@@ -76,6 +83,10 @@ impl MockMcpServer {
     }
 
     /// Add an error response for a tool.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mock response mutex is poisoned.
     #[must_use]
     pub fn with_error(self, tool_id: impl Into<String>, message: impl Into<String>) -> Self {
         self.responses

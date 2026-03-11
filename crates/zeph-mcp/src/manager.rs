@@ -342,7 +342,7 @@ mod tests {
         );
         let dbg = format!("{mgr:?}");
         assert!(dbg.contains("server_count"));
-        assert!(dbg.contains("2"));
+        assert!(dbg.contains('2'));
     }
 
     #[tokio::test]
@@ -469,7 +469,7 @@ mod tests {
             PolicyEnforcer::new(vec![]),
         );
         let dbg = format!("{mgr:?}");
-        assert!(dbg.contains("3"));
+        assert!(dbg.contains('3'));
     }
 
     #[tokio::test]

@@ -917,7 +917,6 @@ pub(super) fn chrono_parse_sqlite(s: &str) -> Result<u64, ()> {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,

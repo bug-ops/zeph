@@ -242,22 +242,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_match_skills_returns_top_k() {
-        let metas = vec![
+        let metas = [
             make_meta("a", "alpha"),
             make_meta("b", "beta"),
             make_meta("c", "gamma"),
         ];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 2, embed_fn_mapping)
             .await;
 
-        assert_eq!(matched.len(), 2);
-        assert_eq!(matched[0].index, 0); // "a" / "alpha"
-        assert_eq!(matched[1].index, 1); // "b" / "beta"
-        assert!(matched[0].score >= matched[1].score);
+        assert_eq!(match_results.len(), 2);
+        assert_eq!(match_results[0].index, 0); // "a" / "alpha"
+        assert_eq!(match_results[1].index, 1); // "b" / "beta"
+        assert!(match_results[0].score >= match_results[1].score);
     }
 
     #[tokio::test]
@@ -269,21 +269,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_match_skills_single_skill() {
-        let metas = vec![make_meta("only", "the only skill")];
+        let metas = [make_meta("only", "the only skill")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 5, embed_fn_constant)
             .await;
 
-        assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].index, 0);
+        assert_eq!(match_results.len(), 1);
+        assert_eq!(match_results[0].index, 0);
     }
 
     #[tokio::test]
     async fn test_matcher_new_returns_none_on_failure() {
-        let metas = vec![make_meta("fail", "will fail")];
+        let metas = [make_meta("fail", "will fail")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let matcher = SkillMatcher::new(&refs, embed_fn_fail).await;
         assert!(matcher.is_none());
@@ -291,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_matcher_skips_failed_embeddings() {
-        let metas = vec![
+        let metas = [
             make_meta("good", "good skill"),
             make_meta("bad", "bad skill"),
         ];
@@ -315,54 +315,54 @@ mod tests {
         let a = vec![1.0, 2.0];
         let b = vec![0.0, 0.0];
         let sim = cosine_similarity(&a, &b);
-        assert_eq!(sim, 0.0);
+        assert!(sim.abs() < f32::EPSILON);
     }
 
     #[tokio::test]
     async fn test_match_skills_returns_all_when_k_larger() {
-        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 100, embed_fn_constant)
             .await;
 
-        assert_eq!(matched.len(), 2);
+        assert_eq!(match_results.len(), 2);
     }
 
     #[tokio::test]
     async fn test_match_skills_query_embed_fails() {
-        let metas = vec![make_meta("a", "alpha")];
+        let metas = [make_meta("a", "alpha")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 5, embed_fn_fail)
             .await;
 
-        assert!(matched.is_empty());
+        assert!(match_results.is_empty());
     }
 
     #[test]
     fn cosine_similarity_different_lengths() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![1.0, 2.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_empty_vectors() {
         let a: Vec<f32> = vec![];
         let b: Vec<f32> = vec![];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_both_zero() {
         let a = vec![0.0, 0.0];
         let b = vec![0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -375,33 +375,33 @@ mod tests {
 
     #[tokio::test]
     async fn match_skills_limit_zero() {
-        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 0, embed_fn_constant)
             .await;
 
-        assert!(matched.is_empty());
+        assert!(match_results.is_empty());
     }
 
     #[tokio::test]
     async fn match_skills_preserves_ranking() {
-        let metas = vec![
+        let metas = [
             make_meta("far", "gamma"),
             make_meta("close", "alpha"),
             make_meta("mid", "beta"),
         ];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 3, embed_fn_mapping)
             .await;
 
-        assert_eq!(matched.len(), 3);
-        assert_eq!(matched[0].index, 1); // "close" / "alpha" is closest to "query"
+        assert_eq!(match_results.len(), 3);
+        assert_eq!(match_results[0].index, 1); // "close" / "alpha" is closest to "query"
     }
 
     #[test]
@@ -424,15 +424,15 @@ mod tests {
 
     #[tokio::test]
     async fn backend_in_memory_match_skills() {
-        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let inner = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let backend = SkillMatcherBackend::InMemory(inner);
-        let matched = backend
+        let matches = backend
             .match_skills(&refs, "query", 5, embed_fn_constant)
             .await;
-        assert_eq!(matched.len(), 2);
+        assert_eq!(matches.len(), 2);
     }
 
     #[test]
@@ -519,7 +519,7 @@ mod tests {
             "delta between sorted scores is always non-negative"
         );
         assert!(
-            !(delta < threshold),
+            delta >= threshold,
             "with threshold=0.0 disambiguation must NOT be triggered"
         );
     }
@@ -537,7 +537,7 @@ mod tests {
             index: 1,
             score: 0.80,
         };
-        assert!(!((high.score - low.score) < threshold));
+        assert!((high.score - low.score) >= threshold);
 
         // delta clearly below threshold => ambiguous
         let close = ScoredMatch {
@@ -549,17 +549,17 @@ mod tests {
 
     #[tokio::test]
     async fn match_skills_returns_scores() {
-        let metas = vec![make_meta("a", "alpha"), make_meta("b", "beta")];
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
-        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let matched = matcher
+        let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let match_results = skill_matcher
             .match_skills(refs.len(), "query", 2, embed_fn_mapping)
             .await;
 
-        assert_eq!(matched.len(), 2);
-        assert!(matched[0].score > 0.0);
-        assert!(matched[0].score >= matched[1].score);
+        assert_eq!(match_results.len(), 2);
+        assert!(match_results[0].score > 0.0);
+        assert!(match_results[0].score >= match_results[1].score);
     }
 
     use proptest::prelude::*;
@@ -581,7 +581,7 @@ mod tests {
             if a.len() == b.len() {
                 let result = cosine_similarity(&a, &b);
                 // cosine similarity is in [-1, 1], allow small floating-point slack
-                assert!(result >= -1.01 && result <= 1.01, "got {result}");
+                assert!((-1.01..=1.01).contains(&result), "got {result}");
             }
         }
     }

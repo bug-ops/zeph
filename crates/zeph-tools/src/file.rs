@@ -710,10 +710,10 @@ mod tests {
             ("limit", serde_json::json!(2)),
         ]);
         let result = exec.execute_file_tool("read", &params).unwrap().unwrap();
-        assert!(result.summary.contains("b"));
-        assert!(result.summary.contains("c"));
-        assert!(!result.summary.contains("a"));
-        assert!(!result.summary.contains("d"));
+        assert!(result.summary.contains('b'));
+        assert!(result.summary.contains('c'));
+        assert!(!result.summary.contains('a'));
+        assert!(!result.summary.contains('d'));
     }
 
     #[test]

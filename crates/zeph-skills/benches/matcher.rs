@@ -6,7 +6,12 @@ use std::hint::black_box;
 use zeph_skills::matcher::cosine_similarity;
 
 fn generate_vector(dim: usize, seed: f32) -> Vec<f32> {
-    (0..dim).map(|i| ((i as f32 + seed) * 0.1).sin()).collect()
+    (0..dim)
+        .map(|i| {
+            let idx = u16::try_from(i).ok().map_or(0.0, f32::from);
+            ((idx + seed) * 0.1).sin()
+        })
+        .collect()
 }
 
 fn cosine_similarity_bench(c: &mut Criterion) {
@@ -28,8 +33,9 @@ fn cosine_ranking(c: &mut Criterion) {
 
     for count in [10, 50, 100] {
         let query = generate_vector(384, 0.0);
-        let candidates: Vec<Vec<f32>> =
-            (0..count).map(|i| generate_vector(384, i as f32)).collect();
+        let candidates: Vec<Vec<f32>> = (0..count)
+            .map(|i| generate_vector(384, u16::try_from(i).ok().map_or(0.0, f32::from)))
+            .collect();
 
         group.bench_with_input(BenchmarkId::new("candidates", count), &count, |b, _| {
             b.iter(|| {

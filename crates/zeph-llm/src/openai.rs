@@ -1075,12 +1075,8 @@ struct TypedChatRequest<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum CompletionTokens {
-    MaxTokens {
-        max_tokens: u32,
-    },
-    MaxCompletionTokens {
-        max_completion_tokens: u32,
-    },
+    MaxTokens { max_tokens: u32 },
+    MaxCompletionTokens { max_completion_tokens: u32 },
 }
 
 impl CompletionTokens {
@@ -1947,7 +1943,7 @@ mod tests {
         assert_eq!(converted[0].content.len(), 2);
         match &converted[0].content[0] {
             OpenAiContentPart::Text { text } => assert_eq!(text, "describe this"),
-            _ => panic!("expected Text part first"),
+            OpenAiContentPart::ImageUrl { .. } => panic!("expected Text part first"),
         }
         match &converted[0].content[1] {
             OpenAiContentPart::ImageUrl { image_url } => {
@@ -1955,7 +1951,7 @@ mod tests {
                 let expected = format!("data:image/jpeg;base64,{}", STANDARD.encode(&data));
                 assert_eq!(image_url.url, expected);
             }
-            _ => panic!("expected ImageUrl part second"),
+            OpenAiContentPart::Text { .. } => panic!("expected ImageUrl part second"),
         }
     }
 
@@ -1968,7 +1964,7 @@ mod tests {
         assert_eq!(converted[0].content.len(), 1);
         match &converted[0].content[0] {
             OpenAiContentPart::Text { text } => assert_eq!(text, "system prompt"),
-            _ => panic!("expected Text part"),
+            OpenAiContentPart::ImageUrl { .. } => panic!("expected Text part"),
         }
     }
 

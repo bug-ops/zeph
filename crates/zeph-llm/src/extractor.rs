@@ -77,7 +77,7 @@ mod tests {
             false
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub"
         }
     }
@@ -142,7 +142,7 @@ mod tests {
                 false
             }
 
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "fail"
             }
         }

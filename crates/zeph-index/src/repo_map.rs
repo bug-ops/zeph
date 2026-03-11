@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn extract_rust_symbols_pub_visibility() {
-        let source = r#"
+        let source = r"
 pub fn hello() {}
 pub(crate) struct Foo;
 enum Bar {}
@@ -492,7 +492,7 @@ impl Foo {
     pub fn bar(&self) {}
     fn private_method(&self) {}
 }
-"#;
+";
         let grammar = Lang::Rust.grammar().unwrap();
         let symbols = extract_symbols(source, &grammar, Lang::Rust);
         let hello = symbols.iter().find(|s| s.name == "hello").unwrap();
@@ -590,9 +590,9 @@ impl Foo {
         assert_eq!(greeter.kind, SymbolKind::Class);
     }
 
-    /// GAP-1552-B: heuristic fallback runs when symbol_query is None.
-    /// Bash has a grammar but no symbol_query, so extract_symbols falls through to
-    /// extract_heuristic. Bash has no entity_node_kinds so the result is an empty
+    /// GAP-1552-B: heuristic fallback runs when `symbol_query` is None.
+    /// Bash has a grammar but no `symbol_query`, so `extract_symbols` falls through to
+    /// `extract_heuristic`. Bash has no `entity_node_kinds` so the result is an empty
     /// Vec — the important thing is no panic and correct code path.
     #[test]
     fn extract_heuristic_fallback_no_symbol_query() {

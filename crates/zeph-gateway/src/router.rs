@@ -144,14 +144,11 @@ mod tests {
     }
 
     fn make_router(
-        auth: Option<String>,
+        auth: Option<&str>,
         rate_limit: u32,
     ) -> (Router, tokio::sync::mpsc::Receiver<String>) {
         let (state, rx) = test_state();
-        (
-            build_router(state, auth.as_deref(), rate_limit, 1_048_576),
-            rx,
-        )
+        (build_router(state, auth, rate_limit, 1_048_576), rx)
     }
 
     #[tokio::test]
@@ -197,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_missing_token() {
-        let (app, _rx) = make_router(Some("secret".into()), 0);
+        let (app, _rx) = make_router(Some("secret"), 0);
         let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
         let req = Request::builder()
             .method("POST")
@@ -211,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_accepts_valid_token() {
-        let (app, _rx) = make_router(Some("secret".into()), 0);
+        let (app, _rx) = make_router(Some("secret"), 0);
         let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
         let req = Request::builder()
             .method("POST")
@@ -226,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_wrong_token() {
-        let (app, _rx) = make_router(Some("secret".into()), 0);
+        let (app, _rx) = make_router(Some("secret"), 0);
         let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
         let req = Request::builder()
             .method("POST")
@@ -241,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_skips_auth() {
-        let (app, _rx) = make_router(Some("secret".into()), 0);
+        let (app, _rx) = make_router(Some("secret"), 0);
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())

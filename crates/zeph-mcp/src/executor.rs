@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn parse_instruction_invalid_json() {
-        let json = r#"{not valid json}"#;
+        let json = r"{not valid json}";
         assert!(serde_json::from_str::<McpInstruction>(json).is_err());
     }
 

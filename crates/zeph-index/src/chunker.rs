@@ -356,11 +356,11 @@ fn main() {
             max_size: 1200,
             min_size: 5,
         };
-        let source = r#"
+        let source = r"
 fn my_function() {
     let x = 1;
 }
-"#;
+";
         let chunks = chunk_file(source, "src/main.rs", Lang::Rust, &config).unwrap();
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].entity_name.as_deref(), Some("my_function"));
@@ -389,11 +389,11 @@ fn my_function() {
             max_size: 1200,
             min_size: 50,
         };
-        let source = r#"
+        let source = r"
 fn a() { 1 }
 fn b() { 2 }
 fn c() { 3 }
-"#;
+";
         let chunks = chunk_file(source, "src/main.rs", Lang::Rust, &config).unwrap();
         assert_eq!(chunks.len(), 1);
     }
@@ -407,7 +407,8 @@ fn c() { 3 }
         };
         let mut body = String::from("fn big() {\n");
         for i in 0..30 {
-            body.push_str(&format!("    let var{i} = {i};\n"));
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "    let var{i} = {i};");
         }
         body.push_str("}\n");
 
@@ -426,7 +427,7 @@ fn c() { 3 }
             max_size: 60,
             min_size: 5,
         };
-        let source = r#"
+        let source = r"
 impl MyStruct {
     fn method_one(&self) {
         let a = 1;
@@ -435,7 +436,7 @@ impl MyStruct {
         let d = 4;
     }
 }
-"#;
+";
         let chunks = chunk_file(source, "src/lib.rs", Lang::Rust, &config).unwrap();
         let has_scope = chunks.iter().any(|c| c.scope_chain.contains("MyStruct"));
         assert!(has_scope, "expected scope chain with MyStruct");

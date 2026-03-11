@@ -517,7 +517,7 @@ mod tests {
 
     /// Requires a live Qdrant instance at localhost:6334.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn ensure_collection_with_quantization_idempotent() {
         let ops = QdrantOps::new("http://localhost:6334").unwrap();
         let collection = "test_quant_idempotent";
@@ -543,7 +543,7 @@ mod tests {
 
     /// Requires a live Qdrant instance at localhost:6334.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn delete_by_ids_empty_no_network_call() {
         let ops = QdrantOps::new("http://localhost:6334").unwrap();
         // Empty ID list must short-circuit and return Ok without hitting Qdrant.

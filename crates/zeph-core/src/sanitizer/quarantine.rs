@@ -219,12 +219,12 @@ mod tests {
     #[test]
     fn quarantine_config_missing_section_uses_defaults() {
         // ContentIsolationConfig without a [quarantine] section
-        let toml_str = r#"
+        let toml_str = r"
 enabled = true
 max_content_size = 65536
 flag_injection_patterns = true
 spotlight_untrusted = true
-"#;
+";
         let cfg: crate::sanitizer::ContentIsolationConfig =
             toml::from_str(toml_str).expect("deserialize");
         assert_eq!(cfg.quarantine, QuarantineConfig::default());
@@ -281,12 +281,15 @@ spotlight_untrusted = true
         ]));
         let cfg = QuarantineConfig::default();
         let qs = QuarantinedSummarizer::new(provider, &cfg);
-        let sanitized = default_sanitizer().sanitize(
+        let sanitized_content = default_sanitizer().sanitize(
             "The temperature today is 20 degrees Celsius.",
             ContentSource::new(ContentSourceKind::WebScrape),
         );
-        let sanitizer = default_sanitizer();
-        let (facts, flags) = qs.extract_facts(&sanitized, &sanitizer).await.unwrap();
+        let content_sanitizer = default_sanitizer();
+        let (facts, flags) = qs
+            .extract_facts(&sanitized_content, &content_sanitizer)
+            .await
+            .unwrap();
         assert_eq!(facts, "Fact: temperature is 20C");
         assert!(flags.is_empty());
     }
@@ -300,17 +303,19 @@ spotlight_untrusted = true
         let provider = AnyProvider::Mock(mock);
         let cfg = QuarantineConfig::default();
         let qs = QuarantinedSummarizer::new(provider, &cfg);
-        let sanitized = default_sanitizer().sanitize(
+        let sanitized_content = default_sanitizer().sanitize(
             "Some web content.",
             ContentSource::new(ContentSourceKind::WebScrape),
         );
         // The sanitized body should have <external-data> wrappers
         assert!(
-            sanitized.body.contains("<external-data"),
+            sanitized_content.body.contains("<external-data"),
             "expected spotlight wrapper"
         );
-        let sanitizer = default_sanitizer();
-        let _ = qs.extract_facts(&sanitized, &sanitizer).await;
+        let content_sanitizer = default_sanitizer();
+        let _ = qs
+            .extract_facts(&sanitized_content, &content_sanitizer)
+            .await;
         // Check that the user message sent to the LLM does NOT contain the wrappers
         let calls = recorded.lock().unwrap();
         assert!(!calls.is_empty(), "expected at least one LLM call");
@@ -333,10 +338,13 @@ spotlight_untrusted = true
         let provider = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
         let cfg = QuarantineConfig::default();
         let qs = QuarantinedSummarizer::new(provider, &cfg);
-        let sanitized = default_sanitizer()
+        let sanitized_content = default_sanitizer()
             .sanitize("content", ContentSource::new(ContentSourceKind::WebScrape));
-        let sanitizer = default_sanitizer();
-        let err = qs.extract_facts(&sanitized, &sanitizer).await.unwrap_err();
+        let content_sanitizer = default_sanitizer();
+        let err = qs
+            .extract_facts(&sanitized_content, &content_sanitizer)
+            .await
+            .unwrap_err();
         assert!(matches!(err, QuarantineError::EmptyResponse));
     }
 
@@ -346,10 +354,13 @@ spotlight_untrusted = true
         let provider = AnyProvider::Mock(MockProvider::failing());
         let cfg = QuarantineConfig::default();
         let qs = QuarantinedSummarizer::new(provider, &cfg);
-        let sanitized = default_sanitizer()
+        let sanitized_content = default_sanitizer()
             .sanitize("content", ContentSource::new(ContentSourceKind::WebScrape));
-        let sanitizer = default_sanitizer();
-        let err = qs.extract_facts(&sanitized, &sanitizer).await.unwrap_err();
+        let content_sanitizer = default_sanitizer();
+        let err = qs
+            .extract_facts(&sanitized_content, &content_sanitizer)
+            .await
+            .unwrap_err();
         assert!(matches!(err, QuarantineError::LlmError(_)));
     }
 

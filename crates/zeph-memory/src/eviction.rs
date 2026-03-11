@@ -341,8 +341,12 @@ mod tests {
             31,
         ];
         let mut month = 1u64;
-        while month <= 12 && total_days >= month_days[month as usize] {
-            total_days -= month_days[month as usize];
+        while month <= 12 {
+            let month_idx = usize::try_from(month).unwrap_or_else(|_| unreachable!());
+            if total_days < month_days[month_idx] {
+                break;
+            }
+            total_days -= month_days[month_idx];
             month += 1;
         }
         let day = total_days + 1;

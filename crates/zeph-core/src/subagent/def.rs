@@ -1201,8 +1201,8 @@ mod tests {
         let mut f2 = std::fs::File::create(dir2.path().join("bot.md")).unwrap();
         f2.write_all(content2.as_bytes()).unwrap();
 
-        let dirs = vec![dir1.path().to_path_buf(), dir2.path().to_path_buf()];
-        let defs = SubAgentDef::load_all(&dirs).unwrap();
+        let search_dirs = vec![dir1.path().to_path_buf(), dir2.path().to_path_buf()];
+        let defs = SubAgentDef::load_all(&search_dirs).unwrap();
 
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].description, "from dir1");

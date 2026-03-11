@@ -232,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn match_skills_embed_fail_returns_empty() {
         let matcher = make_matcher();
-        let metas = vec![make_meta("s", "desc")];
+        let metas = [make_meta("s", "desc")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let embed_fn = |_: &str| -> EmbedFuture {
             Box::pin(async { Err(zeph_llm::LlmError::Other("embed failed".into())) })

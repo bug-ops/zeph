@@ -1254,6 +1254,8 @@ mod tests {
 
     #[tokio::test]
     async fn all_entities_and_stream() {
+        use futures::StreamExt as _;
+
         let gs = setup().await;
         gs.upsert_entity("X", "X", EntityType::Project, None)
             .await
@@ -1264,11 +1266,9 @@ mod tests {
 
         let all = gs.all_entities().await.unwrap();
         assert_eq!(all.len(), 2);
-
-        use futures::StreamExt as _;
         let streamed: Vec<Result<Entity, _>> = gs.all_entities_stream().collect().await;
         assert_eq!(streamed.len(), 2);
-        assert!(streamed.iter().all(|r| r.is_ok()));
+        assert!(streamed.iter().all(Result::is_ok));
     }
 
     #[tokio::test]
@@ -2000,14 +2000,15 @@ mod tests {
 
     /// Validates migration 024 backfill on a pre-canonicalization database state.
     ///
-    /// Simulates a database at migration 021 state (no canonical_name, no aliases), inserts
+    /// Simulates a database at migration 021 state (no `canonical_name`, no aliases), inserts
     /// entities and edges, then applies the migration 024 SQL directly via a single acquired
-    /// connection (required so that PRAGMA foreign_keys = OFF takes effect on the same
+    /// connection (required so that PRAGMA `foreign_keys` = OFF takes effect on the same
     /// connection that executes DROP TABLE). Verifies:
-    /// - canonical_name is backfilled from name for all existing entities
+    /// - `canonical_name` is backfilled from name for all existing entities
     /// - initial aliases are seeded from entity names
-    /// - graph_edges survive (FK cascade did not wipe them)
+    /// - `graph_edges` survive (FK cascade did not wipe them)
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn migration_024_backfill_preserves_entities_and_edges() {
         use sqlx::Acquire as _;
         use sqlx::ConnectOptions as _;

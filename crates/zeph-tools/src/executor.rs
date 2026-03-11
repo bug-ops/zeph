@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn error_kind_execution_other_is_permanent() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "some other error");
+        let io_err = std::io::Error::other("some other error");
         assert_eq!(ToolError::Execution(io_err).kind(), ErrorKind::Permanent);
     }
 

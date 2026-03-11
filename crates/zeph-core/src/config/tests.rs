@@ -2405,9 +2405,9 @@ async fn resolve_secrets_get_secret_returns_none_skips_entry() {
 
 #[test]
 fn stt_config_defaults() {
-    let toml_str = r#"
+    let toml_str = r"
 [llm.stt]
-"#;
+";
     let stt: SttConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(stt.provider, "whisper");
     assert_eq!(stt.model, "whisper-1");

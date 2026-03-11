@@ -63,19 +63,19 @@ mod tests {
     fn zero_vector() {
         let a = vec![0.0_f32, 0.0];
         let b = vec![1.0_f32, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() <= f32::EPSILON);
     }
 
     #[test]
     fn different_lengths() {
         let a = vec![1.0_f32];
         let b = vec![1.0_f32, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() <= f32::EPSILON);
     }
 
     #[test]
     fn empty_vectors() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert!(cosine_similarity(&[], &[]).abs() <= f32::EPSILON);
     }
 
     #[test]
