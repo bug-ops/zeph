@@ -1016,7 +1016,7 @@ struct ToolChatChoice {
 
 #[derive(Deserialize)]
 struct ToolChatMessage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_string_as_default")]
     content: String,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCall>>,
@@ -1032,6 +1032,13 @@ struct OpenAiToolCall {
 struct OpenAiToolCallFunction {
     name: String,
     arguments: String,
+}
+
+fn deserialize_null_string_as_default<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage> {
@@ -1818,6 +1825,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_tool_chat_response_with_null_content_and_tool_calls() {
+        let json = r#"{
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let resp: ToolChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices[0].message.content, "");
+        let tc = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].function.name, "bash");
+    }
+
+    #[test]
     fn convert_messages_structured_with_tool_parts() {
         let messages = vec![
             Message::from_parts(
@@ -2247,6 +2278,70 @@ mod tests {
         }];
         let result = p.chat(&messages).await.unwrap();
         assert_eq!(result, "hello from mock");
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_handles_null_assistant_content() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiProvider::new(
+            "sk-test".into(),
+            server.uri(),
+            "gpt-4o".into(),
+            256,
+            None,
+            None,
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Execute a shell command".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            }),
+        }];
+
+        let result = p.chat_with_tools(&messages, &tools).await.unwrap();
+        match result {
+            ChatResponse::ToolUse { text, tool_calls, .. } => {
+                assert_eq!(text, None);
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].id, "call_123");
+                assert_eq!(tool_calls[0].name, "bash");
+                assert_eq!(tool_calls[0].input, serde_json::json!({"command": "ls"}));
+            }
+            other => panic!("expected ToolUse response, got {other:?}"),
+        }
     }
 
     #[tokio::test]
