@@ -1012,6 +1012,9 @@ mod tests {
                 .fetch_one(store.pool())
                 .await
                 .unwrap();
-        assert_eq!(count, 1, "expected batch insert to succeed after writer commits");
+        assert_eq!(
+            count, 1,
+            "expected batch insert to succeed after writer commits"
+        );
     }
 }
