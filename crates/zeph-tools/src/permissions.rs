@@ -143,6 +143,12 @@ impl PermissionPolicy {
     pub fn rules(&self) -> &HashMap<String, Vec<PermissionRule>> {
         &self.rules
     }
+
+    /// Returns the configured autonomy level.
+    #[must_use]
+    pub fn autonomy_level(&self) -> AutonomyLevel {
+        self.autonomy_level
+    }
 }
 
 /// TOML-deserializable permissions config section.
